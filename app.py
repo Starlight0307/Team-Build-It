@@ -157,4 +157,4 @@ if __name__ == '__main__':
     ex.show()
     sys.exit(app.exec())
 
-##
+##강진구 아우라느아ㅜ란아른
