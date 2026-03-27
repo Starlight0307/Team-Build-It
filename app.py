@@ -152,10 +152,14 @@ class AssistantApp(QWidget):
         scrollbar.setValue(scrollbar.maximum())
 
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
+    app = QApplicatioån(sys.argv)
     ex = AssistantApp()
     ex.show()
     sys.exit(app.exec())
 
+
 ##강진구 아우라느아ㅜ란아른
 ##조성민 1시부터6시 학교알바
+
+
+
