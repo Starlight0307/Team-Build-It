@@ -156,3 +156,5 @@ if __name__ == '__main__':
     ex = AssistantApp()
     ex.show()
     sys.exit(app.exec())
+
+## 메인 파일
