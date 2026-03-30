@@ -157,4 +157,4 @@ if __name__ == '__main__':
     ex.show()
     sys.exit(app.exec())
 
-# 뭐가 문제야 됐다가 안됐다가 신발
+#되는건가?

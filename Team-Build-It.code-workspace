@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"name": "Team-Build-It",
+			"path": "."
+		}
+	],
+	"settings": {
+		"liveServer.settings.multiRootWorkspaceName": "FrontEnd(2026)"
+	}
+}
