@@ -157,4 +157,4 @@ if __name__ == '__main__':
     ex.show()
     sys.exit(app.exec())
 
-#수정해볼게
+#수정해볼게 2트 다시 간다
