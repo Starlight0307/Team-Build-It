@@ -10,14 +10,19 @@ Git: 코드를 다운로드하기 위해 필요합니다.
 윈도우 하단 시작 메뉴에서 **Anaconda Prompt**를 검색해서 실행한 뒤, 아래 명령어를 입력하여 코드를 다운로드하고 해당 폴더로 이동합니다.
 
 DOS
+
 git clone [팀장님이 공유한 깃허브 리포지토리 URL]
 cd Team-Build-It
-2. 독립된 파이썬 가상환경 생성 및 접속
+
+3. 독립된 파이썬 가상환경 생성 및 접속
 패키지 충돌을 막기 위해 현재 프로젝트 전용 가상환경(방)을 만듭니다. (Anaconda Prompt에서 계속 진행합니다.)
 
 DOS
+
 conda create -n ai_agent python=3.10 -y
 conda activate ai_agent
+
+
 (💡 정상적으로 완료되면 터미널 맨 앞부분의 글자가 (base)에서 (ai_agent)로 바뀝니다!)
 
 3. 필수 패키지 한 번에 설치
