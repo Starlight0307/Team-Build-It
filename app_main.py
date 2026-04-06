@@ -28,14 +28,14 @@ AVAILABLE_PLUGINS = [
         "desc": "PC 리소스 상태 체크", 
         "func_name": "get_system_info", 
         "module_name": "system_info", 
-        "github_url": "https://raw.githubusercontent.com/사용자명/레포지토리/main/plugins/system_info.py"
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/tree/main/plugins/system_info.py"
     },
     {
         "name": "다나와 검색", 
         "desc": "최저가 스크래핑", 
         "func_name": "search_product_price", 
         "module_name": "price_search", 
-        "github_url": "https://raw.githubusercontent.com/사용자명/레포지토리/main/plugins/price_search.py"
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/tree/main/plugins/price_search.py"
     }
 ]
 
