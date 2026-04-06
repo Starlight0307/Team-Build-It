@@ -1,0 +1,11 @@
+# Python 캐시 파일
+__pycache__/
+*.pyc
+
+# 맥 OS 시스템 파일
+.DS_Store
+
+# 가상환경 폴더 (만약 폴더 안에 만들었다면)
+venv/
+env/
+.vscode/
