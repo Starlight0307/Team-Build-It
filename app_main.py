@@ -1,3 +1,4 @@
+import subprocess
 import sys
 import os
 import importlib.util
@@ -12,8 +13,12 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QEasingCur
 from auth_ui import AuthWidget 
 
 MOCK_USER = {"name": "", "logged_in": False}
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_DIR = os.path.join(os.getcwd(), "plugins")
 os.makedirs(PLUGIN_DIR, exist_ok=True)
+
+if not os.path.exists(PLUGIN_DIR):
+    os.makedirs(PLUGIN_DIR)
 
 AVAILABLE_PLUGINS = [
     {
@@ -29,6 +34,14 @@ AVAILABLE_PLUGINS = [
         "func_name": "search_product_price", 
         "module_name": "price_search", 
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/price_search.py"
+    },
+    {
+        "name": "구글 캘린더 비서", 
+        "desc": "일정 등록 및 조회 기능", 
+        "func_names": ["add_calendar_event", "list_upcoming_events"],
+        "module_name": "calendar_tool", 
+        "github_url": "https://raw.githubusercontent.com/.../calendar_tool.py",
+        "dependencies": ["google-api-python-client", "google-auth-httplib2", "google-auth-oauthlib"] # 추가
     }
 ]
 
@@ -657,27 +670,6 @@ class AssistantApp(QWidget):
         MOCK_USER["name"] = ""
         self.update_sidebar_ui()
 
-    def download_and_install_plugin(self, f_name, m_name, url, btn):
-        if btn.text() == "설치됨": return
-        try:
-            path = os.path.join(PLUGIN_DIR, f"{m_name}.py")
-            res = requests.get(url, timeout=3)
-            if res.status_code == 200:
-                with open(path, 'w', encoding='utf-8') as f: f.write(res.text)
-            
-            if os.path.exists(path):
-                spec = importlib.util.spec_from_file_location(m_name, path)
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                
-                plugin_info = next(p for p in AVAILABLE_PLUGINS if p['module_name'] == m_name)
-                f_names = plugin_info.get("func_names", [plugin_info.get("func_name")])
-                for name in f_names: self.installed_tools.append(getattr(mod, name))
-                self.installed_module_names.append(m_name)
-                btn.setText("설치됨")
-                btn.setStyleSheet("background-color: transparent; color: gray; border: 1px solid gray; border-radius: 4px;")
-        except Exception: pass
-
     def auto_scroll_to_bottom(self):
         scrollbar = self.scroll_area.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
@@ -710,6 +702,54 @@ class AssistantApp(QWidget):
 
         QTimer.singleShot(50, self.auto_scroll_to_bottom) 
 
+    def download_and_install_plugin(self, f_name, m_name, url, btn):
+    # 이미 설치된 경우 중복 실행 방지
+        if btn.text() == "설치됨": 
+            return
+    
+    # [공통 로직] 모든 버튼 클릭 시 확인 창 띄우기
+        reply = QMessageBox.question(
+            self, 
+            "플러그인 설치 확인", 
+            f"'{f_name}' 기능을 추가하시겠습니까?\n설치 시 외부 라이브러리 다운로드가 진행될 수 있습니다.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.No:
+            return
+
+        # --- 여기서부터는 실제 설치 로직 (라이브러리 체크 -> 다운로드 -> 로드) ---
+        try:
+            btn.setText("설치 중...")
+            btn.setEnabled(False)
+            QApplication.processEvents() # UI 멈춤 방지
+            
+            # 1. 라이브러리 설치 (Dependencies)
+            plugin_info = next(p for p in AVAILABLE_PLUGINS if p['module_name'] == m_name)
+            deps = plugin_info.get("dependencies", [])
+            for lib in deps:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", lib])
+
+            # 2. 파일 다운로드 및 저장
+            path = os.path.join(PLUGIN_DIR, f"{m_name}.py")
+            res = requests.get(url, timeout=5)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(res.text)
+
+            # 3. 플러그인 로드 성공 시 처리
+            btn.setText("설치됨")
+            btn.setStyleSheet("background-color: transparent; color: gray; border: 1px solid gray;")
+            
+            # 성공 알림 (선택 사항)
+            QMessageBox.information(self, "완료", f"'{f_name}' 플러그인이 성공적으로 설치되었습니다.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"설치 실패: {str(e)}")
+            btn.setText("설치")
+            btn.setEnabled(True)
+                
+        
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     ex = AssistantApp()
