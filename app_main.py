@@ -23,9 +23,10 @@ def get_db_connection():
         database="postgres",
         user="postgres.ttydhxlswdutdptvzhwp",
         password="f+Z@rX3b%8&k,?d",
-        port="5432",         
+        port="5432",
         sslmode="require"
     )
+
 # ==========================================
 # ⚙️ 전역 설정
 # ==========================================
@@ -60,6 +61,86 @@ AVAILABLE_PLUGINS = [
 ]
 
 # ==========================================
+# 🛠️ 함수 → ollama tool 딕셔너리 변환
+# ==========================================
+TOOL_SCHEMAS = {
+    "get_system_info": {
+        "type": "function",
+        "function": {
+            "name": "get_system_info",
+            "description": "Returns current PC status including OS, CPU, RAM, and disk.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "get_top_cpu_processes": {
+        "type": "function",
+        "function": {
+            "name": "get_top_cpu_processes",
+            "description": "Returns top 5 processes by CPU usage.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "kill_process": {
+        "type": "function",
+        "function": {
+            "name": "kill_process",
+            "description": "Kills a process by name or number (1 to 5).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "process_name_or_number": {
+                        "type": "string",
+                        "description": "Process name or number (1-5) to kill."
+                    }
+                },
+                "required": ["process_name_or_number"]
+            }
+        }
+    },
+    "search_product_price": {
+        "type": "function",
+        "function": {
+            "name": "search_product_price",
+            "description": "Searches for the lowest price of a product on Danawa.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Product name to search."
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    "add_calendar_event": {
+        "type": "function",
+        "function": {
+            "name": "add_calendar_event",
+            "description": "Adds an event to Google Calendar.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Event title"},
+                    "date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
+                    "time": {"type": "string", "description": "Time in HH:MM format"}
+                },
+                "required": ["title", "date"]
+            }
+        }
+    },
+    "list_upcoming_events": {
+        "type": "function",
+        "function": {
+            "name": "list_upcoming_events",
+            "description": "Lists upcoming events from Google Calendar.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    }
+}
+
+# ==========================================
 # 🧠 백그라운드 AI 스레드
 # ==========================================
 class AIWorker(QThread):
@@ -73,7 +154,15 @@ class AIWorker(QThread):
 
     def run(self):
         try:
-            if not self.installed_tools:
+            ollama_tools = []
+            func_map = {}
+            for func in self.installed_tools:
+                name = func.__name__
+                func_map[name] = func
+                if name in TOOL_SCHEMAS:
+                    ollama_tools.append(TOOL_SCHEMAS[name])
+
+            if not ollama_tools:
                 system_content = "현재 도구가 없습니다. '좌측 마켓플레이스 메뉴에서 플러그인을 먼저 설치해주세요.' 라고만 대답하세요."
             else:
                 system_content = """당신은 PC를 제어하는 유능한 AI 비서입니다.
@@ -83,7 +172,6 @@ class AIWorker(QThread):
                 답변 시작/끝에 따옴표(") 절대 금지, 임의로 지어내기 금지."""
 
             system_msg = {'role': 'system', 'content': system_content}
-
             if len(self.chat_history) > 0 and self.chat_history[0].get('role') == 'system':
                 self.chat_history[0] = system_msg
             else:
@@ -94,21 +182,22 @@ class AIWorker(QThread):
             response = ollama.chat(
                 model='llama3.1',
                 messages=self.chat_history,
-                tools=self.installed_tools if self.installed_tools else None
+                tools=ollama_tools if ollama_tools else None
             )
 
             if response.get('message', {}).get('tool_calls'):
                 tool_results_dict = {}
+                self.chat_history.append(response['message'])
+
                 for tool in response['message']['tool_calls']:
                     func_name = tool['function']['name']
                     args = tool['function']['arguments']
-                    for func in self.installed_tools:
-                        if func.__name__ == func_name:
-                            tool_result = func(**args)
-                            tool_results_dict[func_name] = str(tool_result)
-                            self.chat_history.append(response['message'])
-                            self.chat_history.append({'role': 'tool', 'content': str(tool_result)})
-                            break
+
+                    if func_name in func_map:
+                        tool_result = func_map[func_name](**args)
+                        tool_result_clean = str(tool_result).encode('utf-8', errors='ignore').decode('utf-8')
+                        tool_results_dict[func_name] = tool_result_clean
+                        self.chat_history.append({'role': 'tool', 'content': tool_result_clean})
 
                 final_response = ollama.chat(model='llama3.1', messages=self.chat_history)
                 clean_reply = final_response['message']['content'].strip()
@@ -347,6 +436,7 @@ class PluginMarketplaceWidget(QFrame):
         self.title_label.setStyleSheet(f"color: {title_color}; font-size: 24px; font-weight: bold; background: transparent; border: none;")
         self.search_input.setStyleSheet(f"background-color: {search_bg}; color: {title_color}; border: 1px solid {search_border}; border-radius: 6px; padding: 5px 15px;")
         for card in self.plugin_items: card.update_theme(is_dark_mode)
+
 
 # ==========================================
 # 🖥️ 메인 애플리케이션
@@ -718,11 +808,9 @@ class AssistantApp(QWidget):
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
 
     def download_and_install_plugin(self, f_name, m_name, url, btn):
-        # 이미 설치된 경우 중복 실행 방지
         if btn.text() == "설치됨":
             return
 
-        # 설치 확인 다이얼로그
         reply = QMessageBox.question(
             self,
             "플러그인 설치 확인",
@@ -736,22 +824,19 @@ class AssistantApp(QWidget):
         try:
             btn.setText("설치 중...")
             btn.setEnabled(False)
-            QApplication.processEvents()  # UI 멈춤 방지
+            QApplication.processEvents()
 
-            # 1. 의존 라이브러리 설치
             plugin_info = next(p for p in AVAILABLE_PLUGINS if p['module_name'] == m_name)
             deps = plugin_info.get("dependencies", [])
             for lib in deps:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", lib])
 
-            # 2. 플러그인 파일 다운로드
             path = os.path.join(PLUGIN_DIR, f"{m_name}.py")
             res = requests.get(url, timeout=5)
             res.raise_for_status()
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(res.text)
 
-            # 3. 플러그인 동적 로드
             spec = importlib.util.spec_from_file_location(m_name, path)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
@@ -772,8 +857,6 @@ class AssistantApp(QWidget):
 
 
 if __name__ == '__main__':
-
-    # 앱 실행
     app = QApplication(sys.argv)
     ex = AssistantApp()
     ex.show()

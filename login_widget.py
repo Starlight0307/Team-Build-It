@@ -8,11 +8,11 @@ from PyQt6.QtGui import QColor
 
 def get_db_connection():
     return psycopg2.connect(
-        host="aws-1-ap-northeast-2.pooler.supabase.com",
+        host="db.ttydhxlswdutdptvzhwp.supabase.co",
         database="postgres",
         user="postgres.ttydhxlswdutdptvzhwp",
         password="f+Z@rX3b%8&k,?d",
-        port="6543",
+        port="5432",
         sslmode="require"
     )
 
