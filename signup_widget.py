@@ -1,3 +1,5 @@
+import random
+import string
 import psycopg2
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLineEdit, QPushButton, QLabel, QMessageBox,
@@ -9,13 +11,30 @@ from PyQt6.QtGui import QColor
 
 def get_db_connection():
     return psycopg2.connect(
-        host="db.ttydhxlswdutdptvzhwp.supabase.co",
+        host="aws-1-ap-northeast-2.pooler.supabase.com",  # 0 → 1
         database="postgres",
         user="postgres.ttydhxlswdutdptvzhwp",
         password="f+Z@rX3b%8&k,?d",
-        port="5432",
+        port="6543",
         sslmode="require"
     )
+
+
+# ==========================================
+# 🔑 고유 회원번호 생성 (RUMI-XXXXXX)
+# ==========================================
+def generate_member_no(cur):
+    """
+    RUMI-XXXXXX 형식의 고유 회원번호를 생성합니다.
+    DB에서 중복 확인 후 유일한 번호를 반환합니다.
+    """
+    while True:
+        suffix = ''.join(random.choices(string.digits, k=6))
+        member_no = f"RUMI-{suffix}"
+        cur.execute("SELECT id FROM users WHERE member_no = %s", (member_no,))
+        if not cur.fetchone():
+            return member_no
+
 
 def get_stylesheet(is_dark: bool) -> str:
     if is_dark:
@@ -301,7 +320,7 @@ class SignupWidget(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "DB 오류", str(e))
 
-    # ── 회원가입 처리 ────────────────────────────────────
+    # ── 회원가입 처리 (고유 회원번호 생성 포함) ──────────
     def _handle_signup(self):
         uid   = self.input_id.text().strip()
         pw    = self.input_pw.text()
@@ -317,6 +336,7 @@ class SignupWidget(QWidget):
                       self.combo_m.currentText(),
                       self.combo_d.currentText())
 
+        # ── 유효성 검사 ──
         if not (6 <= len(uid) <= 20):
             self._set_msg(self.msg_id, "아이디는 6~20자로 입력하세요."); return
         self.msg_id.setText("")
@@ -337,21 +357,42 @@ class SignupWidget(QWidget):
             QMessageBox.warning(self, "오류", "생년월일을 선택하세요."); return
 
         birthday = f"{yr}-{int(mo):02d}-{int(dy):02d}"
+
         try:
             conn = get_db_connection(); cur = conn.cursor()
+
+            # 아이디 중복 확인
             cur.execute("SELECT id FROM users WHERE username=%s", (uid,))
             if cur.fetchone():
-                self._set_msg(self.msg_id, "이미 사용 중인 아이디입니다."); cur.close(); conn.close(); return
+                self._set_msg(self.msg_id, "이미 사용 중인 아이디입니다.")
+                cur.close(); conn.close(); return
+
+            # 이메일 중복 확인
             cur.execute("SELECT id FROM users WHERE email=%s", (email,))
             if cur.fetchone():
-                QMessageBox.warning(self, "오류", "이미 사용 중인 이메일입니다."); cur.close(); conn.close(); return
+                QMessageBox.warning(self, "오류", "이미 사용 중인 이메일입니다.")
+                cur.close(); conn.close(); return
+
+            # 🔑 고유 회원번호 생성
+            member_no = generate_member_no(cur)
+
+            # DB 저장 (member_no 포함)
             cur.execute(
-                "INSERT INTO users (username, password, email, name, phone, birthday) VALUES (%s,%s,%s,%s,%s,%s)",
-                (uid, pw, email, name, phone, birthday)
+                """INSERT INTO users (username, password, email, name, phone, birthday, member_no)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (uid, pw, email, name, phone, birthday, member_no)
             )
             conn.commit(); cur.close(); conn.close()
-            QMessageBox.information(self, "완료", "회원가입이 완료되었습니다!")
-            self.clear_fields(); self.signup_success.emit()
+
+            QMessageBox.information(
+                self, "가입 완료",
+                f"회원가입이 완료되었습니다!\n\n"
+                f"회원번호: {member_no}\n"
+                f"(이 번호를 메모해 두세요)"
+            )
+            self.clear_fields()
+            self.signup_success.emit()
+
         except Exception as e:
             QMessageBox.warning(self, "DB 오류", str(e))
 

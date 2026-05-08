@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import os
+import uuid
 import importlib.util
 import requests
 import ollama
@@ -13,19 +14,50 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QPropertyAnimation, QEasingCurve, QTimer
 
 from auth_ui import AuthWidget
+from history_widget import HistoryWidget
 
 # ==========================================
-# 🗄️ Supabase DB 연결
+# 🗄️ Supabase DB 연결 (회원 인증용)
 # ==========================================
-def get_db_connection():
+def get_supabase_connection():
     return psycopg2.connect(
-        host="db.ttydhxlswdutdptvzhwp.supabase.co",
+        host="aws-1-ap-northeast-2.pooler.supabase.com",
         database="postgres",
         user="postgres.ttydhxlswdutdptvzhwp",
         password="f+Z@rX3b%8&k,?d",
-        port="5432",
+        port="6543",
         sslmode="require"
     )
+
+# ==========================================
+# 🗄️ 로컬 PostgreSQL 연결 (대화 기록용)
+# ==========================================
+def get_local_connection():
+    return psycopg2.connect(
+        host="localhost",
+        database="lumi",
+        user="postgres",
+        password="123456789",
+        port="5432"
+    )
+
+# ==========================================
+# 💾 대화 내용 로컬 DB 저장 (세션 포함)
+# ==========================================
+def save_chat_to_db(user_id, role, content, session_id=None, session_title=None):
+    try:
+        conn = get_local_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO chat_logs (user_id, role, content, session_id, session_title)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (user_id or "guest", role, content, session_id, session_title)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[DB 저장 오류] {e}")
 
 # ==========================================
 # ⚙️ 전역 설정
@@ -225,7 +257,7 @@ class AIWorker(QThread):
             self.response_ready.emit(f"⚠️ 오류 발생: {e}")
 
 # ==========================================
-# 🖥️ UI 컴포넌트: 예시 카드 및 말풍선
+# 🖥️ UI 컴포넌트
 # ==========================================
 class CommandCard(QFrame):
     clicked = pyqtSignal(str)
@@ -240,9 +272,9 @@ class CommandCard(QFrame):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(10)
 
-        self.icon_lbl = QLabel(icon_str)
+        self.icon_lbl  = QLabel(icon_str)
         self.title_lbl = QLabel(title)
-        self.desc_lbl = QLabel(desc)
+        self.desc_lbl  = QLabel(desc)
         self.desc_lbl.setWordWrap(True)
         self.desc_lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
@@ -252,11 +284,11 @@ class CommandCard(QFrame):
         layout.addStretch()
 
     def update_theme(self, is_dark_mode):
-        bg = "#2D2D2D" if is_dark_mode else "#FFFFFF"
-        border = "#444444" if is_dark_mode else "#E1E5EA"
-        hover_bg = "#3D3D3D" if is_dark_mode else "#F0F2F5"
+        bg          = "#2D2D2D" if is_dark_mode else "#FFFFFF"
+        border      = "#444444" if is_dark_mode else "#E1E5EA"
+        hover_bg    = "#3D3D3D" if is_dark_mode else "#F0F2F5"
         title_color = "#FFFFFF" if is_dark_mode else "#000000"
-        desc_color = "#AAAAAA" if is_dark_mode else "#666666"
+        desc_color  = "#AAAAAA" if is_dark_mode else "#666666"
 
         self.setStyleSheet(f"QFrame {{ background-color: {bg}; border: 1px solid {border}; border-radius: 12px; }} QFrame:hover {{ border: 1px solid #2EA043; background-color: {hover_bg}; }}")
         self.icon_lbl.setStyleSheet("font-size: 26px; padding-bottom: 5px; border: none; background: transparent;")
@@ -305,11 +337,11 @@ class PluginCard(QFrame):
             self.btn.setStyleSheet("background-color: #2EA043; color: white; font-weight: bold; border-radius: 4px;")
 
     def update_theme(self, is_dark_mode):
-        bg = "#2D2D2D" if is_dark_mode else "#FFFFFF"
-        border = "#444444" if is_dark_mode else "#CCCCCC"
-        hover_bg = "#3D3D3D" if is_dark_mode else "#F0F2F5"
+        bg          = "#2D2D2D" if is_dark_mode else "#FFFFFF"
+        border      = "#444444" if is_dark_mode else "#CCCCCC"
+        hover_bg    = "#3D3D3D" if is_dark_mode else "#F0F2F5"
         title_color = "#FFFFFF" if is_dark_mode else "#000000"
-        desc_color = "#AAAAAA" if is_dark_mode else "#666666"
+        desc_color  = "#AAAAAA" if is_dark_mode else "#666666"
 
         self.setStyleSheet(f"QFrame {{ background-color: {bg}; border: 1px solid {border}; border-radius: 12px; }} QFrame:hover {{ border: 1px solid #2EA043; background-color: {hover_bg}; }}")
         self.name_lbl.setStyleSheet(f"color: {title_color}; font-size: 16px; font-weight: bold; background: transparent; border: none;")
@@ -355,10 +387,10 @@ class MessageBubble(QFrame):
     def update_theme(self, is_dark_mode):
         if is_dark_mode:
             if self.is_user: bg = "#FFFFFF"; border = "#FFFFFF"; color = "#000000"
-            else: bg = "#3D3D3D"; border = "#444444"; color = "#FFFFFF"
+            else:            bg = "#3D3D3D"; border = "#444444"; color = "#FFFFFF"
         else:
             if self.is_user: bg = "#1A1A1A"; border = "#1A1A1A"; color = "#FFFFFF"
-            else: bg = "#F0F2F5"; border = "#E1E5EA"; color = "#1A1A1A"
+            else:            bg = "#F0F2F5"; border = "#E1E5EA"; color = "#1A1A1A"
 
         self.bubble.setStyleSheet(f"background-color: {bg}; border-radius: 12px; border: 1px solid {border};")
         self.message_label.setStyleSheet(f"color: {color}; background: transparent; border: none; font-size: 15px; line-height: 1.6;")
@@ -429,8 +461,8 @@ class PluginMarketplaceWidget(QFrame):
             else: card.hide()
 
     def update_theme(self, is_dark_mode):
-        title_color = "#FFFFFF" if is_dark_mode else "#000000"
-        search_bg = "#2D2D2D" if is_dark_mode else "#FFFFFF"
+        title_color   = "#FFFFFF" if is_dark_mode else "#000000"
+        search_bg     = "#2D2D2D" if is_dark_mode else "#FFFFFF"
         search_border = "#444444" if is_dark_mode else "#E1E5EA"
 
         self.title_label.setStyleSheet(f"color: {title_color}; font-size: 24px; font-weight: bold; background: transparent; border: none;")
@@ -452,6 +484,10 @@ class AssistantApp(QWidget):
         self.installed_tools = []
         self.installed_module_names = []
 
+        # 세션 관리
+        self.current_session_id    = None
+        self.current_session_title = None
+
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.load_existing_plugins()
         self.initUI()
@@ -459,19 +495,19 @@ class AssistantApp(QWidget):
 
     def apply_theme(self):
         if self.is_dark_mode:
-            main_bg = "#1A1A1A"; text_color = "#FFFFFF"
-            input_bg = "#262626"; input_border = "#333333"
-            pill_bg = "#1A1A1A"; pill_border = "#333333"
-            sidebar_bg = "#101010"; sidebar_border = "#2D2D2D"
-            sb_text = "#AAAAAA"; sb_hover_bg = "#2D2D2D"; sb_hover_text = "#FFFFFF"
-            grip_color = "#555555"
+            main_bg        = "#1A1A1A"; text_color     = "#FFFFFF"
+            input_bg       = "#262626"; input_border   = "#333333"
+            pill_bg        = "#1A1A1A"; pill_border    = "#333333"
+            sidebar_bg     = "#101010"; sidebar_border = "#2D2D2D"
+            sb_text        = "#AAAAAA"; sb_hover_bg    = "#2D2D2D"; sb_hover_text = "#FFFFFF"
+            grip_color     = "#555555"
         else:
-            main_bg = "#FFFFFF"; text_color = "#000000"
-            input_bg = "#FFFFFF"; input_border = "#E1E5EA"
-            pill_bg = "#F0F2F5"; pill_border = "#E1E5EA"
-            sidebar_bg = "#F0F4F8"; sidebar_border = "#E1E5EA"
-            sb_text = "#666666"; sb_hover_bg = "#E1E5EA"; sb_hover_text = "#000000"
-            grip_color = "#C0C0C0"
+            main_bg        = "#FFFFFF"; text_color     = "#000000"
+            input_bg       = "#FFFFFF"; input_border   = "#E1E5EA"
+            pill_bg        = "#F0F2F5"; pill_border    = "#E1E5EA"
+            sidebar_bg     = "#F0F4F8"; sidebar_border = "#E1E5EA"
+            sb_text        = "#666666"; sb_hover_bg    = "#E1E5EA"; sb_hover_text = "#000000"
+            grip_color     = "#C0C0C0"
 
         self.setStyleSheet(f"""
             QLabel {{ color: {text_color}; background: transparent; border: none; }}
@@ -501,9 +537,10 @@ class AssistantApp(QWidget):
         """
         for btn in self.nav_info: btn.setStyleSheet(self.sidebar_btn_style)
 
-        if hasattr(self, 'auth_page'): self.auth_page.update_theme(self.is_dark_mode)
-        for card in self.command_cards: card.update_theme(self.is_dark_mode)
-        for bubble in self.chat_bubbles: bubble.update_theme(self.is_dark_mode)
+        if hasattr(self, 'auth_page'):    self.auth_page.update_theme(self.is_dark_mode)
+        if hasattr(self, 'history_page'): self.history_page.update_theme(self.is_dark_mode)
+        for card in self.command_cards:   card.update_theme(self.is_dark_mode)
+        for bubble in self.chat_bubbles:  bubble.update_theme(self.is_dark_mode)
         self.plugin_page.update_theme(self.is_dark_mode)
         self.settings_title.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {text_color}; background: transparent; border: none;")
 
@@ -538,20 +575,21 @@ class AssistantApp(QWidget):
         self.splitter.splitterMoved.connect(self.update_sidebar_ui)
         main_layout.addWidget(self.splitter)
 
+        # ── 사이드바 ──────────────────────────────────
         self.sidebar_frame = QFrame()
         self.sidebar_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         sidebar_layout = QVBoxLayout(self.sidebar_frame)
         sidebar_layout.setContentsMargins(10, 20, 10, 20)
 
-        self.btn_chat = QPushButton()
-        self.btn_plugin = QPushButton()
-        self.btn_history = QPushButton()
+        self.btn_chat     = QPushButton()
+        self.btn_plugin   = QPushButton()
+        self.btn_history  = QPushButton()
         self.btn_settings = QPushButton()
 
         self.nav_info = {
-            self.btn_chat: ("💬", "💬   대화창"),
-            self.btn_plugin: ("🧩", "🧩   마켓플레이스"),
-            self.btn_history: ("🕒", "🕒   대화 기록"),
+            self.btn_chat:     ("💬", "💬   대화창"),
+            self.btn_plugin:   ("🧩", "🧩   마켓플레이스"),
+            self.btn_history:  ("🕒", "🕒   대화 기록"),
             self.btn_settings: ("⚙️", "⚙️   환경설정")
         }
 
@@ -579,6 +617,7 @@ class AssistantApp(QWidget):
         self.splitter_grip.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         handle_layout.addWidget(self.splitter_grip, 0, Qt.AlignmentFlag.AlignCenter)
 
+        # ── 메인 영역 ─────────────────────────────────
         self.main_frame = QFrame()
         self.main_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         main_area_layout = QVBoxLayout(self.main_frame)
@@ -589,23 +628,28 @@ class AssistantApp(QWidget):
         self.stacked_widget.setStyleSheet("background: transparent;")
         main_area_layout.addWidget(self.stacked_widget)
 
+        # index 0: 대화창
         self.init_chat_page()
 
+        # index 1: 마켓플레이스
         self.plugin_page = PluginMarketplaceWidget(self)
         self.plugin_page.plugin_install_request.connect(self.download_and_install_plugin)
         self.stacked_widget.addWidget(self.plugin_page)
 
-        history_lbl = QLabel("🕒 대화 기록 (준비 중)")
-        history_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.stacked_widget.addWidget(history_lbl)
+        # index 2: 대화 기록
+        self.history_page = HistoryWidget(lambda: MOCK_USER)
+        self.stacked_widget.addWidget(self.history_page)
 
+        # index 3: 환경설정
         self.init_settings_page()
 
+        # index 4: 인증
         self.auth_page = AuthWidget(self)
         self.auth_page.login_success.connect(self.on_login_success)
         self.auth_page.logout_success.connect(self.on_logout_success)
         self.stacked_widget.addWidget(self.auth_page)
 
+        # ── 하단 입력창 ───────────────────────────────
         self.bottom_input_wrapper = QWidget()
         self.bottom_input_wrapper.setStyleSheet("background: transparent; border: none;")
         bw_layout = QVBoxLayout(self.bottom_input_wrapper)
@@ -638,7 +682,9 @@ class AssistantApp(QWidget):
         pill_row.setSpacing(10)
 
         for cmd_txt in ["💡 내 PC 상태 확인", "🚀 내 PC 최적화", "🔍 최저가 검색"]:
-            cmd_val = "내 컴퓨터 상태 어때?" if "상태" in cmd_txt else ("내 컴퓨터가 왜이렇게 느려?" if "최적화" in cmd_txt else "[상품명 입력받기]")
+            cmd_val = ("내 컴퓨터 상태 어때?" if "상태" in cmd_txt
+                       else ("내 컴퓨터가 왜이렇게 느려?" if "최적화" in cmd_txt
+                             else "[상품명 입력받기]"))
             btn = QPushButton(cmd_txt)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda checked, c=cmd_val: self.on_card_clicked(c))
@@ -705,15 +751,41 @@ class AssistantApp(QWidget):
 
         self.settings_title = QLabel("⚙️ 환경설정")
         layout.addWidget(self.settings_title)
+        layout.addSpacing(20)
 
         self.btn_theme = QPushButton("☀️ 라이트 모드로 변경")
         self.btn_theme.setMinimumSize(250, 45)
         self.btn_theme.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_theme.setStyleSheet("background-color: #2EA043; color: white; font-size: 16px; font-weight: bold; border-radius: 8px; border: none;")
         self.btn_theme.clicked.connect(self.toggle_theme)
-
         layout.addWidget(self.btn_theme)
+        layout.addSpacing(12)
+
+        # 로그아웃 버튼
+        self.btn_logout = QPushButton("🚪 로그아웃")
+        self.btn_logout.setMinimumSize(250, 45)
+        self.btn_logout.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_logout.setStyleSheet("background-color: #DC2626; color: white; font-size: 16px; font-weight: bold; border-radius: 8px; border: none;")
+        self.btn_logout.clicked.connect(self._handle_logout)
+        layout.addWidget(self.btn_logout)
+
         self.stacked_widget.addWidget(page)
+
+    def _handle_logout(self):
+        if not MOCK_USER["logged_in"]:
+            QMessageBox.information(self, "알림", "로그인 상태가 아닙니다.")
+            return
+        MOCK_USER["logged_in"] = False
+        MOCK_USER["name"] = ""
+        self.current_session_id    = None
+        self.current_session_title = None
+        self.auth_page.logout()
+        for b in self.nav_info: b.setChecked(False)
+        self.btn_chat.setChecked(True)
+        self.btn_profile.setChecked(False)
+        self.stacked_widget.setCurrentIndex(0)
+        self.bottom_input_wrapper.show()
+        self.update_sidebar_ui()
 
     def update_sidebar_ui(self):
         w = self.sidebar_frame.width()
@@ -722,15 +794,15 @@ class AssistantApp(QWidget):
             btn.setText(icon if is_collapsed else full)
 
         if self.is_dark_mode:
-            color = "#2EA043" if MOCK_USER["logged_in"] else "#555555"
+            color      = "#2EA043" if MOCK_USER["logged_in"] else "#555555"
             text_color = "#FFFFFF" if MOCK_USER["logged_in"] else "#AAAAAA"
-            bg_color = "#2D2D2D" if self.btn_profile.isChecked() else "transparent"
-            hover_bg = "#2D2D2D"
+            bg_color   = "#2D2D2D" if self.btn_profile.isChecked() else "transparent"
+            hover_bg   = "#2D2D2D"
         else:
-            color = "#2EA043" if MOCK_USER["logged_in"] else "#AAAAAA"
+            color      = "#2EA043" if MOCK_USER["logged_in"] else "#AAAAAA"
             text_color = "#1A1A1A" if MOCK_USER["logged_in"] else "#666666"
-            bg_color = "#E1E5EA" if self.btn_profile.isChecked() else "transparent"
-            hover_bg = "#E1E5EA"
+            bg_color   = "#E1E5EA" if self.btn_profile.isChecked() else "transparent"
+            hover_bg   = "#E1E5EA"
 
         self.btn_profile.setStyleSheet(f"""
             QPushButton {{ background-color: {bg_color}; border: 2px solid {color}; border-radius: 23px; color: {text_color}; font-size: 14px; font-weight: bold; text-align: left; padding-left: 14px; }}
@@ -757,9 +829,15 @@ class AssistantApp(QWidget):
 
         if idx == 0:
             self.bottom_input_wrapper.show()
-            if self.chat_main_layout.count() <= 2: self.welcome_widget.show()
+            if self.chat_main_layout.count() <= 2:
+                self.welcome_widget.show()
+            self.current_session_id    = None
+            self.current_session_title = None
         else:
             self.bottom_input_wrapper.hide()
+
+        if idx == 2:
+            self.history_page.load_sessions()
 
     def go_to_auth_page(self):
         for b in self.nav_info: b.setChecked(False)
@@ -771,11 +849,21 @@ class AssistantApp(QWidget):
     def on_login_success(self, uid):
         MOCK_USER["logged_in"] = True
         MOCK_USER["name"] = uid
+        self.current_session_id    = None
+        self.current_session_title = None
+        # 로그인 성공 시 대화창으로 이동
+        for b in self.nav_info: b.setChecked(False)
+        self.btn_chat.setChecked(True)
+        self.btn_profile.setChecked(False)
+        self.stacked_widget.setCurrentIndex(0)
+        self.bottom_input_wrapper.show()
         self.update_sidebar_ui()
 
     def on_logout_success(self):
         MOCK_USER["logged_in"] = False
         MOCK_USER["name"] = ""
+        self.current_session_id    = None
+        self.current_session_title = None
         self.update_sidebar_ui()
 
     def auto_scroll_to_bottom(self):
@@ -788,10 +876,19 @@ class AssistantApp(QWidget):
 
         self.welcome_widget.hide()
 
+        if self.current_session_id is None:
+            self.current_session_id    = str(uuid.uuid4())
+            self.current_session_title = txt[:20] + ("..." if len(txt) > 20 else "")
+
         new_bubble = MessageBubble(f"나: {txt}", True)
         self.chat_bubbles.append(new_bubble)
         self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, new_bubble)
         new_bubble.update_theme(self.is_dark_mode)
+
+        save_chat_to_db(
+            MOCK_USER.get("name"), "user", txt,
+            self.current_session_id, self.current_session_title
+        )
 
         self.input_field.clear()
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
@@ -805,6 +902,13 @@ class AssistantApp(QWidget):
         self.chat_bubbles.append(new_bubble)
         self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, new_bubble)
         new_bubble.update_theme(self.is_dark_mode)
+
+        clean = text.replace("🤖 로컬 비서: ", "")
+        save_chat_to_db(
+            MOCK_USER.get("name"), "assistant", clean,
+            self.current_session_id, self.current_session_title
+        )
+
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
 
     def download_and_install_plugin(self, f_name, m_name, url, btn):
