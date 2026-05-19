@@ -59,6 +59,8 @@ def save_chat_to_db(user_id, role, content, session_id=None, session_title=None)
     except Exception as e:
         print(f"[DB 저장 오류] {e}")
 
+import os
+
 # ==========================================
 # ⚙️ 전역 설정
 # ==========================================
@@ -68,28 +70,78 @@ PLUGIN_DIR = os.path.join(os.getcwd(), "plugins")
 os.makedirs(PLUGIN_DIR, exist_ok=True)
 
 AVAILABLE_PLUGINS = [
+    # ──────────────────────────────────────
+    # 1. 시스템 진단 및 제어 (기존 유지)
+    # ──────────────────────────────────────
     {
         "name": "시스템 진단 및 제어",
         "desc": "PC 상태 확인 및 과부하 프로그램 종료 기능",
         "func_names": ["get_system_info", "get_top_cpu_processes", "kill_process"],
         "module_name": "system_info",
-        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_info.py"
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_info.py",
+        "dependencies": []
     },
+
+    # ──────────────────────────────────────
+    # 2. 다나와 검색 (기존 유지)
+    # ──────────────────────────────────────
     {
         "name": "다나와 검색",
         "desc": "최저가 스크래핑",
-        "func_name": "search_product_price",
+        "func_names": ["search_product_price"],
         "module_name": "price_search",
-        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/price_search.py"
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/price_search.py",
+        "dependencies": []
     },
+
+    # ──────────────────────────────────────
+    # 3. 보안 모니터링 (신규 추가)
+    # ──────────────────────────────────────
+    {
+        "name": "보안 모니터링",
+        "desc": "포트 스캔, 의심 프로세스 탐지, 방화벽 규칙 조회/관리, 네트워크 연결 모니터링",
+        "func_names": [
+            "scan_open_ports",           # 포트 스캔 / 열린 포트 확인
+            "detect_suspicious_processes",  # 의심 프로세스 탐지 및 경고
+            "get_firewall_rules",        # 방화벽 규칙 조회
+            "manage_firewall",           # 방화벽 규칙 추가/삭제 (Linux ufw)
+            "get_network_connections",   # 네트워크 연결 목록 조회
+            "monitor_network_traffic",   # 실시간 트래픽 송수신 측정
+        ],
+        "module_name": "security_plugin",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/security.py",
+        "dependencies": ["psutil"]  # socket은 파이썬 표준 라이브러리라 별도 설치 불필요
+    },
+
+    # ──────────────────────────────────────
+    # 4. 구글 캘린더 비서 (URL 수정 + func_names 정리)
+    # ──────────────────────────────────────
     {
         "name": "구글 캘린더 비서",
-        "desc": "일정 등록 및 조회 기능",
-        "func_names": ["add_calendar_event", "list_upcoming_events"],
-        "module_name": "calendar_tool",
-        "github_url": "https://raw.githubusercontent.com/.../calendar_tool.py",
-        "dependencies": ["google-api-python-client", "google-auth-httplib2", "google-auth-oauthlib"]
-    }
+        "desc": "일정 등록·조회·수정·삭제, 반복 일정, 통계 분석, 오늘/내일 브리핑",
+        "func_names": [
+            "setup_calendar_auth",      # 최초 1회 OAuth2 인증 (브라우저 로그인)
+            "get_login_status",         # 현재 로그인 계정 확인
+            "create_event",             # 일정 등록
+            "get_upcoming_events",      # 향후 N일 일정 조회
+            "get_events_by_date",       # 특정 날짜 일정 조회
+            "search_events",            # 키워드로 일정 검색
+            "update_event",             # 일정 수정
+            "delete_event",             # 일정 삭제
+            "create_recurring_event",   # 반복 일정 등록 (매일/매주/매월/매년)
+            "get_calendar_list",        # 연결된 캘린더 목록 조회
+            "get_schedule_summary",     # 일정 통계 (바쁜 요일·시간대 분석)
+            "get_daily_briefing",       # 오늘/내일 일정 브리핑
+        ],
+        "module_name": "calendar_plugin",
+        # ⚠️ 수정 포인트: ".../..." 플레이스홀더 → 실제 경로로 변경
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/calendar_tool.py",
+        "dependencies": [
+            "google-api-python-client",
+            "google-auth-httplib2",
+            "google-auth-oauthlib"
+        ]
+    },
 ]
 
 # ==========================================
