@@ -53,6 +53,219 @@ TOKEN_FILE = os.path.join(BASE_DIR, "token.json")
 DEFAULT_TIMEZONE = "Asia/Seoul"
 
 
+# ==========================================
+# 🛠️ Tool Schemas (ollama tool calling용)
+# ==========================================
+TOOL_SCHEMAS = {
+    "setup_calendar_auth": {
+        "type": "function",
+        "function": {
+            "name": "setup_calendar_auth",
+            "description": (
+                "Google 캘린더 최초 인증을 수행합니다. "
+                "사용자가 '구글 캘린더 연결', '캘린더 로그인', '구글 인증' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "get_login_status": {
+        "type": "function",
+        "function": {
+            "name": "get_login_status",
+            "description": (
+                "현재 구글 캘린더 로그인 상태와 연결된 계정 정보를 반환합니다. "
+                "사용자가 '캘린더 로그인 됐어?', '어떤 계정으로 연결됐어?' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "create_event": {
+        "type": "function",
+        "function": {
+            "name": "create_event",
+            "description": (
+                "구글 캘린더에 새 일정을 등록합니다. "
+                "사용자가 '일정 추가', '~~ 일정 잡아줘', '캘린더에 넣어줘' 등을 말할 때 호출하세요. "
+                "start_datetime, end_datetime은 'YYYY-MM-DD HH:MM' 형식으로 전달하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title":          {"type": "string", "description": "일정 제목"},
+                    "start_datetime": {"type": "string", "description": "시작 일시. 형식: '2025-07-20 14:00'"},
+                    "end_datetime":   {"type": "string", "description": "종료 일시. 형식: '2025-07-20 15:00'"},
+                    "description":    {"type": "string", "description": "일정 설명 (선택)"},
+                    "location":       {"type": "string", "description": "장소 (선택)"},
+                    "reminder_minutes": {"type": "integer", "description": "알림 시간(분). 기본값: 30"},
+                    "color":          {"type": "string", "description": "색상 ID '1'~'11' (선택)"}
+                },
+                "required": ["title", "start_datetime", "end_datetime"]
+            }
+        }
+    },
+    "get_upcoming_events": {
+        "type": "function",
+        "function": {
+            "name": "get_upcoming_events",
+            "description": (
+                "앞으로 N일 이내의 일정을 조회합니다. "
+                "사용자가 '다음 일정 알려줘', '이번 주 일정', '앞으로 7일 일정' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days":        {"type": "integer", "description": "조회할 기간(일). 기본값: 7"},
+                    "max_results": {"type": "integer", "description": "최대 조회 개수. 기본값: 10"}
+                },
+                "required": []
+            }
+        }
+    },
+    "get_events_by_date": {
+        "type": "function",
+        "function": {
+            "name": "get_events_by_date",
+            "description": (
+                "특정 날짜의 일정을 조회합니다. "
+                "사용자가 '7월 20일 일정', '내일 일정 있어?' 등 특정 날짜를 언급할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date_str": {"type": "string", "description": "조회할 날짜. 형식: 'YYYY-MM-DD'. 예: '2025-07-20'"}
+                },
+                "required": ["date_str"]
+            }
+        }
+    },
+    "search_events": {
+        "type": "function",
+        "function": {
+            "name": "search_events",
+            "description": (
+                "키워드로 일정을 검색합니다. "
+                "사용자가 '회의 일정 찾아줘', '병원 일정 있어?' 등 특정 키워드를 검색할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword":    {"type": "string", "description": "검색할 키워드"},
+                    "days_range": {"type": "integer", "description": "검색 범위(오늘 기준 ±N일). 기본값: 30"}
+                },
+                "required": ["keyword"]
+            }
+        }
+    },
+    "update_event": {
+        "type": "function",
+        "function": {
+            "name": "update_event",
+            "description": (
+                "기존 일정을 수정합니다. event_id는 get_upcoming_events 결과의 🆔 값입니다. "
+                "사용자가 '일정 바꿔줘', '시간 수정해줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id":       {"type": "string", "description": "수정할 이벤트 ID"},
+                    "title":          {"type": "string", "description": "새 제목 (선택)"},
+                    "start_datetime": {"type": "string", "description": "새 시작 일시 (선택). 형식: 'YYYY-MM-DD HH:MM'"},
+                    "end_datetime":   {"type": "string", "description": "새 종료 일시 (선택). 형식: 'YYYY-MM-DD HH:MM'"},
+                    "description":    {"type": "string", "description": "새 설명 (선택)"},
+                    "location":       {"type": "string", "description": "새 장소 (선택)"}
+                },
+                "required": ["event_id"]
+            }
+        }
+    },
+    "delete_event": {
+        "type": "function",
+        "function": {
+            "name": "delete_event",
+            "description": (
+                "일정을 삭제합니다. event_id는 get_upcoming_events 결과의 🆔 값입니다. "
+                "사용자가 '일정 지워줘', '취소해줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id": {"type": "string", "description": "삭제할 이벤트 ID"}
+                },
+                "required": ["event_id"]
+            }
+        }
+    },
+    "create_recurring_event": {
+        "type": "function",
+        "function": {
+            "name": "create_recurring_event",
+            "description": (
+                "반복 일정을 등록합니다. "
+                "사용자가 '매주 월요일 회의', '매일 운동 일정', '반복 일정 추가' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title":            {"type": "string", "description": "일정 제목"},
+                    "start_datetime":   {"type": "string", "description": "시작 일시. 형식: 'YYYY-MM-DD HH:MM'"},
+                    "end_datetime":     {"type": "string", "description": "종료 일시. 형식: 'YYYY-MM-DD HH:MM'"},
+                    "recurrence_type":  {"type": "string", "description": "'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY' 중 하나"},
+                    "recurrence_count": {"type": "integer", "description": "반복 횟수. 기본값: 10"},
+                    "description":      {"type": "string", "description": "일정 설명 (선택)"},
+                    "location":         {"type": "string", "description": "장소 (선택)"}
+                },
+                "required": ["title", "start_datetime", "end_datetime"]
+            }
+        }
+    },
+    "get_calendar_list": {
+        "type": "function",
+        "function": {
+            "name": "get_calendar_list",
+            "description": (
+                "연결된 구글 계정의 모든 캘린더 목록과 ID를 반환합니다. "
+                "사용자가 '캘린더 목록', '어떤 캘린더 있어?' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "get_schedule_summary": {
+        "type": "function",
+        "function": {
+            "name": "get_schedule_summary",
+            "description": (
+                "최근 N일간의 일정 통계를 분석합니다(총 일정 수, 바쁜 요일·시간대, 평균 길이 등). "
+                "사용자가 '일정 통계', '언제 제일 바빠?', '일정 분석해줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "description": "분석할 기간(일). 기본값: 30"}
+                },
+                "required": []
+            }
+        }
+    },
+    "get_daily_briefing": {
+        "type": "function",
+        "function": {
+            "name": "get_daily_briefing",
+            "description": (
+                "오늘 또는 내일의 일정을 브리핑 형태로 요약합니다. "
+                "사용자가 '오늘 일정 알려줘', '내일 뭐 있어?', '일정 브리핑' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "'today'(오늘) 또는 'tomorrow'(내일). 기본값: 'today'"}
+                },
+                "required": []
+            }
+        }
+    }
+}
+
+
 # ─────────────────────────────────────────────
 # 🔐 인증 관련
 # ─────────────────────────────────────────────

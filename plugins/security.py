@@ -7,6 +7,133 @@ import socket
 import re
 from datetime import datetime
 
+
+# ==========================================
+# 🛠️ Tool Schemas (ollama tool calling용)
+# ==========================================
+TOOL_SCHEMAS = {
+    "scan_open_ports": {
+        "type": "function",
+        "function": {
+            "name": "scan_open_ports",
+            "description": (
+                "지정한 호스트의 열린 포트를 스캔합니다. "
+                "사용자가 '포트 확인', '열린 포트 알려줘', '포트 스캔' 등을 말할 때 호출하세요. "
+                "target은 IP 또는 도메인, port_range는 '1-1024' 형식으로 전달하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "스캔할 IP 주소 또는 도메인. 기본값: '127.0.0.1'"
+                    },
+                    "port_range": {
+                        "type": "string",
+                        "description": "스캔할 포트 범위. 예: '1-1024', '8000-9000'. 기본값: '1-1024'"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    "detect_suspicious_processes": {
+        "type": "function",
+        "function": {
+            "name": "detect_suspicious_processes",
+            "description": (
+                "실행 중인 프로세스 중 악성코드나 해킹 도구로 의심되는 항목을 탐지합니다. "
+                "사용자가 '보안 점검', '악성 프로그램 확인', '의심 프로세스 찾아줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    "get_firewall_rules": {
+        "type": "function",
+        "function": {
+            "name": "get_firewall_rules",
+            "description": (
+                "현재 OS의 방화벽 규칙을 조회합니다. "
+                "Linux(ufw), macOS(pfctl), Windows(netsh) 모두 지원합니다. "
+                "사용자가 '방화벽 설정 보여줘', '방화벽 규칙 확인' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    "manage_firewall": {
+        "type": "function",
+        "function": {
+            "name": "manage_firewall",
+            "description": (
+                "방화벽 규칙을 추가하거나 삭제합니다. Linux(ufw) 전용이며 관리자 권한이 필요합니다. "
+                "사용자가 '포트 80 허용해줘', '포트 4444 차단해줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "'allow'(허용), 'deny'(거부), 'delete'(규칙 삭제) 중 하나"
+                    },
+                    "port": {
+                        "type": "integer",
+                        "description": "적용할 포트 번호 (1~65535)"
+                    },
+                    "protocol": {
+                        "type": "string",
+                        "description": "'tcp' 또는 'udp'. 기본값: 'tcp'"
+                    }
+                },
+                "required": ["action", "port"]
+            }
+        }
+    },
+    "get_network_connections": {
+        "type": "function",
+        "function": {
+            "name": "get_network_connections",
+            "description": (
+                "현재 활성화된 네트워크 연결을 조회하고 외부 연결 및 의심 포트 연결을 강조합니다. "
+                "사용자가 '네트워크 연결 확인', '외부 통신 중인 프로그램', '인터넷 연결 목록' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    "monitor_network_traffic": {
+        "type": "function",
+        "function": {
+            "name": "monitor_network_traffic",
+            "description": (
+                "지정한 초 동안 네트워크 송수신 트래픽 변화량을 측정합니다. "
+                "사용자가 '트래픽 측정', '인터넷 속도 확인', '네트워크 사용량 보여줘' 등을 말할 때 호출하세요. "
+                "duration_seconds는 1~30 사이 값을 전달하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration_seconds": {
+                        "type": "integer",
+                        "description": "측정할 시간(초). 기본값: 5, 최대: 30"
+                    }
+                },
+                "required": []
+            }
+        }
+    }
+}
+
 # ─────────────────────────────────────────────
 # 🔒 전역 상태 저장소
 # ─────────────────────────────────────────────
@@ -31,128 +158,6 @@ SUSPICIOUS_PORTS = {
     9001: "Tor 릴레이",
     9050: "Tor SOCKS 프록시",
 }
-
-
-# ─────────────────────────────────────────────
-# ✅ 기존 기능 (유지)
-# ─────────────────────────────────────────────
-
-def get_system_info() -> str:
-    """현재 컴퓨터의 상세한 시스템 상태(OS, CPU 코어, RAM, 디스크, 온도 등)를 반환합니다."""
-    print("\n👀 [플러그인] 상세 시스템 정보 스캔 중...")
-    os_info = f"{platform.system()} {platform.release()}"
-    cpu_cores = psutil.cpu_count(logical=True)
-    cpu_usage = psutil.cpu_percent(interval=0.5)
-
-    ram = psutil.virtual_memory()
-    ram_total = round(ram.total / (1024**3), 1)
-    ram_used = round(ram.used / (1024**3), 1)
-
-    disk = psutil.disk_usage('/')
-    disk_total = round(disk.total / (1024**3), 1)
-    disk_free = round(disk.free / (1024**3), 1)
-
-    cpu_temp = "측정 불가 (OS/하드웨어 미지원)"
-    gpu_temp = "측정 불가 (OS/하드웨어 미지원)"
-    gpu_info = "측정 불가"
-
-    try:
-        temps = psutil.sensors_temperatures()
-        if temps:
-            first_sensor = list(temps.values())[0]
-            if first_sensor:
-                cpu_temp = f"{first_sensor[0].current}°C"
-    except:
-        pass
-
-    if platform.system() == "Darwin":
-        try:
-            gpu_req = subprocess.check_output(["system_profiler", "SPDisplaysDataType"], text=True)
-            for line in gpu_req.split('\n'):
-                if "Chipset Model" in line or "Device Name" in line:
-                    gpu_info = line.split(":")[1].strip()
-                    break
-        except:
-            pass
-
-    result = (
-        f"[🖥️ 현재 컴퓨터 상태 상세 보고]\n"
-        f"- 운영체제(OS): {os_info}\n"
-        f"- CPU: {cpu_cores}코어 (점유율: {cpu_usage}% / 온도: {cpu_temp})\n"
-        f"- GPU: {gpu_info} (온도: {gpu_temp})\n"
-        f"- 메모리(RAM): 총 {ram_total}GB 중 {ram_used}GB 사용 중\n"
-        f"- 디스크(Disk): 총 {disk_total}GB 중 {disk_free}GB 여유 공간"
-    )
-    return result
-
-
-def get_top_cpu_processes() -> str:
-    """CPU 점유율 상위 5개 프로그램 목록을 반환하고 메모리에 저장합니다."""
-    global LAST_TOP_PROCESSES
-    print("\n👀 [플러그인] CPU 점유율 정밀 측정 중...")
-
-    for proc in psutil.process_iter():
-        try:
-            proc.cpu_percent(interval=None)
-        except:
-            pass
-
-    time.sleep(0.5)
-
-    processes = []
-    for proc in psutil.process_iter(['name']):
-        try:
-            cpu_val = proc.cpu_percent(interval=None)
-            processes.append({'name': proc.info['name'], 'cpu': cpu_val})
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-
-    if not processes:
-        return "정보 없음"
-
-    processes.sort(key=lambda x: x['cpu'], reverse=True)
-    top_5 = processes[:5]
-    LAST_TOP_PROCESSES = [p['name'] for p in top_5]
-
-    result = "다음은 CPU를 가장 많이 사용하는 상위 5개 프로그램입니다:\n"
-    for idx, p in enumerate(top_5, 1):
-        result += f"{idx}. {p['name']} (점유율: {round(p['cpu'], 1)}%)\n"
-
-    return result
-
-
-def kill_process(process_name_or_number: str) -> str:
-    """입력받은 이름이나 '번호(1~5)'에 해당하는 프로그램을 강제로 종료합니다."""
-    global LAST_TOP_PROCESSES
-    print(f"\n🔥 [플러그인] '{process_name_or_number}' 종료 시도 중...")
-
-    search_name = process_name_or_number.strip()
-
-    if search_name.isdigit():
-        idx = int(search_name) - 1
-        if 0 <= idx < len(LAST_TOP_PROCESSES):
-            search_name = LAST_TOP_PROCESSES[idx]
-        else:
-            return "잘못된 번호입니다. 다시 확인해주세요."
-
-    search_name_lower = search_name.lower()
-    found = False
-    killed_names = set()
-
-    for proc in psutil.process_iter(['name']):
-        try:
-            p_name = proc.info['name']
-            if p_name and search_name_lower in p_name.lower():
-                proc.kill()
-                killed_names.add(p_name)
-                found = True
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-
-    if found:
-        return f"성공적으로 {', '.join(killed_names)} 프로그램을 종료했습니다."
-    else:
-        return f"'{search_name}' 프로그램을 찾을 수 없거나 OS 권한 문제로 종료에 실패했습니다."
 
 
 # ─────────────────────────────────────────────

@@ -147,82 +147,8 @@ AVAILABLE_PLUGINS = [
 # ==========================================
 # 🛠️ 함수 → ollama tool 딕셔너리 변환
 # ==========================================
-TOOL_SCHEMAS = {
-    "get_system_info": {
-        "type": "function",
-        "function": {
-            "name": "get_system_info",
-            "description": "Returns current PC status including OS, CPU, RAM, and disk.",
-            "parameters": {"type": "object", "properties": {}, "required": []}
-        }
-    },
-    "get_top_cpu_processes": {
-        "type": "function",
-        "function": {
-            "name": "get_top_cpu_processes",
-            "description": "Returns top 5 processes by CPU usage.",
-            "parameters": {"type": "object", "properties": {}, "required": []}
-        }
-    },
-    "kill_process": {
-        "type": "function",
-        "function": {
-            "name": "kill_process",
-            "description": "Kills a process by name or number (1 to 5).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "process_name_or_number": {
-                        "type": "string",
-                        "description": "Process name or number (1-5) to kill."
-                    }
-                },
-                "required": ["process_name_or_number"]
-            }
-        }
-    },
-    "search_product_price": {
-        "type": "function",
-        "function": {
-            "name": "search_product_price",
-            "description": "Searches for the lowest price of a product on Danawa.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Product name to search."
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    "add_calendar_event": {
-        "type": "function",
-        "function": {
-            "name": "add_calendar_event",
-            "description": "Adds an event to Google Calendar.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "Event title"},
-                    "date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
-                    "time": {"type": "string", "description": "Time in HH:MM format"}
-                },
-                "required": ["title", "date"]
-            }
-        }
-    },
-    "list_upcoming_events": {
-        "type": "function",
-        "function": {
-            "name": "list_upcoming_events",
-            "description": "Lists upcoming events from Google Calendar.",
-            "parameters": {"type": "object", "properties": {}, "required": []}
-        }
-    }
-}
+TOOL_SCHEMAS = {}   # 각 플러그인 파일 안의 TOOL_SCHEMAS가 로드 시 자동으로 여기에 병합됩니다.
+
 
 # ==========================================
 # 🧠 백그라운드 AI 스레드
@@ -611,10 +537,19 @@ class AssistantApp(QWidget):
                     spec = importlib.util.spec_from_file_location(p['module_name'], filepath)
                     module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(module)
+
                     for name in p.get("func_names", [p.get("func_name")]):
-                        self.installed_tools.append(getattr(module, name))
+                        if hasattr(module, name):
+                            self.installed_tools.append(getattr(module, name))
+    
+                    # ★ 핵심: 플러그인 안의 TOOL_SCHEMAS를 전역에 병합
+                    if hasattr(module, "TOOL_SCHEMAS"):
+                        TOOL_SCHEMAS.update(module.TOOL_SCHEMAS)
+    
                     self.installed_module_names.append(p['module_name'])
-                except Exception: pass
+                except Exception as e:
+                    print(f"[플러그인 로드 실패] {p['module_name']}: {e}")
+
 
     def initUI(self):
         self.resize(1100, 750)
@@ -999,7 +934,11 @@ class AssistantApp(QWidget):
 
             f_names = plugin_info.get("func_names", [plugin_info.get("func_name")])
             for name in f_names:
-                self.installed_tools.append(getattr(mod, name))
+                if hasattr(mod, name):                  # ★ hasattr 체크 추가
+                    self.installed_tools.append(getattr(mod, name))
+
+            if hasattr(mod, "TOOL_SCHEMAS"):            # ★ 핵심: schema 병합
+                TOOL_SCHEMAS.update(mod.TOOL_SCHEMAS)
             self.installed_module_names.append(m_name)
 
             btn.setText("설치됨")

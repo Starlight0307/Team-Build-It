@@ -7,6 +7,65 @@ import subprocess
 # 💡 [핵심] 사용자가 "1번"이라고 했을 때 매칭할 수 있도록 파이썬이 리스트를 기억합니다.
 LAST_TOP_PROCESSES = []
 
+# ==========================================
+# 🛠️ Tool Schemas (ollama tool calling용)
+# ==========================================
+TOOL_SCHEMAS = {
+    "get_system_info": {
+        "type": "function",
+        "function": {
+            "name": "get_system_info",
+            "description": (
+                "현재 PC의 OS, CPU 코어 수 및 점유율, GPU, RAM 사용량, 디스크 여유 공간 등 "
+                "시스템 상태 전체를 반환합니다. "
+                "사용자가 '컴퓨터 상태', '내 PC 상태', '시스템 정보' 등을 물을 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    "get_top_cpu_processes": {
+        "type": "function",
+        "function": {
+            "name": "get_top_cpu_processes",
+            "description": (
+                "CPU 점유율 상위 5개 프로세스 목록을 반환합니다. "
+                "사용자가 '컴퓨터가 느리다', '왜 이렇게 무겁지', 'CPU 많이 쓰는 프로그램' 등을 물을 때 호출하세요. "
+                "결과는 1~5번으로 번호가 매겨지며, 이후 kill_process 호출 시 번호로 참조됩니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    "kill_process": {
+        "type": "function",
+        "function": {
+            "name": "kill_process",
+            "description": (
+                "지정한 프로세스를 강제 종료합니다. "
+                "process_name_or_number에 프로세스 이름 또는 get_top_cpu_processes 결과의 번호(1~5)를 전달하세요. "
+                "사용자가 '1번 종료해', '크롬 꺼줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "process_name_or_number": {
+                        "type": "string",
+                        "description": "종료할 프로세스 이름 또는 번호(1~5). 예: '1', '2', 'chrome.exe'"
+                    }
+                },
+                "required": ["process_name_or_number"]
+            }
+        }
+    }
+}
+
 def get_system_info() -> str:
     """현재 컴퓨터의 상세한 시스템 상태(OS, CPU 코어, RAM, 디스크, 온도 등)를 반환합니다."""
     print("\n👀 [플러그인] 상세 시스템 정보 스캔 중...")
@@ -127,3 +186,5 @@ def kill_process(process_name_or_number: str) -> str:
         return f"성공적으로 {', '.join(killed_names)} 프로그램을 종료했습니다."
     else:
         return f"'{search_name}' 프로그램을 찾을 수 없거나 OS 권한 문제로 종료에 실패했습니다."
+    
+    
