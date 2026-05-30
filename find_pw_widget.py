@@ -1,20 +1,11 @@
-import psycopg2
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLineEdit, QPushButton, QLabel, QMessageBox,
                              QSizePolicy, QGraphicsDropShadowEffect)
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
+from db import update_password
 
-def get_db_connection():
-    return psycopg2.connect(
-        host="aws-1-ap-northeast-2.pooler.supabase.com",  # 0 → 1
-        database="postgres",
-        user="postgres.ttydhxlswdutdptvzhwp",
-        password="f+Z@rX3b%8&k,?d",
-        port="6543",
-        sslmode="require"
-    )
 
 def get_stylesheet(is_dark: bool) -> str:
     if is_dark:
@@ -59,12 +50,6 @@ def get_stylesheet(is_dark: bool) -> str:
             padding: 8px; font-size: 13px; font-weight: 700; min-height: 34px;
         }}
         QPushButton#P:hover  {{ background-color: {'#6EE79A' if is_dark else '#15803D'}; }}
-        QPushButton#S {{
-            background-color: {b2bg}; color: {b2tx};
-            border: 1px solid {brd}; border-radius: 7px;
-            padding: 7px; font-size: 12px; font-weight: 500; min-height: 30px;
-        }}
-        QPushButton#S:hover {{ background-color: {b2hv}; }}
         QPushButton#L {{
             background: transparent; color: {acc};
             border: none; padding: 1px 3px;
@@ -108,13 +93,11 @@ class FindPwWidget(QWidget):
         L.setContentsMargins(26, 26, 26, 26)
         L.setSpacing(0)
 
-        # 헤더
         t = QLabel("비밀번호 재설정"); t.setObjectName("H1"); L.addWidget(t)
         s = QLabel("아이디와 이메일로 본인 확인 후 비밀번호를 변경합니다")
         s.setObjectName("Sub"); s.setWordWrap(True); L.addWidget(s)
         L.addSpacing(16)
 
-        # 안내 박스
         step_box = QFrame(); step_box.setObjectName("StepBox")
         step_box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         sb_lay = QVBoxLayout(step_box)
@@ -125,17 +108,14 @@ class FindPwWidget(QWidget):
         L.addWidget(step_box)
         L.addSpacing(16)
 
-        # 아이디
         self._lbl(L, "아이디"); L.addSpacing(4)
         self.input_id = QLineEdit(); self.input_id.setPlaceholderText("가입한 아이디")
         L.addWidget(self.input_id); L.addSpacing(11)
 
-        # 이메일
         self._lbl(L, "이메일"); L.addSpacing(4)
         self.input_email = QLineEdit(); self.input_email.setPlaceholderText("가입 시 등록한 이메일")
         L.addWidget(self.input_email); L.addSpacing(11)
 
-        # 새 비밀번호
         self._lbl(L, "새 비밀번호"); L.addSpacing(4)
         self.input_pw = QLineEdit()
         self.input_pw.setPlaceholderText("문자·숫자·특수문자 포함 8~20자")
@@ -144,7 +124,6 @@ class FindPwWidget(QWidget):
         self.msg_pw = QLabel(""); self.msg_pw.setObjectName("Err")
         L.addWidget(self.msg_pw); L.addSpacing(11)
 
-        # 새 비밀번호 확인
         self._lbl(L, "새 비밀번호 확인"); L.addSpacing(4)
         self.input_pw2 = QLineEdit()
         self.input_pw2.setPlaceholderText("새 비밀번호 재입력")
@@ -154,17 +133,14 @@ class FindPwWidget(QWidget):
         self.msg_pw2 = QLabel(""); self.msg_pw2.setObjectName("Err")
         L.addWidget(self.msg_pw2); L.addSpacing(18)
 
-        # 재설정 버튼
         btn = QPushButton("비밀번호 재설정"); btn.setObjectName("P")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(self._handle_reset)
         L.addWidget(btn); L.addSpacing(10)
 
-        # 구분선
         sep = QFrame(); sep.setObjectName("Sep"); sep.setFrameShape(QFrame.Shape.HLine)
         L.addWidget(sep); L.addSpacing(12)
 
-        # 로그인으로
         r = QHBoxLayout(); r.setSpacing(4)
         lbl2 = QLabel("기억이 나셨나요?"); lbl2.setObjectName("Sub"); r.addWidget(lbl2)
         b = QPushButton("로그인"); b.setObjectName("L")
@@ -185,33 +161,28 @@ class FindPwWidget(QWidget):
         )
 
     def _handle_reset(self):
-        uid  = self.input_id.text().strip()
-        eml  = self.input_email.text().strip()
-        pw   = self.input_pw.text()
-        pw2  = self.input_pw2.text()
+        uid = self.input_id.text().strip()
+        eml = self.input_email.text().strip()
+        pw  = self.input_pw.text()
+        pw2 = self.input_pw2.text()
 
         if not uid or not eml or not pw:
             QMessageBox.warning(self, "오류", "모든 항목을 입력하세요."); return
 
         ok, err = self._val_pw(pw)
-        if not ok: self._set_msg(self.msg_pw, err); return
+        if not ok:
+            self._set_msg(self.msg_pw, err); return
         self.msg_pw.setText("")
 
-        if pw != pw2: self._set_msg(self.msg_pw2, "비밀번호가 일치하지 않습니다."); return
+        if pw != pw2:
+            self._set_msg(self.msg_pw2, "비밀번호가 일치하지 않습니다."); return
         self.msg_pw2.setText("")
 
-        try:
-            conn = get_db_connection(); cur = conn.cursor()
-            cur.execute("SELECT id FROM users WHERE username=%s AND email=%s", (uid, eml))
-            if not cur.fetchone():
-                QMessageBox.warning(self, "실패", "아이디 또는 이메일이 일치하지 않습니다.")
-                cur.close(); conn.close(); return
-            cur.execute("UPDATE users SET password=%s WHERE username=%s AND email=%s", (pw, uid, eml))
-            conn.commit(); cur.close(); conn.close()
+        if update_password(uid, eml, pw):
             QMessageBox.information(self, "완료", "비밀번호가 재설정되었습니다!")
             self._go_back()
-        except Exception as e:
-            QMessageBox.warning(self, "DB 오류", str(e))
+        else:
+            QMessageBox.warning(self, "실패", "아이디 또는 이메일이 일치하지 않습니다.")
 
     def _val_pw(self, pw):
         if not (8 <= len(pw) <= 20): return False, "8~20자로 입력하세요."

@@ -1,0 +1,37 @@
+{
+  "session_id": "a00711e0-f35b-4eb3-8a03-cc2a4a0cc998",
+  "session_title": "내 컴퓨터 상태 어때?",
+  "user_id": "test2214",
+  "messages": [
+    {
+      "role": "user",
+      "content": "내 컴퓨터 상태 어때?",
+      "timestamp": "2026-05-30 21:34:38"
+    },
+    {
+      "role": "assistant",
+      "content": "[🖥️ 현재 컴퓨터 상태 상세 보고]\n- 운영체제(OS): Windows 11\n- CPU: 20코어 (점유율: 7.4% / 온도: 측정 불가 (OS/하드웨어 미지원))\n- GPU: 측정 불가 (온도: 측정 불가 (OS/하드웨어 미지원))\n- 메모리(RAM): 총 31.7GB 중 12.4GB 사용 중\n- 디스크(Disk): 총 475.6GB 중 115.2GB 여유 공간",
+      "timestamp": "2026-05-30 21:34:53"
+    },
+    {
+      "role": "user",
+      "content": "내 컴퓨터가 왜이렇게 느려?",
+      "timestamp": "2026-05-30 21:34:56"
+    },
+    {
+      "role": "assistant",
+      "content": "다음은 CPU를 가장 많이 사용하는 상위 5개 프로그램입니다:\n1. System Idle Process (점유율: 1921.2%)\n2. python.exe (점유율: 59.8%)\n3. System (점유율: 13.8%)\n4. NVDisplay.Container.exe (점유율: 7.3%)\n5. Code.exe (점유율: 4.9%)\n\n이 중 몇 번 프로그램을 종료할까요?",
+      "timestamp": "2026-05-30 21:35:03"
+    },
+    {
+      "role": "user",
+      "content": "최저가 검색: ",
+      "timestamp": "2026-05-30 21:35:23"
+    },
+    {
+      "role": "assistant",
+      "content": "⚠️ 오류 발생: search_product_price() got an unexpected keyword argument 'query'",
+      "timestamp": "2026-05-30 21:35:25"
+    }
+  ]
+}

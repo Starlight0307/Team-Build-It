@@ -8,13 +8,14 @@ from PyQt6.QtGui import QColor
 
 def get_db_connection():
     return psycopg2.connect(
-        host="aws-1-ap-northeast-2.pooler.supabase.com",  # 0 → 1
+        host="aws-1-ap-northeast-2.pooler.supabase.com",
         database="postgres",
         user="postgres.ttydhxlswdutdptvzhwp",
         password="f+Z@rX3b%8&k,?d",
         port="6543",
         sslmode="require"
     )
+
 
 def get_stylesheet(is_dark: bool) -> str:
     if is_dark:
@@ -82,8 +83,7 @@ class LoginWidget(QWidget):
         self.update_theme(True)
 
     def _build_ui(self):
-        rl = QVBoxLayout(self)
-        rl.setContentsMargins(0, 0, 0, 0)
+        rl = QVBoxLayout(self); rl.setContentsMargins(0, 0, 0, 0)
 
         self.root = QFrame(); self.root.setObjectName("Root")
         self.root.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -98,99 +98,72 @@ class LoginWidget(QWidget):
         self.card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.card.setFixedWidth(320)
         sh = QGraphicsDropShadowEffect()
-        sh.setBlurRadius(28); sh.setOffset(0, 6)
-        sh.setColor(QColor(0, 0, 0, 50))
+        sh.setBlurRadius(28); sh.setOffset(0, 6); sh.setColor(QColor(0, 0, 0, 50))
         self.card.setGraphicsEffect(sh)
 
         L = QVBoxLayout(self.card)
-        L.setContentsMargins(26, 26, 26, 26)
-        L.setSpacing(0)
+        L.setContentsMargins(26, 26, 26, 26); L.setSpacing(0)
 
-        # 타이틀
-        t = QLabel("로그인"); t.setObjectName("H1")
-        L.addWidget(t)
+        t = QLabel("로그인"); t.setObjectName("H1"); L.addWidget(t)
         s = QLabel("계정에 로그인하여 서비스를 이용하세요")
         s.setObjectName("Sub"); L.addWidget(s)
         L.addSpacing(20)
 
-        # 아이디
-        self._add_label(L, "아이디")
-        L.addSpacing(4)
-        self.input_id = QLineEdit()
-        self.input_id.setPlaceholderText("아이디 입력")
-        L.addWidget(self.input_id)
-        L.addSpacing(12)
+        self._add_label(L, "아이디"); L.addSpacing(4)
+        self.input_id = QLineEdit(); self.input_id.setPlaceholderText("아이디 입력")
+        L.addWidget(self.input_id); L.addSpacing(12)
 
-        # 비밀번호
-        self._add_label(L, "비밀번호")
-        L.addSpacing(4)
-        self.input_pw = QLineEdit()
-        self.input_pw.setPlaceholderText("비밀번호 입력")
+        self._add_label(L, "비밀번호"); L.addSpacing(4)
+        self.input_pw = QLineEdit(); self.input_pw.setPlaceholderText("비밀번호 입력")
         self.input_pw.setEchoMode(QLineEdit.EchoMode.Password)
         self.input_pw.returnPressed.connect(self._handle_login)
-        L.addWidget(self.input_pw)
-        L.addSpacing(4)
+        L.addWidget(self.input_pw); L.addSpacing(4)
 
-        # 비밀번호 찾기
         r1 = QHBoxLayout(); r1.addStretch()
-        b = self._link("비밀번호를 잊으셨나요?", self.go_find_pw)
-        r1.addWidget(b); L.addLayout(r1)
-        L.addSpacing(16)
+        r1.addWidget(self._link("비밀번호를 잊으셨나요?", self.go_find_pw))
+        L.addLayout(r1); L.addSpacing(16)
 
-        # 로그인 버튼
         btn = QPushButton("로그인"); btn.setObjectName("P")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(self._handle_login)
-        L.addWidget(btn)
-        L.addSpacing(14)
+        L.addWidget(btn); L.addSpacing(14)
 
-        # 구분선
-        sep = QFrame(); sep.setObjectName("Sep")
-        sep.setFrameShape(QFrame.Shape.HLine)
-        L.addWidget(sep)
-        L.addSpacing(14)
+        sep = QFrame(); sep.setObjectName("Sep"); sep.setFrameShape(QFrame.Shape.HLine)
+        L.addWidget(sep); L.addSpacing(14)
 
-        # 회원가입
         r2 = QHBoxLayout(); r2.setSpacing(4)
-        lno = QLabel("계정이 없으신가요?"); lno.setObjectName("Sub")
-        r2.addWidget(lno)
-        r2.addWidget(self._link("회원가입", self.go_signup))
-        r2.addStretch()
-        L.addLayout(r2)
-        L.addSpacing(6)
+        lno = QLabel("계정이 없으신가요?"); lno.setObjectName("Sub"); r2.addWidget(lno)
+        r2.addWidget(self._link("회원가입", self.go_signup)); r2.addStretch()
+        L.addLayout(r2); L.addSpacing(6)
 
-        # 아이디 찾기
         r3 = QHBoxLayout(); r3.setSpacing(4)
-        lfi = QLabel("아이디를 잊으셨나요?"); lfi.setObjectName("Sub")
-        r3.addWidget(lfi)
-        r3.addWidget(self._link("아이디 찾기", self.go_find_id))
-        r3.addStretch()
+        lfi = QLabel("아이디를 잊으셨나요?"); lfi.setObjectName("Sub"); r3.addWidget(lfi)
+        r3.addWidget(self._link("아이디 찾기", self.go_find_id)); r3.addStretch()
         L.addLayout(r3)
 
         cl.addWidget(self.card)
 
     def _add_label(self, layout, text):
-        l = QLabel(text); l.setObjectName("Lbl")
-        layout.addWidget(l)
+        l = QLabel(text); l.setObjectName("Lbl"); layout.addWidget(l)
 
     def _link(self, text, signal):
         b = QPushButton(text); b.setObjectName("L")
-        b.setCursor(Qt.CursorShape.PointingHandCursor)
-        b.clicked.connect(signal)
+        b.setCursor(Qt.CursorShape.PointingHandCursor); b.clicked.connect(signal)
         return b
 
     def _handle_login(self):
         uid = self.input_id.text().strip()
         pw  = self.input_pw.text()
         if not uid or not pw:
-            QMessageBox.warning(self, "오류", "아이디와 비밀번호를 입력하세요.")
-            return
+            QMessageBox.warning(self, "오류", "아이디와 비밀번호를 입력하세요."); return
         try:
             conn = get_db_connection(); cur = conn.cursor()
             cur.execute("SELECT * FROM users WHERE username=%s AND password=%s", (uid, pw))
             user = cur.fetchone(); cur.close(); conn.close()
-            if user: self.login_success.emit(uid)
-            else: QMessageBox.warning(self, "실패", "아이디 또는 비밀번호가 틀렸습니다.")
+            if user:
+                self.login_success.emit(uid)
+            else:
+                QMessageBox.warning(self, "실패", "아이디 또는 비밀번호가 틀렸습니다.")
         except Exception as e:
             QMessageBox.warning(self, "DB 오류", str(e))
 

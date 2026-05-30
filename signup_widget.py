@@ -1,6 +1,3 @@
-import random
-import string
-import psycopg2
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLineEdit, QPushButton, QLabel, QMessageBox,
                              QComboBox, QSizePolicy, QScrollArea,
@@ -8,32 +5,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
-
-def get_db_connection():
-    return psycopg2.connect(
-        host="aws-1-ap-northeast-2.pooler.supabase.com",  # 0 → 1
-        database="postgres",
-        user="postgres.ttydhxlswdutdptvzhwp",
-        password="f+Z@rX3b%8&k,?d",
-        port="6543",
-        sslmode="require"
-    )
-
-
-# ==========================================
-# 🔑 고유 회원번호 생성 (RUMI-XXXXXX)
-# ==========================================
-def generate_member_no(cur):
-    """
-    RUMI-XXXXXX 형식의 고유 회원번호를 생성합니다.
-    DB에서 중복 확인 후 유일한 번호를 반환합니다.
-    """
-    while True:
-        suffix = ''.join(random.choices(string.digits, k=6))
-        member_no = f"RUMI-{suffix}"
-        cur.execute("SELECT id FROM users WHERE member_no = %s", (member_no,))
-        if not cur.fetchone():
-            return member_no
+from db import user_exists_by_username, user_exists_by_email, register_user
 
 
 def get_stylesheet(is_dark: bool) -> str:
@@ -147,7 +119,6 @@ class SignupWidget(QWidget):
         cl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cl.setContentsMargins(20, 16, 20, 16)
 
-        # 카드 + 스크롤
         self.card = QFrame(); self.card.setObjectName("Card")
         self.card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.card.setFixedWidth(360)
@@ -180,7 +151,7 @@ class SignupWidget(QWidget):
         s.setObjectName("Sub"); L.addWidget(s)
         L.addSpacing(18)
 
-        # ── 아이디 + 중복확인 ──
+        # 아이디 + 중복확인
         self._lbl(L, "아이디"); L.addSpacing(4)
         r_id = QHBoxLayout(); r_id.setSpacing(6)
         self.input_id = QLineEdit()
@@ -195,7 +166,7 @@ class SignupWidget(QWidget):
         self.msg_id = self._msg(); L.addWidget(self.msg_id)
         L.addSpacing(11)
 
-        # ── 비밀번호 ──
+        # 비밀번호
         self._lbl(L, "비밀번호"); L.addSpacing(4)
         self.input_pw = QLineEdit()
         self.input_pw.setPlaceholderText("문자·숫자·특수문자 포함 8~20자")
@@ -204,7 +175,7 @@ class SignupWidget(QWidget):
         self.msg_pw = self._msg(); L.addWidget(self.msg_pw)
         L.addSpacing(11)
 
-        # ── 비밀번호 확인 ──
+        # 비밀번호 확인
         self._lbl(L, "비밀번호 확인"); L.addSpacing(4)
         self.input_pw2 = QLineEdit()
         self.input_pw2.setPlaceholderText("비밀번호 재입력")
@@ -213,21 +184,21 @@ class SignupWidget(QWidget):
         self.msg_pw2 = self._msg(); L.addWidget(self.msg_pw2)
         L.addSpacing(11)
 
-        # ── 이름 ──
+        # 이름
         self._lbl(L, "이름"); L.addSpacing(4)
         self.input_name = QLineEdit()
         self.input_name.setPlaceholderText("실명 입력")
         L.addWidget(self.input_name)
         L.addSpacing(11)
 
-        # ── 전화번호 ──
+        # 전화번호
         self._lbl(L, "전화번호"); L.addSpacing(4)
         self.input_phone = QLineEdit()
         self.input_phone.setPlaceholderText("'-' 제외 11자리")
         L.addWidget(self.input_phone)
         L.addSpacing(11)
 
-        # ── 이메일 ──
+        # 이메일
         self._lbl(L, "이메일"); L.addSpacing(4)
         r_em = QHBoxLayout(); r_em.setSpacing(6)
         self.input_email = QLineEdit()
@@ -238,8 +209,8 @@ class SignupWidget(QWidget):
         r_em.addWidget(at)
         self.combo_domain = QComboBox()
         self.combo_domain.addItems([
-            "naver.com","gmail.com","daum.net","kakao.com",
-            "nate.com","hanmail.net","yahoo.com","직접입력"
+            "naver.com", "gmail.com", "daum.net", "kakao.com",
+            "nate.com", "hanmail.net", "yahoo.com", "직접입력"
         ])
         self.combo_domain.currentTextChanged.connect(
             lambda t: self.input_domain_custom.setVisible(t == "직접입력")
@@ -252,7 +223,7 @@ class SignupWidget(QWidget):
         L.addWidget(self.input_domain_custom)
         L.addSpacing(11)
 
-        # ── 생년월일 ──
+        # 생년월일
         self._lbl(L, "생년월일"); L.addSpacing(4)
         r_bd = QHBoxLayout(); r_bd.setSpacing(6)
         self.combo_y = QComboBox(); self.combo_y.addItem("년도")
@@ -267,7 +238,7 @@ class SignupWidget(QWidget):
         L.addLayout(r_bd)
         L.addSpacing(18)
 
-        # ── 버튼 ──
+        # 버튼
         r_btn = QHBoxLayout(); r_btn.setSpacing(8)
         btn_ok = QPushButton("가입하기"); btn_ok.setObjectName("P")
         btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -280,7 +251,6 @@ class SignupWidget(QWidget):
         L.addLayout(r_btn)
         L.addSpacing(12)
 
-        # 로그인 링크
         r_li = QHBoxLayout(); r_li.setSpacing(4)
         lbl = QLabel("이미 계정이 있으신가요?"); lbl.setObjectName("Sub")
         r_li.addWidget(lbl)
@@ -301,26 +271,21 @@ class SignupWidget(QWidget):
 
     def _set_msg(self, lbl, text, ok=False):
         lbl.setText(text)
-        lbl.setObjectName("Ok" if ok else "Err")
         lbl.setStyleSheet(
             f"color: {'#4ADE80' if ok else '#F87171'}; font-size: 11px; background: transparent;"
         )
 
-    # ── 아이디 중복확인 ──────────────────────────────────
     def _check_id(self):
         uid = self.input_id.text().strip()
-        if not uid: self._set_msg(self.msg_id, "아이디를 입력하세요."); return
-        if not (6 <= len(uid) <= 20): self._set_msg(self.msg_id, "6~20자로 입력하세요."); return
-        try:
-            conn = get_db_connection(); cur = conn.cursor()
-            cur.execute("SELECT id FROM users WHERE username=%s", (uid,))
-            exists = cur.fetchone(); cur.close(); conn.close()
-            if exists: self._set_msg(self.msg_id, "이미 사용 중인 아이디입니다.")
-            else: self._set_msg(self.msg_id, "사용 가능한 아이디입니다.", ok=True)
-        except Exception as e:
-            QMessageBox.warning(self, "DB 오류", str(e))
+        if not uid:
+            self._set_msg(self.msg_id, "아이디를 입력하세요."); return
+        if not (6 <= len(uid) <= 20):
+            self._set_msg(self.msg_id, "6~20자로 입력하세요."); return
+        if user_exists_by_username(uid):
+            self._set_msg(self.msg_id, "이미 사용 중인 아이디입니다.")
+        else:
+            self._set_msg(self.msg_id, "사용 가능한 아이디입니다.", ok=True)
 
-    # ── 회원가입 처리 (고유 회원번호 생성 포함) ──────────
     def _handle_signup(self):
         uid   = self.input_id.text().strip()
         pw    = self.input_pw.text()
@@ -336,19 +301,21 @@ class SignupWidget(QWidget):
                       self.combo_m.currentText(),
                       self.combo_d.currentText())
 
-        # ── 유효성 검사 ──
         if not (6 <= len(uid) <= 20):
             self._set_msg(self.msg_id, "아이디는 6~20자로 입력하세요."); return
         self.msg_id.setText("")
 
         ok, err = self._val_pw(pw)
-        if not ok: self._set_msg(self.msg_pw, err); return
+        if not ok:
+            self._set_msg(self.msg_pw, err); return
         self.msg_pw.setText("")
 
-        if pw != pw2: self._set_msg(self.msg_pw2, "비밀번호가 일치하지 않습니다."); return
+        if pw != pw2:
+            self._set_msg(self.msg_pw2, "비밀번호가 일치하지 않습니다."); return
         self.msg_pw2.setText("")
 
-        if not name: QMessageBox.warning(self, "오류", "이름을 입력하세요."); return
+        if not name:
+            QMessageBox.warning(self, "오류", "이름을 입력하세요."); return
         if not phone or not phone.isdigit() or len(phone) != 11:
             QMessageBox.warning(self, "오류", "전화번호는 '-' 제외 11자리 숫자로 입력하세요."); return
         if not eid or not dom or "." not in dom:
@@ -356,45 +323,17 @@ class SignupWidget(QWidget):
         if yr == "년도" or mo == "월" or dy == "일":
             QMessageBox.warning(self, "오류", "생년월일을 선택하세요."); return
 
+        if user_exists_by_username(uid):
+            self._set_msg(self.msg_id, "이미 사용 중인 아이디입니다."); return
+        if user_exists_by_email(email):
+            QMessageBox.warning(self, "오류", "이미 사용 중인 이메일입니다."); return
+
         birthday = f"{yr}-{int(mo):02d}-{int(dy):02d}"
+        register_user(uid, pw, email, name, phone, birthday)
 
-        try:
-            conn = get_db_connection(); cur = conn.cursor()
-
-            # 아이디 중복 확인
-            cur.execute("SELECT id FROM users WHERE username=%s", (uid,))
-            if cur.fetchone():
-                self._set_msg(self.msg_id, "이미 사용 중인 아이디입니다.")
-                cur.close(); conn.close(); return
-
-            # 이메일 중복 확인
-            cur.execute("SELECT id FROM users WHERE email=%s", (email,))
-            if cur.fetchone():
-                QMessageBox.warning(self, "오류", "이미 사용 중인 이메일입니다.")
-                cur.close(); conn.close(); return
-
-            # 🔑 고유 회원번호 생성
-            member_no = generate_member_no(cur)
-
-            # DB 저장 (member_no 포함)
-            cur.execute(
-                """INSERT INTO users (username, password, email, name, phone, birthday, member_no)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                (uid, pw, email, name, phone, birthday, member_no)
-            )
-            conn.commit(); cur.close(); conn.close()
-
-            QMessageBox.information(
-                self, "가입 완료",
-                f"회원가입이 완료되었습니다!\n\n"
-                f"회원번호: {member_no}\n"
-                f"(이 번호를 메모해 두세요)"
-            )
-            self.clear_fields()
-            self.signup_success.emit()
-
-        except Exception as e:
-            QMessageBox.warning(self, "DB 오류", str(e))
+        QMessageBox.information(self, "가입 완료", "회원가입이 완료되었습니다!")
+        self.clear_fields()
+        self.signup_success.emit()
 
     def _val_pw(self, pw):
         if not (8 <= len(pw) <= 20): return False, "8~20자로 입력하세요."
@@ -409,8 +348,11 @@ class SignupWidget(QWidget):
                   self.input_domain_custom]:
             w.clear()
         self.combo_domain.setCurrentIndex(0)
-        self.combo_y.setCurrentIndex(0); self.combo_m.setCurrentIndex(0); self.combo_d.setCurrentIndex(0)
-        for m in [self.msg_id, self.msg_pw, self.msg_pw2]: m.setText("")
+        self.combo_y.setCurrentIndex(0)
+        self.combo_m.setCurrentIndex(0)
+        self.combo_d.setCurrentIndex(0)
+        for m in [self.msg_id, self.msg_pw, self.msg_pw2]:
+            m.setText("")
 
     def update_theme(self, is_dark: bool):
         self.setStyleSheet(get_stylesheet(is_dark))

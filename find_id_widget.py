@@ -1,20 +1,11 @@
-import psycopg2
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLineEdit, QPushButton, QLabel, QMessageBox,
                              QSizePolicy, QGraphicsDropShadowEffect)
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
+from db import get_username_by_email
 
-def get_db_connection():
-    return psycopg2.connect(
-        host="aws-1-ap-northeast-2.pooler.supabase.com",  # 0 → 1
-        database="postgres",
-        user="postgres.ttydhxlswdutdptvzhwp",
-        password="f+Z@rX3b%8&k,?d",
-        port="6543",
-        sslmode="require"
-    )
 
 def get_stylesheet(is_dark: bool) -> str:
     if is_dark:
@@ -58,12 +49,6 @@ def get_stylesheet(is_dark: bool) -> str:
             padding: 8px; font-size: 13px; font-weight: 700; min-height: 34px;
         }}
         QPushButton#P:hover  {{ background-color: {'#6EE79A' if is_dark else '#15803D'}; }}
-        QPushButton#S {{
-            background-color: {b2bg}; color: {b2tx};
-            border: 1px solid {brd}; border-radius: 7px;
-            padding: 7px; font-size: 12px; font-weight: 500; min-height: 30px;
-        }}
-        QPushButton#S:hover {{ background-color: {b2hv}; }}
         QPushButton#L {{
             background: transparent; color: {acc};
             border: none; padding: 1px 3px;
@@ -107,13 +92,11 @@ class FindIdWidget(QWidget):
         L.setContentsMargins(26, 26, 26, 26)
         L.setSpacing(0)
 
-        # 헤더
         t = QLabel("아이디 찾기"); t.setObjectName("H1"); L.addWidget(t)
         s = QLabel("가입 시 등록한 이메일로 아이디를 찾습니다")
         s.setObjectName("Sub"); L.addWidget(s)
         L.addSpacing(20)
 
-        # 이메일
         lbl = QLabel("이메일"); lbl.setObjectName("Lbl"); L.addWidget(lbl)
         L.addSpacing(4)
         self.input_email = QLineEdit()
@@ -122,12 +105,11 @@ class FindIdWidget(QWidget):
         L.addWidget(self.input_email)
         L.addSpacing(16)
 
-        # 결과 박스 (숨김 상태)
+        # 결과 박스
         self.result_box = QFrame(); self.result_box.setObjectName("ResultBox")
         self.result_box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         rb_lay = QVBoxLayout(self.result_box)
-        rb_lay.setContentsMargins(14, 12, 14, 12)
-        rb_lay.setSpacing(2)
+        rb_lay.setContentsMargins(14, 12, 14, 12); rb_lay.setSpacing(2)
         rb_top = QLabel("확인된 아이디"); rb_top.setObjectName("Sub")
         rb_lay.addWidget(rb_top)
         self.lbl_result = QLabel(""); self.lbl_result.setObjectName("Ok")
@@ -137,22 +119,18 @@ class FindIdWidget(QWidget):
 
         self.lbl_err = QLabel(""); self.lbl_err.setObjectName("Err")
         L.addWidget(self.lbl_err)
-
         L.addSpacing(16)
 
-        # 찾기 버튼
         btn = QPushButton("아이디 찾기"); btn.setObjectName("P")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(self._handle_find)
         L.addWidget(btn)
         L.addSpacing(10)
 
-        # 구분선
         sep = QFrame(); sep.setObjectName("Sep"); sep.setFrameShape(QFrame.Shape.HLine)
         L.addWidget(sep)
         L.addSpacing(12)
 
-        # 로그인으로
         r = QHBoxLayout(); r.setSpacing(4)
         lbl2 = QLabel("기억이 나셨나요?"); lbl2.setObjectName("Sub"); r.addWidget(lbl2)
         b = QPushButton("로그인"); b.setObjectName("L")
@@ -168,18 +146,15 @@ class FindIdWidget(QWidget):
         if not email:
             self.lbl_err.setText("이메일을 입력하세요.")
             self.result_box.hide(); return
-        try:
-            conn = get_db_connection(); cur = conn.cursor()
-            cur.execute("SELECT username FROM users WHERE email=%s", (email,))
-            row = cur.fetchone(); cur.close(); conn.close()
-            if row:
-                self.lbl_result.setText(row[0])
-                self.result_box.show(); self.lbl_err.setText("")
-            else:
-                self.result_box.hide()
-                self.lbl_err.setText("해당 이메일로 가입된 계정이 없습니다.")
-        except Exception as e:
-            QMessageBox.warning(self, "DB 오류", str(e))
+
+        username = get_username_by_email(email)
+        if username:
+            self.lbl_result.setText(username)
+            self.result_box.show()
+            self.lbl_err.setText("")
+        else:
+            self.result_box.hide()
+            self.lbl_err.setText("해당 이메일로 가입된 계정이 없습니다.")
 
     def _go_back(self):
         self.clear_fields(); self.go_login.emit()
