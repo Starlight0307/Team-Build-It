@@ -26,7 +26,7 @@ AVAILABLE_PLUGINS = [
             "get_firewall_rules", "manage_firewall",
             "get_network_connections", "monitor_network_traffic",
         ],
-        "module_name": "security_plugin",
+        "module_name": "security",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/security.py",
         "dependencies": ["psutil"]
     },
