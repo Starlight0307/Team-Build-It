@@ -1,10 +1,10 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget, QSizePolicy
 from PyQt6.QtCore import pyqtSignal
 
-from login_widget   import LoginWidget
-from signup_widget  import SignupWidget
-from find_id_widget import FindIdWidget
-from find_pw_widget import FindPwWidget
+from widget.login_widget   import LoginWidget
+from widget.signup_widget  import SignupWidget
+from widget.find_id_widget import FindIdWidget
+from widget.find_pw_widget import FindPwWidget
 
 PAGE_LOGIN   = 0
 PAGE_SIGNUP  = 1
