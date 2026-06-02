@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QGraphicsOpacityEffect)
-from PyQt6.QtCore import pyqtSignal, Qt, QPropertyAnimation
+from PyQt6.QtCore import pyqtSignal, Qt, QPropertyAnimation, QTimer
 
 # ==========================================
 # 🃏 커맨드 카드
@@ -169,4 +169,63 @@ class MessageBubble(QFrame):
         )
         self.message_label.setStyleSheet(
             f"color: {color}; background: transparent; border: none; font-size: 15px; line-height: 1.6;"
+        )
+
+
+# ==========================================
+# ⏳ AI 작업 중 타이핑 인디케이터
+# ==========================================
+class TypingIndicator(QFrame):
+    """AI 작업 단계를 실시간으로 표시하는 상태 버블."""
+
+    _DOTS = [" .", " ..", " ..."]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dot_idx   = 0
+        self._base_text = "🧠  AI 모델에 요청 중"
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+
+        self.bubble = QFrame()
+        self.bubble.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        bl = QVBoxLayout(self.bubble)
+        bl.setContentsMargins(14, 12, 14, 12)
+
+        self.label = QLabel(self._base_text + self._DOTS[0])
+        self.label.setStyleSheet("font-size: 14px; border: none; background: transparent;")
+        bl.addWidget(self.label)
+
+        layout.addWidget(self.bubble)
+        layout.addStretch()
+        self.setStyleSheet("border: none; background: transparent;")
+
+        # 점(.) 애니메이션 타이머 (400ms 간격)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(400)
+
+    def set_status(self, text: str):
+        """AIWorker에서 단계 변경 시 호출 — 상태 텍스트를 즉시 갱신합니다."""
+        self._base_text = text
+        self._dot_idx   = 0
+        self.label.setText(self._base_text + self._DOTS[0])
+
+    def _tick(self):
+        self._dot_idx = (self._dot_idx + 1) % len(self._DOTS)
+        self.label.setText(self._base_text + self._DOTS[self._dot_idx])
+
+    def stop(self):
+        self._timer.stop()
+
+    def update_theme(self, d):
+        bg  = "#3D3D3D" if d else "#F0F2F5"
+        brd = "#444444" if d else "#E1E5EA"
+        clr = "#AAAAAA" if d else "#666666"
+        self.bubble.setStyleSheet(
+            f"background-color: {bg}; border-radius: 12px; border: 1px solid {brd};"
+        )
+        self.label.setStyleSheet(
+            f"color: {clr}; font-size: 14px; border: none; background: transparent;"
         )

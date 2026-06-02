@@ -11,8 +11,36 @@ os.environ.setdefault("TZ", "Asia/Seoul")
 # ==========================================
 # 🧠 백그라운드 AI 스레드
 # ==========================================
+# 도구 이름 → 사람이 읽기 좋은 한국어 상태 메시지
+TOOL_STATUS_NAMES = {
+    "get_system_info":           "🖥️  시스템 정보 수집 중",
+    "get_top_cpu_processes":     "📊  CPU 프로세스 조회 중",
+    "kill_process":              "⚡  프로세스 종료 중",
+    "search_product_price":      "🛒  최저가 검색 중",
+    "scan_open_ports":           "🔍  포트 스캔 중",
+    "detect_suspicious_processes":"🔒  의심 프로세스 탐지 중",
+    "get_firewall_rules":        "🛡️  방화벽 규칙 조회 중",
+    "manage_firewall":           "🛡️  방화벽 설정 변경 중",
+    "get_network_connections":   "🌐  네트워크 연결 확인 중",
+    "monitor_network_traffic":   "📡  네트워크 트래픽 분석 중",
+    "setup_calendar_auth":       "🔐  구글 캘린더 인증 중",
+    "get_login_status":          "🔐  로그인 상태 확인 중",
+    "create_event":              "📅  일정 등록 중",
+    "get_upcoming_events":       "📋  일정 조회 중",
+    "get_events_by_date":        "📋  날짜별 일정 조회 중",
+    "search_events":             "🔍  일정 검색 중",
+    "update_event":              "✏️  일정 수정 중",
+    "delete_event":              "🗑️  일정 삭제 중",
+    "create_recurring_event":    "🔁  반복 일정 등록 중",
+    "get_calendar_list":         "📆  캘린더 목록 조회 중",
+    "get_schedule_summary":      "📊  일정 통계 분석 중",
+    "get_daily_briefing":        "🔔  일정 브리핑 준비 중",
+}
+
+
 class AIWorker(QThread):
     response_ready = pyqtSignal(str)
+    status_update  = pyqtSignal(str)   # ← 진행 상태 메시지 신호
 
     def __init__(self, user_text, chat_history, installed_tools):
         super().__init__()
@@ -51,6 +79,8 @@ class AIWorker(QThread):
 
             self.chat_history.append({'role': 'user', 'content': self.user_text})
 
+            # ── 1단계: AI 모델 요청 ──
+            self.status_update.emit("🧠  AI 모델에 요청 중")
             response = ollama.chat(
                 model='llama3.1',
                 messages=self.chat_history,
@@ -65,13 +95,18 @@ class AIWorker(QThread):
                     func_name = tool['function']['name']
                     args      = tool['function']['arguments']
 
+                    # ── 2단계: 각 도구 실행 ──
+                    status_msg = TOOL_STATUS_NAMES.get(func_name, f"⚙️  {func_name} 실행 중")
+                    self.status_update.emit(status_msg)
+
                     if func_name in func_map:
                         tool_result       = func_map[func_name](**args)
                         tool_result_clean = str(tool_result).encode('utf-8', errors='ignore').decode('utf-8')
                         tool_results.append(tool_result_clean)
                         self.chat_history.append({'role': 'tool', 'content': tool_result_clean})
 
-                # 도구 결과를 ollama 재가공 없이 바로 출력 (속도 개선)
+                # ── 3단계: 결과 정리 ──
+                self.status_update.emit("📋  결과 정리 중")
                 clean_reply = "\n\n".join(tool_results) if tool_results else "명령을 수행했습니다."
             else:
                 clean_reply = response['message']['content'].strip()

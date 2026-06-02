@@ -11,7 +11,8 @@ from config import MOCK_USER
 from theme import get_palette
 from ai_worker import AIWorker
 from plugin_manager import load_existing_plugins, download_and_install_plugin
-from widget.widgets import CommandCard, MessageBubble
+from plugins_registry import PLUGIN_PILLS
+from widget.widgets import CommandCard, MessageBubble, TypingIndicator
 from widget.marketplace import PluginMarketplaceWidget
 
 from auth_ui import AuthWidget
@@ -72,12 +73,9 @@ class AssistantApp(QWidget):
         self.welcome_title.setStyleSheet(f"font-size: 32px; font-weight: bold; color: {p['tc']}; background: transparent;")
         self.input_container.setStyleSheet(f"QFrame {{ background-color: {p['ib']}; border: 1px solid {p['ibrd']}; border-radius: 24px; }}")
         self.input_field.setStyleSheet(f"color: {p['tc']}; background: transparent; border: none; font-size: 15px; padding: 5px;")
-        for pill in self.pills:
-            pill.setStyleSheet(
-                f"QPushButton {{ background-color: {p['pb']}; border: 1px solid {p['pbrd']}; color: {p['tc']}; "
-                f"border-radius: 15px; padding: 6px 14px; font-size: 13px; }} "
-                f"QPushButton:hover {{ background-color: {'#444444' if d else '#E1E5EA'}; }}"
-            )
+        # pill 스타일은 update_pills()에서 일괄 적용
+        if hasattr(self, 'pill_row'):
+            self.update_pills()
         self.splitter.setStyleSheet(f"QSplitter::handle {{ background-color: {p['main_bg']}; }}")
         self.splitter_grip.setStyleSheet(f"background-color: {p['gc']}; border-radius: 2px; border: none;")
 
@@ -219,21 +217,11 @@ class AssistantApp(QWidget):
         ir.addWidget(self.send_button)
         icl.addLayout(ir)
 
-        pr = QHBoxLayout()
-        pr.setSpacing(10)
-        for cmd_txt in ["💡 내 PC 상태 확인", "🚀 내 PC 최적화", "🔍 최저가 검색"]:
-            cmd_val = (
-                "내 컴퓨터 상태 어때?" if "상태" in cmd_txt
-                else ("내 컴퓨터가 왜이렇게 느려?" if "최적화" in cmd_txt
-                      else "[상품명 입력받기]")
-            )
-            btn = QPushButton(cmd_txt)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda checked, c=cmd_val: self.on_card_clicked(c))
-            self.pills.append(btn)
-            pr.addWidget(btn)
-        pr.addStretch()
-        icl.addLayout(pr)
+        self.pill_row = QHBoxLayout()
+        self.pill_row.setSpacing(10)
+        self.pill_container = icl   # 나중에 pill_row를 접근하기 위해 저장
+        icl.addLayout(self.pill_row)
+        self.update_pills()         # 설치된 플러그인 기반으로 pill 생성
         bwl.addWidget(self.input_container)
         mal.addWidget(self.bottom_input_wrapper)
 
@@ -312,6 +300,42 @@ class AssistantApp(QWidget):
             self, f_name, m_name, url, btn,
             self.installed_tools, self.installed_module_names
         )
+        # 플러그인 설치 후 pill 갱신
+        self.update_pills()
+
+    # ─────────────────────────────────────────────
+    # 💊 빠른 실행 버튼 (pill) 동적 생성
+    # ─────────────────────────────────────────────
+    def update_pills(self):
+        """설치된 플러그인에 맞춰 입력창 아래 pill 버튼을 새로 그립니다."""
+        # 기존 pill 모두 제거
+        for pill in self.pills:
+            self.pill_row.removeWidget(pill)
+            pill.deleteLater()
+        self.pills.clear()
+
+        # 레이아웃에 남은 stretch 아이템 제거
+        while self.pill_row.count():
+            item = self.pill_row.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # 설치된 플러그인 순서대로 pill 추가
+        p = get_palette(self.is_dark_mode)
+        for m_name in self.installed_module_names:
+            for (label, cmd) in PLUGIN_PILLS.get(m_name, []):
+                btn = QPushButton(label)
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setStyleSheet(
+                    f"QPushButton {{ background-color: {p['pb']}; border: 1px solid {p['pbrd']}; "
+                    f"color: {p['tc']}; border-radius: 15px; padding: 6px 14px; font-size: 13px; }} "
+                    f"QPushButton:hover {{ background-color: {'#444444' if self.is_dark_mode else '#E1E5EA'}; }}"
+                )
+                btn.clicked.connect(lambda checked, c=cmd: self.on_card_clicked(c))
+                self.pills.append(btn)
+                self.pill_row.addWidget(btn)
+
+        self.pill_row.addStretch()
 
     # ─────────────────────────────────────────────
     # 🔐 로그인 / 로그아웃
@@ -418,8 +442,10 @@ class AssistantApp(QWidget):
     # 💬 채팅
     # ─────────────────────────────────────────────
     def on_card_clicked(self, cmd):
-        if cmd == "[상품명 입력받기]":
-            self.input_field.setText("최저가 검색: ")
+        # "[텍스트]" 형식이면 입력창에 preset 텍스트를 넣고 포커스
+        if cmd.startswith("[") and cmd.endswith("]"):
+            preset = cmd[1:-1]   # 대괄호 제거
+            self.input_field.setText(preset)
             self.input_field.setFocus()
             self.welcome_widget.hide()
         else:
@@ -445,12 +471,51 @@ class AssistantApp(QWidget):
                               self.current_session_id, self.current_session_title)
 
         self.input_field.clear()
+
+        # ── AI 작업 중 UI 처리 ──
+        self._set_input_enabled(False)
+        self._show_typing_indicator()
+
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
         self.worker = AIWorker(txt, self.chat_history, self.installed_tools)
         self.worker.response_ready.connect(self.display_ai_response)
+        self.worker.status_update.connect(self._on_status_update)
         self.worker.start()
 
+    def _set_input_enabled(self, enabled: bool):
+        """입력창·전송 버튼 활성/비활성 토글."""
+        self.input_field.setEnabled(enabled)
+        self.send_button.setEnabled(enabled)
+        opacity = 1.0 if enabled else 0.4
+        self.send_button.setStyleSheet(
+            f"background-color: #2EA043; color: #FFFFFF; border-radius: 18px; "
+            f"border: none; font-size: 18px; opacity: {opacity};"
+        )
+
+    def _show_typing_indicator(self):
+        """'생각 중...' 버블을 채팅창에 삽입."""
+        self._typing = TypingIndicator()
+        self._typing.update_theme(self.is_dark_mode)
+        self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, self._typing)
+        QTimer.singleShot(50, self.auto_scroll_to_bottom)
+
+    def _on_status_update(self, text: str):
+        """AIWorker에서 단계 변경 신호가 올 때마다 인디케이터 텍스트 갱신."""
+        if hasattr(self, '_typing') and self._typing:
+            self._typing.set_status(text)
+
+    def _hide_typing_indicator(self):
+        """'생각 중...' 버블 제거."""
+        if hasattr(self, '_typing') and self._typing:
+            self._typing.stop()
+            self.chat_main_layout.removeWidget(self._typing)
+            self._typing.deleteLater()
+            self._typing = None
+
     def display_ai_response(self, text):
+        self._hide_typing_indicator()
+        self._set_input_enabled(True)
+
         new_bubble = MessageBubble(text, False)
         self.chat_bubbles.append(new_bubble)
         self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, new_bubble)
