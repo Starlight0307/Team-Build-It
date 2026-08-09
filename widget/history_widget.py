@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt6.QtCore import Qt, QPropertyAnimation, QThread, pyqtSignal
 
 from db import load_sessions, load_messages
+from widget.widgets import bubble_max_width, ideal_bubble_width
 
 
 class SessionListLoader(QThread):
@@ -38,9 +39,12 @@ class SessionMessageLoader(QThread):
 
 
 class HistoryBubble(QFrame):
-    def __init__(self, role, content, timestamp):
+    def __init__(self, role, content, timestamp, max_width=None):
         super().__init__()
         is_user = (role == "user")
+        self._raw_text = content
+        # VBoxLayout 안에서 가로로 꽉 채워야 resizeEvent가 올바른 width를 받음
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         outer = QHBoxLayout(self); outer.setContentsMargins(10, 4, 10, 4)
         self.bubble = QFrame()
@@ -49,7 +53,8 @@ class HistoryBubble(QFrame):
         inner.setContentsMargins(14, 10, 14, 10); inner.setSpacing(4)
 
         self.msg_lbl = QLabel(content); self.msg_lbl.setWordWrap(True)
-        self.msg_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        # Expanding 수직 정책이 스크롤 시 높이 재계산을 틀어뜨리므로 Preferred 사용
+        self.msg_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self.msg_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         if isinstance(timestamp, datetime):
@@ -68,11 +73,24 @@ class HistoryBubble(QFrame):
         else:
             outer.addWidget(self.bubble); outer.addStretch()
 
+        self._apply_bubble_width(max_width or 640)
+
         self.setStyleSheet("border: none; background: transparent;")
         eff = QGraphicsOpacityEffect(self); self.setGraphicsEffect(eff)
         anim = QPropertyAnimation(eff, b"opacity", self)
         anim.setDuration(250); anim.setStartValue(0.0); anim.setEndValue(1.0); anim.start()
         self._anim = anim; self._is_user = is_user
+
+    def _apply_bubble_width(self, container_width: int):
+        cap = bubble_max_width(container_width)
+        self.bubble.setFixedWidth(ideal_bubble_width(self._raw_text, cap))
+
+    def resizeEvent(self, event):
+        """창 크기 변경 시 버블 너비를 다시 계산 — 화면 비율에 맞춰 반응형으로 동작."""
+        super().resizeEvent(event)
+        w = self.width()
+        if w > 100:  # 레이아웃이 확정되기 전의 작은 값은 무시
+            self._apply_bubble_width(w)
 
     def update_theme(self, is_dark):
         if is_dark:
@@ -166,8 +184,8 @@ class HistoryWidget(QWidget):
         self.session_layout.addStretch()
         self.session_scroll.setWidget(self.session_content); ll.addWidget(self.session_scroll)
         self.empty_lbl = QLabel("대화 기록이 없습니다.")
+        self.empty_lbl.setWordWrap(True)
         self.empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.empty_lbl.setStyleSheet("color: #888888; font-size: 12px; padding: 20px;")
         self.empty_lbl.hide(); ll.addWidget(self.empty_lbl)
         self.splitter.addWidget(self.left_panel)
 
@@ -179,8 +197,8 @@ class HistoryWidget(QWidget):
         rl.addWidget(self.session_title_lbl)
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine); sep2.setFixedHeight(1); rl.addWidget(sep2); self.right_sep = sep2
         self.status_lbl = QLabel("좌측에서 대화를 선택하면 내용이 표시됩니다.")
+        self.status_lbl.setWordWrap(True)
         self.status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_lbl.setStyleSheet("color: #888888; font-size: 13px; padding: 40px;")
         rl.addWidget(self.status_lbl)
         self.msg_scroll = QScrollArea(); self.msg_scroll.setWidgetResizable(True)
         self.msg_scroll.setStyleSheet("background: transparent; border: none;"); self.msg_scroll.hide()
@@ -224,8 +242,9 @@ class HistoryWidget(QWidget):
     def _on_messages_loaded(self, rows):
         if not rows: self.status_lbl.setText("이 대화에 메시지가 없습니다."); return
         self.status_lbl.hide(); self.msg_scroll.show()
+        vw = self.msg_scroll.viewport().width()
         for role, content, created_at in rows:
-            bubble = HistoryBubble(role, content, created_at)
+            bubble = HistoryBubble(role, content, created_at, max_width=vw)
             bubble.update_theme(self.is_dark_mode)
             self.bubbles.append(bubble)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
@@ -259,5 +278,7 @@ class HistoryWidget(QWidget):
         self.session_title_lbl.setStyleSheet(f"color: {tc}; background: transparent; border: none;")
         self.right_sep.setStyleSheet(f"background-color: {sc};")
         self.splitter.setStyleSheet(f"QSplitter::handle {{ background-color: {sc}; }}")
+        self.status_lbl.setStyleSheet(f"color: {lc}; background: transparent; border: none; font-size: 13px; padding: 40px;")
+        self.empty_lbl.setStyleSheet(f"color: {lc}; background: transparent; border: none; font-size: 12px; padding: 20px;")
         for item in self.session_items: item.update_theme(is_dark_mode, item.isChecked())
         for b in self.bubbles: b.update_theme(is_dark_mode)

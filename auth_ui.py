@@ -1,10 +1,10 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget, QSizePolicy
 from PyQt6.QtCore import pyqtSignal
 
-from login_widget   import LoginWidget
-from signup_widget  import SignupWidget
-from find_id_widget import FindIdWidget
-from find_pw_widget import FindPwWidget
+from widget.login_widget   import LoginWidget
+from widget.signup_widget  import SignupWidget
+from widget.find_id_widget import FindIdWidget
+from widget.find_pw_widget import FindPwWidget
 
 PAGE_LOGIN   = 0
 PAGE_SIGNUP  = 1
@@ -30,7 +30,8 @@ class AuthWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.stacked = QStackedWidget()
-        self.stacked.setMinimumSize(480, 400)
+        # 고정된 최소 크기를 강제로 지정하지 않음 — 내부 카드(가장 넓은 건 회원가입 360px)의
+        # 실제 필요 크기를 그대로 따라가게 해서 창 크기를 자유롭게 줄일 수 있도록 함
         self.stacked.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.stacked, stretch=1)
 

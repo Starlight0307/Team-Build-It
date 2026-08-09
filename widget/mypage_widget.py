@@ -14,7 +14,6 @@ class MyPageWidget(QWidget):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
-        self.is_dark = True
 
     def _build_ui(self):
         root_layout = QVBoxLayout(self)
@@ -96,8 +95,6 @@ class MyPageWidget(QWidget):
         self.lbl_count.setText(str(count_sessions(username)))
 
     def update_theme(self, is_dark: bool):
-        self.is_dark = is_dark
-
         if is_dark:
             root_bg     = "#1A1A1A"
             card_bg     = "#1C1F26"

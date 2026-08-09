@@ -2,16 +2,10 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLineEdit, QPushButton, QLabel, QMessageBox,
                              QComboBox, QSizePolicy, QScrollArea,
                              QGraphicsDropShadowEffect)
-from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
+from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
 from db import user_exists_by_username, user_exists_by_email, register_user
-
-try:
-    from email_auth import request_code, confirm_code
-    EMAIL_AUTH_AVAILABLE = True
-except ImportError:
-    EMAIL_AUTH_AVAILABLE = False
 
 
 def get_stylesheet(is_dark: bool) -> str:
@@ -102,27 +96,12 @@ def get_stylesheet(is_dark: bool) -> str:
     """
 
 
-class EmailSendThread(QThread):
-    done = pyqtSignal(bool, str)
-
-    def __init__(self, email, purpose="signup"):
-        super().__init__()
-        self.email = email
-        self.purpose = purpose
-
-    def run(self):
-        ok, msg = request_code(self.email, self.purpose)
-        self.done.emit(ok, msg)
-
-
 class SignupWidget(QWidget):
     signup_success = pyqtSignal()
     go_login       = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._email_verified = False
-        self._send_thread = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
         self.update_theme(True)
@@ -166,9 +145,9 @@ class SignupWidget(QWidget):
         L.setContentsMargins(26, 26, 26, 26)
         L.setSpacing(0)
 
-        # 제목
+        # 헤더
         t = QLabel("회원가입"); t.setObjectName("H1"); L.addWidget(t)
-        s = QLabel("계정을 만들고 루미를 시작하세요")
+        s = QLabel("새 계정을 만들어 서비스를 이용하세요")
         s.setObjectName("Sub"); L.addWidget(s)
         L.addSpacing(18)
 
@@ -190,7 +169,7 @@ class SignupWidget(QWidget):
         # 비밀번호
         self._lbl(L, "비밀번호"); L.addSpacing(4)
         self.input_pw = QLineEdit()
-        self.input_pw.setPlaceholderText("영문·숫자·특수문자 포함 8~20자")
+        self.input_pw.setPlaceholderText("문자·숫자·특수문자 포함 8~20자")
         self.input_pw.setEchoMode(QLineEdit.EchoMode.Password)
         L.addWidget(self.input_pw)
         self.msg_pw = self._msg(); L.addWidget(self.msg_pw)
@@ -212,8 +191,8 @@ class SignupWidget(QWidget):
         L.addWidget(self.input_name)
         L.addSpacing(11)
 
-        # 휴대폰번호
-        self._lbl(L, "휴대폰번호"); L.addSpacing(4)
+        # 전화번호
+        self._lbl(L, "전화번호"); L.addSpacing(4)
         self.input_phone = QLineEdit()
         self.input_phone.setPlaceholderText("'-' 제외 11자리")
         L.addWidget(self.input_phone)
@@ -238,37 +217,10 @@ class SignupWidget(QWidget):
         )
         r_em.addWidget(self.combo_domain, 5)
         L.addLayout(r_em)
-
         self.input_domain_custom = QLineEdit()
         self.input_domain_custom.setPlaceholderText("도메인 직접 입력")
         self.input_domain_custom.setVisible(False)
         L.addWidget(self.input_domain_custom)
-        L.addSpacing(6)
-
-        # 인증코드 발송 버튼
-        self.btn_send_code = QPushButton("인증코드 발송")
-        self.btn_send_code.setObjectName("BtnCheck")
-        self.btn_send_code.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_send_code.clicked.connect(self._send_email_code)
-        if not EMAIL_AUTH_AVAILABLE:
-            self.btn_send_code.setEnabled(False)
-        L.addWidget(self.btn_send_code)
-        self.msg_email = self._msg(); L.addWidget(self.msg_email)
-        L.addSpacing(6)
-
-        # 인증코드 입력 + 확인
-        r_code = QHBoxLayout(); r_code.setSpacing(6)
-        self.input_code = QLineEdit()
-        self.input_code.setPlaceholderText("6자리 인증코드 입력")
-        self.input_code.setMaxLength(6)
-        r_code.addWidget(self.input_code)
-        self.btn_verify_code = QPushButton("확인")
-        self.btn_verify_code.setObjectName("BtnCheck")
-        self.btn_verify_code.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_verify_code.clicked.connect(self._verify_email_code)
-        r_code.addWidget(self.btn_verify_code)
-        L.addLayout(r_code)
-        self.msg_code = self._msg(); L.addWidget(self.msg_code)
         L.addSpacing(11)
 
         # 생년월일
@@ -286,7 +238,7 @@ class SignupWidget(QWidget):
         L.addLayout(r_bd)
         L.addSpacing(18)
 
-        # 가입/취소 버튼
+        # 버튼
         r_btn = QHBoxLayout(); r_btn.setSpacing(8)
         btn_ok = QPushButton("가입하기"); btn_ok.setObjectName("P")
         btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -323,13 +275,6 @@ class SignupWidget(QWidget):
             f"color: {'#4ADE80' if ok else '#F87171'}; font-size: 11px; background: transparent;"
         )
 
-    def _get_email(self):
-        eid = self.input_email.text().strip()
-        dom = (self.input_domain_custom.text().strip()
-               if self.combo_domain.currentText() == "직접입력"
-               else self.combo_domain.currentText())
-        return f"{eid}@{dom}" if eid and dom else ""
-
     def _check_id(self):
         uid = self.input_id.text().strip()
         if not uid:
@@ -341,54 +286,17 @@ class SignupWidget(QWidget):
         else:
             self._set_msg(self.msg_id, "사용 가능한 아이디입니다.", ok=True)
 
-    def _send_email_code(self):
-        email = self._get_email()
-        if not email or "." not in email.split("@")[-1]:
-            self._set_msg(self.msg_email, "올바른 이메일 주소를 입력하세요."); return
-
-        self._email_verified = False
-        self.msg_code.setText("")
-        self.btn_send_code.setEnabled(False)
-        self.btn_send_code.setText("발송 중...")
-        self._set_msg(self.msg_email, "인증코드를 발송하고 있습니다...", ok=True)
-
-        self._send_thread = EmailSendThread(email, purpose="signup")
-        self._send_thread.done.connect(self._on_send_done)
-        self._send_thread.start()
-
-    @pyqtSlot(bool, str)
-    def _on_send_done(self, ok, msg):
-        self.btn_send_code.setEnabled(True)
-        self.btn_send_code.setText("인증코드 재발송" if ok else "인증코드 발송")
-        if ok:
-            self._set_msg(self.msg_email, "✓ 인증코드가 발송되었습니다. (5분 내 입력)", ok=True)
-        else:
-            self._set_msg(self.msg_email, f"발송 실패: {msg}")
-
-    def _verify_email_code(self):
-        email = self._get_email()
-        code  = self.input_code.text().strip()
-        if not code:
-            self._set_msg(self.msg_code, "인증코드를 입력하세요."); return
-
-        ok, msg = confirm_code(email, code)
-        if ok:
-            self._email_verified = True
-            self._set_msg(self.msg_code, "✓ 이메일 인증이 완료되었습니다.", ok=True)
-            self.btn_send_code.setEnabled(False)
-            self.btn_verify_code.setEnabled(False)
-            self.input_code.setEnabled(False)
-        else:
-            self._email_verified = False
-            self._set_msg(self.msg_code, msg)
-
     def _handle_signup(self):
         uid   = self.input_id.text().strip()
         pw    = self.input_pw.text()
         pw2   = self.input_pw2.text()
         name  = self.input_name.text().strip()
         phone = self.input_phone.text().strip()
-        email = self._get_email()
+        eid   = self.input_email.text().strip()
+        dom   = (self.input_domain_custom.text().strip()
+                 if self.combo_domain.currentText() == "직접입력"
+                 else self.combo_domain.currentText())
+        email = f"{eid}@{dom}" if eid and dom else ""
         yr, mo, dy = (self.combo_y.currentText(),
                       self.combo_m.currentText(),
                       self.combo_d.currentText())
@@ -409,18 +317,11 @@ class SignupWidget(QWidget):
         if not name:
             QMessageBox.warning(self, "오류", "이름을 입력하세요."); return
         if not phone or not phone.isdigit() or len(phone) != 11:
-            QMessageBox.warning(self, "오류", "휴대폰번호는 '-' 제외 11자리 숫자로 입력하세요."); return
-        if not email or "." not in email.split("@")[-1]:
-            QMessageBox.warning(self, "오류", "올바른 이메일 주소를 입력하세요."); return
+            QMessageBox.warning(self, "오류", "전화번호는 '-' 제외 11자리 숫자로 입력하세요."); return
+        if not eid or not dom or "." not in dom:
+            QMessageBox.warning(self, "오류", "올바른 이메일을 입력하세요."); return
         if yr == "년도" or mo == "월" or dy == "일":
             QMessageBox.warning(self, "오류", "생년월일을 선택하세요."); return
-
-        # 이메일 인증 필수 확인
-        if EMAIL_AUTH_AVAILABLE and not self._email_verified:
-            QMessageBox.warning(self, "이메일 인증 필요",
-                                "이메일 인증을 완료한 후 가입하세요.\n"
-                                "'인증코드 발송' 버튼을 눌러 인증을 진행하세요.")
-            return
 
         if user_exists_by_username(uid):
             self._set_msg(self.msg_id, "이미 사용 중인 아이디입니다."); return
@@ -436,27 +337,22 @@ class SignupWidget(QWidget):
 
     def _val_pw(self, pw):
         if not (8 <= len(pw) <= 20): return False, "8~20자로 입력하세요."
-        if not any(c.isalpha() for c in pw): return False, "영문·숫자·특수문자를 모두 포함해야 합니다."
-        if not any(c.isdigit() for c in pw): return False, "영문·숫자·특수문자를 모두 포함해야 합니다."
-        if not any(not c.isalnum() for c in pw): return False, "영문·숫자·특수문자를 모두 포함해야 합니다."
+        if not any(c.isalpha() for c in pw): return False, "문자·숫자·특수문자를 모두 포함해야 합니다."
+        if not any(c.isdigit() for c in pw): return False, "문자·숫자·특수문자를 모두 포함해야 합니다."
+        if not any(not c.isalnum() for c in pw): return False, "문자·숫자·특수문자를 모두 포함해야 합니다."
         return True, ""
 
     def clear_fields(self):
-        self._email_verified = False
         for w in [self.input_id, self.input_pw, self.input_pw2,
                   self.input_name, self.input_phone, self.input_email,
-                  self.input_domain_custom, self.input_code]:
+                  self.input_domain_custom]:
             w.clear()
         self.combo_domain.setCurrentIndex(0)
         self.combo_y.setCurrentIndex(0)
         self.combo_m.setCurrentIndex(0)
         self.combo_d.setCurrentIndex(0)
-        for m in [self.msg_id, self.msg_pw, self.msg_pw2, self.msg_email, self.msg_code]:
+        for m in [self.msg_id, self.msg_pw, self.msg_pw2]:
             m.setText("")
-        self.btn_send_code.setEnabled(True)
-        self.btn_send_code.setText("인증코드 발송")
-        self.btn_verify_code.setEnabled(True)
-        self.input_code.setEnabled(True)
 
     def update_theme(self, is_dark: bool):
         self.setStyleSheet(get_stylesheet(is_dark))

@@ -121,36 +121,47 @@ def get_top_cpu_processes() -> str:
     """CPU 점유율 상위 5개 프로그램 목록을 반환하고 메모리에 저장합니다."""
     global LAST_TOP_PROCESSES
     print("\n👀 [플러그인] CPU 점유율 정밀 측정 중...")
-    
+
+    # 측정 기준값 초기화 (첫 호출 시 0이 나오는 문제 방지)
     for proc in psutil.process_iter():
         try: proc.cpu_percent(interval=None)
         except: pass
-    
+
     time.sleep(0.5)
-    
+
+    # 코어 수로 나눠서 0~100% 범위로 정규화
+    cpu_count = psutil.cpu_count(logical=True) or 1
+
+    # Windows 시스템 전용 프로세스 필터 (항상 수백%가 나와 의미 없음)
+    EXCLUDED = {"system idle process", "idle", "system"}
+
     processes = []
     for proc in psutil.process_iter(['name']):
         try:
-            cpu_val = proc.cpu_percent(interval=None)
-            processes.append({'name': proc.info['name'], 'cpu': cpu_val})
+            name = proc.info['name'] or ""
+            if name.lower() in EXCLUDED:
+                continue
+            # 코어 수로 나눠 실제 체감 점유율(0~100%)로 정규화
+            cpu_val = proc.cpu_percent(interval=None) / cpu_count
+            if cpu_val <= 0:
+                continue
+            processes.append({'name': name, 'cpu': cpu_val})
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-    
+
     if not processes:
-        return "정보 없음"
+        return "현재 CPU를 사용 중인 프로세스가 없습니다."
 
     processes.sort(key=lambda x: x['cpu'], reverse=True)
     top_5 = processes[:5]
-    
-    # 💡 1번~5번 순서대로 프로그램 이름만 전역 변수에 킵(Keep)해둡니다.
+
+    # 1번~5번 순서대로 프로그램 이름 저장 (kill_process에서 번호로 참조)
     LAST_TOP_PROCESSES = [p['name'] for p in top_5]
-    
+
     result = "다음은 CPU를 가장 많이 사용하는 상위 5개 프로그램입니다:\n"
     for idx, p in enumerate(top_5, 1):
-        name = p['name']
-        cpu = round(p['cpu'], 1)
-        result += f"{idx}. {name} (점유율: {cpu}%)\n"
-        
+        result += f"{idx}. {p['name']} (점유율: {round(p['cpu'], 1)}%)\n"
+
     return result
 
 def kill_process(process_name_or_number: str) -> str:
