@@ -56,6 +56,8 @@ class AIWorker(QThread):
     response_ready = pyqtSignal(str)
     status_update  = pyqtSignal(str)   # ← 진행 상태 메시지 신호
     pending_event  = pyqtSignal(dict)  # ← 소요 시간 불명 시 이벤트 인자 전달
+    price_result   = pyqtSignal(str)   # ← 가격 검색 결과 원본 전달
+    cpu_result     = pyqtSignal(str)   # ← CPU 프로세스 결과 원본 전달
 
     def __init__(self, user_text, chat_history, installed_tools):
         super().__init__()
@@ -144,6 +146,185 @@ class AIWorker(QThread):
 
     def run(self):
         try:
+            import sys
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+
+            # ── 빠른 감지 1: 제품 가격 검색 요청을 정규식으로 직접 감지 ──
+            import re
+            text_lower = self.user_text.lower()
+
+            # 제품명 키워드
+            product_keywords = ['아이폰', 'iphone', '맥북', 'macbook', '갤럭시', 'galaxy',
+                              '노트북', 'laptop', '그래픽카드', 'rtx', 'gtx', 'cpu',
+                              '모니터', 'monitor', '키보드', '마우스', '에어팟', 'airpods']
+
+            # 가격 키워드
+            price_keywords = ['얼마', '가격', '최저가', '시세', '비싸', '싸']
+
+            has_product = any(kw in text_lower for kw in product_keywords)
+            has_price = any(kw in text_lower for kw in price_keywords)
+
+            # 제품 + 가격 키워드가 함께 있으면 직접 search_product_price 호출
+            if has_product and has_price:
+                sys.stderr.write(f"\n🎯 제품 가격 검색 직접 호출 (정규식 감지)\n")
+                sys.stderr.flush()
+
+                func_map = {f.__name__: f for f in self.installed_tools}
+                if 'search_product_price' in func_map:
+                    # 제품명 추출 (가격 관련 키워드 제거) - 개선
+                    query = self.user_text
+
+                    # 1. 가격 관련 표현 제거 (순서 중요 - 긴 패턴부터)
+                    patterns_to_remove = [
+                        r'가격이?\s*어떻게\s*[돼되]\s*\??',
+                        r'가격이?\s*얼마야\??',
+                        r'가격이?\s*얼마에요\??',
+                        r'가격이?\s*얼마인가요\??',
+                        r'가격이?\s*얼마\s*\??',
+                        r'최저가는?\s*얼마야\??',
+                        r'최저가는?\s*얼마\s*\??',
+                        r'최저가는?\s*\??',
+                        r'시세는?\s*얼마야\??',
+                        r'시세는?\s*얼마\s*\??',
+                        r'시세는?\s*\??',
+                        r'얼마야\??',
+                        r'얼마에요\??',
+                        r'얼마인가요\??',
+                        r'얼마쯤\??',
+                        r'얼마\s*\??',
+                        r'가격은?',
+                        r'가격이',
+                        r'이\s*어떻게\s*[돼되]\s*\??',
+                        r'가\s*어떻게\s*[돼되]\s*\??',
+                        r'\?+',
+                        r'!+',
+                    ]
+
+                    for pattern in patterns_to_remove:
+                        query = re.sub(pattern, '', query, flags=re.IGNORECASE)
+
+                    # 2. 앞뒤 공백 제거
+                    query = query.strip()
+
+                    # 3. 연속된 공백을 하나로
+                    query = re.sub(r'\s+', ' ', query)
+
+                    # 4. 마지막 남은 조사 제거 (은, 는, 이, 가, 을, 를)
+                    query = re.sub(r'\s+[은는이가을를]\s*$', '', query)
+
+                    self.status_update.emit("🔍  가격 검색 중")
+                    sys.stderr.write(f"============================================================\n")
+                    sys.stderr.write(f"🔧 플러그인 호출: search_product_price\n")
+                    sys.stderr.write(f"📝 파라미터: {{'query': '{query}'}}\n")
+                    sys.stderr.write(f"============================================================\n")
+                    sys.stderr.flush()
+
+                    try:
+                        tool_result = func_map['search_product_price'](query=query)
+
+                        # 가격 검색 결과 원본 전달
+                        if '🛒' in tool_result:
+                            self.price_result.emit(tool_result)
+
+                        # AI 요약
+                        self.status_update.emit("📋  결과 정리 중")
+                        summary_messages = [{
+                            'role': 'system',
+                            'content': '한국어로 존댓말로 답변하세요.'
+                        }, {
+                            'role': 'user',
+                            'content': f"도구 실행 결과:\n{tool_result}\n\n위 결과를 한국어로 간단히 요약해줘. 결과에 없는 내용은 추가하지 마."
+                        }]
+
+                        final_response = ollama.chat(
+                            model='llama3.1',
+                            messages=summary_messages,
+                            options={'temperature': 0.3}
+                        )
+                        clean_reply = final_response['message']['content'].strip()
+                        self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
+                        return
+                    except Exception as e:
+                        self.response_ready.emit(f"⚠️ 가격 검색 오류: {e}")
+                        return
+
+            # ── 빠른 감지 2: 시스템 상태/성능 관련 요청 직접 감지 ──
+            system_keywords = ['컴퓨터 상태', '시스템 상태', 'pc 상태']
+            slow_keywords = ['느려', '느린', '무거', '버벅', '렉', '끊겨', '느리']
+
+            has_system_status = any(kw in text_lower for kw in system_keywords)
+            has_slow = any(kw in text_lower for kw in slow_keywords) and '컴' in text_lower
+
+            # "느려" 키워드 → CPU 상위 프로세스 표시
+            if has_slow:
+                sys.stderr.write(f"\n🎯 CPU 프로세스 직접 호출 (느림 감지)\n")
+                sys.stderr.flush()
+
+                func_map = {f.__name__: f for f in self.installed_tools}
+
+                if 'get_top_cpu_processes' in func_map:
+                    sys.stderr.write(f"============================================================\n")
+                    sys.stderr.write(f"🔧 플러그인 호출: get_top_cpu_processes\n")
+                    sys.stderr.write(f"📝 파라미터: {{}}\n")
+                    sys.stderr.write(f"============================================================\n")
+                    sys.stderr.flush()
+
+                    try:
+                        self.status_update.emit("💻  CPU 사용량 분석 중")
+                        tool_result = func_map['get_top_cpu_processes']()
+
+                        # CPU 프로세스 결과 원본 전달
+                        self.cpu_result.emit(tool_result)
+
+                        # 간단한 안내 메시지
+                        self.response_ready.emit("🤖 로컬 비서: CPU 사용량이 높은 프로세스 목록입니다. 종료하려면 각 카드의 '종료하기' 버튼을 클릭하세요.")
+                        return
+                    except Exception as e:
+                        self.response_ready.emit(f"⚠️ CPU 프로세스 조회 오류: {e}")
+                        return
+
+            # "시스템 상태" 키워드 → 전체 시스템 정보
+            elif has_system_status:
+                sys.stderr.write(f"\n🎯 시스템 상태 직접 호출 (정규식 감지)\n")
+                sys.stderr.flush()
+
+                func_map = {f.__name__: f for f in self.installed_tools}
+
+                if 'get_system_info' in func_map:
+                    sys.stderr.write(f"============================================================\n")
+                    sys.stderr.write(f"🔧 플러그인 호출: get_system_info\n")
+                    sys.stderr.write(f"📝 파라미터: {{}}\n")
+                    sys.stderr.write(f"============================================================\n")
+                    sys.stderr.flush()
+
+                    try:
+                        self.status_update.emit("💻  시스템 정보 수집 중")
+                        tool_result = func_map['get_system_info']()
+
+                        # AI 요약
+                        self.status_update.emit("📋  결과 정리 중")
+                        summary_messages = [{
+                            'role': 'system',
+                            'content': '한국어로 존댓말로 답변하세요.'
+                        }, {
+                            'role': 'user',
+                            'content': f"도구 실행 결과:\n{tool_result}\n\n위 결과를 한국어로 자연스럽게 요약해줘. 시스템 상태를 알기 쉽게 설명해줘."
+                        }]
+
+                        final_response = ollama.chat(
+                            model='llama3.1',
+                            messages=summary_messages,
+                            options={'temperature': 0.3}
+                        )
+                        clean_reply = final_response['message']['content'].strip()
+                        self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
+                        return
+                    except Exception as e:
+                        self.response_ready.emit(f"⚠️ 시스템 정보 조회 오류: {e}")
+                        return
+
+            # ── 이하 AI tool calling 방식으로 진행 ──
             func_map = {}
             for func in self.installed_tools:
                 func_map[func.__name__] = func
@@ -186,11 +367,22 @@ class AIWorker(QThread):
                     f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}\n"
                     f"사용 가능한 함수 목록: [{available_funcs}]\n"
                     "위 목록에 있는 함수만 호출하세요. 목록에 없는 함수는 절대 만들거나 호출하지 마세요.\n"
+                    "\n"
+                    "*** 함수 선택 규칙 (반드시 따르세요) ***\n"
+                    "1. 제품명(아이폰, 맥북, 갤럭시 등) + 가격/얼마/최저가 키워드 → search_product_price 호출\n"
+                    "2. 캘린더 일정(회의, 약속 등) 검색 → search_events 호출\n"
+                    "3. search_events는 오직 캘린더에 등록된 일정을 찾을 때만 사용\n"
+                    "4. 제품명이 들어간 질문은 절대 search_events를 사용하지 마세요\n"
+                    "\n"
                     f"날짜 계산 규칙: 오늘={_today}, 내일={_tomorrow}. 사용자가 '내일'이라고 하면 반드시 {_tomorrow}를 사용하세요.\n"
                     "create_event의 title 파라미터는 일정의 핵심 이름만 넣으세요 (예: '식사 약속', '팀 회의', '운동'). 사용자의 전체 문장을 넣지 마세요.\n"
-                    "함수 호출 결과를 받으면 한국어로 자연스럽게 요약해서 답변하세요.\n"
-                    "함수 호출 코드를 그대로 출력하지 마세요.\n"
-                    "답변 시작/끝에 따옴표(\") 절대 금지."
+                    "\n"
+                    "*** 답변 규칙 ***\n"
+                    "- 항상 존댓말(~습니다, ~해요)을 사용하세요. 반말 금지.\n"
+                    "- 함수 호출 결과를 받으면 한국어로 자연스럽게 요약해서 답변하세요.\n"
+                    "- 함수 호출 코드를 그대로 출력하지 마세요.\n"
+                    "- 답변 시작/끝에 따옴표(\") 절대 금지.\n"
+                    "- 결과에 없는 내용은 지어내지 마세요."
                 )
 
             system_msg = {'role': 'system', 'content': system_content}
@@ -212,12 +404,23 @@ class AIWorker(QThread):
             # 도구 호출 여부/인자를 정확히 골라야 하는 단계라 temperature를 낮춰
             # 창의적 변형(할루시네이션) 대신 일관되고 예측 가능한 선택을 유도
             self.status_update.emit("🧠  AI 모델에 요청 중")
+
+            import sys
+            sys.stderr.write(f"\n🤖 AI 모델 호출 시작\n")
+            sys.stderr.write(f"   - use_tools: {use_tools}\n")
+            sys.stderr.write(f"   - tools 개수: {len(ollama_tools) if use_tools else 0}\n")
+            sys.stderr.flush()
+
             response = ollama.chat(
                 model='llama3.1',
                 messages=self.chat_history,
                 tools=ollama_tools if use_tools else None,
-                options={'temperature': 0.2} if use_tools else None
+                options={'temperature': 0.1} if use_tools else {'temperature': 0.7}
             )
+
+            sys.stderr.write(f"   - tool_calls: {response.get('message', {}).get('tool_calls')}\n")
+            sys.stderr.write(f"   - content: {response.get('message', {}).get('content')[:100] if response.get('message', {}).get('content') else 'None'}\n")
+            sys.stderr.flush()
 
             if response.get('message', {}).get('tool_calls'):
                 tool_results = []
@@ -264,6 +467,14 @@ class AIWorker(QThread):
                     status_msg = TOOL_STATUS_NAMES.get(func_name, f"⚙️  {func_name} 실행 중")
                     self.status_update.emit(status_msg)
 
+                    # 터미널 로그 출력 (stderr로 출력해서 UI에 캡처되지 않도록)
+                    import sys
+                    sys.stderr.write(f"\n{'='*60}\n")
+                    sys.stderr.write(f"🔧 플러그인 호출: {func_name}\n")
+                    sys.stderr.write(f"📝 파라미터: {args}\n")
+                    sys.stderr.write(f"{'='*60}\n")
+                    sys.stderr.flush()
+
                     if func_name in func_map:
                         import inspect
                         valid_params = inspect.signature(func_map[func_name]).parameters
@@ -273,6 +484,11 @@ class AIWorker(QThread):
                         except Exception as tool_err:
                             tool_result = f"❌ {func_name} 실행 오류: {tool_err}"
                         tool_result_clean = str(tool_result).encode('utf-8', errors='ignore').decode('utf-8')
+
+                        # 가격 검색 결과는 원본을 별도 시그널로 전달
+                        if func_name == 'search_product_price' and '🛒' in tool_result_clean:
+                            self.price_result.emit(tool_result_clean)
+
                         tool_results.append(tool_result_clean)
                         self.chat_history.append({'role': 'tool', 'content': tool_result_clean})
                     else:
@@ -286,11 +502,12 @@ class AIWorker(QThread):
                         'role': 'user',
                         'content': (
                             f"도구 실행 결과:\n{raw_results}\n\n"
-                            "위 결과만 보고 한국어로 요약해줘.\n"
+                            "위 결과만 정확하게 요약해서 답변해줘.\n"
                             "결과에 없는 내용은 절대 추가하거나 지어내지 마.\n"
-                            "일정 조회 결과라면 결과에 있는 제목과 시간을 그대로 보여줘.\n"
+                            "다른 주제나 추측성 내용을 덧붙이지 마.\n"
+                            "일정 조회 결과라면 결과에 있는 제목과 시간만 그대로 보여줘.\n"
+                            "가격 검색 결과라면 결과에 있는 정보만 그대로 보여줘.\n"
                             "링크(http)는 출력하지 마.\n"
-                            "불필요한 조언, 부연은 하지 마.\n"
                             "JSON이나 코드 형식으로 출력하지 마."
                         )
                     }]
@@ -311,12 +528,14 @@ class AIWorker(QThread):
                 clean_reply = clean_reply[1:-1]
 
             # tool_calls 없이 모델이 함수 호출을 텍스트로 출력한 경우 재시도
-            if (re.search(r'\{\s*"name"\s*:\s*"\w+".+?"(?:arguments|parameters)"\s*:', clean_reply, re.DOTALL)
+            if (re.search(r'\{\s*"type"\s*:\s*"function"', clean_reply, re.DOTALL)
+                    or re.search(r'\{\s*"name"\s*:\s*"\w+".+?"(?:arguments|parameters)"\s*:', clean_reply, re.DOTALL)
+                    or re.search(r'"parameters\{"', clean_reply)
                     or re.search(r'^\s*\w+\([^)]*\)\s*$', clean_reply, re.MULTILINE)
                     or re.search(r'^\s*\{.*"message".*\}\s*$', clean_reply.strip(), re.DOTALL)):
                 retry_messages = self.chat_history + [{
                     'role': 'user',
-                    'content': "JSON이나 코드 형식 말고, 한국어 문장으로만 답변해줘."
+                    'content': "JSON이나 코드 형식 말고, 한국어 문장으로만 답변해줘. 함수를 실행한 결과를 자연스럽게 설명해줘."
                 }]
                 retry_response = ollama.chat(model='llama3.1', messages=retry_messages)
                 clean_reply = retry_response['message']['content'].strip()

@@ -896,11 +896,29 @@ class AssistantApp(QWidget):
         self.worker.response_ready.connect(self.display_ai_response)
         self.worker.status_update.connect(self._on_status_update)
         self.worker.pending_event.connect(self._on_pending_event)
+        self.worker.price_result.connect(self._on_price_result)  # 가격 검색 결과 연결
+        self.worker.cpu_result.connect(self._on_cpu_result)  # CPU 프로세스 결과 연결
         self.worker.start()
 
     def _on_pending_event(self, args: dict):
         """AIWorker에서 소요 시간 불명 시 이벤트 인자 저장."""
         self.pending_event_args = args
+
+    def _on_price_result(self, raw_result: str):
+        """가격 검색 원본 결과를 받아서 카드 UI로 표시"""
+        import sys
+        sys.stderr.write(f"\n💳 가격 검색 결과 수신, 카드 UI 생성 중...\n")
+        sys.stderr.flush()
+
+        self._display_price_search_result(raw_result)
+
+    def _on_cpu_result(self, raw_result: str):
+        """CPU 프로세스 원본 결과를 받아서 카드 UI로 표시"""
+        import sys
+        sys.stderr.write(f"\n💻 CPU 프로세스 결과 수신, 카드 UI 생성 중...\n")
+        sys.stderr.flush()
+
+        self._display_cpu_process_result(raw_result)
 
     # 카테고리별 보안 리포트 함수 — 설치된 것만 골라서 순서대로 실행됨
     _SECURITY_REPORT_FUNCS = (
@@ -1125,6 +1143,7 @@ class AssistantApp(QWidget):
         self._hide_typing_indicator()
         self._set_input_enabled(True)
 
+        # 일반 메시지 버블 표시
         new_bubble = MessageBubble(text, False, max_width=self.scroll_area.viewport().width())
         self.chat_bubbles.append(new_bubble)
         self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, new_bubble)
@@ -1147,6 +1166,249 @@ class AssistantApp(QWidget):
         if self._pending_steps:
             next_step = self._pending_steps.pop(0)
             QTimer.singleShot(500, lambda t=next_step: self.send_message(t))
+
+    def _display_cpu_process_result(self, text):
+        """CPU 프로세스 결과를 카드 UI로 표시"""
+        import re
+        import sys
+
+        sys.stderr.write(f"\n🔍 CPU 프로세스 파싱 시작...\n")
+        sys.stderr.flush()
+
+        # 헤더 메시지
+        header = "🤖 로컬 비서: CPU 사용량이 높은 프로세스 목록입니다."
+        header_bubble = MessageBubble(header, False, max_width=self.scroll_area.viewport().width())
+        self.chat_bubbles.append(header_bubble)
+        self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, header_bubble)
+        header_bubble.update_theme(self.is_dark_mode)
+
+        # 프로세스 파싱: "1. 프로세스명 (점유율: X.X%)"
+        process_pattern = r'\d+\.\s+(.+?)\s+\(점유율:\s+([\d.]+)%\)'
+        processes = re.findall(process_pattern, text)
+
+        for idx, (process_name, cpu_percent) in enumerate(processes, 1):
+            sys.stderr.write(f"✅ 프로세스 {idx}: {process_name} - {cpu_percent}%\n")
+            sys.stderr.flush()
+
+            # 프로세스 카드 위젯 생성
+            card_widget = self._create_process_card(process_name, cpu_percent)
+            self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, card_widget)
+
+        sys.stderr.write(f"✅ CPU 프로세스 카드 UI 생성 완료\n")
+        sys.stderr.flush()
+
+    def _create_process_card(self, process_name, cpu_percent):
+        """개별 프로세스 카드 위젯 생성"""
+        from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QFont, QCursor
+
+        card = QFrame()
+        card.setFrameStyle(QFrame.Shape.StyledPanel)
+        card.setStyleSheet("""
+            QFrame {
+                background-color: #fff3cd;
+                border: 1px solid #ffc107;
+                border-radius: 12px;
+                padding: 16px;
+                margin: 8px 0;
+            }
+        """ if not self.is_dark_mode else """
+            QFrame {
+                background-color: #3d3520;
+                border: 1px solid #ffc107;
+                border-radius: 12px;
+                padding: 16px;
+                margin: 8px 0;
+            }
+        """)
+
+        layout = QVBoxLayout(card)
+
+        # 프로세스명
+        name_label = QLabel(process_name)
+        name_label.setWordWrap(True)
+        name_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        layout.addWidget(name_label)
+
+        # CPU 점유율
+        cpu_label = QLabel(f"💻 CPU 사용량: {cpu_percent}%")
+        cpu_label.setFont(QFont("Arial", 13, QFont.Weight.Bold))
+        cpu_label.setStyleSheet("color: #ff6b6b; margin: 8px 0;")
+        layout.addWidget(cpu_label)
+
+        # 종료 버튼
+        kill_btn = QPushButton("🛑 종료하기")
+        kill_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        kill_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #dc3545;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #c82333;
+            }
+        """)
+        kill_btn.clicked.connect(lambda: self._kill_process(process_name))
+        layout.addWidget(kill_btn)
+
+        return card
+
+    def _kill_process(self, process_name):
+        """프로세스 종료"""
+        from PyQt6.QtWidgets import QMessageBox
+
+        # 확인 대화상자
+        reply = QMessageBox.question(
+            self,
+            '프로세스 종료 확인',
+            f'"{process_name}" 프로세스를 종료하시겠습니까?\n\n경고: 중요한 시스템 프로세스를 종료하면 시스템이 불안정해질 수 있습니다.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # kill_process 함수 호출
+            func_map = {f.__name__: f for f in self.installed_tools}
+            if 'kill_process' in func_map:
+                try:
+                    result = func_map['kill_process'](process_name)
+                    self.display_ai_response(f"🤖 로컬 비서: {result}")
+                except Exception as e:
+                    self.display_ai_response(f"⚠️ 프로세스 종료 오류: {e}")
+
+    def _display_price_search_result(self, text):
+        """가격 검색 결과를 카드 UI로 표시"""
+        import re
+        import sys
+
+        sys.stderr.write(f"\n🔍 파싱 시작...\n")
+        sys.stderr.flush()
+
+        # 제목 추출
+        title_match = re.search(r"'([^']+)' 최저가 검색 결과", text)
+        search_query = title_match.group(1) if title_match else "상품"
+
+        # 헤더 메시지
+        header = f"🤖 로컬 비서: '{search_query}' 검색 결과입니다."
+        header_bubble = MessageBubble(header, False, max_width=self.scroll_area.viewport().width())
+        self.chat_bubbles.append(header_bubble)
+        self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, header_bubble)
+        header_bubble.update_theme(self.is_dark_mode)
+
+        # 각 상품 카드 파싱 및 표시 (개선된 정규식)
+        # #1, #2 등으로 구분
+        product_blocks = re.split(r'┌─+┐', text)
+
+        for idx, product_text in enumerate(product_blocks[1:6], 1):  # 최대 5개
+            try:
+                # 상품명 추출
+                name_match = re.search(r'📦 상품명:\s*│\s*(.+?)(?=│\s*💰)', product_text, re.DOTALL)
+                if name_match:
+                    name_lines = name_match.group(1).strip().split('│')
+                    name = ' '.join(line.strip() for line in name_lines if line.strip())
+                else:
+                    continue
+
+                # 가격 추출 (개선)
+                price_match = re.search(r'💰 최저가:\s*(.+?)(?:\n|│)', product_text)
+                if price_match:
+                    price = price_match.group(1).strip()
+                else:
+                    price = "가격 정보 없음"
+
+                # 링크 추출
+                link_match = re.search(r'🔗 다나와 링크:\s*│\s*(.+?)(?:\n|│)', product_text)
+                if link_match:
+                    link = link_match.group(1).strip()
+                else:
+                    link = ""
+
+                sys.stderr.write(f"✅ 상품 {idx}: {name[:30]}... - {price}\n")
+                sys.stderr.flush()
+
+                # 상품 카드 위젯 생성
+                card_widget = self._create_product_card(name, price, link, "")
+                self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, card_widget)
+
+            except Exception as e:
+                sys.stderr.write(f"❌ 상품 {idx} 파싱 실패: {e}\n")
+                sys.stderr.flush()
+                continue
+
+        sys.stderr.write(f"✅ 카드 UI 생성 완료\n")
+        sys.stderr.flush()
+
+    def _create_product_card(self, name, price, link, img_url):
+        """개별 상품 카드 위젯 생성"""
+        from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QFont, QCursor
+
+        card = QFrame()
+        card.setFrameStyle(QFrame.Shape.StyledPanel)
+        card.setStyleSheet("""
+            QFrame {
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 12px;
+                padding: 16px;
+                margin: 8px 0;
+            }
+        """ if not self.is_dark_mode else """
+            QFrame {
+                background-color: #2d2d2d;
+                border: 1px solid #3d3d3d;
+                border-radius: 12px;
+                padding: 16px;
+                margin: 8px 0;
+            }
+        """)
+
+        layout = QVBoxLayout(card)
+
+        # 상품명
+        name_label = QLabel(name[:100])
+        name_label.setWordWrap(True)
+        name_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        layout.addWidget(name_label)
+
+        # 가격
+        price_label = QLabel(f"💰 {price}")
+        price_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        price_label.setStyleSheet("color: #ff6b6b; margin: 8px 0;")
+        layout.addWidget(price_label)
+
+        # 링크 버튼
+        if link and link != "링크 없음":
+            link_btn = QPushButton("🔗 다나와에서 보기")
+            link_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            link_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4dabf7;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #339af0;
+                }
+            """)
+            link_btn.clicked.connect(lambda: self._open_url(link))
+            layout.addWidget(link_btn)
+
+        return card
+
+    def _open_url(self, url):
+        """URL을 기본 브라우저에서 열기"""
+        import webbrowser
+        webbrowser.open(url)
 
     def auto_scroll_to_bottom(self):
         sb = self.scroll_area.verticalScrollBar()

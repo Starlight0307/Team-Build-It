@@ -156,12 +156,12 @@ TOOL_SCHEMAS = {
         "type": "function",
         "function": {
             "name": "search_events",
-            "description": "키워드로 일정을 검색합니다.",
+            "description": "구글 캘린더에 등록된 회의, 약속, 미팅 일정을 검색합니다. 제품/상품 이름(아이폰, 맥북, 갤럭시 등)은 일정이 아니므로 이 함수를 사용하지 마세요. 오직 캘린더에 등록된 일정 제목을 검색할 때만 사용하세요.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "keyword":    {"type": "string"},
-                    "days_range": {"type": "integer"}
+                    "keyword":    {"type": "string", "description": "캘린더 일정 제목 키워드 (회의, 약속, 미팅 등)"},
+                    "days_range": {"type": "integer", "description": "검색할 일수 범위"}
                 },
                 "required": ["keyword"]
             }
@@ -507,6 +507,19 @@ def get_events_by_date(date_str: str, calendar_id: str = "primary") -> str:
 
 def search_events(keyword: str, days_range: int = 30, calendar_id: str = "primary") -> str:
     print(f"\n🔍 [캘린더] '{keyword}' 일정 검색 중...")
+
+    # 상품/가격 검색 키워드 필터링 - search_product_price를 사용해야 함
+    product_keywords = ['아이폰', 'iphone', '갤럭시', 'galaxy', '맥북', 'macbook',
+                       '노트북', 'laptop', '컴퓨터', 'computer', 'pc', 'rtx',
+                       '그래픽카드', 'cpu', '모니터', 'monitor', '키보드', 'keyboard',
+                       '마우스', 'mouse', '에어팟', 'airpods', '아이패드', 'ipad']
+
+    keyword_lower = keyword.lower()
+    for product in product_keywords:
+        if product in keyword_lower:
+            return (f"'{keyword}'는 제품명입니다. "
+                   f"가격을 검색하시려면 '얼마', '가격', '최저가' 등의 키워드와 함께 질문해주세요.")
+
     try:
         service = _get_service()
         tz  = ZoneInfo(DEFAULT_TIMEZONE)
