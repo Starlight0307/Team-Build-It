@@ -75,6 +75,17 @@ TOOL_SCHEMAS = {
 # 🔄 Windows 업데이트 상태 확인
 # ─────────────────────────────────────────────
 
+def _run_powershell(command: str, timeout: int):
+    """PowerShell 출력을 시스템 로케일(예: 한국어 Windows의 CP949)에 의존하지 않고
+    항상 UTF-8로 받기 위한 헬퍼. 이걸 안 하면 공유 폴더 경로나 계정 이름 등에
+    한글이 섞였을 때 시스템 로케일 설정에 따라 글자가 깨질 수 있음."""
+    return subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + command],
+        capture_output=True, encoding="utf-8", errors="replace", timeout=timeout
+    )
+
+
 def check_update_status() -> str:
     print("\n[시스템 보안] Windows 업데이트 상태 확인 중...")
 
@@ -82,11 +93,10 @@ def check_update_status() -> str:
         return "⚠️ 이 기능은 Windows 전용입니다."
 
     try:
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "(Get-HotFix | Sort-Object InstalledOn -Descending | "
-             "Select-Object -First 1).InstalledOn.ToString('yyyy-MM-dd')"],
-            capture_output=True, text=True, timeout=15
+        proc = _run_powershell(
+            "(Get-HotFix | Sort-Object InstalledOn -Descending | "
+            "Select-Object -First 1).InstalledOn.ToString('yyyy-MM-dd')",
+            timeout=15
         )
         raw = proc.stdout.strip()
         if not raw:
@@ -107,11 +117,12 @@ def check_update_status() -> str:
             return header + "✅ 최근에 업데이트가 적용되었습니다."
 
     except subprocess.TimeoutExpired:
-        return "⚠️ 업데이트 상태 확인 시간이 초과되었습니다."
+        return "⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요."
     except ValueError:
-        return f"[🔄 Windows 업데이트 상태]\n날짜 파싱 실패 (원본: '{raw}')"
+        return "[🔄 Windows 업데이트 상태]\n업데이트 날짜 정보를 확인하지 못했습니다."
     except Exception as e:
-        return f"⚠️ 업데이트 상태 확인 실패: {e}"
+        print(f"[시스템 보안] 업데이트 확인 오류: {e}")
+        return "⚠️ 업데이트 상태를 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -124,10 +135,9 @@ def scan_shared_folders() -> str:
         return "⚠️ 이 기능은 Windows 전용입니다."
 
     try:
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-SmbShare | Select-Object Name, Path | ConvertTo-Csv -NoTypeInformation"],
-            capture_output=True, text=True, timeout=15
+        proc = _run_powershell(
+            "Get-SmbShare | Select-Object Name, Path | ConvertTo-Csv -NoTypeInformation",
+            timeout=15
         )
         raw = proc.stdout.strip()
         if not raw:
@@ -144,30 +154,30 @@ def scan_shared_folders() -> str:
         lines  = []
         risky  = []
         for name, path in user_shares:
-            perm_proc = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 f"Get-SmbShareAccess -Name '{name}' | "
-                 "Where-Object {$_.AccountName -like '*Everyone*'} | "
-                 "Select-Object -ExpandProperty AccessRight"],
-                capture_output=True, text=True, timeout=10
+            perm_proc = _run_powershell(
+                f"Get-SmbShareAccess -Name '{name}' | "
+                "Where-Object {$_.AccountName -like '*Everyone*'} | "
+                "Select-Object -ExpandProperty AccessRight",
+                timeout=10
             )
             everyone_access = perm_proc.stdout.strip()
             if everyone_access:
-                lines.append(f"  🚨 {name} → {path}\n     Everyone에게 '{everyone_access}' 권한 — 누구나 접근 가능")
+                lines.append(f"  🚨 {name} → {path}\n     비밀번호 없이 누구나 접근 가능하게 설정되어 있음")
                 risky.append(name)
             else:
                 lines.append(f"  ✅ {name} → {path}")
 
-        result = f"[📁 공유 폴더 점검] (사용자 공유 {len(user_shares)}개)\n\n" + "\n".join(lines)
+        result = f"[📁 공유 폴더 점검] (사용자가 만든 공유 폴더 {len(user_shares)}개)\n\n" + "\n".join(lines)
         if risky:
-            result += (f"\n\n🚨 경고: {', '.join(risky)}는 인증 없이(Everyone) 접근 가능합니다. "
-                        "공용 와이파이/사내망에서 파일이 노출될 수 있으니 공유 권한을 제한하세요.")
+            result += (f"\n\n🚨 경고: {', '.join(risky)} 폴더는 비밀번호 없이 누구나 접근할 수 있습니다. "
+                        "공용 와이파이나 회사 네트워크에서 파일이 노출될 수 있으니 공유 권한을 제한하세요.")
         return result
 
     except subprocess.TimeoutExpired:
-        return "⚠️ 공유 폴더 점검 시간이 초과되었습니다."
+        return "⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요."
     except Exception as e:
-        return f"⚠️ 공유 폴더 점검 실패: {e}"
+        print(f"[시스템 보안] 공유 폴더 확인 오류: {e}")
+        return "⚠️ 공유 폴더 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -189,10 +199,7 @@ def get_login_failures(hours: int = 24) -> str:
             "@{N='SourceIP';E={$_.Properties[19].Value}} | "
             "ConvertTo-Csv -NoTypeInformation"
         )
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_cmd],
-            capture_output=True, text=True, timeout=20
-        )
+        proc = _run_powershell(ps_cmd, timeout=20)
         raw = proc.stdout.strip()
         if not raw or raw.count('\n') == 0:
             return f"[🔑 로그인 실패 이력] (최근 {hours}시간)\n✅ 로그인 실패 기록이 없습니다."
@@ -205,18 +212,19 @@ def get_login_failures(hours: int = 24) -> str:
         lines = [f"  - {ip}: {cnt}회" for ip, cnt in ip_counter.most_common(10)]
 
         result = (f"[🔑 로그인 실패 이력] (최근 {hours}시간, 총 {len(reader)}건)\n\n"
-                  f"발신 IP별 집계:\n" + "\n".join(lines))
+                  f"어디서 시도했는지(주소별 횟수):\n" + "\n".join(lines))
 
         max_ip, max_cnt = ip_counter.most_common(1)[0]
         if max_cnt >= 5:
-            result += (f"\n\n🚨 경고: {max_ip}에서 {max_cnt}회 로그인 실패 — "
-                        "무차별 대입 공격(브루트포스) 의심됩니다.")
+            result += (f"\n\n🚨 경고: {max_ip}에서 {max_cnt}회나 로그인에 실패했습니다 — "
+                        "누군가 비밀번호를 계속 시도하며 침입을 시도했을 가능성이 있습니다.")
         return result
 
     except subprocess.TimeoutExpired:
-        return "⚠️ 로그인 실패 이력 조회 시간이 초과되었습니다."
+        return "⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요."
     except Exception as e:
-        return f"⚠️ 로그인 실패 이력 조회 실패: {e} (관리자 권한이 필요할 수 있습니다)"
+        print(f"[시스템 보안] 로그인 실패 이력 확인 오류: {e}")
+        return "⚠️ 로그인 실패 이력을 확인하지 못했습니다. 관리자 권한으로 앱을 실행해야 할 수 있습니다."
 
 
 # ─────────────────────────────────────────────

@@ -104,5 +104,6 @@ def download_and_install_plugin(
         QMessageBox.information(parent_widget, "완료", f"'{f_name}' 플러그인이 성공적으로 설치되었습니다.")
 
     except Exception as e:
-        QMessageBox.critical(parent_widget, "오류", f"설치 실패: {str(e)}")
+        print(f"[플러그인 설치 오류] {m_name}: {e}")
+        QMessageBox.critical(parent_widget, "오류", f"'{f_name}' 기능 설치에 실패했습니다. 인터넷 연결을 확인하고 잠시 후 다시 시도해주세요.")
         btn.setText("설치"); btn.setEnabled(True)

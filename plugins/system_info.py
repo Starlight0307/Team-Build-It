@@ -82,8 +82,8 @@ def get_system_info() -> str:
     disk_free = round(disk.free / (1024**3), 1)
     
     # 💡 온도 및 GPU 정보 (Mac 등 지원 안되는 OS 예외 처리)
-    cpu_temp = "측정 불가 (OS/하드웨어 미지원)"
-    gpu_temp = "측정 불가 (OS/하드웨어 미지원)"
+    cpu_temp = "측정 불가 (이 컴퓨터에서는 지원하지 않음)"
+    gpu_temp = "측정 불가 (이 컴퓨터에서는 지원하지 않음)"
     gpu_info = "측정 불가"
 
     # 일반적인 온도 측정 시도
@@ -196,6 +196,6 @@ def kill_process(process_name_or_number: str) -> str:
     if found:
         return f"성공적으로 {', '.join(killed_names)} 프로그램을 종료했습니다."
     else:
-        return f"'{search_name}' 프로그램을 찾을 수 없거나 OS 권한 문제로 종료에 실패했습니다."
+        return f"'{search_name}' 프로그램을 찾을 수 없거나 권한이 없어서 종료하지 못했습니다."
     
     

@@ -200,11 +200,11 @@ _MEM_NETWORK_INFO = (
 )
 
 _STARTUP_ITEM_INFO = (
-    "🔁 새 자동 실행 항목",
-    "이 프로그램이 컴퓨터를 켤 때마다 자동으로 실행되도록 등록되었습니다. "
-    "본인이 설치·설정한 것이 아니라면 악성코드가 재부팅 후에도 살아남기 위한 시도일 수 있습니다.",
-    "작업 관리자 > 시작프로그램 탭에서 비활성화하거나, 레지스트리 편집기(Win+R → regedit)에서 "
-    "해당 키를 직접 삭제하세요. 확실치 않다면 실행 파일을 백신으로 검사하세요."
+    "🔁 컴퓨터 켤 때 자동으로 실행되는 새 프로그램",
+    "이 프로그램이 컴퓨터를 켤 때마다 자동으로 실행되도록 방금 새로 등록되었습니다. "
+    "본인이 설치한 게 아니라면 악성 프로그램이 컴퓨터를 껐다 켜도 계속 살아남으려는 시도일 수 있습니다.",
+    "작업 관리자의 '시작프로그램' 탭에서 사용 안 함으로 바꿔보세요. "
+    "확실하지 않으면 함부로 지우지 마시고, 백신 프로그램으로 검사하거나 전문가에게 문의하세요."
 )
 
 
@@ -265,23 +265,23 @@ def _check_new_suspicious_processes():
             explanations = []
             for kw in _SUSPICIOUS_KEYWORDS:
                 if namel == kw or namel.startswith(kw + "."):
-                    reasons.append(f"위험 키워드 프로세스명 ('{kw}')")
+                    reasons.append("알려진 해킹 도구와 이름이 같음")
                     explanations.append(_keyword_explanation(kw))
                     break
 
             temp_paths = ["\\Temp\\", "\\AppData\\Local\\Temp\\", "/tmp/", "/var/tmp/"]
             in_temp = any(p.lower() in exe.lower() for p in temp_paths)
             if in_temp and pid in external_pids:
-                reasons.append(f"임시 폴더 실행 + 외부 네트워크 연결 ({exe})")
+                reasons.append("임시 폴더에서 실행되면서 인터넷과 연결되어 있음")
                 explanations.append(_format_info(_TEMP_NETWORK_INFO))
 
             mem = round(info.get('memory_percent') or 0, 1)
             if mem > 60 and pid in external_pids:
-                reasons.append(f"메모리 고점유({mem}%) + 외부 연결 중")
+                reasons.append(f"메모리를 {mem}%나 쓰면서 인터넷과 연결 중")
                 explanations.append(_format_info(_MEM_NETWORK_INFO))
 
             if reasons:
-                alert = f"PID {pid} | {name} — {' / '.join(reasons)}"
+                alert = f"{name} (실행 번호: {pid}) — {' / '.join(reasons)}"
                 if explanations:
                     alert += "\n   " + "\n   ".join(explanations)
                 new_alerts.append(alert)
@@ -343,9 +343,9 @@ def _snapshot():
     """현재 시작프로그램 항목 전체를 {식별자: 값} 딕셔너리로 반환."""
     snap = {}
     for hive, path in _RUN_KEYS:
-        hive_name = "HKCU" if hive == winreg.HKEY_CURRENT_USER else "HKLM"
+        source_label = "시작프로그램 설정(내 계정용)" if hive == winreg.HKEY_CURRENT_USER else "시작프로그램 설정(모든 사용자용)"
         for name, value in _read_run_key(hive, path).items():
-            snap[f"[레지스트리 {hive_name}] {name}"] = value
+            snap[f"[{source_label}] {name}"] = value
     for name, value in _startup_folder_items().items():
         snap[f"[시작프로그램 폴더] {name}"] = value
     return snap
@@ -368,7 +368,7 @@ def _monitor_loop():
             if new_keys:
                 with _alerts_lock:
                     for key in new_keys:
-                        alert = f"[{ts}] 🚨 새 자동실행 항목 감지: {key} → {current[key]}"
+                        alert = f"[{ts}] 🚨 새로 자동 실행되는 프로그램 발견: {key} → {current[key]}"
                         alert += "\n   " + _format_info(_STARTUP_ITEM_INFO)
                         _alerts.append(alert)
             last_snapshot = current
@@ -382,7 +382,7 @@ def _monitor_loop():
                 if proc_alerts:
                     with _alerts_lock:
                         for a in proc_alerts:
-                            _alerts.append(f"[{ts}] 🦠 새 의심 프로세스 감지: {a}")
+                            _alerts.append(f"[{ts}] 🦠 새로 의심스러운 프로그램 발견: {a}")
             except Exception:
                 pass
 
@@ -429,8 +429,8 @@ def start_realtime_monitor(startup_interval_seconds: int = None,
     # 실제 프로세스 점검 주기는 틱 배수로 반올림되므로, 요청값과 살짝 다를 수 있어 재계산해서 안내
     actual_process_interval = _startup_interval_seconds * _process_check_every_ticks
     return (f"[🛰️ 실시간 감시 시작]\n"
-            f"- 시작프로그램(레지스트리 Run 키, 시작프로그램 폴더): {_startup_interval_seconds}초마다\n"
-            f"- 새로 실행되는 의심 프로세스: {actual_process_interval}초마다\n"
+            f"- 컴퓨터 켤 때 자동 실행되는 프로그램: {_startup_interval_seconds}초마다\n"
+            f"- 새로 실행되는 의심스러운 프로그램: {actual_process_interval}초마다\n"
             f"새 항목이 감지되면 자동으로 기록해두고, "
             f"'실시간 감시 결과 알려줘'라고 물어보면 확인할 수 있습니다.")
 

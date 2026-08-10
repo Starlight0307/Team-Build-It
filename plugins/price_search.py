@@ -41,7 +41,7 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
     sys.stderr.flush()
 
     if not search_query:
-        return "검색어(query)가 비어있습니다."
+        return "검색어가 없습니다. 어떤 상품을 찾으시는지 말씀해주세요."
 
     # 다나와 검색 URL
     encoded_query = urllib.parse.quote(search_query)
@@ -144,11 +144,13 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
                 continue
 
         if len(results) <= 3:
-            return f"'{search_query}' 검색 결과를 파싱할 수 없습니다."
+            return f"'{search_query}' 검색 결과를 가져오지 못했습니다."
 
         return "\n".join(results)
 
     except requests.exceptions.RequestException as e:
-        return f"다나와 통신 에러 발생: {e}"
+        print(f"[가격 검색] 통신 오류: {e}")
+        return "⚠️ 가격 정보를 가져오지 못했습니다. 인터넷 연결을 확인하고 잠시 후 다시 시도해주세요."
     except Exception as e:
-        return f"다나와 검색 중 에러 발생: {e}"
+        print(f"[가격 검색] 오류: {e}")
+        return "⚠️ 가격 검색 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요."

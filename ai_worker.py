@@ -246,7 +246,8 @@ class AIWorker(QThread):
                         self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
                         return
                     except Exception as e:
-                        self.response_ready.emit(f"⚠️ 가격 검색 오류: {e}")
+                        print(f"[AI 워커] 가격 검색 오류: {e}")
+                        self.response_ready.emit("⚠️ 가격을 검색하지 못했습니다. 잠시 후 다시 시도해주세요.")
                         return
 
             # ── 빠른 감지 2: 시스템 상태/성능 관련 요청 직접 감지 ──
@@ -281,7 +282,8 @@ class AIWorker(QThread):
                         self.response_ready.emit("🤖 로컬 비서: CPU 사용량이 높은 프로세스 목록입니다. 종료하려면 각 카드의 '종료하기' 버튼을 클릭하세요.")
                         return
                     except Exception as e:
-                        self.response_ready.emit(f"⚠️ CPU 프로세스 조회 오류: {e}")
+                        print(f"[AI 워커] CPU 프로세스 조회 오류: {e}")
+                        self.response_ready.emit("⚠️ 실행 중인 프로그램 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.")
                         return
 
             # "시스템 상태" 키워드 → 전체 시스템 정보
@@ -321,7 +323,8 @@ class AIWorker(QThread):
                         self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
                         return
                     except Exception as e:
-                        self.response_ready.emit(f"⚠️ 시스템 정보 조회 오류: {e}")
+                        print(f"[AI 워커] 시스템 정보 조회 오류: {e}")
+                        self.response_ready.emit("⚠️ 컴퓨터 상태 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.")
                         return
 
             # ── 이하 AI tool calling 방식으로 진행 ──
@@ -335,7 +338,8 @@ class AIWorker(QThread):
                 try:
                     result = func_map['get_login_status']()
                 except Exception as e:
-                    result = f"❌ 로그인 상태 확인 실패: {e}"
+                    print(f"[AI 워커] 로그인 상태 확인 오류: {e}")
+                    result = "❌ 로그인 상태를 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
                 self.chat_history.append({'role': 'user', 'content': self.user_text})
                 self.chat_history.append({'role': 'assistant', 'content': result})
                 self.response_ready.emit(f"🤖 로컬 비서: {result}")
@@ -482,7 +486,8 @@ class AIWorker(QThread):
                         try:
                             tool_result = func_map[func_name](**args)
                         except Exception as tool_err:
-                            tool_result = f"❌ {func_name} 실행 오류: {tool_err}"
+                            print(f"[AI 워커] '{func_name}' 실행 오류: {tool_err}")
+                            tool_result = "❌ 요청하신 작업을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."
                         tool_result_clean = str(tool_result).encode('utf-8', errors='ignore').decode('utf-8')
 
                         # 가격 검색 결과는 원본을 별도 시그널로 전달
@@ -492,7 +497,8 @@ class AIWorker(QThread):
                         tool_results.append(tool_result_clean)
                         self.chat_history.append({'role': 'tool', 'content': tool_result_clean})
                     else:
-                        tool_results.append(f"❌ '{func_name}' 함수를 찾을 수 없습니다. 플러그인이 설치되어 있는지 확인하세요.")
+                        print(f"[AI 워커] 알 수 없는 함수 호출 시도: {func_name}")
+                        tool_results.append("❌ 이 기능을 사용하려면 관련 플러그인이 설치되어 있는지 확인해주세요.")
 
                 # ── 3단계: 툴 결과를 모델에 다시 보내 자연어로 정리 ──
                 self.status_update.emit("📋  결과 정리 중")
@@ -552,4 +558,5 @@ class AIWorker(QThread):
             self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
 
         except Exception as e:
-            self.response_ready.emit(f"⚠️ 오류 발생: {e}")
+            print(f"[AI 워커] 처리 중 오류: {e}")
+            self.response_ready.emit("⚠️ 요청을 처리하는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.")

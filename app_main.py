@@ -49,7 +49,8 @@ class UpdateCheckWorker(QThread):
         try:
             result = self._func()
         except Exception as e:
-            result = f"⚠️ 업데이트 상태 확인 실패: {e}"
+            print(f"[업데이트 확인] 오류: {e}")
+            result = "⚠️ 업데이트 상태를 확인하지 못했습니다."
         self.result_ready.emit(result)
 
 
@@ -76,7 +77,8 @@ class OverallSecurityCheckWorker(QThread):
             try:
                 result = func()
             except Exception as e:
-                result = f"⚠️ {label} 점검 실패: {e}"
+                print(f"[전체 보안 점검] {label} 오류: {e}")
+                result = f"⚠️ {label} 점검에 실패했습니다."
             m = re.search(r'점수:\s*(\d+)/100', result)
             if m:
                 scores.append(int(m.group(1)))
@@ -198,7 +200,8 @@ class AssistantApp(QWidget):
         try:
             text = func(clear=False)
         except Exception as e:
-            text = f"⚠️ 알림 조회 실패: {e}"
+            print(f"[실시간 감시] 알림 조회 오류: {e}")
+            text = "⚠️ 알림을 불러오지 못했습니다. 잠시 후 다시 시도해주세요."
 
         # 창에서 본 알림도 이후 "이거 왜 위험해?" 같은 후속 질문이 가능하도록
         # 대화 맥락에 남겨둔다 (채팅창에 별도로 보여주진 않음)
@@ -236,7 +239,8 @@ class AssistantApp(QWidget):
         try:
             text = func(clear=False)
         except Exception as e:
-            text = f"⚠️ 알림 조회 실패: {e}"
+            print(f"[실시간 감시] 알림 조회 오류: {e}")
+            text = "⚠️ 알림을 불러오지 못했습니다. 잠시 후 다시 시도해주세요."
 
         # LLM은 거치지 않지만, 이후 사용자가 "이거 왜 위험해?"처럼 후속 질문을
         # 할 수 있으므로 대화 맥락(chat_history)에는 남겨둔다
@@ -357,7 +361,8 @@ class AssistantApp(QWidget):
         try:
             result = func(startup_interval_seconds=startup_s, process_interval_seconds=process_s)
         except Exception as e:
-            result = f"❌ 실시간 감시 시작 실패: {e}"
+            print(f"[실시간 감시] 시작 오류: {e}")
+            result = "❌ 실시간 감시를 시작하지 못했습니다. 잠시 후 다시 시도해주세요."
         self._last_seen_alert_count = 0  # 새로 시작했으니 알림 기준선 초기화
         self.display_ai_response(f"🤖 로컬 비서: [{label} 모드]\n{result}")
         return True
@@ -1042,7 +1047,8 @@ class AssistantApp(QWidget):
         try:
             result = delete_func(event_id=self.last_event_id)
         except Exception as e:
-            result = f"❌ 일정 삭제 중 오류: {e}"
+            print(f"[캘린더] 일정 삭제 오류: {e}")
+            result = "❌ 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요."
 
         last_date = self.last_event_date
 
@@ -1103,7 +1109,8 @@ class AssistantApp(QWidget):
                     if eid:
                         self.last_event_id, self.last_event_date = eid, edate
                 except Exception as e:
-                    response = f"🤖 로컬 비서: ❌ 일정 등록 중 오류: {e}"
+                    print(f"[캘린더] 일정 등록 오류: {e}")
+                    response = "🤖 로컬 비서: ❌ 일정 등록에 실패했습니다. 잠시 후 다시 시도해주세요."
                 self.display_ai_response(response)
                 return
 
@@ -1265,8 +1272,8 @@ class AssistantApp(QWidget):
         # 확인 대화상자
         reply = QMessageBox.question(
             self,
-            '프로세스 종료 확인',
-            f'"{process_name}" 프로세스를 종료하시겠습니까?\n\n경고: 중요한 시스템 프로세스를 종료하면 시스템이 불안정해질 수 있습니다.',
+            '프로그램 종료 확인',
+            f'"{process_name}" 프로그램을 종료하시겠습니까?\n\n경고: 중요한 시스템 프로그램을 종료하면 컴퓨터가 불안정해질 수 있습니다.',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -1279,7 +1286,8 @@ class AssistantApp(QWidget):
                     result = func_map['kill_process'](process_name)
                     self.display_ai_response(f"🤖 로컬 비서: {result}")
                 except Exception as e:
-                    self.display_ai_response(f"⚠️ 프로세스 종료 오류: {e}")
+                    print(f"[프로그램 종료] 오류: {e}")
+                    self.display_ai_response("⚠️ 프로그램을 종료하지 못했습니다. 잠시 후 다시 시도해주세요.")
 
     def _display_price_search_result(self, text):
         """가격 검색 결과를 카드 UI로 표시"""

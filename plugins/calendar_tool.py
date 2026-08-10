@@ -329,21 +329,15 @@ def get_login_status() -> str:
             f"- 토큰 상태: {'⚠️ 만료' if creds.expired else '✅ 유효'}"
         )
     except Exception as e:
-        return f"[🔐 로그인 상태]\n⚠️ 인증 오류: {e}"
+        print(f"[캘린더] 로그인 상태 확인 오류: {e}")
+        return "[🔐 로그인 상태]\n⚠️ 로그인 상태를 확인하지 못했습니다. '구글 캘린더 연결해줘'라고 다시 시도해주세요."
 
 
 def setup_calendar_auth() -> str:
     print(f"\n🔐 [캘린더] {_current_user_id} 초기 인증 시작...")
 
     if not os.path.exists(CREDENTIALS_FILE):
-        return (
-            "❌ credentials.json 파일이 없습니다.\n\n"
-            "【준비 방법】\n"
-            "1. https://console.cloud.google.com 접속\n"
-            "2. Google Calendar API 사용 설정\n"
-            "3. OAuth 2.0 클라이언트 ID 생성 (데스크톱 앱)\n"
-            f"4. JSON 다운로드 후 '{CREDENTIALS_FILE}'로 저장"
-        )
+        return "❌ 지금은 캘린더 기능을 사용할 수 없습니다. 앱 설정을 확인해주세요."
 
     try:
         _import_google()
@@ -359,7 +353,8 @@ def setup_calendar_auth() -> str:
             "이제 모든 캘린더 기능을 사용할 수 있습니다."
         )
     except Exception as e:
-        return f"❌ 인증 실패: {e}"
+        print(f"[캘린더] 인증 오류: {e}")
+        return "❌ 구글 계정 연결에 실패했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -424,7 +419,8 @@ def create_event(
             f"- 이벤트 ID: {event['id']}"
         )
     except Exception as e:
-        return f"❌ 일정 등록 실패: {e}"
+        print(f"[캘린더] 일정 등록 오류: {e}")
+        return "❌ 일정 등록에 실패했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -464,7 +460,8 @@ def get_upcoming_events(days = 7, calendar_id: str = "primary", max_results: int
             result += f"   🆔 {eid}\n\n"
         return result.strip()
     except Exception as e:
-        return f"❌ 일정 조회 실패: {e}"
+        print(f"[캘린더] 일정 조회 오류: {e}")
+        return "❌ 일정을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
 def get_events_by_date(date_str: str, calendar_id: str = "primary") -> str:
@@ -502,7 +499,8 @@ def get_events_by_date(date_str: str, calendar_id: str = "primary") -> str:
     except ValueError:
         return "날짜 형식이 잘못되었습니다. 예: '2025-07-20'"
     except Exception as e:
-        return f"❌ 일정 조회 실패: {e}"
+        print(f"[캘린더] 일정 조회 오류: {e}")
+        return "❌ 일정을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
 def search_events(keyword: str, days_range: int = 30, calendar_id: str = "primary") -> str:
@@ -542,7 +540,8 @@ def search_events(keyword: str, days_range: int = 30, calendar_id: str = "primar
             result += f"{i}. {event.get('summary', '(제목 없음)')} | {_format_datetime(start_raw)} | 🆔 {event.get('id','')}\n"
         return result.strip()
     except Exception as e:
-        return f"❌ 검색 실패: {e}"
+        print(f"[캘린더] 일정 검색 오류: {e}")
+        return "❌ 일정을 검색하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -595,7 +594,8 @@ def update_event(
             f"- 링크: {updated.get('htmlLink', '링크 없음')}"
         )
     except Exception as e:
-        return f"❌ 일정 수정 실패: {e}"
+        print(f"[캘린더] 일정 수정 오류: {e}")
+        return "❌ 일정 수정에 실패했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -611,7 +611,8 @@ def delete_event(event_id: str, calendar_id: str = "primary") -> str:
         service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
         return f"[🗑️ 일정 삭제 완료]\n제목 '{title}' 일정이 삭제되었습니다."
     except Exception as e:
-        return f"❌ 일정 삭제 실패: {e}"
+        print(f"[캘린더] 일정 삭제 오류: {e}")
+        return "❌ 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -631,7 +632,7 @@ def create_recurring_event(
 ) -> str:
     print(f"\n🔁 [캘린더] 반복 일정 등록 중: {title}")
     if recurrence_type.upper() not in ("DAILY", "WEEKLY", "MONTHLY", "YEARLY"):
-        return "recurrence_type은 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY' 중 하나여야 합니다."
+        return "반복 주기는 매일/매주/매월/매년 중 하나로 말씀해주세요."
     try:
         service = _get_service()
         event_body = {
@@ -651,7 +652,8 @@ def create_recurring_event(
             f"- 링크: {event.get('htmlLink', '링크 없음')}"
         )
     except Exception as e:
-        return f"❌ 반복 일정 등록 실패: {e}"
+        print(f"[캘린더] 반복 일정 등록 오류: {e}")
+        return "❌ 반복 일정 등록에 실패했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -677,7 +679,8 @@ def get_calendar_list() -> str:
             )
         return output.strip()
     except Exception as e:
-        return f"❌ 캘린더 목록 조회 실패: {e}"
+        print(f"[캘린더] 목록 조회 오류: {e}")
+        return "❌ 캘린더 목록을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -733,7 +736,8 @@ def get_schedule_summary(days: int = 30, calendar_id: str = "primary") -> str:
             f"요일별: " + " / ".join(f"{d}({c})" for d, c in zip(weekday_names, weekday_count))
         )
     except Exception as e:
-        return f"❌ 통계 분석 실패: {e}"
+        print(f"[캘린더] 통계 분석 오류: {e}")
+        return "❌ 일정 통계를 분석하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -773,7 +777,8 @@ def open_calendar_website() -> str:
             return f"[🌐 브라우저 열기]\n구글 캘린더 웹사이트를 기본 브라우저에서 열었습니다.\n{url}"
         return f"❌ 브라우저를 열 수 없습니다. 직접 접속해주세요: {url}"
     except Exception as e:
-        return f"❌ 브라우저 열기 실패: {e}\n직접 접속해주세요: {url}"
+        print(f"[캘린더] 브라우저 열기 오류: {e}")
+        return f"❌ 브라우저를 열지 못했습니다. 직접 접속해주세요: {url}"
 
 
 # ─────────────────────────────────────────────
