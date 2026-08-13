@@ -1,8 +1,31 @@
 from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QGraphicsOpacityEffect, QLayout, QWidget,
-                             QDialog, QScrollArea)
+                             QDialog, QScrollArea, QStackedWidget)
 from PyQt6.QtCore import pyqtSignal, Qt, QPropertyAnimation, QTimer, QRect, QPoint, QSize
 from PyQt6.QtGui import QFontMetrics, QFont
+
+
+# ==========================================
+# 📚 현재 페이지 크기만 반영하는 스택 위젯
+# ==========================================
+class AutoSizeStackedWidget(QStackedWidget):
+    """기본 QStackedWidget은 안 보이는 페이지까지 포함해서 가장 큰
+    minimumSizeHint를 기준으로 삼는다. 그래서 로그인 화면처럼 세로로 긴
+    페이지가 하나만 섞여 있어도, 지금 보고 있는 페이지(예: 대화창)는 작은데
+    창을 그 이상 줄일 수 없게 되는 문제가 생긴다. 이 클래스는 '현재 보이는
+    페이지'의 크기만 반영해서 그 문제를 없앤다."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.currentChanged.connect(lambda _: self.updateGeometry())
+
+    def sizeHint(self):
+        w = self.currentWidget()
+        return w.sizeHint() if w else super().sizeHint()
+
+    def minimumSizeHint(self):
+        w = self.currentWidget()
+        return w.minimumSizeHint() if w else super().minimumSizeHint()
 
 
 # ==========================================

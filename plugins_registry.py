@@ -135,4 +135,16 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/calendar_tool.py",
         "dependencies": ["google-api-python-client", "google-auth-httplib2", "google-auth-oauthlib", "tzdata"]
     },
+    {
+        "name": "내부 캘린더 비서",
+        "desc": "구글 계정 연동 없이 이 컴퓨터 안에만 일정을 저장 — 로그인 없이 즉시 사용 가능",
+        "func_names": [
+            "local_create_event", "local_get_upcoming_events", "local_get_events_by_date",
+            "local_search_events", "local_update_event", "local_delete_event",
+            "local_create_recurring_event", "local_get_schedule_summary", "local_get_daily_briefing",
+        ],
+        "module_name": "local_calendar",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/local_calendar.py",
+        "dependencies": []
+    },
 ]

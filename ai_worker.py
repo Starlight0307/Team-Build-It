@@ -4,6 +4,26 @@ import ollama
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from config import TOOL_SCHEMAS
+import calendar_preference
+
+# 캘린더 CRUD 함수 이름 집합 — 사용자가 설정에서 고른 백엔드가 아닌 쪽은
+# AI에게 아예 안 보여준다(도구 목록에서 제외). "AI가 둘 중 알아서 고르게"
+# 하면 이름이 비슷한 도구 사이에서 llama3.1이 실측으로 계속 헷갈렸기 때문에,
+# 판단을 프롬프트가 아니라 설정값으로 구조적으로 고정한다.
+# 계정 연결/상태 확인 함수(setup_calendar_auth, get_login_status,
+# get_calendar_list, open_calendar_website)는 "어느 캘린더로 일정을 관리할지"와는
+# 별개 개념이라 필터링 대상에서 제외 — 내부 캘린더가 활성이어도 구글 계정
+# 연결 상태 확인/재연결은 항상 가능해야 함.
+_GOOGLE_CALENDAR_CRUD_FUNCS = (
+    "create_event", "get_upcoming_events", "get_events_by_date", "search_events",
+    "update_event", "delete_event", "create_recurring_event",
+    "get_schedule_summary", "get_daily_briefing",
+)
+_LOCAL_CALENDAR_CRUD_FUNCS = (
+    "local_create_event", "local_get_upcoming_events", "local_get_events_by_date",
+    "local_search_events", "local_update_event", "local_delete_event",
+    "local_create_recurring_event", "local_get_schedule_summary", "local_get_daily_briefing",
+)
 
 # Windows 환경에서 IANA 시간대 미지원 문제 방지
 os.environ.setdefault("TZ", "Asia/Seoul")
@@ -49,6 +69,15 @@ TOOL_STATUS_NAMES = {
     "get_schedule_summary":      "📊  일정 통계 분석 중",
     "get_daily_briefing":        "🔔  일정 브리핑 준비 중",
     "open_calendar_website":     "🌐  브라우저 여는 중",
+    "local_create_event":              "📅  일정 등록 중",
+    "local_get_upcoming_events":       "📋  일정 조회 중",
+    "local_get_events_by_date":        "📋  날짜별 일정 조회 중",
+    "local_search_events":             "🔍  일정 검색 중",
+    "local_update_event":              "✏️  일정 수정 중",
+    "local_delete_event":              "🗑️  일정 삭제 중",
+    "local_create_recurring_event":    "🔁  반복 일정 등록 중",
+    "local_get_schedule_summary":      "📊  일정 통계 분석 중",
+    "local_get_daily_briefing":        "🔔  일정 브리핑 준비 중",
 }
 
 
@@ -70,20 +99,39 @@ class AIWorker(QThread):
         # 시스템
         "상태", "cpu", "메모리", "ram", "디스크", "프로세스", "느려", "무거", "종료",
         "컴퓨터", "pc", "사양", "온도", "코어", "속도",
+        "버벅", "렉", "끊겨", "끊김", "꺼줘", "용량", "저장공간",
         # 가격 검색
-        "검색", "최저가", "가격", "다나와", "얼마",
+        "검색", "최저가", "가격", "다나와", "얼마", "싸게", "저렴",
         # 캘린더 / 구글 계정
-        "일정", "캘린더", "schedule", "calendar", "회의", "약속",
-        "오늘", "내일", "이번주", "다음주", "언제", "추가", "등록", "삭제", "수정",
+        "일정", "캘린더", "schedule", "calendar", "회의", "약속", "예약", "미팅",
+        "오늘", "내일", "모레", "글피", "어제", "이번주", "다음주", "이번달", "다음달",
+        "언제", "추가", "등록", "삭제", "수정", "취소", "미뤄", "연기", "잡아",
         "브리핑", "알려줘", "있어",
         "로그인", "로그아웃", "구글", "google", "계정", "인증", "연동", "동기화",
         "웹사이트", "웹페이지", "브라우저", "사이트",
         # 보안
         "포트", "방화벽", "보안", "네트워크", "스캔", "의심", "악성", "업데이트", "패치",
         "dns", "시작프로그램", "자동실행", "자동 실행", "서비스", "공유폴더", "공유 폴더",
-        "로그인실패", "로그인 실패", "리포트", "종합", "점수",
+        "로그인실패", "로그인 실패", "리포트", "종합", "점수", "해킹", "취약점",
         "실시간", "감시", "모니터링",
     )
+
+    # 실행/상태확인이 아니라 '방법 설명'을 원하는 요청 — 프롬프트로 아무리 지시해도
+    # llama3.1이 의미가 비슷한 함수(예: get_login_status)를 계속 잘못 호출하는 걸
+    # 실측으로 확인함(설명해달라는데 상태 확인 함수를 부름). 그래서 이런 요청은
+    # 아예 tools=None으로 보내서 함수 호출 자체가 물리적으로 불가능하게 만든다.
+    _EXPLANATION_KEYWORDS = ("방법", "사용법", "설명해")
+    # "어떻게"는 "지금 어떻게 돼?/되어있어?"처럼 상태를 묻는 관용구에도 쓰이므로
+    # 그 패턴만 제외하고 나머지("어떻게 해", "어떻게 하는지" 등)는 설명 요청으로 인정
+    _HOW_STATUS_IDIOM = ("어떻게돼", "어떻게되", "어떻게됐")
+
+    def _is_explanation_request(self) -> bool:
+        text = self.user_text.replace(" ", "")
+        if any(kw in text for kw in self._HOW_STATUS_IDIOM):
+            return False
+        if any(kw in text for kw in self._EXPLANATION_KEYWORDS):
+            return True
+        return "어떻게" in text
 
     def _extract_event_title(self, text: str) -> str:
         """사용자 입력에서 일정 제목만 추출 — 날짜/시간/주어/동사/조사 제거 후 남은 명사구.
@@ -133,6 +181,7 @@ class AIWorker(QThread):
     _COMPOUND_REQUEST_KEYWORDS = (
         "일정", "약속", "등록", "추가", "잡아", "캘린더", "삭제", "지워", "없애", "수정",
         "검색", "포트", "방화벽", "보안", "cpu", "메모리", "최적화", "종료",
+        "방법", "어떻게", "사용법", "설명해",
     )
 
     def _is_account_status_request(self) -> bool:
@@ -345,30 +394,67 @@ class AIWorker(QThread):
                 self.response_ready.emit(f"🤖 로컬 비서: {result}")
                 return
 
+            # 설정에서 고른 캘린더 백엔드가 아닌 쪽의 CRUD 함수는 애초에
+            # 노출하지 않는다 (구조적 필터 — 위 상수 설명 참고)
+            active_calendar = calendar_preference.get_active_calendar()
+            hidden_calendar_funcs = (
+                _LOCAL_CALENDAR_CRUD_FUNCS if active_calendar == "google" else _GOOGLE_CALENDAR_CRUD_FUNCS
+            )
+
             ollama_tools = []
             for name, func in func_map.items():
+                if name in hidden_calendar_funcs:
+                    continue
                 if name in TOOL_SCHEMAS:
                     ollama_tools.append(TOOL_SCHEMAS[name])
 
+            # '방법/사용법을 설명해달라'는 요청은 tools=None으로 보내서 함수 호출
+            # 자체를 막는다 — 프롬프트로 "이럴 땐 호출하지 마"라고 아무리 지시해도
+            # 실제로 llama3.1이 계속 무시하고 상태확인/실행 함수를 부르는 걸 확인했음.
+            is_explanation = self._is_explanation_request()
+
             # ── 단순 대화는 tool 없이 전송 (속도 대폭 향상) ──
-            use_tools = bool(ollama_tools) and self._needs_tools()
+            use_tools = bool(ollama_tools) and self._needs_tools() and not is_explanation
 
             from datetime import datetime as _dt
             _today   = _dt.now().strftime("%Y-%m-%d")
             _tomorrow = (_dt.now() + __import__('datetime').timedelta(days=1)).strftime("%Y-%m-%d")
+            _day_after_tomorrow = (_dt.now() + __import__('datetime').timedelta(days=2)).strftime("%Y-%m-%d")
             _weekday = ["월","화","수","목","금","토","일"][_dt.now().weekday()]
 
             if not ollama_tools:
                 system_content = (
-                    f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}\n"
+                    f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}. 모레: {_day_after_tomorrow}\n"
                     "현재 도구가 없습니다. "
                     "'좌측 마켓플레이스 메뉴에서 플러그인을 먼저 설치해주세요.' 라고만 대답하세요."
+                )
+            elif is_explanation:
+                # 실행하지 말고, 설치된 기능 설명(TOOL_SCHEMAS의 description)에 근거해서만
+                # 자연어로 설명하게 한다 — 설명에 없는 내용을 지어내는 걸 막기 위함.
+                feature_docs = "\n".join(
+                    f"- {name}: {TOOL_SCHEMAS[name]['function']['description']}"
+                    for name in func_map
+                    if name in TOOL_SCHEMAS and name not in hidden_calendar_funcs
+                )
+                system_content = (
+                    "당신은 사용자의 PC를 돕는 유능한 AI 비서입니다.\n"
+                    f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}. 모레: {_day_after_tomorrow}\n"
+                    "사용자가 지금 어떤 기능의 '사용 방법'을 설명해달라고 했습니다. "
+                    "지금 그 기능을 실행하거나 상태를 확인하지 마세요 — 오직 설명만 하세요.\n"
+                    "아래는 이 앱에 설치된 기능들에 대한 정확한 설명입니다. 이 내용에 근거해서 "
+                    "사용자가 이해하기 쉬운 자연스러운 한국어로 어떻게 하면 되는지 설명하세요.\n"
+                    "아래 설명에 없는 내용은 절대 지어내지 마세요.\n\n"
+                    f"{feature_docs}\n\n"
+                    "*** 답변 규칙 ***\n"
+                    "- 항상 존댓말(~습니다, ~해요)을 사용하세요.\n"
+                    "- 내부 함수 이름이나 코드는 언급하지 말고, 사용자가 실제로 어떤 말을 하면 되는지로 설명하세요.\n"
+                    "- 답변 시작/끝에 따옴표(\") 절대 금지."
                 )
             else:
                 available_funcs = ", ".join(func_map.keys())
                 system_content = (
                     "당신은 사용자의 PC를 돕는 유능한 AI 비서입니다.\n"
-                    f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}\n"
+                    f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}. 모레: {_day_after_tomorrow}\n"
                     f"사용 가능한 함수 목록: [{available_funcs}]\n"
                     "위 목록에 있는 함수만 호출하세요. 목록에 없는 함수는 절대 만들거나 호출하지 마세요.\n"
                     "\n"
@@ -377,8 +463,15 @@ class AIWorker(QThread):
                     "2. 캘린더 일정(회의, 약속 등) 검색 → search_events 호출\n"
                     "3. search_events는 오직 캘린더에 등록된 일정을 찾을 때만 사용\n"
                     "4. 제품명이 들어간 질문은 절대 search_events를 사용하지 마세요\n"
+                    "5. 사용자가 '방법 알려줘', '어떻게 해', '어떻게 하는지' 등 절차/방법을 물어보면 "
+                    "이건 지금 실행하거나 상태를 확인해달라는 게 아니라 설명해달라는 것입니다. "
+                    "이럴 땐 관련 함수를 호출하지 말고 말로 자연스럽게 설명하세요. "
+                    "예: '계정 연동 방법 알려줘' → get_login_status를 호출하지 말고, "
+                    "어떻게 하면 되는지 설명하세요.\n"
                     "\n"
-                    f"날짜 계산 규칙: 오늘={_today}, 내일={_tomorrow}. 사용자가 '내일'이라고 하면 반드시 {_tomorrow}를 사용하세요.\n"
+                    f"날짜 계산 규칙: 오늘={_today}, 내일={_tomorrow}, 모레={_day_after_tomorrow}. "
+                    f"사용자가 '내일'이라고 하면 반드시 {_tomorrow}를, '모레'라고 하면 반드시 {_day_after_tomorrow}를 사용하세요. "
+                    "직접 날짜를 계산하지 말고 이 값을 그대로 쓰세요.\n"
                     "create_event의 title 파라미터는 일정의 핵심 이름만 넣으세요 (예: '식사 약속', '팀 회의', '운동'). 사용자의 전체 문장을 넣지 마세요.\n"
                     "\n"
                     "*** 답변 규칙 ***\n"
@@ -434,15 +527,16 @@ class AIWorker(QThread):
                     func_name = tool['function']['name']
                     args      = tool['function']['arguments']
 
-                    # ── create_event: title은 LLM 대신 정규식으로 결정론적 추출 ──
+                    # ── 일정 등록: title은 LLM 대신 정규식으로 결정론적 추출 ──
                     # (작은 로컬 모델이 title을 자유 생성하면 의미 없는 텍스트를 만드는 경우가 있음)
-                    if func_name == 'create_event':
+                    # 구글/내부 캘린더 둘 다 동일하게 적용 — 백엔드만 다를 뿐 같은 문제를 겪음.
+                    if func_name in ('create_event', 'local_create_event'):
                         extracted_title = self._extract_event_title(self.user_text)
                         if extracted_title:
                             args['title'] = extracted_title
 
-                    # ── create_event: 소요 시간 처리 ──
-                    if func_name == 'create_event' and 'end_datetime' not in args:
+                    # ── 일정 등록: 소요 시간 처리 ──
+                    if func_name in ('create_event', 'local_create_event') and 'end_datetime' not in args:
                         from event_duration_memory import get_duration, save_duration as _save_dur
                         title = args.get('title', '').strip()
                         known_minutes = get_duration(title)
@@ -459,7 +553,11 @@ class AIWorker(QThread):
                                 pass  # 파싱 실패 시 calendar_tool 기본값 사용
                         else:
                             # 소요 시간 불명 → 사용자에게 질문
-                            self.pending_event.emit(dict(args))
+                            # 나중에 다시 실행할 때 구글/내부 중 어느 함수를 불러야
+                            # 하는지 알 수 있도록 대상 함수명을 같이 넘긴다.
+                            pending_args = dict(args)
+                            pending_args['_target_func'] = func_name
+                            self.pending_event.emit(pending_args)
                             self.response_ready.emit(
                                 f"🤖 로컬 비서: **{title or '일정'}** 등록을 준비했습니다.\n\n"
                                 "이 일정은 얼마나 걸릴 예정인가요?\n"

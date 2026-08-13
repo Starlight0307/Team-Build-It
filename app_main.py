@@ -5,17 +5,19 @@ import uuid
 
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QLabel,
-                             QScrollArea, QFrame, QStackedWidget,
+                             QScrollArea, QFrame,
                              QSplitter, QSizePolicy)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 
 from config import MOCK_USER
 from theme import get_palette
+import calendar_preference
 from ai_worker import AIWorker
 from plugin_manager import load_existing_plugins, download_and_install_plugin
 from plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
 from widget.widgets import (CommandCard, MessageBubble, TypingIndicator, FlowLayout,
-                            ResponsiveCardRow, NotificationToast, RealtimeAlertsDialog)
+                            ResponsiveCardRow, NotificationToast, RealtimeAlertsDialog,
+                            AutoSizeStackedWidget)
 from widget.marketplace import PluginMarketplaceWidget
 
 from auth_ui import AuthWidget
@@ -31,6 +33,11 @@ def _sync_calendar_user(user_id: str):
     try:
         from plugins.calendar_tool import set_current_user
         set_current_user(user_id)
+    except ImportError:
+        pass
+    try:
+        from plugins.local_calendar import set_current_user as set_local_user
+        set_local_user(user_id)
     except ImportError:
         pass
 
@@ -251,6 +258,51 @@ class AssistantApp(QWidget):
         self._unread_alert_count = 0
         self.update_sidebar_ui()
         return True
+
+    # ─────────────────────────────────────────────
+    # 📅 "내부/구글 캘린더로 바꿔줘" — 어느 캘린더를 쓸지 대화로 전환
+    # ─────────────────────────────────────────────
+    _CALENDAR_SWITCH_VERBS = ("바꿔", "바꾸", "전환", "써줘", "쓸래", "쓸게", "사용할래", "사용해줘", "변경", "켜줘", "선택")
+
+    def _maybe_handle_calendar_backend_switch(self, txt: str) -> bool:
+        """'내부 캘린더로 바꿔줘' 같은 요청은 LLM에게 판단을 맡기지 않고
+        여기서 직접 처리한다. 이름이 비슷한 도구/선택지 사이에서 LLM이
+        헷갈리는 문제를 오늘 여러 번 확인했기 때문에, 설정을 바꾸는 이
+        요청도 같은 이유로 결정론적으로 처리 — 대화로 말하면 되지만
+        실제 판단은 코드가 확실하게 한다."""
+        t = txt.replace(" ", "")
+        has_local  = ("내부캘린더" in t) or ("로컬캘린더" in t)
+        has_google = "구글캘린더" in t
+        has_verb   = any(v in t for v in self._CALENDAR_SWITCH_VERBS)
+        is_status_query = (("무슨캘린더" in t) or ("어떤캘린더" in t)) and \
+                           any(w in t for w in ("써", "쓰고", "사용", "쓰는", "쓰니", "뭐야", "뭐니"))
+
+        if is_status_query:
+            active = calendar_preference.get_active_calendar()
+            label  = "내부 캘린더" if active == "local" else "구글 캘린더"
+            self.display_ai_response(f"🤖 로컬 비서: 지금은 **{label}**를 사용 중입니다.")
+            return True
+
+        if has_local and has_verb and not has_google:
+            if not MOCK_USER["logged_in"]:
+                self.display_ai_response(
+                    "🤖 로컬 비서: 내부 캘린더는 로그인한 사용자만 사용할 수 있어요. "
+                    "먼저 로그인해주세요."
+                )
+                return True
+            calendar_preference.set_active_calendar("local")
+            self.display_ai_response(
+                "🤖 로컬 비서: 이제부터 **내부 캘린더**를 사용합니다. "
+                "구글 계정 없이 이 컴퓨터에만 일정이 저장돼요."
+            )
+            return True
+
+        if has_google and has_verb and not has_local:
+            calendar_preference.set_active_calendar("google")
+            self.display_ai_response("🤖 로컬 비서: 이제부터 **구글 캘린더**를 사용합니다.")
+            return True
+
+        return False
 
     # ─────────────────────────────────────────────
     # 🛰️ "실시간 감시 시작해줘" — 주기를 직접 입력받지 않고 프리셋 중 선택
@@ -478,7 +530,7 @@ class AssistantApp(QWidget):
         mal.setContentsMargins(0, 0, 0, 0)
         mal.setSpacing(0)
 
-        self.stacked_widget = QStackedWidget()
+        self.stacked_widget = AutoSizeStackedWidget()
         self.stacked_widget.setStyleSheet("background: transparent;")
         mal.addWidget(self.stacked_widget)
 
@@ -860,6 +912,11 @@ class AssistantApp(QWidget):
             QTimer.singleShot(50, self.auto_scroll_to_bottom)
             return
 
+        # ── "내부/구글 캘린더로 바꿔줘" → 어느 캘린더를 쓸지 대화로 전환 ──
+        if self._maybe_handle_calendar_backend_switch(txt):
+            QTimer.singleShot(50, self.auto_scroll_to_bottom)
+            return
+
         # ── "그거/이거 삭제해줘" → 직전에 언급된 일정을 직접 삭제 ──
         if self._maybe_handle_event_reference(txt):
             QTimer.singleShot(50, self.auto_scroll_to_bottom)
@@ -1074,13 +1131,16 @@ class AssistantApp(QWidget):
         return True
 
     def _execute_pending_event(self, minutes: int):
-        """사용자가 알려준 소요 시간으로 create_event 직접 실행."""
+        """사용자가 알려준 소요 시간으로 일정 등록 함수를 직접 실행
+        (구글 캘린더 create_event / 내부 캘린더 local_create_event 중
+        AIWorker가 원래 부르려던 쪽을 그대로 이어서 실행)."""
         import inspect
         from datetime import datetime, timedelta
         from event_duration_memory import save_duration
 
         args = dict(self.pending_event_args)
         self.pending_event_args = None
+        target_func_name = args.pop('_target_func', 'create_event')
 
         # end_datetime 계산
         start_raw = args.get('start_datetime', '')
@@ -1097,9 +1157,9 @@ class AssistantApp(QWidget):
         if title:
             save_duration(title, minutes)
 
-        # create_event 실행
+        # 원래 AIWorker가 부르려던 함수(구글/내부) 그대로 실행
         for func in self.installed_tools:
-            if func.__name__ == 'create_event':
+            if func.__name__ == target_func_name:
                 valid  = inspect.signature(func).parameters
                 filtered = {k: v for k, v in args.items() if k in valid}
                 try:
