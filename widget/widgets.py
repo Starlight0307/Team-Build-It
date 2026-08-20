@@ -134,12 +134,27 @@ class ResponsiveCardRow(QWidget):
     def __init__(self, min_card_w=160, max_card_w=220, card_h=190,
                  h_spacing=15, v_spacing=15, parent=None):
         super().__init__(parent)
+        # 100% 기준 원본값 — 대화창 확대/축소 배율은 이 값에 곱해서 계산한다
+        self._base_min_w = min_card_w
+        self._base_max_w = max_card_w
+        self._base_card_h = card_h
+        self._base_h_spacing = h_spacing
+        self._base_v_spacing = v_spacing
         self._min_w = min_card_w
         self._max_w = max_card_w
         self._card_h = card_h
         self._h_spacing = h_spacing
         self._v_spacing = v_spacing
         self._cards = []
+
+    def rescale(self, scale: float):
+        """대화창 확대/축소 배율에 맞춰 카드 크기/간격을 다시 계산하고 재배치."""
+        self._min_w = round(self._base_min_w * scale)
+        self._max_w = round(self._base_max_w * scale)
+        self._card_h = round(self._base_card_h * scale)
+        self._h_spacing = round(self._base_h_spacing * scale)
+        self._v_spacing = round(self._base_v_spacing * scale)
+        self._relayout()
 
     def set_cards(self, cards):
         for c in self._cards:
@@ -193,8 +208,11 @@ class ResponsiveCardRow(QWidget):
 
 def bubble_max_width(container_width: int) -> int:
     """긴 메시지가 줄바꿈될 때 쓸 최대 너비 = 컨테이너의 85%, 단 260~900px 범위.
-    화면 크기에 비례해서 커지고 작아짐."""
-    return max(260, min(900, int(container_width * 0.85)))
+    화면 크기에 비례해서 커지고 작아짐. 상/하한선도 대화창 확대/축소 배율에 맞춰
+    같이 늘고 줄어야 글자만 커지고 버블 박스는 그대로인 이상한 느낌이 안 생김."""
+    import ui_scale
+    s = ui_scale.get_scale()
+    return max(round(260*s), min(round(900*s), int(container_width * 0.85)))
 
 
 def ideal_bubble_width(text: str, cap: int, h_padding: int = 40) -> int:
@@ -202,12 +220,16 @@ def ideal_bubble_width(text: str, cap: int, h_padding: int = 40) -> int:
     QLabel(wordWrap=True)의 기본 sizeHint는 실제보다 훨씬 좁게 잡히는 경우가 많아
     (Qt 고질적 동작) maximumWidth만 걸어두면 버블이 상한선까지 안 늘어남 — 그래서
     폰트 메트릭으로 직접 측정해 setFixedWidth로 정확히 지정한다.
-    짧은 텍스트는 좁게, 긴 텍스트는 cap까지 채워서 줄바꿈된다."""
+    짧은 텍스트는 좁게, 긴 텍스트는 cap까지 채워서 줄바꿈된다.
+    실제로 화면에 그려지는 폰트 크기(확대/축소 배율 반영)로 측정해야 버블 너비가
+    글자 크기와 어긋나지 않는다."""
+    import ui_scale
+    s = ui_scale.get_scale()
     font = QFont()
-    font.setPixelSize(15)
+    font.setPixelSize(round(15*s))
     fm = QFontMetrics(font)
     longest_line = max((fm.horizontalAdvance(line) for line in text.split('\n')), default=0)
-    return max(40, min(cap, longest_line + h_padding))
+    return max(round(40*s), min(cap, longest_line + round(h_padding*s)))
 
 # ==========================================
 # 🃏 커맨드 카드
@@ -222,8 +244,7 @@ class CommandCard(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(10)
+        self._layout = layout
 
         self.icon_lbl  = QLabel(icon_str)
         self.title_lbl = QLabel(title)
@@ -238,6 +259,10 @@ class CommandCard(QFrame):
         layout.addStretch()
 
     def update_theme(self, d):
+        import ui_scale
+        s = ui_scale.get_scale()
+        self._layout.setContentsMargins(round(20*s), round(20*s), round(20*s), round(20*s))
+        self._layout.setSpacing(round(10*s))
         bg  = "#2D2D2D" if d else "#FFFFFF"
         brd = "#444444" if d else "#E1E5EA"
         hv  = "#3D3D3D" if d else "#F0F2F5"
@@ -248,13 +273,13 @@ class CommandCard(QFrame):
             f"QFrame:hover {{ border: 1px solid #2EA043; background-color: {hv}; }}"
         )
         self.icon_lbl.setStyleSheet(
-            "font-size: 26px; padding-bottom: 5px; border: none; background: transparent;"
+            f"font-size: {round(26*s)}px; padding-bottom: 5px; border: none; background: transparent;"
         )
         self.title_lbl.setStyleSheet(
-            f"font-weight: bold; font-size: 16px; color: {tc}; background: transparent; border: none;"
+            f"font-weight: bold; font-size: {round(16*s)}px; color: {tc}; background: transparent; border: none;"
         )
         self.desc_lbl.setStyleSheet(
-            f"font-size: 13px; color: {dc}; background: transparent; border: none;"
+            f"font-size: {round(13*s)}px; color: {dc}; background: transparent; border: none;"
         )
 
     def mousePressEvent(self, event):
@@ -338,12 +363,13 @@ class MessageBubble(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
+        self._outer_layout = layout
 
         self.bubble = QFrame()
         self.bubble.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         bl = QVBoxLayout(self.bubble)
-        bl.setContentsMargins(14, 14, 14, 14)
+        self._bubble_layout = bl
+        self._apply_margins()
 
         self.message_label = QLabel(text)
         self.message_label.setWordWrap(True)
@@ -380,6 +406,12 @@ class MessageBubble(QFrame):
         cap = bubble_max_width(container_width)
         self.bubble.setFixedWidth(ideal_bubble_width(self._raw_text, cap))
 
+    def _apply_margins(self):
+        import ui_scale
+        s = ui_scale.get_scale()
+        self._outer_layout.setContentsMargins(round(10*s), round(8*s), round(10*s), round(8*s))
+        self._bubble_layout.setContentsMargins(round(14*s), round(14*s), round(14*s), round(14*s))
+
     def resizeEvent(self, event):
         """창 크기 변경 시 버블 너비를 다시 계산 — 화면 비율에 맞춰 반응형으로 동작."""
         super().resizeEvent(event)
@@ -388,6 +420,11 @@ class MessageBubble(QFrame):
             self._apply_bubble_width(w)
 
     def update_theme(self, d):
+        import ui_scale
+        s = ui_scale.get_scale()
+        self._apply_margins()
+        if self.width() > 100:
+            self._apply_bubble_width(self.width())
         if d:
             bg, brd, color = ("#FFFFFF", "#FFFFFF", "#000000") if self.is_user else ("#3D3D3D", "#444444", "#FFFFFF")
         else:
@@ -396,7 +433,7 @@ class MessageBubble(QFrame):
             f"background-color: {bg}; border-radius: 12px; border: 1px solid {brd};"
         )
         self.message_label.setStyleSheet(
-            f"color: {color}; background: transparent; border: none; font-size: 15px;"
+            f"color: {color}; background: transparent; border: none; font-size: {round(15*s)}px;"
         )
 
 

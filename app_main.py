@@ -8,10 +8,12 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QScrollArea, QFrame,
                              QSplitter, QSizePolicy)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtGui import QShortcut, QKeySequence
 
 from config import MOCK_USER
 from theme import get_palette
 import calendar_preference
+import ui_scale
 from ai_worker import AIWorker
 from plugin_manager import load_existing_plugins, download_and_install_plugin
 from plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
@@ -114,6 +116,7 @@ class AssistantApp(QWidget):
         self.chat_history           = []
         self.chat_bubbles           = []
         self.command_cards          = []
+        self.result_cards           = []    # 프로세스/상품 결과 카드 — 확대/축소 시 다시 그리기 위해 추적
         self.pills                  = []
         self.installed_tools        = []
         self.installed_module_names = []
@@ -425,6 +428,7 @@ class AssistantApp(QWidget):
     def apply_theme(self):
         d = self.is_dark_mode
         p = get_palette(d)
+        s = ui_scale.get_scale()   # 대화창(말풍선/카드/입력창/사이드바)에만 적용되는 배율
 
         self.setStyleSheet(f"""
             QLabel {{ color: {p['tc']}; background: transparent; border: none; }}
@@ -436,9 +440,31 @@ class AssistantApp(QWidget):
         """)
         self.main_frame.setStyleSheet(f"QFrame {{ background-color: {p['main_bg']}; border: none; }}")
         self.sidebar_frame.setStyleSheet(f"QFrame {{ background-color: {p['sb']}; border-right: 1px solid {p['sbrd']}; }}")
-        self.welcome_title.setStyleSheet(f"font-size: 32px; font-weight: bold; color: {p['tc']}; background: transparent;")
+        self.welcome_title.setStyleSheet(f"font-size: {round(32*s)}px; font-weight: bold; color: {p['tc']}; background: transparent;")
         self.input_container.setStyleSheet(f"QFrame {{ background-color: {p['ib']}; border: 1px solid {p['ibrd']}; border-radius: 24px; }}")
-        self.input_field.setStyleSheet(f"color: {p['tc']}; background: transparent; border: none; font-size: 15px; padding: 5px;")
+        self.input_field.setStyleSheet(f"color: {p['tc']}; background: transparent; border: none; font-size: {round(15*s)}px; padding: {round(5*s)}px;")
+        self.input_container.layout().setContentsMargins(round(15*s), round(15*s), round(15*s), round(15*s))
+        self.input_container.layout().setSpacing(round(15*s))
+        self.bottom_input_wrapper.layout().setContentsMargins(round(40*s), round(10*s), round(40*s), round(30*s))
+        self.send_button.setFixedSize(round(36*s), round(36*s))
+        self.send_button.setStyleSheet(
+            f"background-color: #2EA043; color: #FFFFFF; border-radius: {round(18*s)}px; border: none; font-size: {round(18*s)}px;"
+        )
+        self.btn_profile.setFixedHeight(round(46*s))
+        if hasattr(self, 'card_row'):
+            self.card_row.rescale(s)
+        if hasattr(self, 'zoom_label'):
+            self.zoom_label.setText(ui_scale.percent_label())
+            self.zoom_label.setStyleSheet(
+                f"color: {p['tc']}; font-size: 15px; font-weight: bold; background: transparent; border: none;"
+            )
+            zoom_btn_style = (
+                f"QPushButton {{ background-color: {p['pb']}; border: 1px solid {p['pbrd']}; "
+                f"color: {p['tc']}; border-radius: 10px; font-size: 18px; font-weight: bold; }} "
+                f"QPushButton:hover {{ background-color: {'#444444' if d else '#E1E5EA'}; }}"
+            )
+            self.zoom_out_btn.setStyleSheet(zoom_btn_style)
+            self.zoom_in_btn.setStyleSheet(zoom_btn_style)
         # pill 스타일은 update_pills()에서 일괄 적용
         if hasattr(self, 'pill_row'):
             self.update_pills()
@@ -446,8 +472,8 @@ class AssistantApp(QWidget):
         self.splitter_grip.setStyleSheet(f"background-color: {p['gc']}; border-radius: 2px; border: none;")
 
         self.sidebar_btn_style = f"""
-            QPushButton {{ background-color: transparent; border: none; color: {p['sbt']}; font-size: 15px;
-                font-weight: bold; padding: 12px 10px; border-radius: 6px; text-align: left; }}
+            QPushButton {{ background-color: transparent; border: none; color: {p['sbt']}; font-size: {round(15*s)}px;
+                font-weight: bold; padding: {round(12*s)}px {round(10*s)}px; border-radius: 6px; text-align: left; }}
             QPushButton:hover {{ background-color: {p['sbhb']}; color: {p['sbht']}; }}
             QPushButton:checked {{ background-color: #2EA043; color: #FFFFFF; }}
         """
@@ -459,11 +485,31 @@ class AssistantApp(QWidget):
         if hasattr(self, 'mypage'):       self.mypage.update_theme(d)
         for card in self.command_cards:   card.update_theme(d)
         for bubble in self.chat_bubbles:  bubble.update_theme(d)
+        self._refresh_result_cards()
         self.plugin_page.update_theme(d)
         self.settings_title.setStyleSheet(
             f"font-size: 24px; font-weight: bold; color: {p['tc']}; background: transparent; border: none;"
         )
         self.update_sidebar_ui()
+
+    def _refresh_result_cards(self):
+        """프로세스/상품 결과 카드는 chat_bubbles/command_cards처럼 update_theme()로
+        다시 그리는 게 아니라 통째로 새로 만드는 방식이라(폰트 측정으로 폭을 미리
+        계산해두는 카드가 아니라 매번 새로 배치), 확대/축소 시 기존 카드를 지우고
+        저장해둔 원본 데이터로 같은 자리에 다시 만들어 끼워 넣는다."""
+        for entry in self.result_cards:
+            old_widget = entry['widget']
+            idx = self.chat_main_layout.indexOf(old_widget)
+            if idx == -1:
+                continue
+            if entry['kind'] == 'process':
+                new_widget = self._create_process_list_card(entry['data'])
+            else:
+                new_widget = self._create_product_card(*entry['data'])
+            self.chat_main_layout.removeWidget(old_widget)
+            old_widget.deleteLater()
+            self.chat_main_layout.insertWidget(idx, new_widget)
+            entry['widget'] = new_widget
 
     def toggle_theme(self):
         self.is_dark_mode = not self.is_dark_mode
@@ -471,10 +517,32 @@ class AssistantApp(QWidget):
         self.apply_theme()
 
     # ─────────────────────────────────────────────
+    # 🔍 대화창 확대/축소 (브라우저 Ctrl+/Ctrl- 방식)
+    # ─────────────────────────────────────────────
+    def zoom_in(self):
+        ui_scale.zoom_in()
+        self.apply_theme()
+
+    def zoom_out(self):
+        ui_scale.zoom_out()
+        self.apply_theme()
+
+    def zoom_reset(self):
+        ui_scale.reset()
+        self.apply_theme()
+
+    # ─────────────────────────────────────────────
     # 🖥️ UI 초기화
     # ─────────────────────────────────────────────
     def initUI(self):
         self.resize(1100, 750)
+
+        # 🔍 브라우저와 동일한 화면 확대/축소 단축키
+        QShortcut(QKeySequence("Ctrl+="), self).activated.connect(self.zoom_in)
+        QShortcut(QKeySequence("Ctrl++"), self).activated.connect(self.zoom_in)
+        QShortcut(QKeySequence("Ctrl+-"), self).activated.connect(self.zoom_out)
+        QShortcut(QKeySequence("Ctrl+0"), self).activated.connect(self.zoom_reset)
+
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -602,6 +670,35 @@ class AssistantApp(QWidget):
         page = QFrame()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
+
+        # 🔍 대화창 확대/축소 — 오른쪽 상단에 항상 노출 (스크롤해도 안 사라짐)
+        chat_header = QHBoxLayout()
+        chat_header.setContentsMargins(0, 10, 16, 0)
+        chat_header.addStretch()
+
+        self.zoom_out_btn = QPushButton("－")
+        self.zoom_out_btn.setFixedSize(30, 30)
+        self.zoom_out_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.zoom_out_btn.setToolTip("화면 축소 (Ctrl+-)")
+        self.zoom_out_btn.clicked.connect(self.zoom_out)
+        chat_header.addWidget(self.zoom_out_btn)
+
+        self.zoom_label = QLabel(ui_scale.percent_label())
+        self.zoom_label.setFixedWidth(44)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.zoom_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.zoom_label.setToolTip("100%로 초기화 (Ctrl+0)")
+        self.zoom_label.mousePressEvent = lambda event: self.zoom_reset()
+        chat_header.addWidget(self.zoom_label)
+
+        self.zoom_in_btn = QPushButton("＋")
+        self.zoom_in_btn.setFixedSize(30, 30)
+        self.zoom_in_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.zoom_in_btn.setToolTip("화면 확대 (Ctrl++)")
+        self.zoom_in_btn.clicked.connect(self.zoom_in)
+        chat_header.addWidget(self.zoom_in_btn)
+
+        layout.addLayout(chat_header)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -737,12 +834,16 @@ class AssistantApp(QWidget):
                 item.widget().deleteLater()
 
         p = get_palette(self.is_dark_mode)
+        s = ui_scale.get_scale()
+        self.pill_row._h_spacing = round(10*s)
+        self.pill_row._v_spacing = round(10*s)
         for (label, cmd) in self._selected_pill_specs:
             btn = QPushButton(label)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(
                 f"QPushButton {{ background-color: {p['pb']}; border: 1px solid {p['pbrd']}; "
-                f"color: {p['tc']}; border-radius: 15px; padding: 6px 14px; font-size: 13px; }} "
+                f"color: {p['tc']}; border-radius: {round(15*s)}px; padding: {round(6*s)}px {round(14*s)}px; "
+                f"font-size: {round(13*s)}px; }} "
                 f"QPushButton:hover {{ background-color: {'#444444' if self.is_dark_mode else '#E1E5EA'}; }}"
             )
             btn.clicked.connect(lambda checked, c=cmd: self.on_card_clicked(c))
@@ -845,9 +946,10 @@ class AssistantApp(QWidget):
             bg    = "#E1E5EA" if self.btn_profile.isChecked() else "transparent"
             hv    = "#E1E5EA"
 
+        s = ui_scale.get_scale()
         self.btn_profile.setStyleSheet(f"""
-            QPushButton {{ background-color: {bg}; border: 2px solid {color}; border-radius: 23px;
-                color: {tc}; font-size: 14px; font-weight: bold; text-align: left; padding-left: 14px; }}
+            QPushButton {{ background-color: {bg}; border: 2px solid {color}; border-radius: {round(23*s)}px;
+                color: {tc}; font-size: {round(14*s)}px; font-weight: bold; text-align: left; padding-left: {round(14*s)}px; }}
             QPushButton:hover {{ background-color: {hv}; }}
         """)
         if is_collapsed:
@@ -1181,9 +1283,10 @@ class AssistantApp(QWidget):
         self.input_field.setEnabled(enabled)
         self.send_button.setEnabled(enabled)
         opacity = 1.0 if enabled else 0.4
+        s = ui_scale.get_scale()
         self.send_button.setStyleSheet(
-            f"background-color: #2EA043; color: #FFFFFF; border-radius: 18px; "
-            f"border: none; font-size: 18px; opacity: {opacity};"
+            f"background-color: #2EA043; color: #FFFFFF; border-radius: {round(18*s)}px; "
+            f"border: none; font-size: {round(18*s)}px; opacity: {opacity};"
         )
 
     def _show_typing_indicator(self):
@@ -1242,86 +1345,95 @@ class AssistantApp(QWidget):
         sys.stderr.write(f"\n🔍 CPU 프로세스 파싱 시작...\n")
         sys.stderr.flush()
 
-        # 헤더 메시지
-        header = "🤖 로컬 비서: CPU 사용량이 높은 프로세스 목록입니다."
-        header_bubble = MessageBubble(header, False, max_width=self.scroll_area.viewport().width())
-        self.chat_bubbles.append(header_bubble)
-        self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, header_bubble)
-        header_bubble.update_theme(self.is_dark_mode)
-
         # 프로세스 파싱: "1. 프로세스명 (점유율: X.X%)"
         process_pattern = r'\d+\.\s+(.+?)\s+\(점유율:\s+([\d.]+)%\)'
         processes = re.findall(process_pattern, text)
 
-        for idx, (process_name, cpu_percent) in enumerate(processes, 1):
-            sys.stderr.write(f"✅ 프로세스 {idx}: {process_name} - {cpu_percent}%\n")
-            sys.stderr.flush()
-
-            # 프로세스 카드 위젯 생성
-            card_widget = self._create_process_card(process_name, cpu_percent)
+        if processes:
+            # 프로세스마다 따로 카드를 만들면 사이 간격 때문에 화면이 뜨문뜨문
+            # 떨어져 보였음 — 하나의 카드 안에 목록 전체를 묶어서 보여준다.
+            card_widget = self._create_process_list_card(processes)
             self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, card_widget)
+            self.result_cards.append({'widget': card_widget, 'kind': 'process', 'data': processes})
 
         sys.stderr.write(f"✅ CPU 프로세스 카드 UI 생성 완료\n")
         sys.stderr.flush()
 
-    def _create_process_card(self, process_name, cpu_percent):
-        """개별 프로세스 카드 위젯 생성"""
+    def _card_max_width(self) -> int:
+        """결과 카드(프로세스/상품 목록)가 채팅창 폭에 그대로 붙지 않도록 상한선 계산
+        (말풍선처럼 화면을 꽉 채우지 않고 대화창 폭의 약 70%까지만 차지)."""
+        vw = self.scroll_area.viewport().width()
+        return max(320, round(vw * 0.7))
+
+    def _create_process_list_card(self, processes):
+        """CPU 사용량 상위 프로세스 목록을 카드 하나에 묶어서 표시 (종료 버튼 포함)."""
         from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
         from PyQt6.QtCore import Qt
-        from PyQt6.QtGui import QFont, QCursor
+        from PyQt6.QtGui import QCursor
+
+        p = get_palette(self.is_dark_mode)
+        s = ui_scale.get_scale()
 
         card = QFrame()
-        card.setFrameStyle(QFrame.Shape.StyledPanel)
-        card.setStyleSheet("""
-            QFrame {
-                background-color: #fff3cd;
-                border: 1px solid #ffc107;
-                border-radius: 12px;
-                padding: 16px;
-                margin: 8px 0;
-            }
-        """ if not self.is_dark_mode else """
-            QFrame {
-                background-color: #3d3520;
-                border: 1px solid #ffc107;
-                border-radius: 12px;
-                padding: 16px;
-                margin: 8px 0;
-            }
-        """)
+        card.setMaximumWidth(self._card_max_width())
+        card.setStyleSheet(
+            f"QFrame {{ background-color: {p['pb']}; border: 1px solid {p['pbrd']}; "
+            f"border-radius: 12px; }}"
+        )
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(round(16*s), round(12*s), round(16*s), round(12*s))
+        outer.setSpacing(round(2*s))
 
-        layout = QVBoxLayout(card)
+        title = QLabel("💻 CPU 사용량이 높은 프로그램")
+        title.setStyleSheet(
+            f"color: {p['tc']}; font-size: {round(14*s)}px; font-weight: bold; background: transparent; border: none;"
+        )
+        outer.addWidget(title)
+        outer.addSpacing(round(6*s))
 
-        # 프로세스명
-        name_label = QLabel(process_name)
-        name_label.setWordWrap(True)
-        name_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        layout.addWidget(name_label)
+        for idx, (process_name, cpu_percent) in enumerate(processes):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, round(6*s), 0, round(6*s))
+            row.setSpacing(round(10*s))
 
-        # CPU 점유율
-        cpu_label = QLabel(f"💻 CPU 사용량: {cpu_percent}%")
-        cpu_label.setFont(QFont("Arial", 13, QFont.Weight.Bold))
-        cpu_label.setStyleSheet("color: #ff6b6b; margin: 8px 0;")
-        layout.addWidget(cpu_label)
+            name_label = QLabel(process_name)
+            name_label.setStyleSheet(
+                f"color: {p['tc']}; font-size: {round(13*s)}px; background: transparent; border: none;"
+            )
+            row.addWidget(name_label, 1)
 
-        # 종료 버튼
-        kill_btn = QPushButton("🛑 종료하기")
-        kill_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        kill_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #dc3545;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #c82333;
-            }
-        """)
-        kill_btn.clicked.connect(lambda: self._kill_process(process_name))
-        layout.addWidget(kill_btn)
+            cpu_label = QLabel(f"{cpu_percent}%")
+            cpu_label.setStyleSheet(
+                f"color: #ff6b6b; font-size: {round(12*s)}px; font-weight: bold; background: transparent; border: none;"
+            )
+            row.addWidget(cpu_label)
+
+            kill_btn = QPushButton("종료")
+            kill_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            kill_btn.setFixedSize(round(52*s), round(26*s))
+            kill_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: #dc3545;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    font-size: {round(11*s)}px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: #c82333;
+                }}
+            """)
+            kill_btn.clicked.connect(lambda checked, n=process_name: self._kill_process(n))
+            row.addWidget(kill_btn)
+
+            outer.addLayout(row)
+
+            if idx < len(processes) - 1:
+                divider = QFrame()
+                divider.setFixedHeight(1)
+                divider.setStyleSheet(f"background-color: {p['pbrd']}; border: none;")
+                outer.addWidget(divider)
 
         return card
 
@@ -1402,6 +1514,7 @@ class AssistantApp(QWidget):
                 # 상품 카드 위젯 생성
                 card_widget = self._create_product_card(name, price, link, "")
                 self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, card_widget)
+                self.result_cards.append({'widget': card_widget, 'kind': 'product', 'data': (name, price, link, "")})
 
             except Exception as e:
                 sys.stderr.write(f"❌ 상품 {idx} 파싱 실패: {e}\n")
@@ -1412,61 +1525,53 @@ class AssistantApp(QWidget):
         sys.stderr.flush()
 
     def _create_product_card(self, name, price, link, img_url):
-        """개별 상품 카드 위젯 생성"""
-        from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
+        """개별 상품 카드 위젯 생성 (한 줄짜리 컴팩트 카드)"""
+        from PyQt6.QtWidgets import QFrame, QLabel, QHBoxLayout, QPushButton
         from PyQt6.QtCore import Qt
-        from PyQt6.QtGui import QFont, QCursor
+        from PyQt6.QtGui import QCursor
+
+        p = get_palette(self.is_dark_mode)
+        s = ui_scale.get_scale()
 
         card = QFrame()
-        card.setFrameStyle(QFrame.Shape.StyledPanel)
-        card.setStyleSheet("""
-            QFrame {
-                background-color: #f8f9fa;
-                border: 1px solid #dee2e6;
-                border-radius: 12px;
-                padding: 16px;
-                margin: 8px 0;
-            }
-        """ if not self.is_dark_mode else """
-            QFrame {
-                background-color: #2d2d2d;
-                border: 1px solid #3d3d3d;
-                border-radius: 12px;
-                padding: 16px;
-                margin: 8px 0;
-            }
-        """)
+        card.setFixedHeight(round(52*s))
+        card.setMaximumWidth(self._card_max_width())
+        card.setStyleSheet(
+            f"QFrame {{ background-color: {p['pb']}; border: 1px solid {p['pbrd']}; "
+            f"border-radius: 10px; }}"
+        )
 
-        layout = QVBoxLayout(card)
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(round(14*s), round(6*s), round(10*s), round(6*s))
+        layout.setSpacing(round(10*s))
 
-        # 상품명
-        name_label = QLabel(name[:100])
-        name_label.setWordWrap(True)
-        name_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
-        layout.addWidget(name_label)
+        display_name = name if len(name) <= 40 else name[:40] + "..."
+        name_label = QLabel(display_name)
+        name_label.setStyleSheet(f"color: {p['tc']}; font-size: {round(13*s)}px; font-weight: bold; background: transparent; border: none;")
+        layout.addWidget(name_label, 1)
 
-        # 가격
         price_label = QLabel(f"💰 {price}")
-        price_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        price_label.setStyleSheet("color: #ff6b6b; margin: 8px 0;")
+        price_label.setStyleSheet(
+            f"color: #ff6b6b; font-size: {round(13*s)}px; font-weight: bold; background: transparent; border: none;"
+        )
         layout.addWidget(price_label)
 
-        # 링크 버튼
         if link and link != "링크 없음":
-            link_btn = QPushButton("🔗 다나와에서 보기")
+            link_btn = QPushButton("🔗 보기")
             link_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-            link_btn.setStyleSheet("""
-                QPushButton {
+            link_btn.setFixedSize(round(64*s), round(30*s))
+            link_btn.setStyleSheet(f"""
+                QPushButton {{
                     background-color: #4dabf7;
                     color: white;
                     border: none;
                     border-radius: 6px;
-                    padding: 8px 16px;
+                    font-size: {round(12*s)}px;
                     font-weight: bold;
-                }
-                QPushButton:hover {
+                }}
+                QPushButton:hover {{
                     background-color: #339af0;
-                }
+                }}
             """)
             link_btn.clicked.connect(lambda: self._open_url(link))
             layout.addWidget(link_btn)

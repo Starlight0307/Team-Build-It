@@ -25,6 +25,88 @@ _LOCAL_CALENDAR_CRUD_FUNCS = (
     "local_create_recurring_event", "local_get_schedule_summary", "local_get_daily_briefing",
 )
 
+# get_realtime_alerts/get_realtime_alert_count는 "이미 실행 중인 백그라운드 감시"가
+# 있을 때만 의미가 있는데, 실측해보니 llama3.1이 "의심스러운 프로세스나 시작프로그램
+# 확인해줘" 같은 지금 당장 검사해달라는 요청에도 이 둘을 잘못 골라서 감시가 켜진 적도
+# 없으니 "누적된 알림 없음"이라는 부실한 답만 냄 — 실제로 검사하는 get_malware_report /
+# detect_suspicious_processes 등을 대신 불렀어야 함. 캘린더 때와 같은 이유로 프롬프트
+# 설명만으로는 못 고쳐서, 메시지에 실시간 감시 관련 단어가 명시적으로 없으면 이 두
+# 함수 자체를 노출하지 않는다. (감시를 켜고 끄는 start/stop_realtime_monitor,
+# 상태만 확인하는 get_realtime_monitor_status는 헷갈릴 위험이 적어서 제외 대상이 아님)
+_REALTIME_ALERT_FUNCS = ("get_realtime_alerts", "get_realtime_alert_count")
+_REALTIME_KEYWORDS = ("실시간", "감시", "모니터링", "백그라운드")
+
+# 방화벽 규칙처럼 항목이 수백 개라 원본이 2만 자를 넘는 도구 결과를 그대로
+# AI에게 넘기면(요약 단계 + 대화 기록에 계속 남음) 이 컴퓨터 성능으로는
+# 실측 460초까지 걸리고, 그마저도 응답이 엉뚱하게 나오는 걸 확인했다.
+# 대화 기록에 남는 것까지 포함해서 원본 자체를 잘라내야 다음 턴까지 계속
+# 느려지는 걸 막을 수 있다.
+_MAX_TOOL_RESULT_CHARS = 3000
+
+# 카테고리별 도구 필터링 — 설치된 도구를 전부(최대 46개) 매 요청마다 AI에게
+# 보여주면, 이 컴퓨터(전용 GPU 없음)에서는 도구 개수에 비례해서 응답 시간이
+# 폭발적으로 늘어나는 걸 실측으로 확인했다(도구 없음 2.8초 → 2개 34.8초 →
+# 36개 182초). 메시지에 나온 단어로 관련 있는 카테고리만 추려서 그 카테고리의
+# 도구만 노출하면, 대부분의 요청에서 노출되는 도구 개수를 5~15개 수준으로
+# 줄일 수 있어 체감 속도가 크게 개선된다. 어느 카테고리에도 안 걸리면(안전장치)
+# 전체를 그대로 노출해서 있던 기능을 못 쓰게 되는 일은 없도록 한다.
+_TOOL_CATEGORIES = {
+    "system": (
+        ("상태", "cpu", "메모리", "ram", "디스크", "프로세스", "느려", "무거", "종료",
+         "컴퓨터", "pc", "사양", "온도", "코어", "속도",
+         "버벅", "렉", "끊겨", "끊김", "꺼줘", "용량", "저장공간"),
+        ("get_system_info", "get_top_cpu_processes", "kill_process"),
+    ),
+    "price": (
+        ("검색", "최저가", "가격", "다나와", "얼마", "싸게", "저렴"),
+        ("search_product_price",),
+    ),
+    "calendar": (
+        ("일정", "캘린더", "schedule", "calendar", "회의", "약속", "예약", "미팅",
+         "오늘", "내일", "모레", "글피", "어제", "이번주", "다음주", "이번달", "다음달",
+         "언제", "추가", "등록", "삭제", "수정", "취소", "미뤄", "연기", "잡아",
+         "브리핑", "로그인", "로그아웃", "구글", "google", "계정", "인증", "연동", "동기화",
+         "웹사이트", "웹페이지", "브라우저", "사이트"),
+        ("setup_calendar_auth", "get_login_status", "create_event", "get_upcoming_events",
+         "get_events_by_date", "search_events", "update_event", "delete_event",
+         "create_recurring_event", "get_calendar_list", "get_schedule_summary",
+         "get_daily_briefing", "open_calendar_website",
+         "local_create_event", "local_get_upcoming_events", "local_get_events_by_date",
+         "local_search_events", "local_update_event", "local_delete_event",
+         "local_create_recurring_event", "local_get_schedule_summary", "local_get_daily_briefing"),
+    ),
+    "network_security": (
+        ("포트", "방화벽", "네트워크", "dns", "보안", "스캔", "연결", "트래픽", "종합", "점수", "리포트"),
+        ("scan_open_ports", "get_firewall_rules", "manage_firewall", "get_network_connections",
+         "monitor_network_traffic", "check_dns_settings", "get_network_security_report"),
+    ),
+    "malware_detection": (
+        ("의심", "악성", "시작프로그램", "자동실행", "자동 실행", "서비스", "해킹",
+         "보안", "종합", "점수", "리포트"),
+        ("detect_suspicious_processes", "scan_startup_items", "scan_suspicious_services", "get_malware_report"),
+    ),
+    "system_security": (
+        ("업데이트", "패치", "공유폴더", "공유 폴더", "로그인실패", "로그인 실패",
+         "보안", "종합", "점수", "리포트"),
+        ("check_update_status", "scan_shared_folders", "get_login_failures", "get_system_security_report"),
+    ),
+    "realtime_monitor": (
+        ("실시간", "감시", "모니터링", "백그라운드"),
+        ("start_realtime_monitor", "stop_realtime_monitor", "get_realtime_monitor_status",
+         "get_realtime_alerts", "get_realtime_alert_count"),
+    ),
+}
+
+
+def _truncate_tool_result(text: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    last_nl = cut.rfind('\n')
+    if last_nl > limit * 0.5:
+        cut = cut[:last_nl]
+    return cut + f"\n...(내용이 길어 일부만 표시했습니다 — 전체 {len(text)}자 중 앞부분만)"
+
 # Windows 환경에서 IANA 시간대 미지원 문제 방지
 os.environ.setdefault("TZ", "Asia/Seoul")
 
@@ -167,6 +249,16 @@ class AIWorker(QThread):
         text = self.user_text.lower()
         return any(kw in text for kw in self._TOOL_KEYWORDS)
 
+    def _allowed_category_funcs(self):
+        """메시지와 관련 있는 카테고리의 함수 이름만 모아서 반환.
+        어느 카테고리에도 안 걸리면 None(=전체 노출, 안전장치)을 반환한다."""
+        text = self.user_text.lower()
+        allowed = set()
+        for keywords, funcs in _TOOL_CATEGORIES.values():
+            if any(kw in text for kw in keywords):
+                allowed.update(funcs)
+        return allowed if allowed else None
+
     # 계정/로그인 상태 확인 의도 — LLM 판단에 맡기지 않고 직접 함수 호출로 처리
     # (LLM이 실제 데이터 없이 "정상입니다" 식으로 지어낼 위험 방지 + 응답 속도 향상)
     _ACCOUNT_STATUS_KEYWORDS = (
@@ -283,7 +375,11 @@ class AIWorker(QThread):
                             'content': '한국어로 존댓말로 답변하세요.'
                         }, {
                             'role': 'user',
-                            'content': f"도구 실행 결과:\n{tool_result}\n\n위 결과를 한국어로 간단히 요약해줘. 결과에 없는 내용은 추가하지 마."
+                            'content': (
+                                f"도구 실행 결과:\n{tool_result}\n\n"
+                                "위 검색 결과를 한국어로 정리해줘. 결과에 없는 내용은 추가하지 마. "
+                                "상품마다 이름과 가격을 알려주고, 그중 가장 저렴한 것을 추천해줘."
+                            )
                         }]
 
                         final_response = ollama.chat(
@@ -360,7 +456,14 @@ class AIWorker(QThread):
                             'content': '한국어로 존댓말로 답변하세요.'
                         }, {
                             'role': 'user',
-                            'content': f"도구 실행 결과:\n{tool_result}\n\n위 결과를 한국어로 자연스럽게 요약해줘. 시스템 상태를 알기 쉽게 설명해줘."
+                            'content': (
+                                f"도구 실행 결과:\n{tool_result}\n\n"
+                                "위 결과를 한국어로 설명해줘. 결과에 없는 내용은 추가하지 마.\n"
+                                "1) 요약: 전체적으로 컴퓨터 상태가 어떤지 1~2문장으로 먼저 말해줘.\n"
+                                "2) 상세 설명: CPU/메모리/디스크 등 결과에 있는 항목을 하나씩 짚어서 설명해줘.\n"
+                                "3) 대응 추천: 사용량이 높거나 여유 공간이 부족한 항목이 있으면 어떻게 하면 "
+                                "좋을지 추천해줘. 다 괜찮으면 '지금은 별도 조치가 필요 없습니다'로 마무리해줘."
+                            )
                         }]
 
                         final_response = ollama.chat(
@@ -401,9 +504,20 @@ class AIWorker(QThread):
                 _LOCAL_CALENDAR_CRUD_FUNCS if active_calendar == "google" else _GOOGLE_CALENDAR_CRUD_FUNCS
             )
 
+            # 메시지에 "실시간/감시/모니터링/백그라운드" 언급이 없으면 실시간 감시
+            # 알림 조회 함수도 노출하지 않는다 (구조적 필터 — 위 상수 설명 참고)
+            hidden_realtime_funcs = (
+                _REALTIME_ALERT_FUNCS if not any(kw in self.user_text for kw in _REALTIME_KEYWORDS) else ()
+            )
+
+            # 메시지와 관련 있는 카테고리의 도구만 노출 (구조적 필터 — 위 _TOOL_CATEGORIES 설명 참고)
+            allowed_category_funcs = self._allowed_category_funcs()
+
             ollama_tools = []
             for name, func in func_map.items():
-                if name in hidden_calendar_funcs:
+                if name in hidden_calendar_funcs or name in hidden_realtime_funcs:
+                    continue
+                if allowed_category_funcs is not None and name not in allowed_category_funcs:
                     continue
                 if name in TOOL_SCHEMAS:
                     ollama_tools.append(TOOL_SCHEMAS[name])
@@ -434,7 +548,10 @@ class AIWorker(QThread):
                 feature_docs = "\n".join(
                     f"- {name}: {TOOL_SCHEMAS[name]['function']['description']}"
                     for name in func_map
-                    if name in TOOL_SCHEMAS and name not in hidden_calendar_funcs
+                    if name in TOOL_SCHEMAS
+                    and name not in hidden_calendar_funcs
+                    and name not in hidden_realtime_funcs
+                    and (allowed_category_funcs is None or name in allowed_category_funcs)
                 )
                 system_content = (
                     "당신은 사용자의 PC를 돕는 유능한 AI 비서입니다.\n"
@@ -476,7 +593,10 @@ class AIWorker(QThread):
                     "\n"
                     "*** 답변 규칙 ***\n"
                     "- 항상 존댓말(~습니다, ~해요)을 사용하세요. 반말 금지.\n"
-                    "- 함수 호출 결과를 받으면 한국어로 자연스럽게 요약해서 답변하세요.\n"
+                    "- 당신은 결과를 그냥 전달만 하는 게 아니라 사용자를 돕는 비서입니다. "
+                    "점검/진단류 결과를 '모든 항목이 정상입니다'처럼 뭉뚱그리지 말고, "
+                    "무엇을 확인했는지 → 항목별로 어땠는지 → 문제가 있으면 어떻게 하면 좋을지 "
+                    "순서로 구체적으로 설명하세요.\n"
                     "- 함수 호출 코드를 그대로 출력하지 마세요.\n"
                     "- 답변 시작/끝에 따옴표(\") 절대 금지.\n"
                     "- 결과에 없는 내용은 지어내지 마세요."
@@ -588,12 +708,17 @@ class AIWorker(QThread):
                             tool_result = "❌ 요청하신 작업을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."
                         tool_result_clean = str(tool_result).encode('utf-8', errors='ignore').decode('utf-8')
 
-                        # 가격 검색 결과는 원본을 별도 시그널로 전달
+                        # 가격 검색 결과는 원본(잘리지 않은 전체)을 별도 시그널로 전달 —
+                        # 카드 UI가 이 텍스트를 직접 파싱하므로 잘리면 상품이 통째로 빠질 수 있음
                         if func_name == 'search_product_price' and '🛒' in tool_result_clean:
                             self.price_result.emit(tool_result_clean)
 
-                        tool_results.append(tool_result_clean)
-                        self.chat_history.append({'role': 'tool', 'content': tool_result_clean})
+                        # AI에게 넘길 결과·대화 기록용은 길면 잘라서 사용 —
+                        # 방화벽 규칙처럼 항목이 수백 개라 2만 자 넘는 결과를 그대로 넘기면
+                        # 이 컴퓨터 성능으로 실측 460초까지 걸리고 응답도 엉뚱해지는 걸 확인함
+                        tool_result_for_llm = _truncate_tool_result(tool_result_clean)
+                        tool_results.append(tool_result_for_llm)
+                        self.chat_history.append({'role': 'tool', 'content': tool_result_for_llm})
                     else:
                         print(f"[AI 워커] 알 수 없는 함수 호출 시도: {func_name}")
                         tool_results.append("❌ 이 기능을 사용하려면 관련 플러그인이 설치되어 있는지 확인해주세요.")
@@ -606,11 +731,19 @@ class AIWorker(QThread):
                         'role': 'user',
                         'content': (
                             f"도구 실행 결과:\n{raw_results}\n\n"
-                            "위 결과만 정확하게 요약해서 답변해줘.\n"
-                            "결과에 없는 내용은 절대 추가하거나 지어내지 마.\n"
+                            "위 결과를 바탕으로 답변해줘. 결과에 없는 내용은 절대 추가하거나 지어내지 마. "
                             "다른 주제나 추측성 내용을 덧붙이지 마.\n"
-                            "일정 조회 결과라면 결과에 있는 제목과 시간만 그대로 보여줘.\n"
-                            "가격 검색 결과라면 결과에 있는 정보만 그대로 보여줘.\n"
+                            "\n"
+                            "점검/진단/보안/상태 확인류의 결과(점수나 🚨/⚠️/✅ 표시가 있는 리포트)라면 "
+                            "'모든 항목이 정상입니다'처럼 뭉뚱그리지 말고, 아래 3단계로 자세히 설명해줘 — "
+                            "결과에 있는 항목 이름과 수치를 실제로 하나하나 언급해줘:\n"
+                            "1) 요약: 무엇을 점검했고 전체적으로 어떤 상황인지 1~2문장으로 먼저 말해줘.\n"
+                            "2) 상세 설명: 결과에 있는 항목을 하나씩 짚어서 설명해줘. 항목 이름과 상태를 생략하지 마.\n"
+                            "3) 대응 추천: 🚨나 ⚠️로 표시된 문제나 결과에 적힌 권장 조치가 있으면 그 내용을 "
+                            "풀어서 안내해줘. 문제가 없으면 '지금은 별도 조치가 필요 없습니다'처럼 짧게 마무리해줘.\n"
+                            "\n"
+                            "일정 조회 결과라면 결과에 있는 제목과 시간만 그대로 보여줘 (위 3단계 구조는 적용하지 마).\n"
+                            "가격 검색 결과라면 결과에 있는 정보만 그대로 보여줘 (위 3단계 구조는 적용하지 마).\n"
                             "링크(http)는 출력하지 마.\n"
                             "JSON이나 코드 형식으로 출력하지 마."
                         )
