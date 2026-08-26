@@ -65,6 +65,17 @@ def _save_events(events: list, user_id: str = None):
         print(f"[내부 캘린더] 저장 오류: {e}")
 
 
+def get_all_events() -> list:
+    """캘린더 화면(UI) 전용 함수 — AI 도구 목록(TOOL_SCHEMAS)에는 올리지 않는다.
+    로그인 안 한 상태면 빈 리스트를 반환(에러 문자열이 아니라 화면에서 직접
+    "로그인이 필요합니다" 안내를 보여주기 위함)."""
+    if _current_user_id == "guest":
+        return []
+    events = _load_events()
+    events.sort(key=lambda e: e.get("start", ""))
+    return events
+
+
 # ==========================================
 # 🛠️ Tool Schemas (ollama tool calling용)
 # ==========================================

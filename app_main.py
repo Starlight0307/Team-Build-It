@@ -25,6 +25,7 @@ from widget.marketplace import PluginMarketplaceWidget
 from auth_ui import AuthWidget
 from widget.history_widget import HistoryWidget
 from widget.mypage_widget import MyPageWidget
+from widget.calendar_widget import CalendarWidget
 from db import save_chat_to_file
 
 
@@ -480,9 +481,10 @@ class AssistantApp(QWidget):
         for btn in self.nav_info:
             btn.setStyleSheet(self.sidebar_btn_style)
 
-        if hasattr(self, 'auth_page'):    self.auth_page.update_theme(d)
-        if hasattr(self, 'history_page'): self.history_page.update_theme(d)
-        if hasattr(self, 'mypage'):       self.mypage.update_theme(d)
+        if hasattr(self, 'auth_page'):     self.auth_page.update_theme(d)
+        if hasattr(self, 'history_page'):  self.history_page.update_theme(d)
+        if hasattr(self, 'mypage'):        self.mypage.update_theme(d)
+        if hasattr(self, 'calendar_page'): self.calendar_page.update_theme(d)
         for card in self.command_cards:   card.update_theme(d)
         for bubble in self.chat_bubbles:  bubble.update_theme(d)
         self._refresh_result_cards()
@@ -562,12 +564,23 @@ class AssistantApp(QWidget):
         self.btn_plugin   = QPushButton()
         self.btn_history  = QPushButton()
         self.btn_settings = QPushButton()
+        self.btn_calendar = QPushButton()
 
         self.nav_info = {
             self.btn_chat:     ("💬", "💬   대화창"),
             self.btn_plugin:   ("🧩", "🧩   마켓플레이스"),
             self.btn_history:  ("🕒", "🕒   대화 기록"),
             self.btn_settings: ("⚙️", "⚙️   환경설정"),
+            self.btn_calendar: ("📅", "📅   캘린더"),
+        }
+        # nav_info의 등장 순서(0~4)와 stacked_widget의 실제 페이지 인덱스가
+        # 항상 같지는 않다 — auth_page(4)/mypage(5)는 nav_info에 없는 별도
+        # 경로(go_to_profile_page)로만 열리는 "숨은" 페이지라, 캘린더처럼
+        # nav_info에 새로 추가하는 페이지는 그 뒤(6번)에 등록되므로 명시적으로
+        # 매핑해준다 (navigate_pages에서 사용).
+        self._nav_stack_index = {
+            self.btn_chat: 0, self.btn_plugin: 1, self.btn_history: 2,
+            self.btn_settings: 3, self.btn_calendar: 6,
         }
         for btn in self.nav_info:
             btn.setCheckable(True)
@@ -621,6 +634,9 @@ class AssistantApp(QWidget):
         self.mypage = MyPageWidget(self)                                        # index 5
         self.mypage.logout_requested.connect(self._handle_logout)
         self.stacked_widget.addWidget(self.mypage)
+
+        self.calendar_page = CalendarWidget(lambda: MOCK_USER, self)            # index 6
+        self.stacked_widget.addWidget(self.calendar_page)
 
         # 하단 입력창
         self.bottom_input_wrapper = QWidget()
@@ -896,7 +912,7 @@ class AssistantApp(QWidget):
         for b in self.nav_info: b.setChecked(False)
         self.btn_profile.setChecked(False)
         btn.setChecked(True)
-        idx = list(self.nav_info.keys()).index(btn)
+        idx = self._nav_stack_index[btn]
         self.stacked_widget.setCurrentIndex(idx)
         if idx == 0:
             self.bottom_input_wrapper.show()
@@ -908,6 +924,8 @@ class AssistantApp(QWidget):
             self.bottom_input_wrapper.hide()
         if idx == 2:
             self.history_page.load_sessions()
+        if idx == 6:
+            self.calendar_page.load_events()
 
     def go_to_profile_page(self):
         for b in self.nav_info: b.setChecked(False)
