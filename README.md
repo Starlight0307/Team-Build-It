@@ -35,6 +35,14 @@ conda activate ai_agent
 pip install -r requirements.txt
 
 
+3-1. ⚠️ 필수: 비밀 설정 파일 채우기 (최초 1회)
+DB 접속 정보/이메일 발송 비밀번호는 보안상 git에 올리지 않습니다. 아래 두 템플릿
+파일을 복사해서 실제 값을 채워넣어야 로그인/회원가입/이메일 인증 기능이 동작합니다
+(실제 값은 팀 관리자에게 문의하세요):
+
+- `.env.example` → 같은 위치에 `.env`로 복사 후 SUPABASE_* 값 채우기
+- `auth/email_config.example.py` → 같은 폴더에 `auth/email_config.py`로 복사 후 SMTP_* 값 채우기
+
 4. ⭐️ 핵심: Ollama 및 AI 모델 설치 (최초 1회)
 이 프로그램은 구글 서버가 아닌 내 컴퓨터의 AI 엔진을 사용하므로, 윈도우용 AI 엔진 설치가 필수입니다.
 

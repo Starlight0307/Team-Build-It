@@ -1,20 +1,16 @@
-import psycopg2
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLineEdit, QPushButton, QLabel, QMessageBox,
                              QSizePolicy, QGraphicsDropShadowEffect)
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
+from data.db import _supabase_connect
+
 
 def get_db_connection():
-    return psycopg2.connect(
-        host="aws-1-ap-northeast-2.pooler.supabase.com",
-        database="postgres",
-        user="postgres.ttydhxlswdutdptvzhwp",
-        password="f+Z@rX3b%8&k,?d",
-        port="6543",
-        sslmode="require"
-    )
+    # 접속 정보는 .env(환경변수)에서만 읽는다 — data/db.py의 헬퍼와 동일한
+    # 접속 정보를 공유해 코드에 중복 하드코딩하지 않도록 함.
+    return _supabase_connect()
 
 
 def get_stylesheet(is_dark: bool) -> str:

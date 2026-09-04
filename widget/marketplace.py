@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QSizePolicy)
 from PyQt6.QtCore import pyqtSignal, Qt, QEvent
 
-from plugins_registry import AVAILABLE_PLUGINS
+from core.plugins_registry import AVAILABLE_PLUGINS
 from widget.widgets import PluginCard
 
 # ==========================================

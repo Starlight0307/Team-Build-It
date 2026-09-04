@@ -2,3 +2,4 @@ PyQt6
 requests
 ollama
 psycopg2-binary
+python-dotenv

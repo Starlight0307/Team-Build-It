@@ -1,10 +1,38 @@
 import os
 import re
+import inspect
 import ollama
+import httpx  # ollama 패키지가 이미 의존하는 라이브러리 — 오류 종류 구분에만 사용
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from config import TOOL_SCHEMAS
-import calendar_preference
+from settings.config import TOOL_SCHEMAS
+from calendar_feature import calendar_preference
+
+
+def _diagnose_error(e: Exception) -> str:
+    """예외 종류를 보고 사용자가 이해하기 쉬운 원인 설명과 해결 방법을 만든다.
+    내부 코드/스택트레이스는 절대 포함하지 않음 — 원본은 호출하는 쪽에서
+    print()로 콘솔에만 남기고, 여기서는 화면에 보여줄 안내문만 반환한다."""
+    if isinstance(e, ConnectionError):
+        return (
+            "⚠️ AI 모델(Ollama)에 연결하지 못했습니다.\n\n"
+            "컴퓨터에서 'Ollama' 프로그램이 켜져 있는지 확인해주세요. "
+            "꺼져 있다면 Ollama 앱을 실행한 뒤 다시 시도해주세요."
+        )
+    if isinstance(e, httpx.TimeoutException):
+        return (
+            "⚠️ AI 응답을 기다리는 시간이 너무 길어져 중단했습니다.\n\n"
+            "컴퓨터 성능이나 요청 내용에 따라 시간이 걸릴 수 있어요. 잠시 후 다시 시도해주세요."
+        )
+    if isinstance(e, ollama.ResponseError):
+        text = (getattr(e, 'error', '') or str(e)).lower()
+        if 'model' in text and ('not found' in text or 'pull' in text):
+            return (
+                "⚠️ AI 모델(llama3.1)이 설치되어 있지 않습니다.\n\n"
+                "터미널에서 'ollama pull llama3.1' 명령을 실행해 모델을 내려받은 뒤 다시 시도해주세요."
+            )
+        return "⚠️ AI 모델 서버에서 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
+    return "⚠️ 요청을 처리하는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요."
 
 # 캘린더 CRUD 함수 이름 집합 — 사용자가 설정에서 고른 백엔드가 아닌 쪽은
 # AI에게 아예 안 보여준다(도구 목록에서 제외). "AI가 둘 중 알아서 고르게"
@@ -98,14 +126,85 @@ _TOOL_CATEGORIES = {
 }
 
 
+def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
+    """실제 도구 실행 결과를 받아 대화체 답변으로 정리한다. 정상적인
+    tool_calls 경로와, 아래 _extract_faked_tool_call로 복구해서 실제
+    실행한 경우가 이 함수를 공유해서 쓴다 — 어느 경로든 '진짜 결과'가
+    있을 때만 이 함수를 타므로 지어낼 여지가 없다."""
+    summary_messages = chat_history + [{
+        'role': 'user',
+        'content': (
+            f"도구 실행 결과:\n{raw_results}\n\n"
+            "위 결과를 바탕으로 답변해줘. 결과에 없는 내용은 절대 추가하거나 지어내지 마. "
+            "특히 프로그램/서비스/프로세스 이름은 결과 텍스트에 실제로 적혀 있는 것만 언급해 — "
+            "'Windows Defender', 'Microsoft Edge'처럼 그럴듯해 보여도 결과에 없으면 "
+            "존재 여부를 모르는 거니까 절대 언급하지 마. 다른 주제나 추측성 내용을 덧붙이지 마.\n"
+            "\n"
+            "점검/진단/보안/상태 확인류의 결과(점수나 🚨/⚠️/✅ 표시가 있는 리포트)라면 "
+            "'모든 항목이 정상입니다'처럼 뭉뚱그리지 말고, 비서가 옆에서 말로 설명해주듯 "
+            "자연스러운 대화체로 답해줘 (번호를 매기거나 '요약:', '상세 설명:' 같은 "
+            "딱딱한 소제목은 쓰지 말고, 문장으로 자연스럽게 이어서 말해줘):\n"
+            "- 먼저 무엇을 확인했고 전체적으로 어떤 상황인지 한두 문장으로 말해줘.\n"
+            "- 결과 텍스트 안에 개별 항목(이름/수치)이 실제로 나열되어 있으면, 그 항목들을 "
+            "있는 그대로 하나씩 짚어서 설명해줘 — 생략하지 마. 하지만 결과가 '몇 개를 확인했고 "
+            "문제없음/이상없음' 같은 개수와 판정만 있고 개별 항목 목록이 없다면, 없는 항목을 "
+            "지어내서 나열하지 말고 그 개수와 판정만 그대로 전달해.\n"
+            "- 결과에 🚨나 ⚠️가 하나라도 있으면, 마지막 문장을 반드시 물음표로 끝나는 "
+            "질문으로 마무리해줘 — 예: '포트 445가 열려 있어서 위험할 수 있어요. "
+            "지금 방화벽에서 막아드릴까요?'. 조언만 하고 끝내지 마. "
+            "이 경우엔 '지금은 따로 확인할 게 없어요' 같은 문장을 절대 쓰지 마 — "
+            "그 문장은 🚨나 ⚠️가 결과에 하나도 없을 때만 쓰는 거야.\n"
+            "- 문장마다 줄바꿈을 넣어서 뚝뚝 끊어 보이게 하지 말고, 자연스러운 대화 문단으로 이어줘.\n"
+            "\n"
+            "일정 조회 결과라면 결과에 있는 제목과 시간만 그대로 보여줘 (위 방식은 적용하지 마).\n"
+            "가격 검색 결과라면 결과에 있는 정보만 그대로 보여줘 (위 방식은 적용하지 마).\n"
+            "링크(http)는 출력하지 마.\n"
+            "JSON이나 코드 형식으로 출력하지 마."
+        )
+    }]
+    final_response = ollama.chat(model='llama3.1', messages=summary_messages)
+    return final_response['message']['content'].strip()
+
+
+def _extract_faked_tool_call(text: str):
+    """모델이 실제 tool_calls API 없이 함수 호출을 텍스트로만 흉내 낸 경우,
+    거기서 의도했던 함수 이름을 뽑아낸다 — 못 찾으면 None.
+    실측 확인: 이럴 때 그냥 "다시 말해줘"라고 재시도만 시키면, 모델이 실제
+    결과 없이 있지도 않은 프로세스 이름을 지어내 "발견했다"고 답하는 등
+    근거 없는 답을 만들어내는 걸 확인했다 — 그래서 흉내만 낸 게 아니라
+    실제로 그 함수를 호출해서 진짜 결과로 답하게 만드는 게 안전하다."""
+    m = re.search(r'"name"\s*:\s*"(\w+)"', text)
+    if m:
+        return m.group(1)
+    m = re.search(r'^\s*(\w+)\([^)]*\)\s*$', text, re.MULTILINE)
+    if m:
+        return m.group(1)
+    return None
+
+
 def _truncate_tool_result(text: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str:
+    """길면 앞부분만 잘라서 반환 — 단, 🚨/⚠️ 경고 표시가 있는 줄은 잘린 뒷부분에
+    있더라도 별도로 붙여서 반드시 모델에게 전달한다. 앞부분만 자르면 방화벽
+    규칙처럼 항목이 많은 결과에서 진짜 문제가 있는 줄이 뒤쪽에 있을 때 통째로
+    잘려나가 '모든 항목이 정상'이라고 잘못 요약될 위험이 있어 이를 방지한다."""
     if len(text) <= limit:
         return text
     cut = text[:limit]
     last_nl = cut.rfind('\n')
     if last_nl > limit * 0.5:
         cut = cut[:last_nl]
-    return cut + f"\n...(내용이 길어 일부만 표시했습니다 — 전체 {len(text)}자 중 앞부분만)"
+
+    dropped_alert_lines = [
+        line for line in text[len(cut):].split('\n')
+        if ('🚨' in line or '⚠️' in line) and line.strip() not in cut
+    ]
+
+    result = cut
+    if dropped_alert_lines:
+        result += "\n\n(내용이 길어 잘렸지만, 잘린 부분에 있던 경고 항목은 놓치지 않도록 아래에 표시)\n"
+        result += "\n".join(dropped_alert_lines)
+    result += f"\n...(내용이 길어 일부만 표시했습니다 — 전체 {len(text)}자 중 앞부분{'과 경고 항목' if dropped_alert_lines else ''}만)"
+    return result
 
 # Windows 환경에서 IANA 시간대 미지원 문제 방지
 os.environ.setdefault("TZ", "Asia/Seoul")
@@ -244,15 +343,31 @@ class AIWorker(QThread):
         t = t.strip()
         return t if len(t) >= 2 else ""
 
-    def _needs_tools(self) -> bool:
-        """사용자 입력에 도구 관련 키워드가 있는지 빠르게 판단."""
+    def _keyword_search_text(self) -> str:
+        """키워드 매칭에 쓸 텍스트를 만든다. "응, 445번 막아줘"처럼 짧은
+        후속 대답은 그 자체엔 도구 관련 단어가 없는 경우가 많아서 — 실측해보니
+        이럴 때 도구 목록 자체가 하나도 안 보여서 AI가 아무것도 못 하고
+        그냥 말로만 답하는 문제가 있었다. 메시지가 짧으면(20자 이하) 직전
+        AI 답변까지 같이 훑어서, 방금 무슨 얘기를 하던 중이었는지 반영한다."""
         text = self.user_text.lower()
+        if len(self.user_text.strip()) <= 20:
+            for msg in reversed(self.chat_history):
+                if msg.get('role') == 'assistant':
+                    text = text + ' ' + str(msg.get('content', '')).lower()
+                    break
+                if msg.get('role') == 'user':
+                    break
+        return text
+
+    def _needs_tools(self) -> bool:
+        """사용자 입력(+ 필요시 직전 AI 답변)에 도구 관련 키워드가 있는지 빠르게 판단."""
+        text = self._keyword_search_text()
         return any(kw in text for kw in self._TOOL_KEYWORDS)
 
     def _allowed_category_funcs(self):
-        """메시지와 관련 있는 카테고리의 함수 이름만 모아서 반환.
+        """메시지(+ 필요시 직전 AI 답변)와 관련 있는 카테고리의 함수 이름만 모아서 반환.
         어느 카테고리에도 안 걸리면 None(=전체 노출, 안전장치)을 반환한다."""
-        text = self.user_text.lower()
+        text = self._keyword_search_text()
         allowed = set()
         for keywords, funcs in _TOOL_CATEGORIES.values():
             if any(kw in text for kw in keywords):
@@ -392,7 +507,7 @@ class AIWorker(QThread):
                         return
                     except Exception as e:
                         print(f"[AI 워커] 가격 검색 오류: {e}")
-                        self.response_ready.emit("⚠️ 가격을 검색하지 못했습니다. 잠시 후 다시 시도해주세요.")
+                        self.response_ready.emit(_diagnose_error(e))
                         return
 
             # ── 빠른 감지 2: 시스템 상태/성능 관련 요청 직접 감지 ──
@@ -458,11 +573,22 @@ class AIWorker(QThread):
                             'role': 'user',
                             'content': (
                                 f"도구 실행 결과:\n{tool_result}\n\n"
-                                "위 결과를 한국어로 설명해줘. 결과에 없는 내용은 추가하지 마.\n"
-                                "1) 요약: 전체적으로 컴퓨터 상태가 어떤지 1~2문장으로 먼저 말해줘.\n"
-                                "2) 상세 설명: CPU/메모리/디스크 등 결과에 있는 항목을 하나씩 짚어서 설명해줘.\n"
-                                "3) 대응 추천: 사용량이 높거나 여유 공간이 부족한 항목이 있으면 어떻게 하면 "
-                                "좋을지 추천해줘. 다 괜찮으면 '지금은 별도 조치가 필요 없습니다'로 마무리해줘."
+                                "위 결과를 비서가 옆에서 말해주듯 자연스러운 대화체로 설명해줘. "
+                                "번호를 매기거나 '요약:', '상세 설명:' 같은 딱딱한 소제목은 쓰지 마. "
+                                "결과에 없는 내용은 추가하지 마.\n"
+                                "먼저 전체적으로 컴퓨터 상태가 어떤지 한두 문장으로 말하고, "
+                                "그다음 CPU/메모리/디스크 등 결과에 있는 항목을 하나씩 짚어서 설명해줘.\n"
+                                "사용량이 높거나 여유 공간이 부족한 항목이 있으면, 조언만 하지 말고 "
+                                "'~해드릴까요?'처럼 대신 확인하거나 정리해줄지 물어봐줘. "
+                                "'측정할 수 없음'/'확인 불가'처럼 값을 못 가져온 항목은 비정상이나 "
+                                "문제가 있다는 뜻이 절대 아니야 — 그냥 이 컴퓨터에서 그 항목을 "
+                                "지원하지 않거나 접근 권한이 없다는 뜻이니, 문제로 취급하지 말고 "
+                                "'~는 확인할 수 없었어요' 정도로만 담담하게 언급해줘. "
+                                "다른 실제 수치 항목들이 다 정상 범위면, 측정 불가 항목이 있어도 "
+                                "전체적으로 정상이라고 말해줘 — 측정 불가 항목 때문에 "
+                                "'모든 항목이 정상적이지 않다'는 식으로 말하지 마. "
+                                "다 괜찮으면 '지금은 따로 확인할 게 없어요'로 짧게 마무리해줘. "
+                                "문장마다 줄바꿈을 넣지 말고 자연스러운 대화 문단으로 이어줘."
                             )
                         }]
 
@@ -476,7 +602,7 @@ class AIWorker(QThread):
                         return
                     except Exception as e:
                         print(f"[AI 워커] 시스템 정보 조회 오류: {e}")
-                        self.response_ready.emit("⚠️ 컴퓨터 상태 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.")
+                        self.response_ready.emit(_diagnose_error(e))
                         return
 
             # ── 이하 AI tool calling 방식으로 진행 ──
@@ -595,8 +721,10 @@ class AIWorker(QThread):
                     "- 항상 존댓말(~습니다, ~해요)을 사용하세요. 반말 금지.\n"
                     "- 당신은 결과를 그냥 전달만 하는 게 아니라 사용자를 돕는 비서입니다. "
                     "점검/진단류 결과를 '모든 항목이 정상입니다'처럼 뭉뚱그리지 말고, "
-                    "무엇을 확인했는지 → 항목별로 어땠는지 → 문제가 있으면 어떻게 하면 좋을지 "
-                    "순서로 구체적으로 설명하세요.\n"
+                    "무엇을 확인했는지 → 항목별로 어땠는지 순서로 구체적으로 설명하고, "
+                    "문제가 있으면 조언만 하지 말고 '~해드릴까요?'처럼 대신 해줄지 물어보세요.\n"
+                    "- 번호를 매기거나 딱딱한 소제목을 달지 말고, 자연스러운 대화체 문장으로 이어서 답하세요. "
+                    "문장마다 줄바꿈을 넣어 뚝뚝 끊어 보이게 하지 마세요.\n"
                     "- 함수 호출 코드를 그대로 출력하지 마세요.\n"
                     "- 답변 시작/끝에 따옴표(\") 절대 금지.\n"
                     "- 결과에 없는 내용은 지어내지 마세요."
@@ -657,7 +785,7 @@ class AIWorker(QThread):
 
                     # ── 일정 등록: 소요 시간 처리 ──
                     if func_name in ('create_event', 'local_create_event') and 'end_datetime' not in args:
-                        from event_duration_memory import get_duration, save_duration as _save_dur
+                        from calendar_feature.event_duration_memory import get_duration, save_duration as _save_dur
                         title = args.get('title', '').strip()
                         known_minutes = get_duration(title)
                         if known_minutes:
@@ -698,7 +826,6 @@ class AIWorker(QThread):
                     sys.stderr.flush()
 
                     if func_name in func_map:
-                        import inspect
                         valid_params = inspect.signature(func_map[func_name]).parameters
                         args = {k: v for k, v in args.items() if k in valid_params}
                         try:
@@ -727,32 +854,7 @@ class AIWorker(QThread):
                 self.status_update.emit("📋  결과 정리 중")
                 if tool_results:
                     raw_results = "\n".join(tool_results)
-                    summary_messages = self.chat_history + [{
-                        'role': 'user',
-                        'content': (
-                            f"도구 실행 결과:\n{raw_results}\n\n"
-                            "위 결과를 바탕으로 답변해줘. 결과에 없는 내용은 절대 추가하거나 지어내지 마. "
-                            "다른 주제나 추측성 내용을 덧붙이지 마.\n"
-                            "\n"
-                            "점검/진단/보안/상태 확인류의 결과(점수나 🚨/⚠️/✅ 표시가 있는 리포트)라면 "
-                            "'모든 항목이 정상입니다'처럼 뭉뚱그리지 말고, 아래 3단계로 자세히 설명해줘 — "
-                            "결과에 있는 항목 이름과 수치를 실제로 하나하나 언급해줘:\n"
-                            "1) 요약: 무엇을 점검했고 전체적으로 어떤 상황인지 1~2문장으로 먼저 말해줘.\n"
-                            "2) 상세 설명: 결과에 있는 항목을 하나씩 짚어서 설명해줘. 항목 이름과 상태를 생략하지 마.\n"
-                            "3) 대응 추천: 🚨나 ⚠️로 표시된 문제나 결과에 적힌 권장 조치가 있으면 그 내용을 "
-                            "풀어서 안내해줘. 문제가 없으면 '지금은 별도 조치가 필요 없습니다'처럼 짧게 마무리해줘.\n"
-                            "\n"
-                            "일정 조회 결과라면 결과에 있는 제목과 시간만 그대로 보여줘 (위 3단계 구조는 적용하지 마).\n"
-                            "가격 검색 결과라면 결과에 있는 정보만 그대로 보여줘 (위 3단계 구조는 적용하지 마).\n"
-                            "링크(http)는 출력하지 마.\n"
-                            "JSON이나 코드 형식으로 출력하지 마."
-                        )
-                    }]
-                    final_response = ollama.chat(
-                        model='llama3.1',
-                        messages=summary_messages,
-                    )
-                    clean_reply = final_response['message']['content'].strip()
+                    clean_reply = _summarize_tool_results(self.chat_history, raw_results)
                 else:
                     clean_reply = "명령을 수행했습니다."
             else:
@@ -764,30 +866,102 @@ class AIWorker(QThread):
             if clean_reply.startswith("'") and clean_reply.endswith("'"):
                 clean_reply = clean_reply[1:-1]
 
-            # tool_calls 없이 모델이 함수 호출을 텍스트로 출력한 경우 재시도
-            if (re.search(r'\{\s*"type"\s*:\s*"function"', clean_reply, re.DOTALL)
-                    or re.search(r'\{\s*"name"\s*:\s*"\w+".+?"(?:arguments|parameters)"\s*:', clean_reply, re.DOTALL)
-                    or re.search(r'"parameters\{"', clean_reply)
-                    or re.search(r'^\s*\w+\([^)]*\)\s*$', clean_reply, re.MULTILINE)
-                    or re.search(r'^\s*\{.*"message".*\}\s*$', clean_reply.strip(), re.DOTALL)):
-                retry_messages = self.chat_history + [{
-                    'role': 'user',
-                    'content': "JSON이나 코드 형식 말고, 한국어 문장으로만 답변해줘. 함수를 실행한 결과를 자연스럽게 설명해줘."
-                }]
-                retry_response = ollama.chat(model='llama3.1', messages=retry_messages)
-                clean_reply = retry_response['message']['content'].strip()
-
-            clean_reply = (
-                clean_reply
-                .replace("다.", "다.\n\n")
-                .replace("요.", "요.\n\n")
-                .replace("까?", "까?\n\n")
-                .strip()
+            # tool_calls 없이 모델이 함수 호출을 텍스트로 출력한 경우, 또는 애초에
+            # 도구가 필요한 요청이었는데(use_tools=True) 실제 tool_calls가 하나도
+            # 안 온 경우 — 후자는 텍스트가 JSON처럼 안 보이는 '그냥 자연스러운 문장'
+            # 형태로 뭔가 확인한 척만 하는 경우까지 잡기 위한 것으로, 아래 정규식에
+            # 안 걸리는 순수 텍스트 지어내기(예: 실제로는 확인 안 했는데 우연히
+            # 사용자가 갖고 있을 법한 프로그램 이름을 자연스럽게 언급하는 경우)까지
+            # 방지한다 — 확인 결과라고 말하려면 반드시 실제 실행을 거치게 강제.
+            tool_calls_missing_when_expected = use_tools and not response.get('message', {}).get('tool_calls')
+            looks_like_faked_call = (
+                re.search(r'\{\s*"type"\s*:\s*"function"', clean_reply, re.DOTALL)
+                or re.search(r'\{\s*"name"\s*:\s*"\w+".+?"(?:arguments|parameters)"\s*:', clean_reply, re.DOTALL)
+                or re.search(r'"parameters\{"', clean_reply)
+                or re.search(r'^\s*\w+\([^)]*\)\s*$', clean_reply, re.MULTILINE)
+                or re.search(r'^\s*\{.*"message".*\}\s*$', clean_reply.strip(), re.DOTALL)
             )
+            if tool_calls_missing_when_expected or looks_like_faked_call:
+
+                # 흉내만 낸 게 아니라 실제로 그 함수를 실행해서 진짜 결과로 답하게
+                # 만든다 — "다시 말해줘" 재시도만으로는 모델이 실행 결과 없이
+                # 있지도 않은 프로세스 이름 등을 지어내는 걸 실측으로 확인했음.
+                # 인자를 안전하게 못 뽑아내므로, 인자 없이 호출 가능한(모두 기본값
+                # 있는) 함수일 때만 자동 실행하고 — kill_process/manage_firewall처럼
+                # 실행 인자가 반드시 필요한 함수는 안전을 위해 자동 실행하지 않는다.
+                #
+                # 자동 실행 후보는 반드시 (a) use_tools=True였던 턴이고, (b) 이번 턴에
+                # 실제로 모델에게 노출된 도구 목록(ollama_tools) 안에 있어야 한다 —
+                # func_map 전체(설치된 46개 플러그인 함수 전부)를 기준으로 하면, 이번
+                # 요청과 무관하다고 판단해 카테고리/설명모드/캘린더 백엔드 필터로
+                # 일부러 숨겨둔 함수(예: 다른 카테고리의 상태변경 함수)까지 모델이
+                # 텍스트로 흉내만 내도 실행돼버리는 구멍이 생긴다 — 이번 감사에서 발견.
+                exposed_func_names = {
+                    t.get('function', {}).get('name') for t in ollama_tools
+                } if use_tools else set()
+
+                faked_func_name = _extract_faked_tool_call(clean_reply)
+                executed = False
+                can_auto_execute = (
+                    use_tools
+                    and faked_func_name
+                    and faked_func_name in exposed_func_names
+                    and faked_func_name in func_map
+                )
+                if can_auto_execute:
+                    sig_params = inspect.signature(func_map[faked_func_name]).parameters
+                    has_required_arg = any(
+                        p.default is inspect.Parameter.empty
+                        and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+                        for p in sig_params.values()
+                    )
+                    if not has_required_arg:
+                        try:
+                            fake_result = func_map[faked_func_name]()
+                            fake_result_clean = str(fake_result).encode('utf-8', errors='ignore').decode('utf-8')
+                            fake_result_for_llm = _truncate_tool_result(fake_result_clean)
+                            # 실제로는 없었던 tool_calls를 흉내내지 않도록, 이 요청을
+                            # 처리한 '주체'를 assistant 메시지로 남겨 정상 tool_calls
+                            # 경로와 동일한 user→assistant→tool 순서를 유지한다.
+                            self.chat_history.append({
+                                'role': 'assistant',
+                                'content': f"{faked_func_name} 실행 결과를 확인하겠습니다."
+                            })
+                            self.chat_history.append({'role': 'tool', 'content': fake_result_for_llm})
+                            clean_reply = _summarize_tool_results(self.chat_history, fake_result_for_llm)
+                            executed = True
+                        except Exception as tool_err:
+                            print(f"[AI 워커] 흉내낸 함수 호출 복구 실행 오류: {tool_err}")
+                    # has_required_arg인 경우는 아래 '확인/처리하지 못했다'는
+                    # 공통 안내 메시지로 처리한다 (executed는 False로 남겨둠).
+
+                if not executed:
+                    if tool_calls_missing_when_expected:
+                        # 실제로 실행하지 못한 경우(함수 이름을 특정 못했거나, 이번
+                        # 턴에 노출되지 않은/숨겨진 함수였거나, 인자가 꼭 필요한 함수였거나)
+                        # — 어떤 이유든 모델에게 "다시 말해줘"라고 재시도시키지 않는다.
+                        # 재시도해도 실제 데이터 없이 또 지어낼 뿐이라는 걸 실측으로
+                        # 확인했기 때문에, 확인/처리 못 했다는 사실 그대로 솔직하게 안내한다.
+                        clean_reply = (
+                            "방금 요청을 정확하게 확인/처리하지 못했어요. 어떤 걸 확인하거나 "
+                            "처리해드릴지 조금 더 구체적으로 말씀해주시면 실제로 확인해서 알려드릴게요."
+                        )
+                    else:
+                        # 도구가 필요한 요청은 아니었고(use_tools=False) 단순 텍스트가
+                        # 우연히 코드/JSON처럼 보인 경우 — 이때는 확인 결과를 지어낼
+                        # 위험이 없으므로 기존처럼 자연스러운 문장으로 재시도한다.
+                        retry_messages = self.chat_history + [{
+                            'role': 'user',
+                            'content': "JSON이나 코드 형식 말고, 한국어 문장으로만 답변해줘. 함수를 실행한 결과를 자연스럽게 설명해줘."
+                        }]
+                        retry_response = ollama.chat(model='llama3.1', messages=retry_messages)
+                        clean_reply = retry_response['message']['content'].strip()
+
+            clean_reply = clean_reply.strip()
 
             self.chat_history.append({'role': 'assistant', 'content': clean_reply})
             self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
 
         except Exception as e:
             print(f"[AI 워커] 처리 중 오류: {e}")
-            self.response_ready.emit("⚠️ 요청을 처리하는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요.")
+            self.response_ready.emit(_diagnose_error(e))

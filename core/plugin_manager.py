@@ -5,8 +5,8 @@ import importlib.util
 import requests
 from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton
 
-from config import PLUGIN_DIR, TOOL_SCHEMAS
-from plugins_registry import AVAILABLE_PLUGINS
+from settings.config import PLUGIN_DIR, TOOL_SCHEMAS
+from core.plugins_registry import AVAILABLE_PLUGINS
 
 # ==========================================
 # 🔌 플러그인 로더

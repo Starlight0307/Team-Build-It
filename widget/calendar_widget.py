@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QScrollArea, QFrame, QPushButton)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
-from theme import get_palette
+from settings.theme import get_palette
 
 
 class GoogleAuthWorker(QThread):

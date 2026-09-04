@@ -5,10 +5,10 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
 from PyQt6.QtGui import QColor
 
-from db import user_exists_by_username, user_exists_by_email, register_user
+from data.db import user_exists_by_username, user_exists_by_email, register_user
 
 try:
-    from email_auth import request_code, confirm_code
+    from auth.email_auth import request_code, confirm_code
     EMAIL_AUTH_AVAILABLE = True
 except ImportError:
     EMAIL_AUTH_AVAILABLE = False

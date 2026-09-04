@@ -3,6 +3,9 @@ import re
 import sys
 import uuid
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QLabel,
                              QScrollArea, QFrame,
@@ -10,23 +13,23 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QShortcut, QKeySequence
 
-from config import MOCK_USER
-from theme import get_palette
-import calendar_preference
-import ui_scale
-from ai_worker import AIWorker
-from plugin_manager import load_existing_plugins, download_and_install_plugin
-from plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
+from settings.config import MOCK_USER
+from settings.theme import get_palette
+from calendar_feature import calendar_preference
+from settings import ui_scale
+from core.ai_worker import AIWorker
+from core.plugin_manager import load_existing_plugins, download_and_install_plugin
+from core.plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
 from widget.widgets import (CommandCard, MessageBubble, TypingIndicator, FlowLayout,
                             ResponsiveCardRow, NotificationToast, RealtimeAlertsDialog,
                             AutoSizeStackedWidget)
 from widget.marketplace import PluginMarketplaceWidget
 
-from auth_ui import AuthWidget
+from auth.auth_ui import AuthWidget
 from widget.history_widget import HistoryWidget
 from widget.mypage_widget import MyPageWidget
 from widget.calendar_widget import CalendarWidget
-from db import save_chat_to_file
+from data.db import save_chat_to_file
 
 
 # ==========================================
@@ -121,6 +124,7 @@ class AssistantApp(QWidget):
         self.pills                  = []
         self.installed_tools        = []
         self.installed_module_names = []
+        self.worker                 = None  # 현재 실행 중인 AIWorker — 중복 요청 방지에 사용
         self.current_session_id     = None
         self.current_session_title  = None
         self.pending_event_args     = None  # 소요 시간 대기 중인 create_event 인자
@@ -182,9 +186,13 @@ class AssistantApp(QWidget):
             self._show_realtime_alert_toast(delta)
 
     def _show_realtime_alert_toast(self, delta: int):
-        toast = NotificationToast(f"🛰️ 실시간 감시: 새 알림 {delta}건 발생\n클릭하면 상세 내용을 확인합니다")
-        toast.setParent(self)
+        toast = self._show_toast(f"🛰️ 실시간 감시: 새 알림 {delta}건 발생\n클릭하면 상세 내용을 확인합니다")
         toast.clicked.connect(lambda t=toast: self._on_toast_clicked(t))
+
+    def _show_toast(self, message: str) -> "NotificationToast":
+        """화면 오른쪽 위에 잠깐 떴다 사라지는 알림(토스트)을 띄운다."""
+        toast = NotificationToast(message)
+        toast.setParent(self)
 
         toast.adjustSize()
         margin = 20
@@ -197,6 +205,7 @@ class AssistantApp(QWidget):
 
         self._active_toasts.append(toast)
         QTimer.singleShot(6000, lambda t=toast: self._dismiss_toast(t))
+        return toast
 
     def _on_toast_clicked(self, toast):
         self._dismiss_toast(toast)
@@ -360,7 +369,7 @@ class AssistantApp(QWidget):
         # 시간 표현("분"/"시간")이 있으면 프리셋 번호 인식보다 먼저 확인한다.
         # 안 그러면 "10분마다"의 앞자리 '1'이 1번 프리셋으로, "3시간마다"가
         # 3번 프리셋으로 잘못 인식될 수 있음.
-        from event_duration_memory import parse_duration_minutes
+        from calendar_feature.event_duration_memory import parse_duration_minutes
         if "분" in t or "시간" in t:
             minutes = parse_duration_minutes(t)
             if minutes and minutes > 0:
@@ -994,6 +1003,18 @@ class AssistantApp(QWidget):
         txt = text_to_send if text_to_send else self.input_field.text()
         if not txt:
             return
+
+        # ── 이전 요청이 아직 처리 중이면 새 요청을 막는다 ──
+        # input_field/send_button은 처리 중엔 비활성화되지만, pill 버튼이나
+        # 커맨드 카드는 그렇지 않아서 클릭하면 send_message()가 또 호출될 수
+        # 있었음. 그러면 이전 AIWorker가 아직 돌고 있는데 self.worker가 새
+        # 워커로 덮어써지고, 두 스레드가 같은 chat_history를 동시에 건드려서
+        # 채팅창이 꼬이거나(응답이 엉뚱한 순서로 나옴) "생각 중..." 표시가
+        # 안 지워지고 남는 등 이상 동작의 원인이 됐다.
+        if self.worker is not None and self.worker.isRunning():
+            self._show_toast("⏳ 아직 이전 요청을 처리하고 있어요. 잠시만 기다려주세요.")
+            return
+
         self.welcome_widget.hide()
 
         if self.current_session_id is None:
@@ -1054,7 +1075,7 @@ class AssistantApp(QWidget):
         # 파싱 실패 시 맥락 없는 LLM 호출로 넘기지 않고(할루시네이션 방지),
         # 명확히 취소 안내 후 사용자가 다시 요청하도록 함
         if self.pending_event_args is not None:
-            from event_duration_memory import parse_duration_minutes
+            from calendar_feature.event_duration_memory import parse_duration_minutes
             minutes = parse_duration_minutes(txt)
             if minutes and minutes > 0:
                 self._execute_pending_event(minutes)
@@ -1256,7 +1277,7 @@ class AssistantApp(QWidget):
         AIWorker가 원래 부르려던 쪽을 그대로 이어서 실행)."""
         import inspect
         from datetime import datetime, timedelta
-        from event_duration_memory import save_duration
+        from calendar_feature.event_duration_memory import save_duration
 
         args = dict(self.pending_event_args)
         self.pending_event_args = None
@@ -1297,9 +1318,14 @@ class AssistantApp(QWidget):
         self.display_ai_response("🤖 로컬 비서: ❌ 캘린더 플러그인을 찾을 수 없습니다.")
 
     def _set_input_enabled(self, enabled: bool):
-        """입력창·전송 버튼 활성/비활성 토글."""
+        """입력창·전송 버튼·빠른 실행(pill) 버튼 활성/비활성 토글.
+        pill 버튼은 send_message()의 중복 요청 방지 가드로도 걸러지지만,
+        처리 중엔 아예 눌러도 반응이 없어 보이는 게 아니라 "지금은 안 됨"이
+        시각적으로도 드러나야 헷갈리지 않는다."""
         self.input_field.setEnabled(enabled)
         self.send_button.setEnabled(enabled)
+        for pill in self.pills:
+            pill.setEnabled(enabled)
         opacity = 1.0 if enabled else 0.4
         s = ui_scale.get_scale()
         self.send_button.setStyleSheet(

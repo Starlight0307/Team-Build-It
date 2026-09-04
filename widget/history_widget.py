@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QGraphicsOpacityEffect, QSplitter)
 from PyQt6.QtCore import Qt, QPropertyAnimation, QThread, pyqtSignal
 
-from db import load_sessions, load_messages
+from data.db import load_sessions, load_messages
 from widget.widgets import bubble_max_width, ideal_bubble_width
 
 

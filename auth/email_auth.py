@@ -15,9 +15,9 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 try:
-    from email_config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD
+    from auth.email_config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD
 except ImportError:
-    raise ImportError("email_config.py 파일이 없습니다. email_config.py를 프로젝트 루트에 추가하세요.")
+    raise ImportError("email_config.py 파일이 없습니다. auth/email_config.py를 추가하세요 (git에는 올리지 마세요 — .gitignore에 이미 등록되어 있습니다).")
 
 # 인증코드 저장소: { email: { "code": "123456", "expires_at": timestamp } }
 _auth_store: dict = {}

@@ -210,7 +210,7 @@ def bubble_max_width(container_width: int) -> int:
     """긴 메시지가 줄바꿈될 때 쓸 최대 너비 = 컨테이너의 85%, 단 260~900px 범위.
     화면 크기에 비례해서 커지고 작아짐. 상/하한선도 대화창 확대/축소 배율에 맞춰
     같이 늘고 줄어야 글자만 커지고 버블 박스는 그대로인 이상한 느낌이 안 생김."""
-    import ui_scale
+    from settings import ui_scale
     s = ui_scale.get_scale()
     return max(round(260*s), min(round(900*s), int(container_width * 0.85)))
 
@@ -223,7 +223,7 @@ def ideal_bubble_width(text: str, cap: int, h_padding: int = 40) -> int:
     짧은 텍스트는 좁게, 긴 텍스트는 cap까지 채워서 줄바꿈된다.
     실제로 화면에 그려지는 폰트 크기(확대/축소 배율 반영)로 측정해야 버블 너비가
     글자 크기와 어긋나지 않는다."""
-    import ui_scale
+    from settings import ui_scale
     s = ui_scale.get_scale()
     font = QFont()
     font.setPixelSize(round(15*s))
@@ -259,7 +259,7 @@ class CommandCard(QFrame):
         layout.addStretch()
 
     def update_theme(self, d):
-        import ui_scale
+        from settings import ui_scale
         s = ui_scale.get_scale()
         self._layout.setContentsMargins(round(20*s), round(20*s), round(20*s), round(20*s))
         self._layout.setSpacing(round(10*s))
@@ -407,7 +407,7 @@ class MessageBubble(QFrame):
         self.bubble.setFixedWidth(ideal_bubble_width(self._raw_text, cap))
 
     def _apply_margins(self):
-        import ui_scale
+        from settings import ui_scale
         s = ui_scale.get_scale()
         self._outer_layout.setContentsMargins(round(10*s), round(8*s), round(10*s), round(8*s))
         self._bubble_layout.setContentsMargins(round(14*s), round(14*s), round(14*s), round(14*s))
@@ -420,7 +420,7 @@ class MessageBubble(QFrame):
             self._apply_bubble_width(w)
 
     def update_theme(self, d):
-        import ui_scale
+        from settings import ui_scale
         s = ui_scale.get_scale()
         self._apply_margins()
         if self.width() > 100:

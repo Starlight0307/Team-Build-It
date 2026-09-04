@@ -19,3 +19,5 @@ users.json
 plugins/credentials.json
 plugins/tokens/
 plugins/client_secret_*.json
+.env
+**/email_config.py

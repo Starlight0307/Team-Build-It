@@ -9,9 +9,26 @@ import os
 import json
 from datetime import datetime
 
-BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
-CHAT_LOG_DIR = os.path.join(BASE_DIR, "chat_logs")
+# data/db.py 기준 프로젝트 루트(한 단계 위)의 chat_logs/ — 폴더 정리로 db.py가
+# data/ 밑으로 옮겨졌지만 대화기록 저장 위치는 그대로 유지하기 위함.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CHAT_LOG_DIR = os.path.join(PROJECT_ROOT, "chat_logs")
 os.makedirs(CHAT_LOG_DIR, exist_ok=True)
+
+
+def _supabase_connect():
+    """Supabase Postgres 연결 — 접속 정보는 .env(환경변수)에서만 읽는다.
+    예전엔 비밀번호가 코드에 그대로 박혀 있어서 git 저장소에 커밋됐었음 —
+    보안 문제라 .env로 옮기고 코드에서는 절대 하드코딩하지 않는다."""
+    import psycopg2
+    return psycopg2.connect(
+        host=os.environ["SUPABASE_HOST"],
+        database=os.environ.get("SUPABASE_DB", "postgres"),
+        user=os.environ["SUPABASE_USER"],
+        password=os.environ["SUPABASE_PASSWORD"],
+        port=os.environ.get("SUPABASE_PORT", "6543"),
+        sslmode="require"
+    )
 
 
 # ==========================================
@@ -129,15 +146,7 @@ def count_sessions(user_id: str) -> int:
 def check_login(username: str, password: str) -> bool:
     """수파베이스 로그인 확인 - 구버전 호환용"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="aws-1-ap-northeast-2.pooler.supabase.com",
-            database="postgres",
-            user="postgres.ttydhxlswdutdptvzhwp",
-            password="f+Z@rX3b%8&k,?d",
-            port="6543",
-            sslmode="require"
-        )
+        conn = _supabase_connect()
         cur = conn.cursor()
         cur.execute("SELECT * FROM users WHERE username=%s AND password=%s", (username, password))
         user = cur.fetchone()
@@ -151,15 +160,7 @@ def check_login(username: str, password: str) -> bool:
 def user_exists_by_username(username: str) -> bool:
     """수파베이스 아이디 중복 확인 - 구버전 호환용"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="aws-1-ap-northeast-2.pooler.supabase.com",
-            database="postgres",
-            user="postgres.ttydhxlswdutdptvzhwp",
-            password="f+Z@rX3b%8&k,?d",
-            port="6543",
-            sslmode="require"
-        )
+        conn = _supabase_connect()
         cur = conn.cursor()
         cur.execute("SELECT id FROM users WHERE username=%s", (username,))
         exists = cur.fetchone()
@@ -173,15 +174,7 @@ def user_exists_by_username(username: str) -> bool:
 def user_exists_by_email(email: str) -> bool:
     """수파베이스 이메일 중복 확인 - 구버전 호환용"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="aws-1-ap-northeast-2.pooler.supabase.com",
-            database="postgres",
-            user="postgres.ttydhxlswdutdptvzhwp",
-            password="f+Z@rX3b%8&k,?d",
-            port="6543",
-            sslmode="require"
-        )
+        conn = _supabase_connect()
         cur = conn.cursor()
         cur.execute("SELECT id FROM users WHERE email=%s", (email,))
         exists = cur.fetchone()
@@ -195,15 +188,8 @@ def user_exists_by_email(email: str) -> bool:
 def register_user(username, password, email, name, phone, birthday):
     """수파베이스 회원가입 - 구버전 호환용"""
     try:
-        import psycopg2, random, string
-        conn = psycopg2.connect(
-            host="aws-1-ap-northeast-2.pooler.supabase.com",
-            database="postgres",
-            user="postgres.ttydhxlswdutdptvzhwp",
-            password="f+Z@rX3b%8&k,?d",
-            port="6543",
-            sslmode="require"
-        )
+        import random, string
+        conn = _supabase_connect()
         cur = conn.cursor()
         # 고유 회원번호 생성
         while True:
@@ -224,15 +210,7 @@ def register_user(username, password, email, name, phone, birthday):
 def get_username_by_email(email: str):
     """수파베이스 이메일로 아이디 찾기 - 구버전 호환용"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="aws-1-ap-northeast-2.pooler.supabase.com",
-            database="postgres",
-            user="postgres.ttydhxlswdutdptvzhwp",
-            password="f+Z@rX3b%8&k,?d",
-            port="6543",
-            sslmode="require"
-        )
+        conn = _supabase_connect()
         cur = conn.cursor()
         cur.execute("SELECT username FROM users WHERE email=%s", (email,))
         row = cur.fetchone()
@@ -246,15 +224,7 @@ def get_username_by_email(email: str):
 def update_password(username: str, email: str, new_password: str) -> bool:
     """수파베이스 비밀번호 변경 - 구버전 호환용"""
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host="aws-1-ap-northeast-2.pooler.supabase.com",
-            database="postgres",
-            user="postgres.ttydhxlswdutdptvzhwp",
-            password="f+Z@rX3b%8&k,?d",
-            port="6543",
-            sslmode="require"
-        )
+        conn = _supabase_connect()
         cur = conn.cursor()
         cur.execute("SELECT id FROM users WHERE username=%s AND email=%s", (username, email))
         if not cur.fetchone():
