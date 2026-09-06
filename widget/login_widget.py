@@ -4,13 +4,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
-from data.db import _supabase_connect
-
-
-def get_db_connection():
-    # 접속 정보는 .env(환경변수)에서만 읽는다 — data/db.py의 헬퍼와 동일한
-    # 접속 정보를 공유해 코드에 중복 하드코딩하지 않도록 함.
-    return _supabase_connect()
+from data.db import verify_login
 
 
 def get_stylesheet(is_dark: bool) -> str:
@@ -153,10 +147,7 @@ class LoginWidget(QWidget):
         if not uid or not pw:
             QMessageBox.warning(self, "오류", "아이디와 비밀번호를 입력하세요."); return
         try:
-            conn = get_db_connection(); cur = conn.cursor()
-            cur.execute("SELECT * FROM users WHERE username=%s AND password=%s", (uid, pw))
-            user = cur.fetchone(); cur.close(); conn.close()
-            if user:
+            if verify_login(uid, pw):
                 self.login_success.emit(uid)
             else:
                 QMessageBox.warning(self, "실패", "아이디 또는 비밀번호가 틀렸습니다.")

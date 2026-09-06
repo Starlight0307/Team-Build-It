@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS calendar_events (
 CREATE TABLE IF NOT EXISTS users (
     id          SERIAL PRIMARY KEY,
     username    VARCHAR(20)  NOT NULL UNIQUE,  -- 로그인 아이디, 6~20자 (signup_widget에서 검증)
-    password    VARCHAR(255) NOT NULL,         -- ⚠️ 현재 평문으로 저장/비교 중 — 별도 고도화 작업(해싱 적용) 필요
+    password    VARCHAR(255) NOT NULL,         -- bcrypt 해시 저장 (data/db.py _hash_password).
+                                                -- 기존 평문 계정은 로그인 성공 시 자동으로 해시로 승격됨 (verify_login)
     email       VARCHAR(255) NOT NULL UNIQUE,
     name        VARCHAR(50)  NOT NULL,
     phone       VARCHAR(20)  NOT NULL,         -- '-' 없이 숫자 11자리로 저장

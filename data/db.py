@@ -9,6 +9,8 @@ import os
 import json
 from datetime import datetime
 
+import bcrypt
+
 # data/db.py 기준 프로젝트 루트(한 단계 위)의 chat_logs/ — 폴더 정리로 db.py가
 # data/ 밑으로 옮겨졌지만 대화기록 저장 위치는 그대로 유지하기 위함.
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -138,6 +140,58 @@ def count_sessions(user_id: str) -> int:
 
 
 # ==========================================
+# 🔐 비밀번호 해싱 (bcrypt)
+#
+# 예전엔 password 컬럼에 평문을 그대로 저장/비교했음 — DB가 노출되면
+# 전 회원 비밀번호가 그대로 유출되는 구조라 보안 취약점이었음.
+# 지금부터 신규 가입/비밀번호 변경은 전부 bcrypt 해시로 저장하고,
+# 기존에 이미 평문으로 저장돼 있던 계정은 verify_login()에서 로그인에
+# 성공하는 순간 자동으로 해시로 승격(마이그레이션)한다.
+# ==========================================
+
+def _hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _is_bcrypt_hash(value) -> bool:
+    return isinstance(value, str) and value.startswith(("$2a$", "$2b$", "$2y$"))
+
+
+def verify_login(username: str, password: str) -> bool:
+    """로그인 검증.
+    - password 컬럼이 이미 bcrypt 해시면 bcrypt로 비교.
+    - 아직 평문(레거시 계정)이면 그대로 비교하고, 일치하면 이 시점에
+      해시로 갱신해 둔다 (다음부터는 해시로 저장됨).
+    """
+    try:
+        conn = _supabase_connect()
+        cur = conn.cursor()
+        cur.execute("SELECT id, password FROM users WHERE username=%s", (username,))
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            return False
+
+        user_id, stored = row
+        if _is_bcrypt_hash(stored):
+            ok = bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8"))
+        else:
+            ok = (stored == password)
+            if ok:
+                cur.execute(
+                    "UPDATE users SET password=%s WHERE id=%s",
+                    (_hash_password(password), user_id)
+                )
+                conn.commit()
+
+        cur.close(); conn.close()
+        return ok
+    except Exception as e:
+        print(f"[로그인 오류] {e}")
+        return False
+
+
+# ==========================================
 # 🔒 이전 버전 호환용 스텁 함수
 # (login_widget, signup_widget 구버전이 import할 경우 오류 방지)
 # 실제 인증은 각 위젯에서 psycopg2로 수파베이스 직접 처리
@@ -145,16 +199,7 @@ def count_sessions(user_id: str) -> int:
 
 def check_login(username: str, password: str) -> bool:
     """수파베이스 로그인 확인 - 구버전 호환용"""
-    try:
-        conn = _supabase_connect()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM users WHERE username=%s AND password=%s", (username, password))
-        user = cur.fetchone()
-        cur.close(); conn.close()
-        return user is not None
-    except Exception as e:
-        print(f"[로그인 오류] {e}")
-        return False
+    return verify_login(username, password)
 
 
 def user_exists_by_username(username: str) -> bool:
@@ -191,6 +236,7 @@ def register_user(username, password, email, name, phone, birthday):
         import random, string
         conn = _supabase_connect()
         cur = conn.cursor()
+        hashed_pw = _hash_password(password)
         # 고유 회원번호 생성
         while True:
             suffix = ''.join(random.choices(string.digits, k=6))
@@ -200,7 +246,7 @@ def register_user(username, password, email, name, phone, birthday):
                 break
         cur.execute(
             "INSERT INTO users (username, password, email, name, phone, birthday, member_no) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (username, password, email, name, phone, birthday, member_no)
+            (username, hashed_pw, email, name, phone, birthday, member_no)
         )
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
@@ -230,7 +276,10 @@ def update_password(username: str, email: str, new_password: str) -> bool:
         if not cur.fetchone():
             cur.close(); conn.close()
             return False
-        cur.execute("UPDATE users SET password=%s WHERE username=%s AND email=%s", (new_password, username, email))
+        cur.execute(
+            "UPDATE users SET password=%s WHERE username=%s AND email=%s",
+            (_hash_password(new_password), username, email)
+        )
         conn.commit(); cur.close(); conn.close()
         return True
     except Exception as e:
