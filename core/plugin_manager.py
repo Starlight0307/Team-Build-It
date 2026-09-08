@@ -1,5 +1,6 @@
 import os
 import sys
+import hashlib
 import subprocess
 import importlib.util
 import requests
@@ -79,6 +80,22 @@ def download_and_install_plugin(
         path = os.path.join(PLUGIN_DIR, f"{m_name}.py")
         res  = requests.get(url, timeout=10)
         res.raise_for_status()
+
+        # ── 무결성 검증: 레지스트리에 고정해둔 SHA-256과 다르면 설치 거부 ──
+        # (레포가 나중에 변조되거나, 응답이 중간에서 바뀌는 경우를 detect하기 위함.
+        #  URL 자체는 AVAILABLE_PLUGINS 화이트리스트에서만 나오므로 임의 URL
+        #  다운로드는 애초에 불가능하고, 이 검증은 그 URL의 "내용"을 검증한다.)
+        expected_hash = plugin_info.get("sha256")
+        actual_hash = hashlib.sha256(res.content).hexdigest()
+        if expected_hash and actual_hash != expected_hash:
+            QMessageBox.critical(
+                parent_widget, "설치 거부",
+                f"'{f_name}' 플러그인의 내용이 등록된 것과 다릅니다 (무결성 검증 실패).\n"
+                "원본 저장소가 변경되었을 수 있어 안전을 위해 설치를 중단합니다."
+            )
+            btn.setText("설치"); btn.setEnabled(True)
+            return
+
         with open(path, 'w', encoding='utf-8') as f:
             f.write(res.text)
 

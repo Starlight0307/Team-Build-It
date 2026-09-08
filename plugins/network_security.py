@@ -80,6 +80,37 @@ TOOL_SCHEMAS = {
             }
         }
     },
+    "block_suspicious_process": {
+        "type": "function",
+        "function": {
+            "name": "block_suspicious_process",
+            "description": (
+                "탐지된 의심 프로세스를 강제 종료하고, 포트를 지정하면 방화벽에서 해당 포트도 "
+                "함께 차단합니다. detect_suspicious_processes, get_network_security_report, "
+                "get_malware_report 등에서 위험하다고 확인된 대상에 대해서만 호출하세요. "
+                "단순히 CPU를 많이 쓰는 정상 프로그램을 끄려는 요청에는 kill_process를 사용하고 "
+                "이 함수는 쓰지 마세요 — 이 함수는 '위협 대응'용입니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "process_name": {
+                        "type": "string",
+                        "description": "종료할 의심 프로세스 이름"
+                    },
+                    "port": {
+                        "type": "integer",
+                        "description": "함께 차단할 포트 번호 (선택 사항, 지정하지 않으면 프로세스만 종료)"
+                    },
+                    "protocol": {
+                        "type": "string",
+                        "description": "'tcp' 또는 'udp'. 기본값: 'tcp'"
+                    }
+                },
+                "required": ["process_name"]
+            }
+        }
+    },
     "get_network_connections": {
         "type": "function",
         "function": {
@@ -459,6 +490,115 @@ def manage_firewall(action: str, port: int, protocol: str = "tcp") -> str:
     except Exception as e:
         print(f"[네트워크 보안] 방화벽 변경 오류: {e}")
         return "⚠️ 방화벽 설정 변경에 실패했습니다. 관리자 권한이 필요할 수 있습니다."
+
+
+def preview_matching_processes(process_name: str) -> dict:
+    """process_name과 정확히 일치(대소문자 무시)하는 실행 중인 프로세스를 조회만 하고
+    종료하지 않는다. block_suspicious_process를 실행하기 '전에' 확인창에 실제 영향
+    대상(PID+이름)을 보여주기 위한 용도 — ChatGPT 1차 검수에서 "확인창 문구와 실제
+    실행 대상이 다를 수 있다"고 지적받은 부분에 대한 대응.
+    LLM에게 직접 노출하는 tool이 아니므로 TOOL_SCHEMAS에는 등록하지 않는다.
+
+    ChatGPT 2차 검수 반영: AccessDenied로 조회하지 못한 프로세스를 그냥 누락시키면
+    "3개 있는데 2개만 표시"인 상황을 사용자가 알 수 없다는 지적 — access_denied_count로
+    별도 반환해서 확인창에 "일부는 권한 제한으로 조회되지 않을 수 있음"을 표시할 수 있게 함."""
+    target = process_name.strip().lower()
+    matched = []
+    access_denied_count = 0
+    for proc in psutil.process_iter(['pid', 'name']):
+        try:
+            p_name = proc.info['name']
+            if p_name and p_name.lower() == target:
+                matched.append({'pid': proc.info['pid'], 'name': p_name})
+        except psutil.AccessDenied:
+            access_denied_count += 1
+        except psutil.NoSuchProcess:
+            continue
+    return {'processes': matched, 'access_denied_count': access_denied_count}
+
+
+def block_suspicious_process(process_name: str, port: int = None, protocol: str = "tcp") -> str:
+    """의심 프로세스를 종료하고, 포트가 지정되면 방화벽에서도 함께 차단한다.
+    system_info 플러그인이 설치되어 있지 않아도 동작해야 하므로(마켓플레이스에서
+    각 플러그인은 독립적으로 설치 가능) kill_process를 import하지 않고
+    프로세스 종료 로직을 이 함수 안에 자체적으로 둔다.
+
+    ChatGPT 1차 검수 반영: (1) substring 대신 정확한 이름 일치로 변경 —
+    "chrome"을 넣었을 때 이름에 chrome이 포함된 모든 프로세스가 아니라
+    정확히 그 이름인 프로세스만 대상이 되도록 함. (2) 권한 부족 등으로
+    종료하지 못한 프로세스를 조용히 넘기지 않고 별도로 보고함.
+    ChatGPT 2차 검수 반영: (3) 실패 목록에도 PID 포함 — 동명 프로세스가 여러 개면
+    이름만으로는 몇 개가 실패했는지 알 수 없다는 지적. (4) port/process_name 입력값
+    자체를 검증해서 잘못된 값이 조용히 통과하지 않도록 함.
+    (PID 기반 재검증, TOCTOU 완전 방지, kill_process와의 로직 공유는
+    이번 라운드에서는 범위를 넘어선다고 판단해 반영하지 않음 — 기록 파일 참고.
+    확인창의 preview는 PID를 보여주지만 실행은 이름으로 재검색한다는 점도
+    알려진 한계로 남겨둠.)"""
+    if not isinstance(process_name, str) or not process_name.strip():
+        return "⚠️ 유효하지 않은 프로세스 이름입니다."
+
+    print(f"\n[네트워크 보안] '{process_name}' 위협 대응 처리 중... (포트: {port})")
+
+    results = []
+
+    # 1) 프로세스 종료 — 정확한 이름 일치만 대상으로 함 (substring 매칭 제거)
+    killed_names = set()
+    failed_processes = []
+    try:
+        target = process_name.strip().lower()
+        for proc in psutil.process_iter(['name']):
+            try:
+                p_name = proc.info['name']
+                if not p_name or p_name.lower() != target:
+                    continue
+                try:
+                    proc.kill()
+                    killed_names.add(p_name)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    failed_processes.append(f"{p_name} (PID {proc.pid})")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception as e:
+        print(f"[네트워크 보안] 프로세스 종료 오류: {e}")
+        results.append(f"⚠️ 프로세스 종료 중 오류가 발생했습니다: {e}")
+    else:
+        if killed_names:
+            results.append(f"✅ 프로세스 종료 완료: {', '.join(killed_names)}")
+        if failed_processes:
+            results.append(f"⚠️ 권한 부족 등으로 종료하지 못한 프로세스: {', '.join(failed_processes)}")
+        if not killed_names and not failed_processes:
+            results.append(f"'{process_name}'과 정확히 일치하는 실행 중인 프로세스를 찾지 못했습니다.")
+
+    # 2) 포트 차단 (지정된 경우에만) — 프로세스 종료 결과와 무관하게 항상 시도
+    if port is not None:
+        # LLM이 tool_calls 인자를 문자열로 보내는 경우가 있어(스키마상 integer로
+        # 정의되어 있어도) manage_firewall의 "1 <= port <= 65535" 비교에서
+        # TypeError가 나지 않도록 여기서 먼저 정수로 정규화한다.
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            results.append(f"\n⚠️ 포트 번호({port})가 올바르지 않아 방화벽 차단은 건너뛰었습니다.")
+            return "\n".join(results)
+
+        if not (1 <= port <= 65535):
+            results.append(f"\n⚠️ 포트 번호({port})가 유효 범위(1~65535)가 아니어서 방화벽 차단을 건너뛰었습니다.")
+            return "\n".join(results)
+
+        # protocol이 빈 문자열이어도 "tcp"로 조용히 치환하지 않고 그대로 검증한다 —
+        # 잘못된 입력이 검증을 우회하지 않도록 하기 위함 (ChatGPT 2차 검수 지적).
+        protocol = str(protocol).strip().lower()
+        if protocol not in ("tcp", "udp"):
+            results.append(f"\n⚠️ protocol 값({protocol})이 올바르지 않아 방화벽 차단은 건너뛰었습니다. 'tcp' 또는 'udp'만 가능합니다.")
+            return "\n".join(results)
+
+        try:
+            firewall_result = manage_firewall(action="deny", port=port, protocol=protocol)
+            results.append(f"\n{firewall_result}")
+        except Exception as e:
+            print(f"[네트워크 보안] 방화벽 차단 오류: {e}")
+            results.append(f"\n⚠️ 방화벽 차단 중 오류가 발생했습니다: {e}")
+
+    return "\n".join(results)
 
 
 # ─────────────────────────────────────────────

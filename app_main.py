@@ -1095,13 +1095,67 @@ class AssistantApp(QWidget):
         self._show_typing_indicator()
 
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
-        self.worker = AIWorker(txt, self.chat_history, self.installed_tools)
+        self.worker = AIWorker(txt, self.chat_history, self.installed_tools, self.current_session_id)
         self.worker.response_ready.connect(self.display_ai_response)
         self.worker.status_update.connect(self._on_status_update)
         self.worker.pending_event.connect(self._on_pending_event)
         self.worker.price_result.connect(self._on_price_result)  # 가격 검색 결과 연결
         self.worker.cpu_result.connect(self._on_cpu_result)  # CPU 프로세스 결과 연결
+        self.worker.confirm_required.connect(self._on_confirm_required)  # 위험한 동작 확인 연결
         self.worker.start()
+
+    def _on_confirm_required(self, payload: dict):
+        """AIWorker가 위험한 동작(프로세스 종료/방화벽 변경/일정 삭제 등) 실행 전
+        사용자 확인을 요청했을 때 처리. QThread 안에서는 QMessageBox를 직접
+        띄울 수 없으므로, 여기(메인 스레드)에서 확인창을 띄우고 승인 시에만
+        실제로 함수를 실행한다."""
+        from PyQt6.QtWidgets import QMessageBox
+
+        func_name   = payload['func_name']
+        args        = payload['args']
+        description = payload['description']
+
+        reply = QMessageBox.question(
+            self,
+            '작업 확인',
+            f'{description}\n\n이 작업을 진행하시겠습니까?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            func_map = {f.__name__: f for f in self.installed_tools}
+            if func_name in func_map:
+                try:
+                    result = func_map[func_name](**args)
+                    self.display_ai_response(f"🤖 로컬 비서: {result}")
+                    self._remember_kill_confirmation(func_name, args)
+                except Exception as e:
+                    print(f"[확인 후 실행 오류] {func_name}: {e}")
+                    self.display_ai_response("❌ 요청하신 작업을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.")
+            else:
+                self.display_ai_response("❌ 이 기능을 사용하려면 관련 플러그인이 설치되어 있는지 확인해주세요.")
+        else:
+            self.display_ai_response("🤖 로컬 비서: 요청하신 작업을 취소했습니다.")
+
+        QTimer.singleShot(50, self.auto_scroll_to_bottom)
+
+    def _remember_kill_confirmation(self, func_name: str, args: dict):
+        """kill_process/block_suspicious_process를 승인해서 실행했으면 그 프로세스
+        이름을 기억해둔다 (core/preference_memory.py). 다음에 같은 프로세스를 또
+        종료하려 할 때 확인창에 "지난번에도 종료하셨어요" 힌트를 보여주기 위함 —
+        임베딩/ML 없이 반복 여부만 기억하는 최소한의 개인화."""
+        if func_name == 'kill_process':
+            name = args.get('process_name_or_number', '')
+        elif func_name == 'block_suspicious_process':
+            name = args.get('process_name', '')
+        else:
+            return
+
+        key = (name or '').strip().lower()
+        if key and not key.isdigit():
+            from core.preference_memory import save_pref
+            save_pref("kill_confirm", key, True)
 
     def _on_pending_event(self, args: dict):
         """AIWorker에서 소요 시간 불명 시 이벤트 인자 저장."""
@@ -1501,6 +1555,7 @@ class AssistantApp(QWidget):
                 try:
                     result = func_map['kill_process'](process_name)
                     self.display_ai_response(f"🤖 로컬 비서: {result}")
+                    self._remember_kill_confirmation('kill_process', {'process_name_or_number': process_name})
                 except Exception as e:
                     print(f"[프로그램 종료] 오류: {e}")
                     self.display_ai_response("⚠️ 프로그램을 종료하지 못했습니다. 잠시 후 다시 시도해주세요.")

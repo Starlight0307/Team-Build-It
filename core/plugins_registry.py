@@ -28,6 +28,9 @@ PLUGIN_PILLS = {
         ("📅 오늘 일정", "오늘 일정 알려줘"),
         ("🗓️ 일정 추가", "[일정 추가: ]"),
     ],
+    "iot_control": [
+        ("🏠 스마트 기기 검색", "연결된 스마트 기기 찾아줘"),
+    ],
 }
 
 # 대화창 중앙에 뜨는 커맨드 카드 후보 (아이콘, 제목, 설명, 전송할 명령어)
@@ -56,6 +59,9 @@ PLUGIN_CARDS = {
         ("📅", "오늘 일정 확인", "오늘 등록된 일정을 확인합니다.", "오늘 일정 알려줘"),
         ("🗓️", "일정 추가", "새로운 일정을 등록합니다.", "[일정 추가: ]"),
     ],
+    "iot_control": [
+        ("🏠", "스마트 기기 검색", "로컬 네트워크의 Kasa 스마트 기기를 검색합니다.", "연결된 스마트 기기 찾아줘"),
+    ],
 }
 
 AVAILABLE_PLUGINS = [
@@ -65,6 +71,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["get_system_info", "get_top_cpu_processes", "kill_process"],
         "module_name": "system_info",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_info.py",
+        "sha256": "320f081326e56ba731a437aaf4606c7cff189872a7791181623df2e39c3a4bd0",
         "dependencies": ["psutil"]
     },
     {
@@ -73,6 +80,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["search_product_price"],
         "module_name": "price_search",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/price_search.py",
+        "sha256": "d781cb6c04f65e6e6ad3a7e505865cf9cac52e83f70127ddd3a6649e8b51329b",
         "dependencies": ["requests", "beautifulsoup4"]
     },
     {
@@ -80,11 +88,13 @@ AVAILABLE_PLUGINS = [
         "desc": "포트 스캔, 방화벽 조회/관리, 네트워크 연결·트래픽 모니터링, DNS 위변조 확인",
         "func_names": [
             "scan_open_ports", "get_firewall_rules", "manage_firewall",
+            "block_suspicious_process", "preview_matching_processes",
             "get_network_connections", "monitor_network_traffic", "check_dns_settings",
             "get_network_security_report",
         ],
         "module_name": "network_security",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/network_security.py",
+        "sha256": "c7b8d943c6302c8907541aff32d508bce886ccf348849cd952507fdbe8971cc3",
         "dependencies": ["psutil"]
     },
     {
@@ -96,6 +106,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "malware_detection",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/malware_detection.py",
+        "sha256": "ef88342ed35a773ae1889a951333b6d877eca117d3d6b00673f302e6bff55dce",
         "dependencies": ["psutil"]
     },
     {
@@ -107,6 +118,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "system_security",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_security.py",
+        "sha256": "8f80e70cf544b01ee1df2f2ac163a7550457b549400b90d58f62910d00832c0a",
         "dependencies": []
     },
     {
@@ -119,6 +131,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "realtime_monitor",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/realtime_monitor.py",
+        "sha256": "a52746c48d20325c3c74233d9ae85b6c43c0d0837622283d014cef9d3be43712",
         "dependencies": []
     },
     {
@@ -133,6 +146,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "calendar_tool",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/calendar_tool.py",
+        "sha256": "d017ca2ce96795f4df41140472d3608a267f8c9a72ef5898e87c54730f247a8a",
         "dependencies": ["google-api-python-client", "google-auth-httplib2", "google-auth-oauthlib", "tzdata"]
     },
     {
@@ -145,6 +159,16 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "local_calendar",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/local_calendar.py",
+        "sha256": "f576160d6e652232b3d49308ff96850fcb4651574e2711ef7dd63e5dcd4104f5",
         "dependencies": []
+    },
+    {
+        "name": "IoT 스마트 기기 제어",
+        "desc": "TP-Link Kasa 스마트 플러그 등 로컬 네트워크의 IoT 기기 검색 및 전원 제어",
+        "func_names": ["discover_iot_devices", "control_iot_device"],
+        "module_name": "iot_control",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/iot_control.py",
+        "sha256": "8251762e8fb18d839203628ea492675e731171c6f20766793b1eca9ffde46307",
+        "dependencies": ["python-kasa"]
     },
 ]
