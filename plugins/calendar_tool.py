@@ -422,9 +422,7 @@ def create_event(
             f"- 시작: {start_datetime}\n"
             f"- 종료: {end_datetime}\n"
             f"- 장소: {location or '없음'}\n"
-            f"- 알림: {reminder_minutes}분 전\n"
-            f"- 링크: {event.get('htmlLink', '링크 없음')}\n"
-            f"- 이벤트 ID: {event['id']}"
+            f"- 알림: {reminder_minutes}분 전"
         )
     except Exception as e:
         print(f"[캘린더] 일정 등록 오류: {e}")
@@ -598,8 +596,7 @@ def update_event(
             f"[✅ 일정 수정 완료]\n"
             f"- 제목: {updated.get('summary')}\n"
             f"- 시작: {updated['start'].get('dateTime', updated['start'].get('date'))}\n"
-            f"- 종료: {updated['end'].get('dateTime', updated['end'].get('date'))}\n"
-            f"- 링크: {updated.get('htmlLink', '링크 없음')}"
+            f"- 종료: {updated['end'].get('dateTime', updated['end'].get('date'))}"
         )
     except Exception as e:
         print(f"[캘린더] 일정 수정 오류: {e}")
@@ -656,8 +653,7 @@ def create_recurring_event(
             f"[✅ 반복 일정 등록 완료]\n"
             f"- 제목: {title}\n"
             f"- 시작: {start_datetime}\n"
-            f"- 반복: {label[recurrence_type.upper()]} × {recurrence_count}회\n"
-            f"- 링크: {event.get('htmlLink', '링크 없음')}"
+            f"- 반복: {label[recurrence_type.upper()]} × {recurrence_count}회"
         )
     except Exception as e:
         print(f"[캘린더] 반복 일정 등록 오류: {e}")

@@ -279,8 +279,7 @@ def local_create_event(
             f"- 시작: {start_datetime}\n"
             f"- 종료: {end_datetime}\n"
             f"- 장소: {location or '없음'}\n"
-            f"- 알림: {reminder_minutes}분 전\n"
-            f"- 이벤트 ID: {event['id']}"
+            f"- 알림: {reminder_minutes}분 전"
         )
     except ValueError:
         return "날짜 형식이 잘못되었습니다. 예: '2025-07-20 14:00'"

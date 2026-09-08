@@ -319,17 +319,38 @@ class AIWorker(QThread):
         LLM에게 제목 생성을 맡기면 가끔 의미 없는 텍스트를 지어내므로
         (작은 로컬 모델의 알려진 한계) 정규식으로 결정론적으로 추출한다."""
         t = text.strip()
-        # 날짜/시간 패턴 제거
+        # 문장 맨 앞 대화체 추임새 제거("그래 그럼", "음 그니까" 등) — 실측 확인:
+        # 이게 없으면 "그래 그럼 내일 일정 추가하려고해 ..." 같은 문장에서
+        # "그래 그럼"이 제목에 그대로 남아 "그래 그럼  친구와 점심약속"처럼
+        # 제목이 깨지는 문제가 있었음.
+        t = re.sub(r'^(?:(?:그래서|그래|그럼|좋아|그러자|오케이|오케|콜|자|음|어|응|네|아니|근데|그니까)[,!~.\s]*)+', '', t).strip()
+        # 날짜/시간 패턴 제거 — "아침/점심/저녁/밤"은 숫자 시각 바로 앞에 붙어있을
+        # 때만 같이 제거한다("저녁 7시" → 제거). 단독으로 쓰이는 "점심"/"저녁"은
+        # "점심약속"처럼 실제 제목의 일부일 수 있어 무작정 지우면 안 됨 — 실측 확인:
+        # "오늘 저녁 7시에 저녁약속 추가해줘"에서 "저녁"을 통째로 지우면
+        # "저녁약속"의 "저녁"까지 같이 사라져 제목이 깨짐.
         t = re.sub(r'\d{4}[-./]\d{1,2}[-./]\d{1,2}', '', t)
         t = re.sub(r'\d{1,2}월\s*\d{1,2}일', '', t)
-        t = re.sub(r'(오전|오후)?\s*\d{1,2}시(\s*\d{1,2}분)?(에서?)?', '', t)
+        t = re.sub(r'(아침|점심|저녁|밤|새벽)?\s*(오전|오후)?\s*\d{1,2}시(\s*\d{1,2}분)?(에서?)?', '', t)
         t = re.sub(r'\d{1,2}:\d{2}', '', t)
         # 시간 부사 제거
         for kw in ['내일', '모레', '오늘', '이번주', '다음주']:
             t = t.replace(kw, '')
-        # 문장 맨 앞 주어(대명사) 제거
-        t = re.sub(r'^(나는|나|내가|저는|저)\s*', '', t.strip())
-        # 요청 표현 제거 (긴 것부터)
+        # 문장 맨 앞 주어(대명사) 제거 — "저" 뒤에 공백/끝이 와야만 대명사로 보고
+        # 지운다(경계 확인 없이 지우면 "저녁약속"의 "저"까지 잘라먹어 "녁약속"이
+        # 되는 걸 실측으로 확인함 — "저"가 "저녁/저기/저거" 같은 다른 단어의
+        # 접두부일 수도 있기 때문).
+        t = re.sub(r'^(나는|나|내가|저는|저)(?=\s|$)\s*', '', t.strip())
+        # 요청 동사(추가/등록/삭제/취소/변경/수정/잡) + 다양한 어미("~하려고해",
+        # "~하고 싶어", "~할래" 등) 조합을 폭넓게 제거 — "추가해줘"처럼 흔한
+        # 형태만 리스트로 관리하면 "추가하려고해" 같은 변형에서 놓치는 걸
+        # 실측으로 확인해서, 동사+어미를 정규식으로 함께 잡도록 함.
+        t = re.sub(
+            r'(추가|등록|삭제|취소|변경|수정|잡)'
+            r'(하려고\s*해?|하고\s*싶어|할래|할게요?|해주세요|해줘|해)',
+            '', t
+        )
+        # 요청 표현 제거 (긴 것부터) — 위 정규식에 안 걸리는 나머지 고정 표현들
         for kw in ['캘린더에 추가해줘', '캘린더에 넣어줘', '캘린더에 등록해줘',
                    '일정 추가해줘', '일정 등록해줘', '일정 잡아줘', '일정 넣어줘',
                    '일정 추가해', '일정 등록해', '추가해줘', '등록해줘', '잡아줘', '넣어줘',
@@ -343,14 +364,98 @@ class AIWorker(QThread):
         t = t.strip()
         return t if len(t) >= 2 else ""
 
+    # 상대 날짜 표현 → 오늘 기준 며칠 뒤인지
+    _RELATIVE_DAY_OFFSETS = {"오늘": 0, "내일": 1, "모레": 2, "글피": 3}
+
+    def _resolve_event_date(self, text: str):
+        """일정 등록 문장에 "내일"/"모레"/"N월 N일"/"YYYY-MM-DD" 같은 날짜
+        표현이 있으면, 실제 오늘 날짜를 기준으로 결정론적으로 계산한 날짜
+        문자열("YYYY-MM-DD")을 반환한다. 없으면 None(=모델이 만든 날짜를
+        그대로 신뢰).
+
+        시스템 프롬프트에 오늘/내일 날짜를 명시해서 넘겨줘도, llama3.1이
+        그 값을 안 쓰고 스스로 계산한(가끔 완전히 엉뚱한 연도의) 날짜를
+        만들어내는 걸 실측으로 확인함 — "내일"이라고 했는데 2023-03-09를
+        만들어낸 사례. 제목(_extract_event_title)과 같은 이유로, 프롬프트
+        지시만으론 안 되니 정규식으로 날짜만큼은 강제로 맞춰준다."""
+        from datetime import datetime
+        now = datetime.now()
+        for word, offset in self._RELATIVE_DAY_OFFSETS.items():
+            if word in text:
+                from datetime import timedelta
+                return (now + timedelta(days=offset)).strftime("%Y-%m-%d")
+        m = re.search(r'(\d{1,2})월\s*(\d{1,2})일', text)
+        if m:
+            month, day = int(m.group(1)), int(m.group(2))
+            try:
+                candidate = now.replace(year=now.year, month=month, day=day,
+                                         hour=0, minute=0, second=0, microsecond=0)
+            except ValueError:
+                return None
+            if candidate.date() < now.date():
+                try:
+                    candidate = candidate.replace(year=now.year + 1)
+                except ValueError:
+                    return None
+            return candidate.strftime("%Y-%m-%d")
+        m2 = re.search(r'(\d{4})[-./](\d{1,2})[-./](\d{1,2})', text)
+        if m2:
+            try:
+                return datetime(int(m2.group(1)), int(m2.group(2)), int(m2.group(3))).strftime("%Y-%m-%d")
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _apply_resolved_date(datetime_str: str, resolved_date: str) -> str:
+        """모델이 만든 datetime 문자열에서 시:분(:초) 부분만 남기고 날짜만
+        결정론적으로 계산된 값으로 교체한다. 시간 부분을 못 찾으면 원본 그대로."""
+        m = re.search(r'(\d{1,2}):(\d{2})(?::(\d{2}))?', datetime_str)
+        if not m:
+            return datetime_str
+        hh, mm, ss = m.group(1).zfill(2), m.group(2), m.group(3) or "00"
+        return f"{resolved_date} {hh}:{mm}:{ss}"
+
+    # "아니 괜찮아"/"괜찮다고"처럼 방금 제안한 조치를 거절/무시하는 짧은 대답 —
+    # 이런 대답까지 아래에서 직전 AI 메시지(포트/방화벽/의심 프로세스 같은
+    # 보안 키워드로 가득한 리포트)를 덧붙여버리면, 거절했는데도 도구가 다시
+    # 노출돼서 같은 검사를 반복하거나 같은 질문을 또 던지는 문제가 실측으로
+    # 확인됨 — 사용자가 "아니 괜찮아"라고 했는데 AI가 똑같은 리포트를 또
+    # 보여주며 "막아드릴까요?"를 반복한 사례.
+    _DECLINE_KEYWORDS = (
+        "아니괜찮", "괜찮아", "괜찮습니다", "괜찮다고", "괜찮대", "됐어", "됐습니다",
+        "됐다고", "안해도", "필요없어", "필요없다고", "하지마", "그만해", "그만하자",
+        "아니야", "아니에요", "아뇨", "노노", "싫어", "아니됐어", "아니됐다고",
+    )
+
+    # "괜찮아"는 한국어에서 "괜찮아(그냥 둬)"=거절과 "괜찮아, 진행해줘"=승낙 둘 다로
+    # 쓰일 수 있어 그 자체만으론 모호하다 — "해줘/막아/진행해" 같은 실행 요청
+    # 표현이 같이 있으면 승낙(도구 실행 유지)으로 보고 거절 취급하지 않는다.
+    _ACTION_CONFIRM_HINTS = (
+        "해줘", "해주세요", "해줄래", "부탁", "진행해", "막아", "삭제해", "지워줘",
+        "종료해", "꺼줘", "처리해", "고쳐줘", "수정해", "켜줘",
+    )
+
+    def _is_decline_reply(self) -> bool:
+        """방금 AI가 제안한 조치를 거절하는 짧은 대답인지 판단. 다른 실제
+        요청 없이 순수하게 거절만 하는 경우로 한정하기 위해 길이도 짧게 제한하고,
+        실행을 요청하는 표현이 같이 있으면(예: "괜찮아 진행해줘") 승낙으로 보고
+        거절로 오판하지 않는다."""
+        text = self.user_text.replace(" ", "")
+        if any(hint in text for hint in self._ACTION_CONFIRM_HINTS):
+            return False
+        return len(text) <= 15 and any(kw in text for kw in self._DECLINE_KEYWORDS)
+
     def _keyword_search_text(self) -> str:
         """키워드 매칭에 쓸 텍스트를 만든다. "응, 445번 막아줘"처럼 짧은
         후속 대답은 그 자체엔 도구 관련 단어가 없는 경우가 많아서 — 실측해보니
         이럴 때 도구 목록 자체가 하나도 안 보여서 AI가 아무것도 못 하고
         그냥 말로만 답하는 문제가 있었다. 메시지가 짧으면(20자 이하) 직전
-        AI 답변까지 같이 훑어서, 방금 무슨 얘기를 하던 중이었는지 반영한다."""
+        AI 답변까지 같이 훑어서, 방금 무슨 얘기를 하던 중이었는지 반영한다.
+        단, 거절하는 대답(_is_decline_reply)이면 직전 AI 답변을 덧붙이지 않는다 —
+        거절 의사를 도구 재실행 트리거로 오인하지 않도록 하기 위함."""
         text = self.user_text.lower()
-        if len(self.user_text.strip()) <= 20:
+        if len(self.user_text.strip()) <= 20 and not self._is_decline_reply():
             for msg in reversed(self.chat_history):
                 if msg.get('role') == 'assistant':
                     text = text + ' ' + str(msg.get('content', '')).lower()
@@ -782,6 +887,17 @@ class AIWorker(QThread):
                         extracted_title = self._extract_event_title(self.user_text)
                         if extracted_title:
                             args['title'] = extracted_title
+
+                    # ── 일정 등록: 날짜는 LLM 대신 정규식으로 결정론적 계산 ──
+                    # (title과 같은 이유 — "내일"이라고 했는데 모델이 스스로 계산해서
+                    # 엉뚱한 연도/날짜를 만들어내는 걸 실측으로 확인함. 시간(시:분)은
+                    # 모델이 비교적 잘 뽑아내므로 그대로 두고 날짜만 교체한다.)
+                    if func_name in ('create_event', 'local_create_event'):
+                        resolved_date = self._resolve_event_date(self.user_text)
+                        if resolved_date:
+                            for _dt_key in ('start_datetime', 'end_datetime'):
+                                if args.get(_dt_key):
+                                    args[_dt_key] = self._apply_resolved_date(args[_dt_key], resolved_date)
 
                     # ── 일정 등록: 소요 시간 처리 ──
                     if func_name in ('create_event', 'local_create_event') and 'end_datetime' not in args:
