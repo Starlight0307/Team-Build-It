@@ -23,9 +23,50 @@ def load_existing_plugins(installed_tools: list, installed_module_names: list):
         if not os.path.exists(filepath):
             continue
         try:
-            spec   = importlib.util.spec_from_file_location(p['module_name'], filepath)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            # "plugins.{module_name}" 정식 경로로 sys.modules에 등록해서 로드한다 —
+            # 그냥 spec_from_file_location만 쓰면 이 모듈이 sys.modules에 안 남아서,
+            # app_main.py 같은 다른 곳에서 "from plugins.local_calendar import ..."처럼
+            # 표준 import로 같은 파일을 또 불러오면 완전히 별개의 모듈 객체가 생긴다.
+            # 그 결과 예를 들어 로그인 시 app_main._sync_calendar_user()가
+            # set_current_user()로 바꾼 _current_user_id는 "표준 import로 만들어진
+            # 사본"에만 반영되고, 정작 여기서 만들어 installed_tools에 등록한 함수들이
+            # 참조하는 모듈에는 전혀 반영되지 않는다 — 실측으로 확인된 버그(내부/구글
+            # 캘린더 로그인 상태가 항상 "guest"로 남아 전혀 동작하지 않음). 두 곳이
+            # 같은 모듈 객체를 보게 하려면 정식 dotted name으로 sys.modules에 먼저
+            # 등록해야 한다.
+            # ChatGPT 검수 지적: sys.modules에 등록만 하는 걸로는 "이미 등록되어 있으면
+            # 그걸 재사용한다"까지 보장하지 않는다(다른 코드가 먼저 표준 import를 해서
+            # 이미 캐시돼 있어도 이 함수가 새 모듈 객체를 또 만들어 덮어쓸 수 있음) —
+            # 이미 로드돼 있으면 재사용하고, exec_module 도중 예외가 나면 불완전하게
+            # 초기화된 모듈이 캐시에 남지 않도록 등록을 되돌린다.
+            # "plugins.{module_name}" 정식 경로로 sys.modules에 등록해서 로드한다 —
+            # 그냥 spec_from_file_location만 쓰면 이 모듈이 sys.modules에 안 남아서,
+            # app_main.py 같은 다른 곳에서 "from plugins.local_calendar import ..."처럼
+            # 표준 import로 같은 파일을 또 불러오면 완전히 별개의 모듈 객체가 생긴다.
+            # 그 결과 예를 들어 로그인 시 app_main._sync_calendar_user()가
+            # set_current_user()로 바꾼 _current_user_id는 "표준 import로 만들어진
+            # 사본"에만 반영되고, 정작 여기서 만들어 installed_tools에 등록한 함수들이
+            # 참조하는 모듈에는 전혀 반영되지 않는다 — 실측으로 확인된 버그(내부/구글
+            # 캘린더 로그인 상태가 항상 "guest"로 남아 전혀 동작하지 않음). 두 곳이
+            # 같은 모듈 객체를 보게 하려면 정식 dotted name으로 sys.modules에 먼저
+            # 등록해야 한다.
+            # ChatGPT 검수 지적: sys.modules에 등록만 하는 걸로는 "이미 등록되어 있으면
+            # 그걸 재사용한다"까지 보장하지 않는다(다른 코드가 먼저 표준 import를 해서
+            # 이미 캐시돼 있어도 이 함수가 새 모듈 객체를 또 만들어 덮어쓸 수 있음) —
+            # 이미 로드돼 있으면 재사용하고, exec_module 도중 예외가 나면 불완전하게
+            # 초기화된 모듈이 캐시에 남지 않도록 등록을 되돌린다.
+            full_name = f"plugins.{p['module_name']}"
+            if full_name in sys.modules:
+                module = sys.modules[full_name]
+            else:
+                spec   = importlib.util.spec_from_file_location(full_name, filepath)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[full_name] = module
+                try:
+                    spec.loader.exec_module(module)
+                except Exception:
+                    sys.modules.pop(full_name, None)
+                    raise
 
             for name in p.get("func_names", [p.get("func_name")]):
                 func = getattr(module, name, None)
@@ -99,10 +140,21 @@ def download_and_install_plugin(
         with open(path, 'w', encoding='utf-8') as f:
             f.write(res.text)
 
-        # 동적 로드
-        spec   = importlib.util.spec_from_file_location(m_name, path)
+        # 동적 로드 — load_existing_plugins()와 동일한 이유로 "plugins.{m_name}"
+        # 정식 경로로 sys.modules에 등록해서, 다른 곳의 표준 import(from plugins.X
+        # import ...)와 같은 모듈 객체를 보도록 한다. 여기는 load_existing_plugins()와
+        # 달리 "이미 있으면 재사용"하지 않는다 — 여기는 "지금 막 새로 내려받은 파일을
+        # 설치"하는 경로라서, 혹시 같은 이름이 이미 캐시돼 있어도 그건 옛 코드이므로
+        # 반드시 방금 받은 새 파일로 덮어써야 한다.
+        full_name = f"plugins.{m_name}"
+        spec   = importlib.util.spec_from_file_location(full_name, path)
         mod    = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        sys.modules[full_name] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            sys.modules.pop(full_name, None)
+            raise
 
         for name in plugin_info.get("func_names", [plugin_info.get("func_name")]):
             func = getattr(mod, name, None)

@@ -14,6 +14,9 @@ __pycache__/
 chat_logs/
 *.pyc
 
+# 테스트 캐시
+.pytest_cache/
+
 # 민감 정보 파일
 users.json
 plugins/credentials.json

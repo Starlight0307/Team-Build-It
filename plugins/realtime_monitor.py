@@ -355,6 +355,44 @@ def _snapshot():
     return snap
 
 
+def _run_one_tick(last_snapshot: dict, tick: int) -> dict:
+    """감시 주기 한 틱에 해당하는 실제 점검+알림 기록 로직. ChatGPT 검수 지적으로
+    _monitor_loop()의 while문 안에 있던 걸 분리했다 — 원래는 실제 스레드가
+    _startup_interval_seconds(최소 10초)만큼 기다려야만 이 로직이 실행돼서,
+    "새 프로세스가 실제로 감지→알림 기록까지 이어지는가"를 테스트하려면 매번
+    수 초씩 기다려야 했다. 이제는 대기 없이 이 함수 하나만 직접 호출해서
+    검증할 수 있다(tests/integration/test_realtime_monitor.py 참고). 반환값은
+    다음 틱에 넘길 새 snapshot — _monitor_loop가 그대로 이어받아 쓴다."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 1) 시작프로그램 — 매 틱마다, 비용이 거의 없어서 자주 확인
+    try:
+        current = _snapshot()
+        new_keys = set(current) - set(last_snapshot)
+        if new_keys:
+            with _alerts_lock:
+                for key in new_keys:
+                    alert = f"[{ts}] 🚨 새로 자동 실행되는 프로그램 발견: {key} → {current[key]}"
+                    alert += "\n   " + _format_info(_STARTUP_ITEM_INFO)
+                    _alerts.append(alert)
+        last_snapshot = current
+    except Exception:
+        pass
+
+    # 2) 의심 프로세스 — N틱마다, 전체 프로세스 순회 비용이 있어서 느슨하게
+    if tick % _process_check_every_ticks == 0:
+        try:
+            proc_alerts = _check_new_suspicious_processes()
+            if proc_alerts:
+                with _alerts_lock:
+                    for a in proc_alerts:
+                        _alerts.append(f"[{ts}] 🦠 새로 의심스러운 프로그램 발견: {a}")
+        except Exception:
+            pass
+
+    return last_snapshot
+
+
 def _monitor_loop():
     last_snapshot = _snapshot()
     tick = 0
@@ -363,32 +401,7 @@ def _monitor_loop():
         if _monitor_stop_flag.is_set():
             break
         tick += 1
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # 1) 시작프로그램 — 매 틱마다, 비용이 거의 없어서 자주 확인
-        try:
-            current = _snapshot()
-            new_keys = set(current) - set(last_snapshot)
-            if new_keys:
-                with _alerts_lock:
-                    for key in new_keys:
-                        alert = f"[{ts}] 🚨 새로 자동 실행되는 프로그램 발견: {key} → {current[key]}"
-                        alert += "\n   " + _format_info(_STARTUP_ITEM_INFO)
-                        _alerts.append(alert)
-            last_snapshot = current
-        except Exception:
-            pass
-
-        # 2) 의심 프로세스 — N틱마다, 전체 프로세스 순회 비용이 있어서 느슨하게
-        if tick % _process_check_every_ticks == 0:
-            try:
-                proc_alerts = _check_new_suspicious_processes()
-                if proc_alerts:
-                    with _alerts_lock:
-                        for a in proc_alerts:
-                            _alerts.append(f"[{ts}] 🦠 새로 의심스러운 프로그램 발견: {a}")
-            except Exception:
-                pass
+        last_snapshot = _run_one_tick(last_snapshot, tick)
 
 
 def start_realtime_monitor(startup_interval_seconds: int = None,

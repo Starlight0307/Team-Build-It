@@ -1,6 +1,63 @@
+import re
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
+
+# ChatGPT 검수 지적: 다나와 검색 결과에 검색어와 다른 등급의 상품(예: "에어팟 프로"를
+# 검색했는데 "프로"가 안 붙은 일반 에어팟)이 섞여 나올 수 있는데, "그중 가장 저렴한
+# 것을 추천해줘"라고 LLM에게 판단·계산을 맡기면 모델이 그 등급 차이를 못 보고 다른
+# 상품을 "가장 싼 [검색어]"라고 잘못 단정하는 걸 실측으로 확인했다(2번 중 1번꼴로
+# 재현). 결과를 줄여서 필터링하면 진짜 관련 상품을 놓칠 위험이 있으니 결과 자체는
+# 그대로 두되, "검색어와 실제로 일치하는 상품"과 "그중 최저가"는 LLM에게 판단시키지
+# 않고 여기서 코드로 결정론적으로 계산해서 결과 텍스트에 명시해준다 — LLM은 그 계산
+# 결과를 그대로 옮기기만 하면 되게 만드는 게 목표.
+_QUERY_TRAILING_WORDS = (
+    "알려줘", "검색해줘", "찾아줘", "보여줘", "궁금해", "최저가", "가격",
+)
+
+
+def _query_core(query: str) -> str:
+    """매칭 판단용으로만 쓰는, 요청 동사/가격 관련 단어를 뗀 핵심 검색어."""
+    core = query
+    for w in _QUERY_TRAILING_WORDS:
+        core = core.replace(w, "")
+    return re.sub(r"\s+", "", core).strip()
+
+
+def _build_match_summary(parsed_products: list, search_query: str) -> str:
+    """검색어와 실제로 이름이 일치하는 상품 판정 + 그중 최저가 계산을 LLM에게
+    맡기지 않고 여기서 결정론적으로 끝낸다 (LLM은 이 결과를 그대로 옮기기만
+    하면 됨). parsed_products는 (상품명, 가격원|None) 튜플 리스트.
+
+    다나와 스크래핑(네트워크 I/O)과 분리해서 여기 독립 함수로 뺀 이유: 이
+    판정/계산 로직 자체가 정확한지는 네트워크 없이도 검증 가능해야 테스트가
+    빠르고 안정적이기 때문 (tests/unit/test_price_search_matching.py 참고)."""
+    query_core = _query_core(search_query)
+    if query_core:
+        matched = [p for p in parsed_products if query_core in p[0].replace(" ", "")]
+    else:
+        matched = list(parsed_products)
+    matched_with_price = [p for p in matched if p[1] is not None]
+
+    lines = [""]
+    if matched_with_price:
+        cheapest_name, cheapest_price = min(matched_with_price, key=lambda p: p[1])
+        lines.append("[💡 검색어와 이름이 일치하는 상품 중 최저가 — 이미 계산됨]")
+        lines.append(f"{cheapest_name}: {cheapest_price:,}원")
+        unmatched = [p for p in parsed_products if p not in matched]
+        if unmatched:
+            lines.append(
+                f"(참고: 위 5개 중 {len(unmatched)}개는 검색어 '{search_query}'와 "
+                f"이름이 다른 상품이라 이 최저가 비교에서 제외함 — "
+                + ", ".join(p[0] for p in unmatched) + ")"
+            )
+    else:
+        lines.append(
+            f"[💡 참고] 위 5개 상품 중 검색어 '{search_query}'와 이름이 정확히 일치하는 "
+            "상품을 찾지 못했습니다 — 관련은 있지만 다른 모델/등급일 수 있으니 상품명을 "
+            "그대로 확인해주세요."
+        )
+    return "\n".join(lines)
 
 # ==========================================
 # 🛠️ Tool Schemas (ollama tool calling용)
@@ -68,6 +125,8 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
         results.append(f"║  🛒 '{search_query}' 최저가 검색 결과")
         results.append(f"╚══════════════════════════════════════════════════════╝\n")
 
+        parsed_products = []  # (name, price_won:int|None) — 매칭/최저가 계산용
+
         # 최대 5개 상품 정보 추출
         for idx, product in enumerate(products[:5], 1):
             try:
@@ -80,6 +139,7 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
                     continue
 
                 name = name_elem.get_text(strip=True)
+                price_won = None
 
                 # 가격 추출 - hidden input에서 가져오기
                 price_formatted = "가격 정보 없음"
@@ -90,6 +150,7 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
                     try:
                         price = int(price_input.get('value'))
                         price_formatted = f"{price:,}원"
+                        price_won = price
                     except:
                         pass
 
@@ -106,6 +167,7 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
                         try:
                             price = int(price_text)
                             price_formatted = f"{price:,}원"
+                            price_won = price
                         except:
                             pass
 
@@ -140,11 +202,15 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
                 results.append(f"└─────────────────────────────────────────────────────┘")
                 results.append("")
 
+                parsed_products.append((name, price_won))
+
             except Exception as e:
                 continue
 
         if len(results) <= 3:
             return f"'{search_query}' 검색 결과를 가져오지 못했습니다."
+
+        results.append(_build_match_summary(parsed_products, search_query))
 
         return "\n".join(results)
 
