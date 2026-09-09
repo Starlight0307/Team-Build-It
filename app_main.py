@@ -3,6 +3,17 @@ import re
 import sys
 import uuid
 
+# 콘솔 코드페이지가 cp949(한국어 Windows 기본값)인 환경에서 플러그인들이
+# 디버그 로그로 찍는 이모지(🔥🗑️ 등)가 print()에서 UnicodeEncodeError로
+# 죽는 문제가 있었음 — 특히 kill_process/delete_event처럼 위험 동작 확인 후
+# 실행되는 함수 안에서 발생하면, 실제 동작은 시도조차 못 했는데 사용자에게는
+# "요청하신 작업을 처리하지 못했습니다"라는 오탐 오류만 보임. 프로그램 시작
+# 시점에 표준출력/에러 인코딩을 UTF-8로 고정해서 원천 차단.
+if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -440,8 +451,17 @@ class AssistantApp(QWidget):
         p = get_palette(d)
         s = ui_scale.get_scale()   # 대화창(말풍선/카드/입력창/사이드바)에만 적용되는 배율
 
+        # 실제 앱을 켜서 확인창을 직접 봤을 때 발견한 버그: 위 "QLabel { color: ... }"가
+        # 최상위 위젯(self)에 적용되면 그 안에서 만들어지는 QMessageBox(로그인/회원가입
+        # 오류, 플러그인 설치, 프로세스 종료·IoT 제어 등 위험 동작 확인창 전부 포함)의
+        # 내부 라벨까지 이 색을 상속받는다. 다크 모드에서는 tc가 흰색인데 QMessageBox
+        # 자체 배경은 항상 OS 기본값(흰색)이라, 흰 글씨+흰 배경으로 텍스트가 거의 안
+        # 보이는 문제가 있었다 — 콘솔 테스트로는 못 잡고 실제 GUI를 띄워봐야만 보였음.
+        # QMessageBox의 배경은 테마와 무관하게 항상 밝은 색이므로 그 안의 텍스트는
+        # 테마 설정과 무관하게 항상 어두운 색으로 고정한다.
         self.setStyleSheet(f"""
             QLabel {{ color: {p['tc']}; background: transparent; border: none; }}
+            QMessageBox QLabel {{ color: #000000; background: transparent; border: none; }}
             QScrollArea {{ background-color: transparent; border: none; }}
             QScrollBar:vertical {{ border: none; background: transparent; width: 8px; border-radius: 4px; }}
             QScrollBar::handle:vertical {{ background: #AAAAAA; border-radius: 4px; }}
@@ -1568,12 +1588,24 @@ class AssistantApp(QWidget):
         sys.stderr.write(f"\n🔍 파싱 시작...\n")
         sys.stderr.flush()
 
+        # 카드 상자(╔...) 앞에 붙어있는 안내 문구가 있으면 따로 뽑아둔다 —
+        # core/ai_worker.py의 _track_price_search()가 재검색일 때 "🔁 이전에도
+        # 검색하신 적 있어요" 같은 개인화 힌트를 이 앞부분에 붙여서 보내는데,
+        # 헤더를 아래서 새로 만들면서 이 부분을 그냥 버리면 힌트가 카드 UI에는
+        # 전혀 안 보이는 문제가 있었다 — 실제 GUI로 테스트하다가 발견함(콘솔
+        # 테스트는 신호 페이로드 문자열만 확인해서 이 화면 표시 버그를 못 잡았음).
+        box_start = text.find("╔")
+        prefix_note = text[:box_start].strip() if box_start > 0 else ""
+
         # 제목 추출
         title_match = re.search(r"'([^']+)' 최저가 검색 결과", text)
         search_query = title_match.group(1) if title_match else "상품"
 
         # 헤더 메시지
-        header = f"🤖 로컬 비서: '{search_query}' 검색 결과입니다."
+        if prefix_note:
+            header = f"🤖 로컬 비서: {prefix_note}\n\n'{search_query}' 검색 결과입니다."
+        else:
+            header = f"🤖 로컬 비서: '{search_query}' 검색 결과입니다."
         header_bubble = MessageBubble(header, False, max_width=self.scroll_area.viewport().width())
         self.chat_bubbles.append(header_bubble)
         self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, header_bubble)

@@ -90,7 +90,15 @@ def _load_recent_context(user_id: str, exclude_session_id: str = None) -> str:
             # 수 있고, 메시지는 있지만 전부 빈 문자열인 세션도 "쓸모 있는 세션"으로
             # 착각해서 폴백을 멈추면 안 됨(자체 테스트 중 발견).
             candidate = [m for m in candidate if m[0] in ("user", "assistant") and (m[1] or "").strip()]
-            if candidate:
+            # 실측으로 확인: 앱 시작 시 자동으로 뜨는 "Windows 업데이트 상태" 배너 같은
+            # 건 사용자 메시지 없이 assistant 역할 하나만 session_id=None(→"default")으로
+            # 저장된다(app_main.py의 _on_update_check_result → display_ai_response →
+            # save_chat_to_file, current_session_id가 아직 None인 시점). 이런 "사용자
+            # 발화가 아예 없는 세션"을 실제 대화로 착각해 불러오면, 모델에게 앞뒤 맥락
+            # 없는 한 줄만 던져주게 되어 "아까 무슨 얘기 나눴지?" 같은 질문에 엉뚱하고
+            # 어색한 답을 하게 만든다 — 반드시 user 발화가 최소 1개는 있어야 "실제 대화"로
+            # 인정한다.
+            if candidate and any(m[0] == "user" for m in candidate):
                 messages = candidate
                 break
         if not messages:
@@ -187,10 +195,14 @@ _DANGEROUS_FUNCS = {
     "block_suspicious_process": _describe_block_suspicious_process,
     "delete_event":             lambda a, fm: "구글 캘린더 일정 삭제 (되돌릴 수 없음)",
     "local_delete_event":       lambda a, fm: "내부 캘린더 일정 삭제 (되돌릴 수 없음)",
-    # IoT 기기는 실제 물리 공간에 영향을 준다(조명이 갑자기 꺼지거나, 난방기가
-    # 켜지는 등) — LLM이 알아서 판단해 바로 실행하면 안 되는 이유가 소프트웨어
-    # 위험과는 다른 종류라 별도로 danger 목록에 포함.
-    "control_iot_device":       lambda a, fm: f"'{a.get('device_name', '')}' 기기 {'켜기' if a.get('action') == 'on' else '끄기'}",
+    # control_iot_device는 여기 넣지 않는다 — 처음엔 "물리적 기기에 영향을 주니
+    # 위험하다"고 넣었는데, 실제로 켜보니 사용자 입장에서 이상한 UX였다:
+    # kill_process/manage_firewall/block_suspicious_process는 AI가 스스로
+    # "이게 위험해 보이니 처리하자"고 판단해서 부르는 경우가 있어 확인이
+    # 필요하지만, "거실 전등 켜줘"는 사용자가 이미 명확하게 지시한 그대로를
+    # 실행하는 것이라 애매함이 없다. 게다가 조명/TV 같은 IoT 기기는 잘못
+    # 켜져도 되돌리기 쉬운 저위험 동작이라, 시스템에 실질적 피해를 줄 수 있는
+    # 나머지와 같은 급으로 취급하는 건 과했다 — 실사용자(팀원) 피드백으로 수정.
 }
 
 # get_realtime_alerts/get_realtime_alert_count는 "이미 실행 중인 백그라운드 감시"가
@@ -246,12 +258,14 @@ _TOOL_CATEGORIES = {
     "network_security": (
         ("포트", "방화벽", "네트워크", "dns", "보안", "스캔", "연결", "트래픽", "종합", "점수", "리포트"),
         ("scan_open_ports", "get_firewall_rules", "manage_firewall", "get_network_connections",
-         "monitor_network_traffic", "check_dns_settings", "get_network_security_report"),
+         "monitor_network_traffic", "check_dns_settings", "get_network_security_report",
+         "block_suspicious_process"),
     ),
     "malware_detection": (
         ("의심", "악성", "시작프로그램", "자동실행", "자동 실행", "서비스", "해킹",
          "보안", "종합", "점수", "리포트"),
-        ("detect_suspicious_processes", "scan_startup_items", "scan_suspicious_services", "get_malware_report"),
+        ("detect_suspicious_processes", "scan_startup_items", "scan_suspicious_services", "get_malware_report",
+         "block_suspicious_process"),
     ),
     "system_security": (
         ("업데이트", "패치", "공유폴더", "공유 폴더", "로그인실패", "로그인 실패",
@@ -263,14 +277,45 @@ _TOOL_CATEGORIES = {
         ("start_realtime_monitor", "stop_realtime_monitor", "get_realtime_monitor_status",
          "get_realtime_alerts", "get_realtime_alert_count"),
     ),
+    # 실측 테스트에서 이 카테고리 자체가 빠져 있어 "전등 켜줘" 같은 요청이 다른
+    # 카테고리(예: "검색"이 겹쳐 price 카테고리)로 잘못 분류되거나 아무 카테고리에도
+    # 안 걸려서, discover_iot_devices/control_iot_device가 이번 턴에 노출된
+    # 도구 목록(ollama_tools)에 아예 없었던 것을 확인함 — _TOOL_KEYWORDS만 고치는
+    # 걸로는 안 되고 여기도 같이 고쳐야 실제로 호출됨.
+    "iot": (
+        ("스마트", "iot", "전등", "조명", "플러그", "가전", "기기", "켜줘", "켜",
+         "전원", "보일러", "에어컨", "온도조절"),
+        ("discover_iot_devices", "control_iot_device"),
+    ),
 }
+
+
+def _looks_like_json_leak(text: str) -> bool:
+    """모델이 자연어 대신 tool_calls 형식을 흉내 낸 JSON/코드 조각을 그대로
+    출력했는지 검사한다. 원래는 첫 모델 응답에서만 썼는데, _summarize_tool_results
+    (실제 결과를 자연어로 정리해달라고 다시 요청하는 두 번째 호출)도 같은 방식으로
+    JSON을 흉내 내는 걸 실측으로 확인해서, 그 결과도 사용자에게 그대로 보여주기
+    전에 이 검사를 거치게 만든다."""
+    return bool(
+        re.search(r'\{\s*"type"\s*:\s*"function"', text, re.DOTALL)
+        or re.search(r'\{\s*"name"\s*:\s*"\w+".+?"(?:arguments|parameters)"\s*:', text, re.DOTALL)
+        or re.search(r'"parameters\{"', text)
+        or re.search(r'^\s*\w+\([^)]*\)\s*$', text, re.MULTILINE)
+        or re.search(r'^\s*\{.*"message".*\}\s*$', text.strip(), re.DOTALL)
+    )
 
 
 def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
     """실제 도구 실행 결과를 받아 대화체 답변으로 정리한다. 정상적인
     tool_calls 경로와, 아래 _extract_faked_tool_call로 복구해서 실제
     실행한 경우가 이 함수를 공유해서 쓴다 — 어느 경로든 '진짜 결과'가
-    있을 때만 이 함수를 타므로 지어낼 여지가 없다."""
+    있을 때만 이 함수를 타므로 지어낼 여지가 없다.
+
+    단, 이 자연어 정리 요청 자체에 대해서도 모델이 JSON을 흉내 낼 수 있다는 걸
+    실측으로 확인했다(예: 세션 맥락 질문에 get_system_info를 지어내 부르고,
+    그 결과를 정리해달라는 이 두 번째 호출에서도 또 JSON을 출력). 그럴 땐 한 번
+    더 요청하고, 그래도 안 되면 원본 결과라도 그대로 보여준다 — 의미 없는 JSON
+    조각을 사용자에게 보여주는 것보다는 낫다."""
     summary_messages = chat_history + [{
         'role': 'user',
         'content': (
@@ -303,7 +348,25 @@ def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
         )
     }]
     final_response = ollama.chat(model='llama3.1', messages=summary_messages)
-    return final_response['message']['content'].strip()
+    result = final_response['message']['content'].strip()
+
+    if _looks_like_json_leak(result):
+        retry_messages = summary_messages + [{
+            'role': 'user',
+            'content': (
+                "방금 답변이 함수 호출 형식(JSON/코드)으로 나왔어요. 그런 형식 말고, "
+                "결과를 사람에게 말하듯 자연스러운 한국어 문장으로만 다시 답해줘."
+            )
+        }]
+        retry_response = ollama.chat(model='llama3.1', messages=retry_messages)
+        result = retry_response['message']['content'].strip()
+
+    if _looks_like_json_leak(result):
+        # 재시도까지 실패하면, 의미 없는 JSON 조각을 사용자에게 보여주는 대신
+        # 실제로 확인된 원본 결과라도 그대로 보여준다.
+        result = f"결과를 자연스러운 문장으로 정리하진 못했지만, 확인된 내용은 다음과 같아요:\n\n{raw_results}"
+
+    return result
 
 
 def _extract_faked_tool_call(text: str):
@@ -444,6 +507,11 @@ class AIWorker(QThread):
         "dns", "시작프로그램", "자동실행", "자동 실행", "서비스", "공유폴더", "공유 폴더",
         "로그인실패", "로그인 실패", "리포트", "종합", "점수", "해킹", "취약점",
         "실시간", "감시", "모니터링",
+        # IoT — 실측 테스트에서 이 키워드들이 빠져있어 "전등 켜줘" 같은 요청이
+        # use_tools=False로 들어가는 바람에 AI가 도구 호출 없이 답변을 지어내는
+        # 문제를 확인함(할루시네이션). 자연스러운 IoT 요청 표현을 최대한 포함.
+        "스마트", "iot", "전등", "조명", "플러그", "가전", "기기", "켜줘", "켜",
+        "전원", "보일러", "에어컨", "온도조절",
     )
 
     # 실행/상태확인이 아니라 '방법 설명'을 원하는 요청 — 프롬프트로 아무리 지시해도
@@ -973,6 +1041,17 @@ class AIWorker(QThread):
                     "이럴 땐 관련 함수를 호출하지 말고 말로 자연스럽게 설명하세요. "
                     "예: '계정 연동 방법 알려줘' → get_login_status를 호출하지 말고, "
                     "어떻게 하면 되는지 설명하세요.\n"
+                    "6. 전등/조명/TV/보일러/에어컨 등 스마트 기기를 켜거나 끄라는 요청은 "
+                    "반드시 control_iot_device를 호출하세요 (절대 답변만으로 '켰습니다'라고 "
+                    "말하지 마세요 — 함수를 호출하지 않으면 실제로는 아무 일도 일어나지 않습니다). "
+                    "기기 이름이 정확한지 모르겠으면 먼저 discover_iot_devices를 호출해서 "
+                    "실제 등록된 기기 목록을 확인한 뒤 control_iot_device를 호출하세요. "
+                    "'스마트 기기 찾아줘', '연결된 기기 뭐 있어' 같은 요청은 discover_iot_devices를 호출하세요.\n"
+                    "7. 사용자가 '위험한/의심스러운 프로세스가 있으면 종료해줘', '있으면 막아줘'처럼 "
+                    "탐지 결과에 따라 대응까지 요청하면, detect_suspicious_processes 같은 탐지 함수만 "
+                    "다시 부르지 말고 block_suspicious_process를 호출하세요. 종료할 프로세스 이름을 "
+                    "아직 모르면 먼저 detect_suspicious_processes나 get_malware_report로 탐지부터 "
+                    "하고, 그 결과에 실제로 있던 이름으로 block_suspicious_process를 호출하세요.\n"
                     "\n"
                     f"날짜 계산 규칙: 오늘={_today}, 내일={_tomorrow}, 모레={_day_after_tomorrow}. "
                     f"사용자가 '내일'이라고 하면 반드시 {_tomorrow}를, '모레'라고 하면 반드시 {_day_after_tomorrow}를 사용하세요. "
@@ -1049,6 +1128,14 @@ class AIWorker(QThread):
 
             if response.get('message', {}).get('tool_calls'):
                 tool_results = []
+                # 이번 턴에서 확인이 필요한 위험한 동작을 전부 모아뒀다가 한꺼번에
+                # 확인 요청을 보낸다 — 예전엔 첫 번째 위험한 동작에서 바로
+                # emit+return 했는데, 그러면 같은 턴에 함께 요청된 다른 위험한
+                # 동작(예: "종료하고 방화벽도 막아줘"에서 kill_process +
+                # manage_firewall을 동시에 호출)이 조용히 무시된다는 걸 실측으로
+                # 확인했다 — 사용자가 확인창에서 승인해도 두 번째 요청은 실행되지
+                # 않았음.
+                pending_dangerous = []
                 self.chat_history.append(response['message'])
 
                 for tool in response['message']['tool_calls']:
@@ -1120,14 +1207,15 @@ class AIWorker(QThread):
                         valid_params = inspect.signature(func_map[func_name]).parameters
                         args = {k: v for k, v in args.items() if k in valid_params}
 
-                        # ── 위험한 동작은 실행하지 않고 메인 스레드에 확인을 요청 ──
+                        # ── 위험한 동작은 즉시 실행하지 않고 모아둔다 (루프가
+                        # 끝난 뒤 한꺼번에 확인 요청) ──
                         if func_name in _DANGEROUS_FUNCS:
-                            self.confirm_required.emit({
+                            pending_dangerous.append({
                                 'func_name': func_name,
                                 'args': args,
                                 'description': _DANGEROUS_FUNCS[func_name](args, func_map),
                             })
-                            return
+                            continue
 
                         try:
                             tool_result = func_map[func_name](**args)
@@ -1153,13 +1241,35 @@ class AIWorker(QThread):
                         print(f"[AI 워커] 알 수 없는 함수 호출 시도: {func_name}")
                         tool_results.append("❌ 이 기능을 사용하려면 관련 플러그인이 설치되어 있는지 확인해주세요.")
 
-                # ── 3단계: 툴 결과를 모델에 다시 보내 자연어로 정리 ──
+                # ── 3단계: 안전한 도구 결과가 있으면 모델에게 다시 보내 자연어로 정리 ──
                 self.status_update.emit("📋  결과 정리 중")
                 if tool_results:
                     raw_results = "\n".join(tool_results)
-                    clean_reply = _summarize_tool_results(self.chat_history, raw_results)
+                    safe_reply = _summarize_tool_results(self.chat_history, raw_results)
+                elif not pending_dangerous:
+                    safe_reply = "명령을 수행했습니다."
                 else:
-                    clean_reply = "명령을 수행했습니다."
+                    # 안전하게 실행된 결과는 없고 확인 대기 중인 위험한 동작만 있는
+                    # 경우 — "명령을 수행했습니다"라고 하면 거짓이므로 이 경우엔
+                    # 안전한 결과 메시지 자체를 보내지 않는다(아래 확인 요청만 감).
+                    safe_reply = None
+
+                if safe_reply is not None:
+                    safe_reply = safe_reply.strip()
+                    if safe_reply.startswith('"') and safe_reply.endswith('"'):
+                        safe_reply = safe_reply[1:-1]
+                    if safe_reply.startswith("'") and safe_reply.endswith("'"):
+                        safe_reply = safe_reply[1:-1]
+                    self.chat_history.append({'role': 'assistant', 'content': safe_reply})
+                    self.response_ready.emit(f"🤖 로컬 비서: {safe_reply}")
+
+                # ── 4단계: 모아둔 위험한 동작을 전부(하나씩) 확인 요청한다 ──
+                # (여러 개면 메인 스레드에서 확인창이 순서대로 뜬다 — app_main.py의
+                # _on_confirm_required가 신호 하나당 한 번씩 호출되기 때문)
+                for action in pending_dangerous:
+                    self.confirm_required.emit(action)
+
+                return
             else:
                 clean_reply = response['message']['content'].strip()
 
@@ -1177,13 +1287,7 @@ class AIWorker(QThread):
             # 사용자가 갖고 있을 법한 프로그램 이름을 자연스럽게 언급하는 경우)까지
             # 방지한다 — 확인 결과라고 말하려면 반드시 실제 실행을 거치게 강제.
             tool_calls_missing_when_expected = use_tools and not response.get('message', {}).get('tool_calls')
-            looks_like_faked_call = (
-                re.search(r'\{\s*"type"\s*:\s*"function"', clean_reply, re.DOTALL)
-                or re.search(r'\{\s*"name"\s*:\s*"\w+".+?"(?:arguments|parameters)"\s*:', clean_reply, re.DOTALL)
-                or re.search(r'"parameters\{"', clean_reply)
-                or re.search(r'^\s*\w+\([^)]*\)\s*$', clean_reply, re.MULTILINE)
-                or re.search(r'^\s*\{.*"message".*\}\s*$', clean_reply.strip(), re.DOTALL)
-            )
+            looks_like_faked_call = _looks_like_json_leak(clean_reply)
             if tool_calls_missing_when_expected or looks_like_faked_call:
 
                 # 흉내만 낸 게 아니라 실제로 그 함수를 실행해서 진짜 결과로 답하게
