@@ -1,6 +1,8 @@
 import os
 import re
 import inspect
+from collections import Counter
+from datetime import datetime
 import ollama
 import httpx  # ollama 패키지가 이미 의존하는 라이브러리 — 오류 종류 구분에만 사용
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -305,6 +307,328 @@ def _looks_like_json_leak(text: str) -> bool:
     )
 
 
+_UNRELATED_TOPIC_MARKERS = ("일정", "캘린더", "스케줄", "포트", "방화벽")
+
+# 2026-09-11 system_info 재검증에서 발견한 버그: "CPU 많이 먹는 프로그램
+# 보여줘"라고 요청해서 실제로는 get_top_cpu_processes 결과(프로세스 목록,
+# 포트/방화벽과 무관)만 받았는데, 최종 답변이 "포트 스캔을 다시 해보니 어떤
+# 포트도 열려 있지는 않습니다만..."이라며 이번 턴에 실행하지도 않은 포트
+# 스캔을 지어내고, 심지어 직전(별개) network_security 턴에서 실제로 발견된
+# "포트 445 열림"과도 모순되는 "아무 포트도 안 열림"을 말하는 걸 확인했다.
+# chat_history에 최근 network_security 대화가 남아있어서(_일정_ 사례와 달리
+# 이번엔 실제로 맥락에 "포트"가 있었음) 그 맥락이 무관한 새 요약에 새어든
+# 것으로 보인다 — "일정"만 감시하던 목록에 "포트/방화벽"도 추가해 같은
+# 방식으로 잡는다.
+
+
+_PORT_WORD_PATTERN = re.compile(r'(?<!리)포트(?!폴리오)')
+
+# 2026-09-11 malware_detection 재검증에서 발견한 버그: get_malware_report()의
+# 원본 결과 헤더가 "[🦠 악성코드 탐지 종합 리포트]"인데, "리포트"라는 단어
+# 자체가 부분 문자열로 "포트"를 포함하고 있어서 `"포트" in raw_results`가
+# 실제로는 포트/방화벽 얘기가 전혀 없는데도 True로 잘못 판정되는 걸 확인했다
+# (report ⊃ port, 우연한 부분 문자열 충돌). 그 결과 이 검사기가 무력화되어
+# "포트 445가 열려 있어서 위험할 수 있어요"라는, 이번 결과와 전혀 무관한
+# 지어낸 문장이 그대로 사용자에게 노출됐다. "포트"만 별도로 "리포트"의
+# 일부가 아닌 경우에만 매치하도록 정규식으로 분리했다.
+def _contains_topic_marker(text: str) -> bool:
+    if _PORT_WORD_PATTERN.search(text):
+        return True
+    return any(kw in text for kw in _UNRELATED_TOPIC_MARKERS if kw != "포트")
+
+
+def _looks_like_unrelated_topic_leak(result: str, raw_results: str) -> bool:
+    """2026-09-11 실사용 재검증에서 발견한 버그: 작은 로컬 모델(llama3.1)이
+    도구 결과 요약 단계에서 실제 결과와 전혀 무관한 화제를 스스로 지어내
+    끼워넣는 걸 확인했다 — "네트워크 연결 확인해줘"라고 요청해서 실제로는
+    get_network_connections 결과(인터넷 연결 목록)만 받았는데, "네, 내일의
+    일정과 현재 인터넷 연결의 상태를 확인해 보았습니다. 오늘은 어떤 일정을
+    가지고 있나요?"처럼 결과에 없는 일정 얘기를 지어내 붙이고 뜬금없는
+    질문으로 마무리한 사례를 재현했다. chat_history나 이전 세션 기록에도
+    캘린더 관련 내용이 전혀 없었으므로 맥락 유출이 아니라 순수한 할루시네이션
+    이었다 — 도구 결과 텍스트 자체에 이 주제 단어가 전혀 없는데 요약 답변에는
+    등장하면 지어낸 것으로 간주한다. system_info 재검증에서 "포트"/"방화벽"도
+    같은 패턴(직전 turn의 network_security 맥락이 무관한 요약에 새어듦)으로
+    나타나서 목록에 추가했다. ("포트" 단독 판정은 위 "리포트" 충돌 문제 때문에
+    _contains_topic_marker로 분리)."""
+    return _contains_topic_marker(result) and not _contains_topic_marker(raw_results)
+
+
+_PERCENT_PATTERN = re.compile(r'\d+(?:\.\d+)?%')
+
+
+def _looks_like_numeric_distortion(result: str, raw_results: str) -> bool:
+    """2026-09-11 system_info 재검증에서 발견한 버그: get_top_cpu_processes가
+    "1. Ld9BoxHeadless.exe (점유율: 4.4%)"처럼 명확한 소수점 퍼센트를 반환했는데,
+    요약 단계에서 llama3.1이 이를 "이 프로세스는 CPU의 44%를 차지하고 있습니다"
+    처럼 소수점을 통째로 날리고 10배 부풀린 값으로 다시 말하는 걸 실측으로
+    확인했다(1.5%→15%, 0.0%→10%도 같은 패턴으로 동시에 발생). 항목을 인용하는
+    첫 줄은 정확한데 그 아래 설명 문장에서만 틀리는 식이라 단순 재인용 검사로는
+    못 잡는다 — 결과에 등장하는 모든 퍼센트 값을 뽑아서 원본 결과에 그 값이
+    문자 그대로 없으면 지어낸 숫자로 간주한다."""
+    raw_percents = set(_PERCENT_PATTERN.findall(raw_results))
+    result_percents = set(_PERCENT_PATTERN.findall(result))
+    return bool(result_percents - raw_percents)
+
+
+_RISK_MARKERS = ("🚨", "⚠️")
+
+
+def _looks_like_fabricated_risk_marker(result: str, raw_results: str) -> bool:
+    """2026-09-11 malware_detection 재검증에서 발견한 버그: scan_startup_items가
+    시작프로그램 12개를 반환했는데 그 raw 결과 어디에도 🚨/⚠️ 표시가 전혀 없었다
+    (전부 정상적인 목록 나열뿐). 그런데도 요약 단계에서 llama3.1이 "Riot
+    Vanguard"(실제로는 라이엇게임즈의 정상적인 안티치트 드라이버)에 스스로
+    "⚠️ 위험으로 표시된 항목"이라고 지어내 붙이는 걸 실측으로 확인했다 — 시스템
+    프롬프트에 이미 "판단은 오직 결과에 적힌 🚨/⚠️ 표시로만 하고 네 지식으로
+    짐작해서 위험도를 새로 매기지 마"라고 명시했는데도 위반한 사례. raw_results
+    전체에 위험 표시가 하나도 없는데 요약 답변에만 등장하면, 근거 없이 지어낸
+    위험 판정으로 간주한다(raw에 실제로 🚨/⚠️가 있는 정상적인 경우는 걸리지
+    않는다 — 그 경우는 요약이 원본 표시를 그대로 옮긴 것일 뿐이므로)."""
+    raw_has_marker = any(m in raw_results for m in _RISK_MARKERS)
+    result_has_marker = any(m in result for m in _RISK_MARKERS)
+    return result_has_marker and not raw_has_marker
+
+
+def _looks_like_repetition_loop(result: str) -> bool:
+    """2026-09-11 실사용 재검증에서 발견한 버그: 항목이 많은 도구 결과
+    (get_network_connections 36건)를 "하나씩 짚어서 설명해달라"는 프롬프트와
+    함께 주면, 작은 로컬 모델(llama3.1)이 몇 개를 설명하다가 같은 줄/문장을
+    그대로 반복하는 무한 루프에 빠져 답이 수천 자로 끝없이 길어지고 결국
+    문장 중간에 잘리는 걸 실측으로 확인했다. 정상 응답은 서로 다른 줄이
+    대부분인 것과 달리, 이 경우엔 완전히 동일한 줄이 여러 번 그대로
+    반복된다 — 그걸 감지한다."""
+    lines = [ln.strip() for ln in result.split('\n') if ln.strip()]
+    if len(lines) < 6:
+        return False
+    counts = Counter(lines)
+    return counts.most_common(1)[0][1] >= 4
+
+
+_SCORE_REPORT_MARKER = "항목별 상태:"
+_SCORE_REPORT_SCORE_PATTERN = re.compile(r'점수:\s*(\d+)/100')
+# 주의: "⚠️"는 U+26A0(⚠) + U+FE0F(변형 선택자) 두 코드포인트로 이뤄진 글자라
+# [🚨⚠️✅]처럼 문자 클래스에 넣으면 "⚠"만 매치되고 뒤의 변형 선택자가
+# 떨어져나가, 이후 marker in ('🚨', '⚠️') 비교가 항상 실패해서 ⚠️로 표시된
+# 항목이 위험/정상 어느 쪽에도 안 들어가고 조용히 통째로 사라지는 버그가
+# 있었다(오프라인 테스트로 발견, GUI 재현 전에 잡음). 반드시 (마커1|마커2|마커3)
+# 형태의 대안(alternation)으로 각 마커를 통째 문자열로 매치해야 한다.
+_SCORE_REPORT_CATEGORY_LINE = re.compile(r'^[ \t]*(🚨|⚠️|✅)[ \t]*(.+?)[ \t]*$', re.MULTILINE)
+_SCORE_REPORT_TITLE_LINE = re.compile(r'^\[([^\]]+)\]$', re.MULTILINE)
+
+
+def _build_score_report_reply(raw_results: str):
+    """2026-09-11 malware_detection 재검증에서 발견한 버그: get_malware_report()는
+    '점수: N/100' + 카테고리별 🚨/✅ 상태 줄(항상 같은 고정 구조)을 반환하는데,
+    이 요약을 llama3.1에게 자유롭게 맡기면 재현할 때마다 다른 방식으로 상태를
+    뒤집어 말했다 — ✅(정상)로 표시된 '시작프로그램'/'자동 시작 서비스'를
+    '의심 프로그램'이라 부르며 조치가 필요한 목록으로 나열하고, 정작 🚨로 표시된
+    실제 위험 항목('의심 프로세스')은 조치 대상에서 빠지거나 뭉개졌다. 두 번째
+    재현에서는 원본에 없는 이모지(🐨🐛😔🐜)까지 지어냈다 — 프롬프트 지시문을
+    강화해도(위 '반대 방향 실수도 절대 하지 마' 추가) 재현됐으므로, 이 고정
+    구조 리포트만큼은 LLM 자유 요약을 아예 타지 않고 코드로 결정론적으로
+    문장을 만든다 (price_search._build_match_summary와 같은 원칙: 판단은
+    코드가 하고 LLM은 설명만 — ChatGPT 검수에서 'Deterministic-first summary
+    rule'로 명명됨).
+
+    malware_detection.py와 system_security.py는 둘 다 같은 _score_report()
+    헬퍼(사실상 동일 코드 중복)를 써서 "[제목]\\n점수: N/100 (등급)\\n\\n
+    항목별 상태:\\n  <마커> <이름>..." 형태의 리포트를 만든다 — 헤더 텍스트만
+    다를 뿐 구조가 완전히 같으므로, 특정 플러그인 마커 대신 공통 구조 마커
+    "항목별 상태:"로 감지해서 두 플러그인 모두에 적용한다. 이 마커가 없는
+    다른 결과(자유형 검색/목록 등)에는 영향 없음."""
+    if _SCORE_REPORT_MARKER not in raw_results:
+        return None
+    score_match = _SCORE_REPORT_SCORE_PATTERN.search(raw_results)
+    categories = _SCORE_REPORT_CATEGORY_LINE.findall(raw_results)
+    if not score_match or not categories:
+        return None
+    score = int(score_match.group(1))
+    risky = [name.strip() for marker, name in categories if marker in ('🚨', '⚠️')]
+    safe = [name.strip() for marker, name in categories if marker == '✅']
+
+    title_match = _SCORE_REPORT_TITLE_LINE.search(raw_results)
+    title = re.sub(r'^[^\w가-힣]+', '', title_match.group(1)).strip() if title_match else "점검 리포트"
+
+    parts = [f"{title}를 확인해봤는데, 점수는 {score}/100점이에요."]
+    if risky:
+        parts.append(f"{', '.join(risky)} 쪽에 위험 표시가 있어서 확인이 필요해 보여요.")
+        if safe:
+            parts.append(f"{', '.join(safe)}는 정상이고요.")
+        parts.append(f"{risky[0]}를 자세히 봐드릴까요?")
+    else:
+        parts.append(f"{', '.join(safe)} 모두 정상이라 지금은 특별히 걱정할 부분이 없어요.")
+    return " ".join(parts)
+
+
+_SINGLE_VERDICT_LINE = re.compile(r'^(✅|⚠️|🚨)\s*(.+)$')
+
+
+def _build_single_verdict_reply(raw_results: str):
+    """2026-09-11 system_security 재검증에서 발견한 버그: get_login_failures()가
+    실패 기록이 없을 때 반환하는 결과는 "[🔑 로그인 실패 이력] (최근 24시간)\\n
+    ✅ 로그인 실패 기록이 없습니다."처럼 헤더 한 줄 + 결론 한 줄뿐인 아주 단순한
+    구조인데, 이걸 llama3.1에게 자연어로 다듬으라고 맡기면 근거 없는 서사를
+    지어내는 걸 확인했다 — "로그인을 여러 번 시도했으나 성공적으로 인증할 수
+    있는 기록이 아직 없어요. 재인증해 보시는 건 어떨까요?"처럼 원본에 전혀
+    없는 '시도/인증 실패' 이야기를 만들어내고 엉뚱하게 재인증을 권유했다.
+    원본이 이미 '결론 한 줄'뿐이라 자연어로 다듬을 내용 자체가 없으므로,
+    헤더([...]) 줄을 뺀 본문이 ✅/⚠️/🚨로 시작하는 문장 딱 한 줄뿐이면 LLM을
+    거치지 않고 그 문장을 그대로 전달한다 (score report와 같은 원칙:
+    Deterministic-first summary rule)."""
+    body_lines = [ln.strip() for ln in raw_results.strip().split('\n')
+                  if ln.strip() and not ln.strip().startswith('[')]
+    if len(body_lines) != 1:
+        return None
+    match = _SINGLE_VERDICT_LINE.match(body_lines[0])
+    if not match:
+        return None
+    return f"확인해봤는데, {match.group(2).strip()}"
+
+
+_REALTIME_STATUS_MARKER = "[🛰️ 실시간 감시 상태]"
+_REALTIME_NOT_RUNNING_TEXT = "현재 감시가 실행 중이 아닙니다."
+_REALTIME_RUNNING_PATTERN = re.compile(
+    r'✅ 실행 중 \(시작 후 (\d+)분 경과\)\n'
+    r'- 시작프로그램 점검: (\d+)초 간격\n'
+    r'- 의심 프로세스 점검: (\d+)초 간격\n'
+    r'누적 알림: (\d+)건'
+)
+
+
+def _build_realtime_status_reply(raw_results: str):
+    """2026-09-11 realtime_monitor 재검증에서 발견한 버그: get_realtime_monitor_status()가
+    실행 중일 때 반환하는 결과("[🛰️ 실시간 감시 상태]\\n✅ 실행 중 (시작 후 0분
+    경과)\\n- 시작프로그램 점검: 20초 간격\\n- 의심 프로세스 점검: 60초 간격\\n
+    누적 알림: 0건")는 ✅가 '실행 중'이라는 상태 한 곳에만 붙어 있는데, 이를
+    llama3.1에게 자연어로 다듬으라고 맡기면 "모든 항목에 ✅가 표시되어
+    정상적인 상태"라며 원본에 없는 '항목별로 전부 ✅ 표시됨'이라는 구조를
+    지어내고, "혹시 위험할 수 있는 것이 있다면 알려드릴까요?"처럼 AI가
+    사용자에게 위험 여부를 되묻는 앞뒤가 안 맞는 문장으로 마무리하는 걸
+    확인했다. 이 상태 결과는 항상 고정된 4개 필드(경과 분/시작프로그램
+    간격/프로세스 간격/누적 알림 수)로만 구성되므로, score report와 같은
+    원칙으로 LLM을 거치지 않고 코드로 직접 문장을 만든다."""
+    if _REALTIME_STATUS_MARKER not in raw_results:
+        return None
+    if _REALTIME_NOT_RUNNING_TEXT in raw_results:
+        return "확인해봤는데, 지금은 실시간 감시가 꺼져 있어요."
+    match = _REALTIME_RUNNING_PATTERN.search(raw_results)
+    if not match:
+        return None
+    minutes, startup_sec, process_sec, alert_count = match.groups()
+    alert_count = int(alert_count)
+    parts = [
+        f"실시간 감시가 켜진 지 {minutes}분 됐어요. "
+        f"시작프로그램은 {startup_sec}초마다, 의심 프로세스는 {process_sec}초마다 확인하고 있고요."
+    ]
+    if alert_count > 0:
+        parts.append(f"지금까지 누적된 알림이 {alert_count}건 있어요. 확인해드릴까요?")
+    else:
+        parts.append("지금까지 누적된 알림은 없어요.")
+    return " ".join(parts)
+
+
+_REALTIME_STOP_NOT_RUNNING = "실시간 감시가 실행 중이 아닙니다."
+_REALTIME_STOP_SUCCESS_MARKER = "[🛰️ 실시간 감시 중지]"
+
+
+def _build_realtime_stop_reply(raw_results: str):
+    """2026-09-11 realtime_monitor 재검증에서 발견한 버그: stop_realtime_monitor()가
+    감시를 껐을 때 반환하는 "[🛰️ 실시간 감시 중지] 백그라운드 감시를
+    종료했습니다."를 요약하면서, llama3.1이 "더 이상 자원도 사용할게요"라고
+    답했다 — "더 이상 자원을 사용하지 않을게요"라고 해야 할 부정 표현이
+    빠져서 방금 감시를 껐다는 사실과 정반대로 들리는 문장이 됐다(부정어
+    누락). 이 두 결과 모두 고정 문자열이라 LLM 없이 바로 답할 수 있다."""
+    stripped = raw_results.strip()
+    if stripped == _REALTIME_STOP_NOT_RUNNING:
+        return "확인해봤는데, 실시간 감시가 원래 실행 중이 아니었어요."
+    if stripped.startswith(_REALTIME_STOP_SUCCESS_MARKER):
+        return "네, 실시간 감시를 중지했어요."
+    return None
+
+
+_CALENDAR_CONFIRM_MARKERS = ("[✅ 일정 등록 완료 (내부 캘린더)]", "[✅ 일정 수정 완료 (내부 캘린더)]")
+_CALENDAR_FIELD_LINE = re.compile(r'^- (제목|시작|종료): (.+)$', re.MULTILINE)
+_CALENDAR_DT_FORMATS = ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M")
+
+
+def _parse_calendar_dt(s: str):
+    s = re.sub(r'\([^)]*\)', '', s).strip()  # "2026-09-12(토) 15:00" -> "2026-09-12 15:00"
+    for fmt in _CALENDAR_DT_FORMATS:
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _format_calendar_dt_korean(dt: datetime, include_date: bool = True) -> str:
+    ampm = "오전" if dt.hour < 12 else "오후"
+    hour12 = dt.hour % 12 or 12
+    time_part = f"{ampm} {hour12}시" if dt.minute == 0 else f"{ampm} {hour12}시 {dt.minute}분"
+    if not include_date:
+        return time_part
+    weekday = "월화수목금토일"[dt.weekday()]
+    return f"{dt.month}월 {dt.day}일({weekday}) {time_part}"
+
+
+def _build_calendar_confirmation_reply(raw_results: str):
+    """2026-09-11 local_calendar 재검증에서 발견한 버그: local_create_event()가
+    반환하는 원본 결과("- 시작: 2026-09-12 15:00")는 24시간제라 전혀 모호하지
+    않은데, 이를 자연어로 다듬으라고 llama3.1에게 맡기면 12시간제(오전/오후)로
+    변환하는 과정에서 오후 3시(15:00)를 "오전 03시"로 잘못 바꾸는 걸 확인했다
+    (원본 데이터는 정확했음 — 저장된 JSON 파일로 직접 재확인). 종료 시각
+    표기도 "2026년 9월 일 오후 3시"처럼 날짜 숫자가 통째로 빠지는 손상까지
+    같이 발생했다. local_create_event/local_update_event가 받아들이는 날짜
+    형식은 _parse_datetime()이 파싱 가능한 24시간제 형식(YYYY-MM-DD HH:MM 등)
+    뿐이라 항상 결정론적으로 파싱 가능하므로, 오전/오후 변환은 코드가 직접
+    계산해서 LLM이 숫자를 틀리게 만들 여지를 없앤다."""
+    if not any(m in raw_results for m in _CALENDAR_CONFIRM_MARKERS):
+        return None
+    fields = dict(_CALENDAR_FIELD_LINE.findall(raw_results))
+    title = fields.get("제목")
+    start_raw = fields.get("시작")
+    end_raw = fields.get("종료")
+    if not title or not start_raw or not end_raw:
+        return None
+    start_dt = _parse_calendar_dt(start_raw)
+    end_dt = _parse_calendar_dt(end_raw)
+    if not start_dt or not end_dt:
+        return None
+    is_update = "수정" in raw_results.split('\n', 1)[0]
+    verb = "수정했어요" if is_update else "등록했어요"
+    start_str = _format_calendar_dt_korean(start_dt)
+    same_day = start_dt.date() == end_dt.date()
+    end_str = _format_calendar_dt_korean(end_dt, include_date=not same_day)
+    return f"'{title}' 일정을 {start_str}부터 {end_str}까지로 {verb}."
+
+
+_CALENDAR_EMPTY_HEADER_MARKERS = ("[📋", "[🔍", "[📊")
+
+
+def _build_calendar_empty_reply(raw_results: str):
+    """2026-09-11 local_calendar 재검증에서 발견한 버그: local_get_upcoming_events()가
+    "[📋 일정 조회 결과 (내부 캘린더)]\\n향후 7일 내 일정이 없습니다."처럼
+    조회 결과가 없을 때 반환하는 아주 단순한 결과를 llama3.1에게 요약시키면,
+    "실수로 9월 11일 오전 7시에 등록된 '스팀 설치' 일정은 삭제했습니다 —
+    다시 확인해 보세요!"처럼 존재하지도 않는 일정을 지어내고, 심지어 조회
+    함수(local_get_upcoming_events)는 삭제 기능이 전혀 없는데도 "실수로
+    삭제했다"는 완전히 거짓인 파괴적 행위까지 주장했다 — 원본에는 "일정이
+    없다"는 사실 하나뿐, 삭제/실수/스팀 언급이 전혀 없었다. 사용자가 실제로
+    데이터를 잃었다고 오해할 수 있는 심각한 사례.
+    get_upcoming_events/get_events_by_date/search_events/get_schedule_summary
+    4개 함수 모두 결과가 없을 때 "[헤더]\\n한 문장('~없습니다')" 형태의 고정
+    구조만 반환하므로(소스 코드로 확인), 이 형태를 감지하면 LLM을 거치지
+    않고 그 문장을 그대로 전달한다."""
+    if not any(raw_results.startswith(m) for m in _CALENDAR_EMPTY_HEADER_MARKERS):
+        return None
+    body_lines = [ln.strip() for ln in raw_results.strip().split('\n')
+                  if ln.strip() and not ln.strip().startswith('[')]
+    if len(body_lines) != 1 or "없습니다" not in body_lines[0]:
+        return None
+    return f"확인해봤는데, {body_lines[0]}"
+
+
 def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
     """실제 도구 실행 결과를 받아 대화체 답변으로 정리한다. 정상적인
     tool_calls 경로와, 아래 _extract_faked_tool_call로 복구해서 실제
@@ -316,20 +640,44 @@ def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
     그 결과를 정리해달라는 이 두 번째 호출에서도 또 JSON을 출력). 그럴 땐 한 번
     더 요청하고, 그래도 안 되면 원본 결과라도 그대로 보여준다 — 의미 없는 JSON
     조각을 사용자에게 보여주는 것보다는 낫다."""
+    deterministic_reply = _build_score_report_reply(raw_results)
+    if deterministic_reply is not None:
+        return deterministic_reply
+    deterministic_reply = _build_single_verdict_reply(raw_results)
+    if deterministic_reply is not None:
+        return deterministic_reply
+    deterministic_reply = _build_realtime_status_reply(raw_results)
+    if deterministic_reply is not None:
+        return deterministic_reply
+    deterministic_reply = _build_realtime_stop_reply(raw_results)
+    if deterministic_reply is not None:
+        return deterministic_reply
+    deterministic_reply = _build_calendar_confirmation_reply(raw_results)
+    if deterministic_reply is not None:
+        return deterministic_reply
+    deterministic_reply = _build_calendar_empty_reply(raw_results)
+    if deterministic_reply is not None:
+        return deterministic_reply
+
     summary_messages = chat_history + [{
         'role': 'user',
         'content': (
             f"도구 실행 결과:\n{raw_results}\n\n"
             "위 결과를 바탕으로 답변해줘. 결과에 없는 내용은 절대 추가하거나 지어내지 마. "
             "특히 프로그램/서비스/프로세스 이름은 결과 텍스트에 실제로 적혀 있는 것만 언급해 — "
-            "'Windows Defender', 'Microsoft Edge'처럼 그럴듯해 보여도 결과에 없으면 "
-            "존재 여부를 모르는 거니까 절대 언급하지 마. 다른 주제나 추측성 내용을 덧붙이지 마.\n"
+            "그럴듯해 보이는 이름이 떠올라도 결과에 문자 그대로 적혀 있지 않으면 존재 여부를 "
+            "모르는 거니까 이름을 지어내서 언급하지 마. 다른 주제나 추측성 내용을 덧붙이지 마.\n"
             "\n"
             "점검/진단/보안/상태 확인류의 결과(점수나 🚨/⚠️/✅ 표시가 있는 리포트)라면 "
             "'모든 항목이 정상입니다'처럼 뭉뚱그리지 말고, 비서가 옆에서 말로 설명해주듯 "
             "자연스러운 대화체로 답해줘 (번호를 매기거나 '요약:', '상세 설명:' 같은 "
             "딱딱한 소제목은 쓰지 말고, 문장으로 자연스럽게 이어서 말해줘):\n"
             "- 먼저 무엇을 확인했고 전체적으로 어떤 상황인지 한두 문장으로 말해줘.\n"
+            "- 결과 텍스트가 이미 확인을 끝내고 결론을 명확히 말하고 있다면(예: '~가 "
+            "없습니다', '~로 나타났습니다'), 그 뒤에 '확인해보지 못했지만', '알 수 없지만'"
+            "처럼 방금 한 말과 반대되는 불확실성 표현을 덧붙이지 마 — 이미 확인해서 나온 "
+            "결론을 스스로 다시 의심하면 안 돼. 결과에 없는 영어 단어나 다른 언어를 "
+            "섞어 쓰지 말고 자연스러운 한국어로만 답해.\n"
             "- 결과 텍스트 안에 개별 항목(이름/수치)이 실제로 나열되어 있으면, 그 항목들을 "
             "있는 그대로 하나씩 짚어서 설명해줘 — 생략하지 마. 하지만 결과가 '몇 개를 확인했고 "
             "문제없음/이상없음' 같은 개수와 판정만 있고 개별 항목 목록이 없다면, 없는 항목을 "
@@ -342,9 +690,17 @@ def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
             "처럼 위험하다는 뉘앙스를 절대 덧붙이지 마 — 결과가 위험하다고 표시하지 않은 "
             "항목을 네가 임의로 의심스럽게 만들면 안 돼. 판단은 오직 결과에 적힌 🚨/⚠️ "
             "표시로만 하고, 네 지식으로 짐작해서 위험도를 새로 매기지 마.\n"
+            "- 반대 방향 실수도 절대 하지 마: 결과에서 ✅로 표시된(정상/안전) 항목을 "
+            "'의심 프로그램', '위험으로 표시된 항목'이라고 부르거나 그 항목들을 "
+            "조치가 필요한 목록인 것처럼 나열하면 안 돼 — ✅는 정상이라는 뜻이니 "
+            "위험 언급 없이 정상이라고만 말해. 결과에 🚨/⚠️로 표시된 항목이 실제로 "
+            "있다면 그 항목의 이름을 정확히 짚어서 언급해야지, ✅ 항목으로 대신 "
+            "채우면 안 돼.\n"
             "- 결과에 🚨나 ⚠️가 하나라도 있으면, 마지막 문장을 반드시 물음표로 끝나는 "
-            "질문으로 마무리해줘 — 예: '포트 445가 열려 있어서 위험할 수 있어요. "
-            "지금 방화벽에서 막아드릴까요?'. 조언만 하고 끝내지 마. "
+            "질문으로 마무리해줘 — 결과에 실제로 나온 항목 이름을 그대로 넣어서 "
+            "'~가 위험할 수 있어요. 지금 조치해드릴까요?'처럼 자연스러운 질문으로 "
+            "마무리해줘 (이 예시 문구를 그대로 베끼지 말고 실제 결과 내용으로 채워줘). "
+            "조언만 하고 끝내지 마. "
             "이 경우엔 '지금은 따로 확인할 게 없어요' 같은 문장을 절대 쓰지 마 — "
             "그 문장은 🚨나 ⚠️가 결과에 하나도 없을 때만 쓰는 거야. '지금은 따로 확인할 게 "
             "없지만 ~가 위험할 수 있어요'처럼 안전하다는 말과 위험하다는 말을 한 문장/문단에 "
@@ -357,23 +713,46 @@ def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
             "JSON이나 코드 형식으로 출력하지 마."
         )
     }]
-    final_response = ollama.chat(model='llama3.1', messages=summary_messages)
+    # 2026-09-11 실사용 재검증에서 발견한 버그: 옵션 없이 호출하면 항목이
+    # 많은 결과(get_network_connections 36건 등)를 하나씩 짚어 설명하다가
+    # 같은 줄을 계속 반복하는 무한 루프에 빠져 답이 끝없이 길어지고 결국
+    # 문장 중간에 잘리는 걸 실측으로 확인했다 — repeat_penalty로 반복을
+    # 억제하고 num_predict로 최악의 경우에도 응답 길이에 상한을 둔다.
+    _SUMMARY_OPTIONS = {'repeat_penalty': 1.3, 'num_predict': 700}
+
+    final_response = ollama.chat(model='llama3.1', messages=summary_messages, options=_SUMMARY_OPTIONS)
     result = final_response['message']['content'].strip()
 
-    if _looks_like_json_leak(result):
+    if _looks_like_repetition_loop(result):
+        # 반복 루프는 같은 프롬프트로 다시 요청해도 또 반복될 가능성이 높아
+        # (이미 느린 로컬 모델을 두 번 기다리게 하는 대신) 재시도 없이 바로
+        # 원본 결과로 대체한다.
+        return f"결과를 자연스러운 문장으로 정리하진 못했지만, 확인된 내용은 다음과 같아요:\n\n{raw_results}"
+
+    if (_looks_like_json_leak(result) or _looks_like_unrelated_topic_leak(result, raw_results)
+            or _looks_like_numeric_distortion(result, raw_results)
+            or _looks_like_fabricated_risk_marker(result, raw_results)):
         retry_messages = summary_messages + [{
             'role': 'user',
             'content': (
-                "방금 답변이 함수 호출 형식(JSON/코드)으로 나왔어요. 그런 형식 말고, "
-                "결과를 사람에게 말하듯 자연스러운 한국어 문장으로만 다시 답해줘."
+                "방금 답변에 문제가 있었어요 — 함수 호출 형식(JSON/코드)으로 나왔거나, "
+                "위 도구 실행 결과에는 전혀 없는 다른 주제(예: 일정/캘린더/포트/방화벽)를 "
+                "언급했거나, 결과에 있는 숫자(%, 개수 등)를 실제와 다르게 바꿔 말했거나, "
+                "결과에 🚨/⚠️ 표시가 전혀 없는데 특정 항목을 위험하다고 지어냈어요. "
+                "오직 위에 주어진 도구 실행 결과 내용만 바탕으로, 숫자와 위험 표시는 결과에 "
+                "적힌 그대로, 사람에게 말하듯 자연스러운 한국어 문장으로만 다시 답해줘. "
+                "결과에 없는 내용은 무엇이든 절대 추가하지 마."
             )
         }]
-        retry_response = ollama.chat(model='llama3.1', messages=retry_messages)
+        retry_response = ollama.chat(model='llama3.1', messages=retry_messages, options=_SUMMARY_OPTIONS)
         result = retry_response['message']['content'].strip()
 
-    if _looks_like_json_leak(result):
-        # 재시도까지 실패하면, 의미 없는 JSON 조각을 사용자에게 보여주는 대신
-        # 실제로 확인된 원본 결과라도 그대로 보여준다.
+    if (_looks_like_json_leak(result) or _looks_like_unrelated_topic_leak(result, raw_results)
+            or _looks_like_repetition_loop(result) or _looks_like_numeric_distortion(result, raw_results)
+            or _looks_like_fabricated_risk_marker(result, raw_results)):
+        # 재시도까지 실패하면, 의미 없는 JSON 조각/무관한 화제/지어낸 숫자나
+        # 위험 판정을 사용자에게 보여주는 대신 실제로 확인된 원본 결과라도
+        # 그대로 보여준다.
         result = f"결과를 자연스러운 문장으로 정리하진 못했지만, 확인된 내용은 다음과 같아요:\n\n{raw_results}"
 
     return result
@@ -696,6 +1075,187 @@ class AIWorker(QThread):
         text = self._keyword_search_text()
         return any(kw in text for kw in self._TOOL_KEYWORDS)
 
+    # 2026-09-11 실사용 재검증에서 발견한 버그: "포트 445가 열려 있어서
+    # 위험할 수 있어요. 지금 방화벽에서 막아드릴까요?"라는 제안에 "응, 막아줘"
+    # 처럼 짧게 승낙만 하면, "막아줘"라는 표현이 manage_firewall(방화벽 차단)과
+    # block_suspicious_process(프로세스 차단) 둘 다에 쓰일 수 있는 데다 이 turn엔
+    # 도구가 여러 카테고리 합쳐 노출돼 있어서, 실측으로 LLM이 엉뚱한 함수를
+    # 고르고 존재하지도 않는 process_name(심지어 다른 도구 이름을 그대로 넣음)을
+    # 지어내 확인창을 띄우는 걸 확인했다. 포트 번호는 직전 대화에 이미 명확히
+    # 있으므로 LLM에게 다시 추론시키지 않고 여기서 정확한 포트로 직접
+    # manage_firewall 확인을 띄운다(실행 자체는 여전히 사용자 승인이 필요).
+    # (?!\s*개) 없이 첫 매치만 썼더니 "열린 포트 2개를 발견했습니다"의 "포트 2"가
+    # 실제 포트 번호보다 먼저 잡혀서 확인창에 엉뚱하게 "포트 2"가 뜨는 걸 실측으로
+    # 확인했다 — "N개"(개수 표현)는 제외하고, 메시지 끝의 차단 제안 문구 바로
+    # 앞에 오는 포트 번호(=마지막 매치)를 실제 대상으로 삼는다.
+    _PORT_NUMBER_PATTERN = re.compile(r'포트\s*(\d{1,5})(?!\s*개)')
+    # "와/과/및/," 로 이어지는 포트 목록만 이어서 인정한다 — 뒤에 "개"가
+    # 붙으면(개수 표현) 포트로 안 친다. ChatGPT 2차 검수 제안: "포트 135번과
+    # 445번"(번 붙는 표현), "포트 135와 포트 445"(포트가 또 반복되는 표현)도
+    # 자연스러운 한국어 포트 나열이라 같이 지원한다.
+    _PORT_LIST_CONTINUATION = re.compile(r'\s*(?:,|와|과|및|/)\s*(?:포트\s*)?(\d{1,5})번?(?!\s*개)')
+    # 인접한 두 앵커 사이가 "순수 연결어"뿐인지 확인용 — "포트 135와 포트 445"처럼
+    # "포트"가 반복돼도 사이에 다른 말(설명 문장 등)이 안 끼어 있으면 같은 목록으로 본다.
+    _PORT_CONNECTOR_ONLY = re.compile(r'\s*(?:,|와|과|및|/)\s*$')
+    _BLOCK_OFFER_PHRASES = ("막아드릴까요", "차단해드릴까요", "막을까요", "차단할까요")
+
+    @classmethod
+    def _extract_offered_ports(cls, content: str) -> list:
+        """실측 중 발견한 3차 버그: "포트 135와 445가 열려 있어서 위험할 수
+        있어요. 막아드릴까요?"처럼 한 문장에 포트가 2개 이상 같이 제안되면,
+        "445"는 앞에 "포트"가 다시 안 붙어서(그냥 "135와 445"로 이어짐)
+        _PORT_NUMBER_PATTERN 매치에서 빠지고 135만 잡혀서, 사용자가 "응
+        막아줘"라고 둘 다 승낙했는데 445는 조용히 누락되는 걸 확인했다.
+
+        ChatGPT 1차 검수 지적: 첫 수정판은 "마지막 포트 앵커부터 문장 끝까지
+        나오는 숫자를 전부 포트로 간주"했는데, 이러면 "포트 135와 445가 열려
+        있고 2분 동안 3회 감지되었습니다"처럼 포트가 아닌 숫자(2분, 3회)까지
+        같이 잡혀버리는 false positive가 생긴다. "포트 N" 앵커 바로 뒤에
+        콤마/와/과/및/슬래시로 곧장 이어지는 숫자만 같은 목록으로 인정하고,
+        그 연결이 끊기면(다른 단어가 끼면) 더 이상 포트로 보지 않는다.
+        1~65535 범위 검증도 같이 한다(포트 99999 같은 값이 확인창까지
+        올라오지 않도록).
+
+        ChatGPT 2차 검수 지적: "포트 135와 포트 445가 열려 있어서... 막아드릴까요?"
+        처럼 "포트"가 매번 반복되면, 마지막 앵커("포트 445")만 잡고 135를
+        놓치는 걸 실측 전 유닛 테스트로 확인했다 — 항목별 이전 보고("포트 135
+        (RPC)...", "포트 445 (SMB)...")를 건너뛰고 최종 제안 문장의 앵커로
+        가려고 항상 "마지막 앵커"를 썼는데, 이 케이스는 그 마지막 앵커 자체가
+        여러 개라 문제가 됐다. 그래서 마지막 앵커에서 시작해, 바로 앞 앵커와의
+        사이가 순수 연결어(와/과/및/,//)뿐일 때만 그 앞 앵커까지 시작점을
+        당겨준다 — 항목별 보고처럼 사이에 다른 설명 문장이 끼어 있으면 여전히
+        건너뛴다."""
+        anchors = list(cls._PORT_NUMBER_PATTERN.finditer(content))
+        if not anchors:
+            return []
+        idx = len(anchors) - 1
+        while idx > 0:
+            prev = anchors[idx - 1]
+            gap = content[prev.end():anchors[idx].start()]
+            if gap.startswith('번'):
+                gap = gap[1:]
+            if not cls._PORT_CONNECTOR_ONLY.fullmatch(gap):
+                break
+            idx -= 1
+        anchor = anchors[idx]
+        raw_ports = [anchor.group(1)]
+        pos = anchor.end()
+        if content[pos:pos + 1] == '번':
+            pos += 1
+        while True:
+            m = cls._PORT_LIST_CONTINUATION.match(content, pos)
+            if not m:
+                break
+            raw_ports.append(m.group(1))
+            pos = m.end()
+        seen = []
+        for n in raw_ports:
+            port = int(n)
+            if 1 <= port <= 65535 and port not in seen:
+                seen.append(port)
+        return seen
+
+    def _maybe_handle_port_block_confirmation(self, func_map: dict) -> bool:
+        """직전 AI 답변이 특정 포트의 방화벽 차단을 제안했고, 이번 사용자
+        메시지가 그 제안에 대한 짧은 승낙이면 LLM을 거치지 않고 정확한
+        포트로 manage_firewall 확인을 직접 띄운다. 승낙 신호 없음/거절/직전
+        답변에 포트 제안 없음이면 아무것도 안 하고 False를 반환해 평소대로
+        LLM 흐름을 탄다.
+
+        포트 번호와 "막아드릴까요" 문구 사이의 거리를 제한하지 않는다 — 처음엔
+        정규식 하나로 "포트 445 ... 막아드릴까요"를 한 번에 매칭하려고 좁은
+        글자수 제한(.{0,20})을 뒀었는데, 실제 문장("포트 445가 열려 있어서
+        위험할 수 있어요. 지금 방화벽에서 막아드릴까요?")은 그 제한보다 길어서
+        매칭에 실패하고 조용히 LLM 흐름으로 넘어가버리는 걸 실측으로 확인했다.
+        포트 번호 존재 여부와 차단 제안 문구 존재 여부를 서로 독립적으로 확인."""
+        if 'manage_firewall' not in func_map:
+            return False
+        text = self.user_text.replace(" ", "")
+        if len(text) > 20 or self._is_decline_reply():
+            return False
+        if not any(h in text for h in self._ACTION_CONFIRM_HINTS):
+            return False
+
+        for msg in reversed(self.chat_history):
+            if msg.get('role') == 'assistant':
+                content = str(msg.get('content', ''))
+                ports = self._extract_offered_ports(content)
+                if not ports or not any(p in content for p in self._BLOCK_OFFER_PHRASES):
+                    return False
+                # 2026-09-11 실사용 재검증에서 발견한 2차 버그: 여기서 chat_history에
+                # 아무것도 안 남기고 emit만 하면, 사용자가 확인창에서 Yes/No 중 뭘
+                # 누르든 그 결과가 대화 기록에 안 남는다. 그러면 다음 turn에서 이 함수가
+                # 다시 reversed(chat_history)의 "가장 최근 assistant 메시지"를 찾을 때
+                # 여전히 이 "...막아드릴까요?" 제안이 최신으로 남아있어서, 전혀 관련
+                # 없는 다음 요청("포트 스캔 해줘" 등)에도 똑같은 방화벽 차단 확인창이
+                # 또 뜨는 걸 실측으로 확인했다. 정상 LLM 경로(아래 1173/1338줄)처럼
+                # 유저 메시지 + 중립적인 assistant placeholder를 먼저 남겨서, 다음
+                # turn이 볼 "가장 최근 assistant 메시지"가 더 이상 이 제안이 아니게
+                # 만든다 (Yes/No 결과 자체는 app_main.py 쪽 메인 스레드에서 처리되므로
+                # 여기서는 결과를 미리 단정하지 않고 "확인을 요청했다"는 사실만 기록).
+                self.chat_history.append({'role': 'user', 'content': self.user_text})
+                for port in ports:
+                    args = {'action': 'deny', 'port': port, 'protocol': 'tcp'}
+                    self.confirm_required.emit({
+                        'func_name': 'manage_firewall',
+                        'args': args,
+                        'description': _DANGEROUS_FUNCS['manage_firewall'](args, func_map),
+                    })
+                ports_desc = ', '.join(f'{p}/tcp' for p in ports)
+                self.chat_history.append({
+                    'role': 'assistant',
+                    'content': f'포트 {ports_desc} 방화벽 차단 확인을 요청했습니다.',
+                })
+                return True
+            if msg.get('role') == 'user':
+                return False
+        return False
+
+    # 2026-09-11 실사용 재검증에서 발견한 버그: 위 _maybe_handle_port_block_
+    # confirmation은 "막아드릴까요/차단해드릴까요/막을까요/차단할까요"라는 정확한
+    # 문구에만 반응한다. AI가 "방화벽에서 막혀있는지 확인해드릴까요?"처럼 다르게
+    # 표현하면 이 shortcut이 (의도대로) 그냥 지나쳐서 평소 LLM tool-calling
+    # 경로로 넘어가는데, 그 경로에서 "응 막아줘"라는 사용자의 짧은 답변에 대해
+    # LLM이 kill_process(process_name_or_number='응')와 manage_firewall(port=None)
+    # 을 동시에 호출해서 확인창에 "'응' 프로세스 강제 종료"와 "포트 None/tcp
+    # 방화벽 차단"이 뜨는 걸 실측으로 확인했다 — 사용자의 답변 텍스트 자체를
+    # 프로세스 이름으로 쓰고, 포트는 아예 못 뽑아서 None을 그대로 넣은 것.
+    # 모든 가능한 제안 문구를 다 열거해서 shortcut으로 가로채는 대신, 위험한
+    # 함수를 실제로 확인창에 띄우기 직전에 인자 자체가 말이 되는지 검증해서
+    # 이런 경우엔 아예 확인창을 안 띄우고 다시 물어보게 만든다.
+    _TRIVIAL_REPLY_WORDS = (
+        "응", "네", "예", "그래", "좋아", "오케이", "okay", "ok", "yes", "y",
+        "아니", "아니오", "아니요", "no",
+    )
+
+    def _looks_like_bogus_dangerous_action(self, func_name: str, args: dict, func_map: dict) -> bool:
+        """위험한 함수(kill_process/manage_firewall/block_suspicious_process)의
+        인자가 명백히 지어낸 값인지 확인한다. 포트가 없거나(None) 범위(1~65535)
+        밖이거나, 프로세스 이름 자리에 사용자의 답변 텍스트 그대로나 단순
+        긍정/부정 단어, 혹은 다른 함수 이름이 그대로 들어있으면 지어낸 것으로
+        간주한다."""
+        if func_name == 'manage_firewall':
+            try:
+                port = int(args.get('port'))
+            except (TypeError, ValueError):
+                return True
+            return not (1 <= port <= 65535)
+
+        if func_name in ('kill_process', 'block_suspicious_process'):
+            key = 'process_name_or_number' if func_name == 'kill_process' else 'process_name'
+            name = str(args.get(key, '')).strip()
+            if not name:
+                return True
+            if name.lower() in self._TRIVIAL_REPLY_WORDS:
+                return True
+            if name == self.user_text.strip():
+                return True
+            if name in func_map:
+                return True
+            return False
+
+        return False
+
     def _allowed_category_funcs(self):
         """메시지(+ 필요시 직전 AI 답변)와 관련 있는 카테고리의 함수 이름만 모아서 반환.
         어느 카테고리에도 안 걸리면 None(=전체 노출, 안전장치)을 반환한다."""
@@ -859,6 +1419,44 @@ class AIWorker(QThread):
                         self.response_ready.emit(_diagnose_error(e))
                         return
 
+            # ── 빠른 감지 1.5: 가격 검색 직후 "이 중에 제일 싼 거" 같은 후속
+            # 질문 직접 처리 ──
+            # 실측으로 발견한 버그: 가격 검색 직후 "이 중에 제일 싸게 파는 거
+            # 어느거야?"처럼 새 제품명 없이 직전 결과를 가리키는 후속 질문을
+            # 하면, 이 질문엔 제품 키워드가 없어서 위 정규식 직접 호출(빠른
+            # 감지 1)에 안 걸리고 평소 LLM tool-calling 경로로 넘어간다. 그런데
+            # 위 직접 호출 경로는 chat_history에 아무것도 안 남기기 때문에(요약을
+            # 별도 summary_messages로만 처리) 후속 질문 시점엔 LLM이 방금 무엇을
+            # 검색했는지 전혀 모르는 상태가 된다 — 그 결과 LLM이 "갤럭시 S24
+            # 최저가"처럼 사용자가 언급한 적도 없는 완전히 다른 제품을 지어내
+            # 재검색하는 걸 실측으로 확인했다(아이폰 16 검색 직후 재현). 새로
+            # 검색하는 대신 price_search.py가 이미 계산해서 기억해둔
+            # LAST_SEARCH를 그대로 재사용한다.
+            _PRICE_FOLLOWUP_HINTS = (
+                "이중", "그중", "저중", "이것중", "그것중", "가장싸", "제일싸",
+                "가장저렴", "제일저렴", "가장싼", "제일싼", "뭐가싸", "어떤게싸",
+            )
+            text_no_space = self.user_text.replace(" ", "")
+            if any(h in text_no_space for h in _PRICE_FOLLOWUP_HINTS) and not has_product:
+                from plugins.price_search import LAST_SEARCH
+                if LAST_SEARCH.get("query"):
+                    sys.stderr.write("\n🎯 가격 검색 후속 질문 직접 처리 (재검색 안 함)\n")
+                    sys.stderr.flush()
+                    if LAST_SEARCH.get("cheapest_name"):
+                        reply = (
+                            f"방금 보여드린 '{LAST_SEARCH['query']}' 검색 결과 중에서는 "
+                            f"{LAST_SEARCH['cheapest_name']}가 {LAST_SEARCH['cheapest_price']:,}원으로 "
+                            "가장 저렴해요."
+                        )
+                    else:
+                        reply = (
+                            f"방금 '{LAST_SEARCH['query']}' 검색 결과 중에는 검색어와 이름이 "
+                            "정확히 일치하는 상품이 없어서 단정적으로 최저가를 말씀드리기 "
+                            "어려워요 — 위에 보여드린 상품명을 직접 확인해주세요."
+                        )
+                    self.response_ready.emit(f"🤖 로컬 비서: {reply}")
+                    return
+
             # ── 빠른 감지 2: 시스템 상태/성능 관련 요청 직접 감지 ──
             system_keywords = ['컴퓨터 상태', '시스템 상태', 'pc 상태']
             slow_keywords = ['느려', '느린', '무거', '버벅', '렉', '끊겨', '느리']
@@ -958,6 +1556,11 @@ class AIWorker(QThread):
             func_map = {}
             for func in self.installed_tools:
                 func_map[func.__name__] = func
+
+            # ── "포트 X 막아줘" 직전 제안에 대한 짧은 승낙은 LLM을 거치지 않고
+            # 정확한 포트로 직접 manage_firewall 확인을 띄운다 (위 설명 참고) ──
+            if self._maybe_handle_port_block_confirmation(func_map):
+                return
 
             # ── 계정 확인 요청은 LLM을 거치지 않고 직접 get_login_status 호출 ──
             if self._is_account_status_request() and 'get_login_status' in func_map:
@@ -1229,6 +1832,16 @@ class AIWorker(QThread):
                         # ── 위험한 동작은 즉시 실행하지 않고 모아둔다 (루프가
                         # 끝난 뒤 한꺼번에 확인 요청) ──
                         if func_name in _DANGEROUS_FUNCS:
+                            # 인자가 지어낸 값(포트 None, 사용자 답변 텍스트를
+                            # 그대로 프로세스 이름으로 사용 등)이면 확인창 자체를
+                            # 띄우지 않고 다시 물어본다 (위 _looks_like_bogus_
+                            # dangerous_action 설명 참고).
+                            if self._looks_like_bogus_dangerous_action(func_name, args, func_map):
+                                tool_results.append(
+                                    "❌ 요청하신 작업의 대상을 정확히 파악하지 못했어요. "
+                                    "어떤 프로세스/포트인지 구체적으로 다시 말씀해주시겠어요?"
+                                )
+                                continue
                             pending_dangerous.append({
                                 'func_name': func_name,
                                 'args': args,

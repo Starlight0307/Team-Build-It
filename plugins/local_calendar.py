@@ -306,6 +306,12 @@ def _format_event_line(i: int, event: dict) -> str:
 
 def local_get_upcoming_events(days=7, max_results: int = 10) -> str:
     days = int(days)
+    # ollama tool-calling이 max_results를 JSON 문자열("10")로 넘기는 경우가
+    # 실측으로 확인됨 — int 타입힌트만으론 런타임에 강제되지 않아서
+    # matched[:max_results] 슬라이싱에서 TypeError가 나고, 이게 요약 단계의
+    # 할루시네이션(예: "실수로 일정을 삭제했다"는 지어낸 이야기)으로 이어지는
+    # 걸 확인했다. days와 동일하게 여기서도 명시적으로 정수로 변환한다.
+    max_results = int(max_results)
     print(f"\n📋 [내부 캘린더] 향후 {days}일 일정 조회 중...")
     login_error = _require_login()
     if login_error:
@@ -377,6 +383,7 @@ def local_get_events_by_date(date_str: str) -> str:
 
 
 def local_search_events(keyword: str, days_range: int = 30) -> str:
+    days_range = int(days_range)  # local_get_upcoming_events와 같은 이유로 명시 변환
     print(f"\n🔍 [내부 캘린더] '{keyword}' 일정 검색 중...")
     login_error = _require_login()
     if login_error:
@@ -525,6 +532,7 @@ def local_create_recurring_event(
     login_error = _require_login()
     if login_error:
         return login_error
+    recurrence_count = int(recurrence_count)  # local_get_upcoming_events와 같은 이유로 명시 변환
     recurrence_type = recurrence_type.upper()
     if recurrence_type not in _RECURRENCE_STEP:
         return "반복 주기는 매일/매주/매월/매년 중 하나로 말씀해주세요."
@@ -569,6 +577,7 @@ def local_create_recurring_event(
 # ─────────────────────────────────────────────
 
 def local_get_schedule_summary(days: int = 30) -> str:
+    days = int(days)  # local_get_upcoming_events와 같은 이유로 명시 변환
     print(f"\n📊 [내부 캘린더] 최근 {days}일 일정 분석 중...")
     login_error = _require_login()
     if login_error:

@@ -15,6 +15,18 @@ _QUERY_TRAILING_WORDS = (
     "알려줘", "검색해줘", "찾아줘", "보여줘", "궁금해", "최저가", "가격",
 )
 
+# 2026-09-11 실사용 재검증에서 발견한 버그: 가격 검색 직후 "이 중에 제일 싸게
+# 파는 거 어느거야?"처럼 새 제품명 없이 직전 결과를 가리키는 후속 질문을 하면,
+# ai_worker.py의 정규식 직접 호출(제품명+가격 키워드 동시 감지)이 이 후속
+# 질문에는 제품명이 없어서 안 걸리고 평소 LLM tool-calling 경로로 넘어가는데,
+# 그 경로에서 chat_history에 이 검색의 흔적이 전혀 없어서(직접 호출 경로가
+# chat_history에 기록을 안 남김) LLM이 완전히 새로운, 사용자가 언급한 적도
+# 없는 제품("갤럭시 S24 최저가")을 지어내 재검색하는 걸 실측으로 확인했다.
+# system_info.py의 LAST_TOP_PROCESSES와 같은 방식으로, 가장 최근 검색에서
+# 이미 계산된 최저가 정보를 모듈 전역에 기억해뒀다가 ai_worker.py가 후속
+# 질문에서 새로 검색하지 않고 바로 재사용할 수 있게 한다.
+LAST_SEARCH = {"query": None, "cheapest_name": None, "cheapest_price": None}
+
 
 def _query_core(query: str) -> str:
     """매칭 판단용으로만 쓰는, 요청 동사/가격 관련 단어를 뗀 핵심 검색어."""
@@ -51,7 +63,15 @@ def _build_match_summary(parsed_products: list, search_query: str) -> str:
                 f"이름이 다른 상품이라 이 최저가 비교에서 제외함 — "
                 + ", ".join(p[0] for p in unmatched) + ")"
             )
+        # 후속 질문("이 중에 제일 싼 거 뭐야?")에서 재검색 없이 재사용할 수
+        # 있도록 방금 계산한 최저가를 기억해둔다 (위 LAST_SEARCH 설명 참고).
+        LAST_SEARCH["query"] = search_query
+        LAST_SEARCH["cheapest_name"] = cheapest_name
+        LAST_SEARCH["cheapest_price"] = cheapest_price
     else:
+        LAST_SEARCH["query"] = search_query
+        LAST_SEARCH["cheapest_name"] = None
+        LAST_SEARCH["cheapest_price"] = None
         lines.append(
             f"[💡 참고] 위 5개 상품 중 검색어 '{search_query}'와 이름이 정확히 일치하는 "
             "상품을 찾지 못했습니다 — 관련은 있지만 다른 모델/등급일 수 있으니 상품명을 "

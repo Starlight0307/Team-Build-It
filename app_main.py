@@ -1212,7 +1212,18 @@ class AssistantApp(QWidget):
         맡기면 일부만 부르고 마는 문제를 피하기 위함."""
         t = txt.replace(" ", "")
         has_security = "보안" in t
-        has_all_word = any(q in t for q in ("전체", "종합", "전부", "모두", "총체적"))
+        # "종합"은 애매한 단어다 — "보안 종합해줘"(카테고리 전체를 묻는 뜻)에도
+        # 쓰이지만, "네트워크 보안 종합해줘"처럼 특정 카테고리 하나를 자세히
+        # 봐달라는 뜻으로도 흔히 쓰인다. 실측으로 확인: 후자인데도 이 조건을
+        # 그대로 쓰면 네트워크만 물었는데 악성코드/시스템 리포트까지 다 섞여서
+        # 나와버려 사용자가 혼란스러워한다. "전체/전부/모두/총체적"처럼 애매함이
+        # 없는 단어는 특정 카테고리 이름이 같이 있어도 항상 전체로 취급하고,
+        # "종합"만 있을 땐 특정 카테고리 이름이 없을 때만 전체로 취급한다.
+        _UNAMBIGUOUS_ALL_WORDS = ("전체", "전부", "모두", "총체적")
+        _SPECIFIC_CATEGORY_WORDS = ("네트워크", "악성코드", "멀웨어", "시스템")
+        has_unambiguous_all = any(q in t for q in _UNAMBIGUOUS_ALL_WORDS)
+        has_specific_category = any(w in t for w in _SPECIFIC_CATEGORY_WORDS)
+        has_all_word = has_unambiguous_all or ("종합" in t and not has_specific_category)
         if not (has_security and has_all_word):
             return False
 
