@@ -629,6 +629,271 @@ def _build_calendar_empty_reply(raw_results: str):
     return f"확인해봤는데, {body_lines[0]}"
 
 
+_IOT_NO_DEVICES_TEXT = (
+    "현재 로컬 네트워크에서 발견된 Kasa 스마트 기기가 없습니다. "
+    "기기 전원이 켜져 있고 이 컴퓨터와 같은 Wi-Fi에 연결되어 있는지 확인해주세요."
+)
+
+
+def _build_iot_no_devices_reply(raw_results: str):
+    """2026-09-11 iot_control 재검증에서 발견한 버그: discover_iot_devices()가
+    기기를 하나도 못 찾았을 때 반환하는 고정 문자열(마커 없이 두 문장짜리
+    안내문)을 요약하면서, llama3.1이 여러 문단에 걸쳐 "전원이 꺼져있을
+    수도", "Wi-Fi 연결이 안 됐을 수도" 등 그럴듯한 이유를 나열하다가 마지막
+    문장에서 "위의 두 가지 사항이 모두 확인되지 않았지만 Kasa 스마트 기기
+    이름은 발견되었습니다"라며 응답 전체(그리고 원본 사실)와 정반대로
+    "발견했다"고 결론을 뒤집는 걸 확인했다 — 원본은 처음부터 끝까지 "기기가
+    없다"는 사실 하나뿐이었다. 이 결과는 항상 동일한 고정 문자열이므로
+    정확히 일치할 때 LLM을 거치지 않고 결정론적으로 답한다."""
+    if raw_results.strip() == _IOT_NO_DEVICES_TEXT:
+        return ("확인해봤는데, 로컬 네트워크에서 발견된 Kasa 스마트 기기가 없어요. "
+                 "기기 전원이 켜져 있고 이 컴퓨터와 같은 Wi-Fi에 연결돼 있는지 확인해봐 주실래요?")
+    return None
+
+
+_IOT_NOT_FOUND_PATTERN = re.compile(
+    r"^'(.+?)'이라는 이름의 기기를 찾지 못했습니다\. "
+    r"discover_iot_devices로 정확한 기기 이름을 먼저 확인해주세요\.$"
+)
+_IOT_AMBIGUOUS_PATTERN = re.compile(
+    r"^'(.+?)'이라는 이름의 기기가 (\d+)개 발견되어 어느 것을 제어할지 알 수 없습니다 "
+    r"\((.+?)\)\. 기기 이름을 다르게 설정한 뒤 다시 시도해주세요\.$"
+)
+
+
+def _build_iot_control_reply(raw_results: str):
+    """2026-09-11 iot_control 재검증에서 발견한 버그(discover_iot_devices의
+    "기기 없음" 버그를 고친 직후, 바로 이어지는 턴에서 재현됨 — 이번 세션에서
+    가장 심각한 날조 사례): control_iot_device()가 "'거실 전등'이라는
+    이름의 기기를 찾지 못했습니다. discover_iot_devices로 정확한 기기
+    이름을 먼저 확인해주세요."라는, 실제로 아무 기기도 없다는 걸 의미하는
+    결과를 반환했는데(직전 턴에서 discover_iot_devices()가 "발견된 기기
+    없음"이라고 이미 정확히 답했음), llama3.1이 "2번째discovered item:
+    192.168.x.x : Kasa 스마트 TV"라며 존재한 적도 없는 가짜 기기 이름과
+    가짜 IP(심지어 "x.x"라는 placeholder 문자 그대로)를 지어내고, 한영
+    혼용 단어("2번째ly discovered")까지 섞어 쓰며 "기기가 발견됐다"고
+    직전 턴의 정확한 결과와도 모순되는 주장을 했다. 사용자가 실제로
+    존재하지 않는 기기를 제어하려 시도할 수 있는 위험한 사례라 우선순위를
+    높게 봤다. device_name이 끼워진 파라미터화된 고정 형식 문자열이므로
+    정규식으로 파싱해서 결정론적으로 답한다."""
+    stripped = raw_results.strip()
+    m = _IOT_NOT_FOUND_PATTERN.match(stripped)
+    if m:
+        device_name = m.group(1)
+        return (f"'{device_name}'이라는 이름의 기기를 못 찾았어요. "
+                 "먼저 스마트 기기 목록을 확인해서 정확한 이름으로 다시 시도해주실래요?")
+    m = _IOT_AMBIGUOUS_PATTERN.match(stripped)
+    if m:
+        device_name, count, ip_list = m.groups()
+        return (f"'{device_name}'이라는 이름의 기기가 {count}개 발견돼서 어느 걸 제어할지 알 수 없어요 "
+                 f"({ip_list}). 기기 이름을 다르게 설정한 뒤 다시 시도해주실래요?")
+    return None
+
+
+_PORT_SCAN_HEADER = re.compile(r'^\[🔍 포트 스캔 결과\] (?P<target>.+?) \((?P<range>.+?)\)\n(?P<body>.+)$', re.DOTALL)
+_PORT_SCAN_NONE = re.compile(r'^열린 포트가 없습니다\. \(스캔 시간: [\d.]+초\)$')
+_PORT_SCAN_COUNT = re.compile(r'^열린 포트 \d+개 발견 \(스캔 시간: [\d.]+초\):$')
+# svc 안에 "SMB(파일 공유)"처럼 괄호가 한 번 더 중첩될 수 있어서 [^()]* 뒤에
+# (괄호쌍)?을 한 번 더 허용한다 — PORT_RISKS의 모든 서비스명이 이 형태.
+_PORT_SCAN_ITEM = re.compile(
+    r'^ {2}- 포트\s*(?P<port>\d+)\s*\((?P<svc>[^()]*(?:\([^()]*\))?[^()]*)\)(?:\s*—\s*(?P<desc>.+))?$'
+)
+
+
+def _build_port_scan_reply(raw_results: str):
+    """2026-09-12 network_security 재검증(대화 품질 라운드)에서 발견한 버그:
+    "포트 445 확인해줘"처럼 특정 포트 하나를 콕 집어 묻는 아주 흔한 질문에
+    scan_open_ports()가 정확하고 구조화된 결과("[🔍 포트 스캔 결과]
+    127.0.0.1 (445)\\n열린 포트 1개 발견...\\n  - 포트   445 (SMB(파일
+    공유)) — 🚨 랜섬웨어가 자주 노리는 통로...")를 반환하는데도, 요약 단계의
+    llama3.1이 "SMB인 모양입니다"처럼 이미 확실한 사실을 불필요하게
+    얼버무리거나, "그런데 위험한 프로그램도 있어요? 확인해보지 못했지만…"
+    처럼 사용자가 묻지도 않은 새 주제를 지어내고 스스로 발뺌하는 걸
+    확인했다. 프롬프트를 강화해도(반대되는 불확실성 표현 금지, 확신 있게
+    말하기 규칙 추가) 완전히 없어지지 않아서, 이 결과도 고정 구조이므로
+    코드로 직접 문장을 만든다."""
+    m = _PORT_SCAN_HEADER.match(raw_results.strip())
+    if not m:
+        return None
+    target, prange, body = m.group('target'), m.group('range'), m.group('body').strip()
+    if _PORT_SCAN_NONE.match(body):
+        return f"{target}의 {prange} 포트를 확인해봤는데, 열린 포트가 없어요."
+    lines = body.split('\n')
+    if not lines or not _PORT_SCAN_COUNT.match(lines[0]):
+        return None
+    items = []
+    for ln in lines[1:]:
+        im = _PORT_SCAN_ITEM.match(ln)
+        if not im:
+            return None  # 예상 못한 줄 형식이면 안전하게 LLM 경로로 폴백
+        items.append((im.group('port'), im.group('svc'), im.group('desc')))
+    if not items:
+        return None
+    parts = [f"{target}의 {prange} 포트를 확인해봤는데, 열린 포트가 {len(items)}개 있어요."]
+    risky_port = None
+    for port, svc, desc in items:
+        if desc:
+            parts.append(f"포트 {port}는 {svc}예요 — {desc}.")
+            if not risky_port and ('🚨' in desc or '⚠️' in desc):
+                risky_port = port
+        else:
+            parts.append(f"포트 {port}는 어떤 서비스인지 알려진 게 없어요.")
+    if risky_port:
+        parts.append(f"포트 {risky_port}가 위험할 수 있어요. 지금 방화벽에서 막아드릴까요?")
+    return " ".join(parts)
+
+
+_DNS_CHECK_HEADER = re.compile(r'^\[🌐 DNS 설정(?: 확인)?\]\n(?P<body>.+)$', re.DOTALL)
+_DNS_CHECK_NO_INFO = "DNS 서버 정보를 가져올 수 없습니다."
+_DNS_CHECK_DHCP = "설정된 DNS 서버가 없습니다 (DHCP 자동)."
+_DNS_CHECK_ITEM = re.compile(r'^ {2}(?P<mark>✅|🚨) (?P<ip>\S+) \((?P<label>.+)\)$')
+_DNS_CHECK_OK_SUFFIX = "✅ 알려진 정상 DNS 서버만 사용 중입니다."
+_DNS_CHECK_WARN_PREFIX = re.compile(
+    r'^🚨 경고: (?P<ips>.+)는 알려지지 않은 외부 DNS 서버입니다\. .+$', re.DOTALL
+)
+
+
+def _build_dns_check_reply(raw_results: str):
+    """2026-09-12 network_security 재검증(대화 품질 라운드)에서 발견한 버그:
+    "DNS 설정 이상없는지 확인해줘"라는 흔한 질문에 check_dns_settings()가
+    이미 "[🌐 DNS 설정 확인]\\n  ✅ 168.126.63.1 (KT DNS)\\n  ✅ 168.126.63.2
+    (KT DNS)\\n\\n✅ 알려진 정상 DNS 서버만 사용 중입니다."처럼 확정된 결과를
+    반환하는데도, 요약 단계의 llama3.1이 "KT DNS가 정상적으로 작동
+    증인걸로 보입니다"처럼 불필요하게 얼버무리고 문법이 깨진 문장까지
+    만들어내는 걸 확인했다. scan_open_ports와 같은 이유로 이 결과도 고정
+    구조이므로 코드로 직접 문장을 만든다."""
+    m = _DNS_CHECK_HEADER.match(raw_results.strip())
+    if not m:
+        return None
+    body = m.group('body')
+    if body == _DNS_CHECK_NO_INFO:
+        return "DNS 서버 정보를 가져올 수 없었어요."
+    if body == _DNS_CHECK_DHCP:
+        return "설정된 DNS 서버가 따로 없고, DHCP로 자동 할당받고 있어요."
+
+    split = body.split('\n\n', 1)
+    if len(split) != 2:
+        return None
+    item_block, tail = split
+    items = []
+    for ln in item_block.split('\n'):
+        im = _DNS_CHECK_ITEM.match(ln)
+        if not im:
+            return None
+        items.append((im.group('mark'), im.group('ip'), im.group('label')))
+    if not items:
+        return None
+
+    labels = {label for _, _, label in items}
+    if len(items) == 1:
+        _, ip, label = items[0]
+        parts = [f"DNS 서버를 확인해봤는데 {ip}({label}) 하나를 쓰고 있어요."]
+    elif len(labels) == 1:
+        label = labels.pop()
+        ip_list = ", ".join(ip for _, ip, _ in items)
+        parts = [f"DNS 서버를 확인해봤는데 {ip_list} 총 {len(items)}개가 설정되어 있고, 모두 {label}예요."]
+    else:
+        detail = ", ".join(f"{ip}({label})" for _, ip, label in items)
+        parts = [f"DNS 서버를 확인해봤는데 {detail}로 총 {len(items)}개가 설정되어 있어요."]
+
+    tail = tail.strip()
+    if tail == _DNS_CHECK_OK_SUFFIX:
+        parts.append("알려진 정상 DNS 서버만 사용 중이라 문제없어 보여요.")
+        return " ".join(parts)
+    wm = _DNS_CHECK_WARN_PREFIX.match(tail)
+    if wm:
+        parts.append(
+            f"그런데 {wm.group('ips')}는 알려지지 않은 외부 DNS 서버예요. "
+            "악성코드가 DNS를 조작해 가짜 사이트로 유도하는 파밍 공격일 수 있으니, "
+            "네트워크 어댑터 설정에서 DNS를 직접 확인해보시는 걸 권해드려요."
+        )
+        return " ".join(parts)
+    return None
+
+
+_NET_CONN_HEADER = re.compile(r'^\[🌐 인터넷 연결 확인 결과\] \([^)]*\)\n\n(?P<body>.+)$', re.DOTALL)
+_NET_CONN_NONE_TEXT = "현재 활성화된 네트워크 연결이 없습니다."
+_NET_CONN_EMPTY_TAIL = "외부로 나가는 연결이 없습니다."
+_NET_CONN_SECTION_HEADER = re.compile(r'^(?P<icon>⛔|🌍|🏠) [^\d\n]+?(?P<count>\d+)건:$', re.MULTILINE)
+_NET_CONN_SUSPICIOUS_ITEM = re.compile(
+    r'^ {2}(?P<proc>.+?) \(실행 번호: (?P<pid>[^)]+)\) \| \S+ → (?P<raddr>\S+) \[[^\]]+\] \| \S+\n'
+    r' {5}⛔ 경고: (?P<warn>.+)$',
+    re.MULTILINE
+)
+_NET_CONN_TRUNCATED_MARK = "...(내용이 길어"
+
+
+def _build_network_connections_reply(raw_results: str):
+    """2026-09-12 network_security 재검증(대화 품질 라운드)에서 발견한 버그:
+    "지금 연결된 네트워크 뭐 있는지 봐줘"처럼 흔한 질문에
+    get_network_connections()가 연결이 많으면(실측 76건, 9321자) 요약
+    단계로 넘기기 전에 _truncate_tool_result가 앞부분만 잘라서 넘기는데,
+    llama3.1이 이 잘린 원본조차 자연어로 정리하지 못하고 계속 JSON을
+    흉내 내다가 결국 "결과를 자연스러운 문장으로 정리하진 못했지만..."
+    안전 폴백으로 빠져서, CLOSE_WAIT/ESTABLISHED/실행 번호 같은 전문
+    용어가 잔뜩 섞인 원본 76줄이 그대로 사용자에게 노출되는 걸 확인했다.
+    원본은 "⛔ 의심스러운 연결 N건: / 🌍 외부 연결 N건: / 🏠 내부 연결
+    N건:" 섹션과 헤더의 건수 숫자가 고정 구조라, 항목이 아무리 많거나
+    잘려도 헤더 숫자만 신뢰하면 코드로 직접 요약 문장을 만들 수 있다.
+    단, ⛔ 의심스러운 연결 섹션은 항상 맨 앞이라 잘릴 위험이 없으므로
+    그 항목들만은 온전히 파싱해서 하나하나 알려준다."""
+    raw = raw_results.strip()
+    if raw == _NET_CONN_NONE_TEXT:
+        return "지금은 활성화된 네트워크 연결이 없어요."
+    m = _NET_CONN_HEADER.match(raw)
+    if not m:
+        return None
+    body = m.group('body').strip()
+    if body == _NET_CONN_EMPTY_TAIL:
+        return "지금은 외부로 나가는 네트워크 연결이 없어요."
+
+    was_truncated = _NET_CONN_TRUNCATED_MARK in body
+    headers = list(_NET_CONN_SECTION_HEADER.finditer(body))
+    if not headers:
+        return None
+
+    counts = {h.group('icon'): int(h.group('count')) for h in headers}
+
+    suspicious_items = []
+    sus_header = next((h for h in headers if h.group('icon') == '⛔'), None)
+    if sus_header:
+        next_start = len(body)
+        for h in headers:
+            if sus_header.end() < h.start() < next_start:
+                next_start = h.start()
+        sus_block = body[sus_header.end():next_start]
+        suspicious_items = _NET_CONN_SUSPICIOUS_ITEM.findall(sus_block)
+        if len(suspicious_items) != counts.get('⛔', 0):
+            return None  # 예상 밖 형식 — 안전하게 LLM 경로로 폴백
+
+    external_count = counts.get('🌍', 0)
+    local_count = counts.get('🏠', 0)
+    total = counts.get('⛔', 0) + external_count + local_count
+    if total == 0:
+        return None
+
+    parts = [f"네트워크 연결을 확인해봤는데, 총 {total}건이 있어요."]
+    if suspicious_items:
+        parts.append(f"그중 {len(suspicious_items)}건이 의심스러운 연결이에요:")
+        for proc, _pid, raddr, warn in suspicious_items:
+            parts.append(f"{proc}({raddr}) — {warn}.")
+        parts.append("지금 바로 이 프로세스를 차단해드릴까요?")
+    else:
+        parts.append("의심스러운 연결은 없었어요.")
+
+    if external_count and local_count:
+        parts.append(f"외부 인터넷 연결 {external_count}건, 내 컴퓨터 안에서만 이뤄지는 연결 {local_count}건이었어요.")
+    elif external_count:
+        parts.append("나머지는 전부 외부 인터넷 연결이었어요.")
+    elif local_count:
+        parts.append("나머지는 전부 내 컴퓨터 안에서만 이뤄지는 연결이었어요.")
+
+    if was_truncated and (external_count or local_count):
+        parts.append("연결 수가 많아서 하나하나 다 나열하진 못했지만, 의심스러운 연결이 있었다면 빠짐없이 알려드린 거예요.")
+
+    return " ".join(parts)
+
+
 def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
     """실제 도구 실행 결과를 받아 대화체 답변으로 정리한다. 정상적인
     tool_calls 경로와, 아래 _extract_faked_tool_call로 복구해서 실제
@@ -656,6 +921,21 @@ def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
     if deterministic_reply is not None:
         return deterministic_reply
     deterministic_reply = _build_calendar_empty_reply(raw_results)
+    if deterministic_reply is not None:
+        return deterministic_reply
+    deterministic_reply = _build_iot_no_devices_reply(raw_results)
+    if deterministic_reply is not None:
+        return deterministic_reply
+    deterministic_reply = _build_iot_control_reply(raw_results)
+    if deterministic_reply is not None:
+        return deterministic_reply
+    deterministic_reply = _build_port_scan_reply(raw_results)
+    if deterministic_reply is not None:
+        return deterministic_reply
+    deterministic_reply = _build_dns_check_reply(raw_results)
+    if deterministic_reply is not None:
+        return deterministic_reply
+    deterministic_reply = _build_network_connections_reply(raw_results)
     if deterministic_reply is not None:
         return deterministic_reply
 
@@ -696,11 +976,22 @@ def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
             "위험 언급 없이 정상이라고만 말해. 결과에 🚨/⚠️로 표시된 항목이 실제로 "
             "있다면 그 항목의 이름을 정확히 짚어서 언급해야지, ✅ 항목으로 대신 "
             "채우면 안 돼.\n"
+            "- 결과에 문자 그대로 적혀 있는 사실은 확신 있게 말해 — '~인 모양입니다', "
+            "'~일 수도 있습니다', '~처럼 보입니다'처럼 이미 확실한 사실을 불확실하게 "
+            "얼버무리지 마. 예를 들어 결과에 '445 SMB(파일 공유)'라고 명확히 적혀 "
+            "있으면 '포트 445는 SMB예요'라고 단정해서 말해야지, 'SMB인 모양입니다'라고 "
+            "하면 안 돼.\n"
+            "- 너는 이미 결과 텍스트를 다 읽었으니, 그 안에 있는 사실을 사용자에게 "
+            "'~이었죠?', '~맞죠?'처럼 되물어서 확인시키지 마 — 네가 이미 아는 걸 "
+            "사용자에게 확인받으려고 하면 안 돼. 결과를 설명할 땐 항상 네가 확인한 "
+            "내용을 사용자에게 알려주는 방향으로만 말해.\n"
             "- 결과에 🚨나 ⚠️가 하나라도 있으면, 마지막 문장을 반드시 물음표로 끝나는 "
             "질문으로 마무리해줘 — 결과에 실제로 나온 항목 이름을 그대로 넣어서 "
             "'~가 위험할 수 있어요. 지금 조치해드릴까요?'처럼 자연스러운 질문으로 "
             "마무리해줘 (이 예시 문구를 그대로 베끼지 말고 실제 결과 내용으로 채워줘). "
-            "조언만 하고 끝내지 마. "
+            "이 질문은 반드시 '내(비서)가 대신 조치해줄까'를 묻는 방향이어야 해 — "
+            "'추가로 확인할 게 더 없나요?'처럼 사용자한테 할 일을 떠넘기듯 되묻는 "
+            "방향으로 쓰면 안 돼. 조언만 하고 끝내지 마. "
             "이 경우엔 '지금은 따로 확인할 게 없어요' 같은 문장을 절대 쓰지 마 — "
             "그 문장은 🚨나 ⚠️가 결과에 하나도 없을 때만 쓰는 거야. '지금은 따로 확인할 게 "
             "없지만 ~가 위험할 수 있어요'처럼 안전하다는 말과 위험하다는 말을 한 문장/문단에 "
@@ -1174,6 +1465,17 @@ class AIWorker(QThread):
         if len(text) > 20 or self._is_decline_reply():
             return False
         if not any(h in text for h in self._ACTION_CONFIRM_HINTS):
+            return False
+        # 2026-09-12 대화 품질 재검증에서 발견한 버그: "DNS 설정 이상없는지
+        # 확인해줘"처럼 방화벽 차단과 전혀 무관한 새 요청인데, "확인해줘"에
+        # 든 "해줘"가 위 _ACTION_CONFIRM_HINTS에 걸려서 직전 "포트 445 막아
+        # 드릴까요?" 제안에 대한 승낙으로 오인되어, 엉뚱한 방화벽 차단
+        # 확인창이 뜨는 걸 GUI로 실측했다 — 사용자는 방화벽을 막겠다고 말한
+        # 적이 없는데 실제 위험한 동작 확인창이 뜬 심각한 사례. "확인"이라는
+        # 단어는 "이것 좀 확인해줘"처럼 승낙과 무관하게 아주 흔히 쓰이므로,
+        # "막아/차단" 같은 방화벽 차단 관련 단어가 전혀 없이 "확인"만 있으면
+        # 승낙으로 보지 않는다.
+        if "확인" in text and not any(h in text for h in ("막아", "차단", "막을", "차단할")):
             return False
 
         for msg in reversed(self.chat_history):

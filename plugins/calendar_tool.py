@@ -381,6 +381,10 @@ def create_event(
     color: str = ""
 ) -> str:
     print(f"\n📅 [캘린더] 일정 등록 중: {title}")
+    # local_calendar 재검증(ChatGPT 지적)에서 나온 것과 같은 우려 — 구글
+    # 캘린더 API의 reminders.overrides[].minutes는 정수를 기대하는데,
+    # ollama tool-calling이 문자열로 넘기면 API 호출이 거부될 수 있다.
+    reminder_minutes = int(reminder_minutes)
     try:
         service = _get_service()
         start   = _parse_datetime(start_datetime, timezone)
@@ -510,6 +514,8 @@ def get_events_by_date(date_str: str, calendar_id: str = "primary") -> str:
 
 
 def search_events(keyword: str, days_range: int = 30, calendar_id: str = "primary") -> str:
+    days_range = int(days_range)  # local_calendar 재검증에서 발견한 것과 같은 패턴
+    # (ollama tool-calling이 문자열로 넘기면 timedelta()에서 TypeError) — 명시 변환
     print(f"\n🔍 [캘린더] '{keyword}' 일정 검색 중...")
 
     # 상품/가격 검색 키워드 필터링 - search_product_price를 사용해야 함
@@ -692,6 +698,7 @@ def get_calendar_list() -> str:
 # ─────────────────────────────────────────────
 
 def get_schedule_summary(days: int = 30, calendar_id: str = "primary") -> str:
+    days = int(days)  # local_calendar 재검증에서 발견한 것과 같은 패턴 — 명시 변환
     print(f"\n📊 [캘린더] 최근 {days}일 일정 분석 중...")
     try:
         service = _get_service()

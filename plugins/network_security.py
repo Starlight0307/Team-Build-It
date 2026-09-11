@@ -17,7 +17,10 @@ TOOL_SCHEMAS = {
             "name": "scan_open_ports",
             "description": (
                 "지정한 호스트의 열린 포트를 스캔합니다. "
-                "사용자가 '포트 확인', '열린 포트 알려줘', '포트 스캔' 등을 말할 때 호출하세요. "
+                "사용자가 '포트 확인', '열린 포트 알려줘', '포트 스캔', "
+                "'포트 445는 어때?', '포트 80 괜찮아?'처럼 특정 포트 하나의 상태를 "
+                "캐주얼하게 물어보는 경우에도 반드시 이 함수를 호출하세요 — "
+                "다른 함수로 대체하거나 함수 호출 없이 추측으로 답하면 안 됩니다. "
                 "target은 IP 또는 도메인, port_range는 '1-1024' 형식으로 전달하세요."
             ),
             "parameters": {
@@ -29,7 +32,8 @@ TOOL_SCHEMAS = {
                     },
                     "port_range": {
                         "type": "string",
-                        "description": "스캔할 포트 범위. 예: '1-1024', '8000-9000'. 기본값: '1-1024'"
+                        "description": "스캔할 포트 범위. 예: '1-1024', '8000-9000'. 포트 하나만 확인하고 "
+                                       "싶으면 '445'처럼 숫자 하나만 전달해도 됩니다. 기본값: '1-1024'"
                     }
                 },
                 "required": []
@@ -262,10 +266,22 @@ def _parse_fw_block(rule: dict, out: list):
 def scan_open_ports(target: str = "127.0.0.1", port_range: str = "1-1024") -> str:
     print(f"\n[네트워크 보안] {target} 포트 스캔 중... ({port_range})")
 
+    # 2026-09-12 실사용 재검증에서 발견: "포트 445는 어때?"처럼 포트 하나만
+    # 콕 집어 물어보는 아주 흔한 질문에 LLM이 port_range='445'(범위 아닌
+    # 숫자 하나)로 호출하는 걸 확인했다. 원래는 "1-1024" 형식만 받아서
+    # split("-")가 실패하고 "포트 범위 형식이 잘못되었습니다"라는 오류가
+    # 나는데, 이 짧고 애매한 오류를 요약하는 단계에서 llama3.1이 자기모순
+    # 문장 + 내부 프롬프트 지시문처럼 보이는 문구까지 뒤섞어 지어내는 걸
+    # 확인했다. LLM이 매번 정확히 "445-445" 형식으로 부르길 기대하기보다,
+    # 애초에 숫자 하나만 와도 그 포트 하나짜리 범위로 자연스럽게 처리하면
+    # 이 오류 경로 자체가 사라진다.
     try:
-        start_port, end_port = map(int, port_range.split("-"))
+        if "-" in port_range:
+            start_port, end_port = map(int, port_range.split("-"))
+        else:
+            start_port = end_port = int(port_range.strip())
     except ValueError:
-        return "포트 범위 형식이 잘못되었습니다. 예: '1-1024'"
+        return "포트 범위 형식이 잘못되었습니다. 예: '1-1024' 또는 포트 하나만 '445'처럼 입력해도 됩니다."
 
     total = end_port - start_port + 1
     if total > 10000:
