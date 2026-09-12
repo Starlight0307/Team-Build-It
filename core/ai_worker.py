@@ -234,7 +234,13 @@ _MAX_TOOL_RESULT_CHARS = 3000
 # 전체를 그대로 노출해서 있던 기능을 못 쓰게 되는 일은 없도록 한다.
 _TOOL_CATEGORIES = {
     "system": (
-        ("상태", "cpu", "메모리", "ram", "디스크", "프로세스", "느려", "무거", "종료",
+        # 2026-09-13 재검증에서 발견: "상태"가 너무 범용적인 단어라 "방화벽
+        # 상태 확인해줘"처럼 다른 카테고리 요청에도 걸려서 get_system_info가
+        # 불필요하게 함께 노출/호출되는 걸 확인했다(정확히 "네트워크 보안
+        # 점검" 퀵액션 버튼 문구 "포트랑 방화벽 상태 확인해줘"에서 재현).
+        # "내 PC/컴퓨터 상태"류의 정당한 요청은 이미 "pc"/"컴퓨터" 키워드로
+        # 걸리므로 "상태"를 빼도 놓치지 않는다.
+        ("cpu", "메모리", "ram", "디스크", "프로세스", "느려", "무거", "종료",
          "컴퓨터", "pc", "사양", "온도", "코어", "속도",
          "버벅", "렉", "끊겨", "끊김", "꺼줘", "용량", "저장공간"),
         ("get_system_info", "get_top_cpu_processes", "kill_process"),
@@ -711,7 +717,13 @@ def _build_port_scan_reply(raw_results: str):
     처럼 사용자가 묻지도 않은 새 주제를 지어내고 스스로 발뺌하는 걸
     확인했다. 프롬프트를 강화해도(반대되는 불확실성 표현 금지, 확신 있게
     말하기 규칙 추가) 완전히 없어지지 않아서, 이 결과도 고정 구조이므로
-    코드로 직접 문장을 만든다."""
+    코드로 직접 문장을 만든다.
+
+    2026-09-13 실사용자 지적: 포트가 여러 개일 때 모든 문장을 공백으로
+    이어 붙이니 "포트 135는... 포트 445는..."처럼 긴 한 문단이 되어
+    실제 채팅창에서 읽기 어렵다(가시성 저하) — 2개 이상이면 항목마다
+    줄바꿈된 목록으로 보여주도록 바꿨다(1개뿐일 땐 목록 없이 자연스러운
+    한 문장으로 유지)."""
     m = _PORT_SCAN_HEADER.match(raw_results.strip())
     if not m:
         return None
@@ -729,18 +741,25 @@ def _build_port_scan_reply(raw_results: str):
         items.append((im.group('port'), im.group('svc'), im.group('desc')))
     if not items:
         return None
-    parts = [f"{target}의 {prange} 포트를 확인해봤는데, 열린 포트가 {len(items)}개 있어요."]
+
     risky_port = None
+    item_lines = []
     for port, svc, desc in items:
         if desc:
-            parts.append(f"포트 {port}는 {svc}예요 — {desc}.")
+            item_lines.append(f"포트 {port}는 {svc}예요 — {desc}.")
             if not risky_port and ('🚨' in desc or '⚠️' in desc):
                 risky_port = port
         else:
-            parts.append(f"포트 {port}는 어떤 서비스인지 알려진 게 없어요.")
+            item_lines.append(f"포트 {port}는 어떤 서비스인지 알려진 게 없어요.")
+
+    header_line = f"{target}의 {prange} 포트를 확인해봤는데, 열린 포트가 {len(items)}개 있어요."
+    if len(items) == 1:
+        result = f"{header_line} {item_lines[0]}"
+    else:
+        result = header_line + "\n" + "\n".join(f"- {ln}" for ln in item_lines)
     if risky_port:
-        parts.append(f"포트 {risky_port}가 위험할 수 있어요. 지금 방화벽에서 막아드릴까요?")
-    return " ".join(parts)
+        result += f"\n포트 {risky_port}가 위험할 수 있어요. 지금 방화벽에서 막아드릴까요?"
+    return result
 
 
 _DNS_CHECK_HEADER = re.compile(r'^\[🌐 DNS 설정(?: 확인)?\]\n(?P<body>.+)$', re.DOTALL)
@@ -872,73 +891,250 @@ def _build_network_connections_reply(raw_results: str):
     if total == 0:
         return None
 
-    parts = [f"네트워크 연결을 확인해봤는데, 총 {total}건이 있어요."]
+    # 2026-09-13 실사용자 지적: 의심 연결이 여러 건이면 한 문단으로 이어
+    # 붙여서 가시성이 떨어진다는 지적을 받아, 2건 이상이면 줄바꿈 목록으로
+    # 보여준다(1건뿐일 땐 자연스러운 한 문장으로 유지).
+    lines = [f"네트워크 연결을 확인해봤는데, 총 {total}건이 있어요."]
     if suspicious_items:
-        parts.append(f"그중 {len(suspicious_items)}건이 의심스러운 연결이에요:")
-        for proc, _pid, raddr, warn in suspicious_items:
-            parts.append(f"{proc}({raddr}) — {warn}.")
-        parts.append("지금 바로 이 프로세스를 차단해드릴까요?")
+        item_lines = [f"{proc}({raddr}) — {warn}." for proc, _pid, raddr, warn in suspicious_items]
+        if len(item_lines) == 1:
+            lines.append(f"그중 1건이 의심스러운 연결이에요: {item_lines[0]}")
+        else:
+            lines.append(f"그중 {len(item_lines)}건이 의심스러운 연결이에요:")
+            lines.extend(f"- {ln}" for ln in item_lines)
+        lines.append("지금 바로 이 프로세스를 차단해드릴까요?")
     else:
-        parts.append("의심스러운 연결은 없었어요.")
+        lines.append("의심스러운 연결은 없었어요.")
 
     if external_count and local_count:
-        parts.append(f"외부 인터넷 연결 {external_count}건, 내 컴퓨터 안에서만 이뤄지는 연결 {local_count}건이었어요.")
+        lines.append(f"외부 인터넷 연결 {external_count}건, 내 컴퓨터 안에서만 이뤄지는 연결 {local_count}건이었어요.")
     elif external_count:
-        parts.append("나머지는 전부 외부 인터넷 연결이었어요.")
+        lines.append("나머지는 전부 외부 인터넷 연결이었어요.")
     elif local_count:
-        parts.append("나머지는 전부 내 컴퓨터 안에서만 이뤄지는 연결이었어요.")
+        lines.append("나머지는 전부 내 컴퓨터 안에서만 이뤄지는 연결이었어요.")
 
     if was_truncated and (external_count or local_count):
-        parts.append("연결 수가 많아서 하나하나 다 나열하진 못했지만, 의심스러운 연결이 있었다면 빠짐없이 알려드린 거예요.")
+        # 2026-09-13 ChatGPT 검수 지적: ⛔ 섹션이 항상 맨 앞이라는 가정만으로
+        # "빠짐없이"라고 단정하는 건 실제 코드가 보장하는 범위보다 강한
+        # 주장이라 표현을 완화한다.
+        lines.append("연결 수가 많아서 하나하나 다 나열하진 않았어요. 의심스러운 연결은 확인된 항목을 모두 알려드렸어요.")
 
-    return " ".join(parts)
+    return "\n".join(lines)
 
 
-def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
-    """실제 도구 실행 결과를 받아 대화체 답변으로 정리한다. 정상적인
-    tool_calls 경로와, 아래 _extract_faked_tool_call로 복구해서 실제
-    실행한 경우가 이 함수를 공유해서 쓴다 — 어느 경로든 '진짜 결과'가
-    있을 때만 이 함수를 타므로 지어낼 여지가 없다.
+_FW_RULES_HEADER = re.compile(r'^\[🛡️ 방화벽 규칙 — 인바운드 허용 (?P<total>\d+)개\]\n※ [^\n]+\n\n(?P<body>.+)$', re.DOTALL)
+_FW_RULES_NONE_TEXT = "[🛡️ 방화벽 규칙]\n활성화된 인바운드 허용 규칙이 없습니다."
+_FW_RULES_ITEM = re.compile(
+    r'^ {2}(?P<mark>🚨|✅) (?P<name>.+?) \| 포트: (?P<port>.+?) \| 대상: (?P<prog>.+?)(?: — (?P<warn>.+))?$',
+    re.MULTILINE
+)
+_FW_RULES_TRUNCATED_MARK = "...(내용이 길어"
 
-    단, 이 자연어 정리 요청 자체에 대해서도 모델이 JSON을 흉내 낼 수 있다는 걸
-    실측으로 확인했다(예: 세션 맥락 질문에 get_system_info를 지어내 부르고,
-    그 결과를 정리해달라는 이 두 번째 호출에서도 또 JSON을 출력). 그럴 땐 한 번
-    더 요청하고, 그래도 안 되면 원본 결과라도 그대로 보여준다 — 의미 없는 JSON
-    조각을 사용자에게 보여주는 것보다는 낫다."""
-    deterministic_reply = _build_score_report_reply(raw_results)
-    if deterministic_reply is not None:
-        return deterministic_reply
-    deterministic_reply = _build_single_verdict_reply(raw_results)
-    if deterministic_reply is not None:
-        return deterministic_reply
-    deterministic_reply = _build_realtime_status_reply(raw_results)
-    if deterministic_reply is not None:
-        return deterministic_reply
-    deterministic_reply = _build_realtime_stop_reply(raw_results)
-    if deterministic_reply is not None:
-        return deterministic_reply
-    deterministic_reply = _build_calendar_confirmation_reply(raw_results)
-    if deterministic_reply is not None:
-        return deterministic_reply
-    deterministic_reply = _build_calendar_empty_reply(raw_results)
-    if deterministic_reply is not None:
-        return deterministic_reply
-    deterministic_reply = _build_iot_no_devices_reply(raw_results)
-    if deterministic_reply is not None:
-        return deterministic_reply
-    deterministic_reply = _build_iot_control_reply(raw_results)
-    if deterministic_reply is not None:
-        return deterministic_reply
-    deterministic_reply = _build_port_scan_reply(raw_results)
-    if deterministic_reply is not None:
-        return deterministic_reply
-    deterministic_reply = _build_dns_check_reply(raw_results)
-    if deterministic_reply is not None:
-        return deterministic_reply
-    deterministic_reply = _build_network_connections_reply(raw_results)
-    if deterministic_reply is not None:
-        return deterministic_reply
 
+def _build_firewall_rules_reply(raw_results: str):
+    """2026-09-12 network_security 재검증(대화 품질 라운드)에서 발견한 버그:
+    "포트랑 방화벽 상태 확인해줘"에 get_firewall_rules가 인바운드 허용
+    221개 같은 큰 결과를 반환하면, 원래 이 결과엔 위험 표시가 전혀 없어서
+    요약 단계 llama3.1이 "Any 포트를 전부 쓸 수 있으니 위험하다"는 판단을
+    스스로 지어내(결과에 없는 위험 판정 금지 규칙 위반) 위험해 보이는
+    규칙마다 거의 똑같은 "조치해드릴까요?"를 반복하고, 결국 응답 길이
+    상한(num_predict)에 걸려 "-(생략)"처럼 잘린 내부 텍스트가 그대로
+    노출되는 걸 확인했다. plugins/network_security.py의 get_firewall_rules를
+    고쳐 위험(인바운드 전체 포트 허용) 여부를 코드가 직접 🚨/✅로 표시하고
+    위험 규칙을 앞으로 정렬해두게 했으니, 여기서도 그 고정 구조를 코드로
+    직접 요약해 위험 규칙당 반복 질문 없이 한 번만 묻는다.
+
+    2026-09-13 실사용자 지적: 위험 규칙을 전부 공백으로 이어 붙이니
+    "Quick Share(모든 프로그램) — 포트 Any 전부 허용. Quick Share(모든
+    프로그램) — 포트 Any 전부 허용. ..."처럼 윈도우가 프로필/프로토콜별로
+    만들어둔 같은 이름의 규칙이 한 문단에 반복돼 읽기 어렵다(가시성 저하).
+    이제 줄바꿈된 목록으로 보여주고, 이름이 같은 규칙은 "(동일 이름 규칙
+    N개)"로 한 줄에 묶는다."""
+    raw = raw_results.strip()
+    if raw == _FW_RULES_NONE_TEXT:
+        return "지금은 활성화된 인바운드 허용 규칙이 없어요."
+    m = _FW_RULES_HEADER.match(raw)
+    if not m:
+        return None
+    total = int(m.group('total'))
+    body = m.group('body')
+    was_truncated = _FW_RULES_TRUNCATED_MARK in body
+
+    # 2026-09-13 ChatGPT 검수 지적: findall()은 패턴에 안 맞는 줄을 그냥
+    # 조용히 무시하므로, 원본에 예상 못한 줄이 섞여 있어도(예: 잘리다 만
+    # 내부 텍스트) 알아채지 못하고 그 줄만 빠진 채 "정상적으로" 답을
+    # 만들어버릴 위험이 있었다. get_network_connections의 의심 연결
+    # 섹션과 같은 방식으로, 실제 줄 수와 매칭된 항목 수를 비교해서 하나라도
+    # 안 맞으면 안전하게 LLM 경로로 폴백한다.
+    # 2026-09-13 실사용(위험 규칙 125개, 원본 16562자) 재현으로 발견: 위험
+    # 규칙이 많으면 _truncate_tool_result가 잘린 뒤에도 🚨 줄을 전부 별도로
+    # 복구해서 다시 붙이는데, 그 복구 안내 문구("(내용이 길어 잘렸지만...)")
+    # 한 줄이 이 검증에 안 걸려서 매번 통째로 LLM 폴백으로 빠지고, 그 결과 125개
+    # 위험 규칙 원본을 LLM이 요약하다 깨진 문장을 만드는 걸 확인했다 —
+    # 이 안내 문구도 예상된 구조로 보고 걸러낸다(실제 위험 규칙 줄들은
+    # 여전히 findall로 전부 잡히므로 안전하게 처리 가능).
+    _fw_truncate_notes = ('...(내용이 길어', '(내용이 길어 잘렸지만')
+    non_empty_lines = [
+        ln for ln in body.split('\n')
+        if ln.strip() and not ln.startswith(_fw_truncate_notes)
+    ]
+    items = _FW_RULES_ITEM.findall(body)
+    if not items or len(items) != len(non_empty_lines):
+        return None
+    risky = [(name, prog) for mark, name, port, prog, _warn in items if mark == '🚨']
+
+    lines = [f"방화벽 인바운드 허용 규칙을 확인해봤는데, 총 {total}개가 있어요."]
+
+    if risky:
+        grouped = {}
+        order = []
+        for name, prog in risky:
+            key = (name, prog)
+            if key not in grouped:
+                grouped[key] = 0
+                order.append(key)
+            grouped[key] += 1
+
+        lines.append(f"그중 {len(risky)}개가 모든 포트를 허용하고 있어서 위험할 수 있어요:")
+        shown = 0
+        for key in order:
+            if shown >= 10:
+                break
+            name, prog = key
+            count = grouped[key]
+            suffix = f" (동일 이름 규칙 {count}개)" if count > 1 else ""
+            lines.append(f"- {name}({prog}) — 포트 전부 허용{suffix}")
+            shown += 1
+        remaining_names = len(order) - shown
+        if remaining_names > 0:
+            remaining_rules = sum(grouped[k] for k in order[shown:])
+            lines.append(f"- 그 외에도 {remaining_names}개 이름의 규칙(총 {remaining_rules}개)이 더 있어요")
+        lines.append("이 규칙들을 지금 정리해드릴까요?")
+    else:
+        lines.append("모든 포트를 허용하는 위험한 규칙은 없었어요.")
+
+    if was_truncated:
+        # 2026-09-13 ChatGPT 검수 지적: 위험 규칙이 항상 목록 맨 앞에 오도록
+        # 정렬해뒀다는 사실만으로 "빠짐없이"라고 단정하는 건, 실제 코드가
+        # 보장하는 범위("잘리지 않은 앞부분에서 파싱된 위험 규칙")보다 강한
+        # 주장이라 표현을 완화한다.
+        lines.append("규칙 수가 많아서 전부 나열하진 않았어요. 확인된 위험 규칙은 위와 같아요.")
+
+    return "\n".join(lines)
+
+
+_TRAFFIC_HEADER = re.compile(
+    r'^\[📡 인터넷 사용량 측정 결과\] \((?P<dur>\d+)초 동안\)\n'
+    r'- 업로드: (?P<up_kb>[\d.]+) KB \((?P<up_rate>[\d.]+) KB/초\)\n'
+    r'- 다운로드: (?P<down_kb>[\d.]+) KB \((?P<down_rate>[\d.]+) KB/초\)\n\n'
+    r'외부와 많이 통신한 프로그램 상위 (?P<top_n>\d+)개:\n'
+    r'(?P<body>.+)$',
+    re.DOTALL
+)
+_TRAFFIC_NONE_PROC = "  (외부와 연결 중인 프로그램 없음)"
+_TRAFFIC_PROC_ITEM = re.compile(r'^ {2}(?P<rank>\d+)위 (?P<name>.+?) \(외부 연결 (?P<cnt>\d+)개\)$')
+
+
+def _build_traffic_monitor_reply(raw_results: str):
+    """2026-09-13 network_security 재검증 중 발견한 버그(monitor_network_traffic):
+    duration_seconds에 타입힌트만 있고 int() 변환이 없어서 ollama가 문자열
+    ('10')로 넘기면 min(max(...))에서 TypeError로 조용히 실패했다(local_calendar/
+    calendar_tool과 동일한 패턴 — plugins/network_security.py에서 수정). 그
+    실패 메시지만 받은 요약 단계 llama3.1이 "네이버 웹페이지가 많이
+    열렸는데요 - 네이버(1920): 총 데이터 양 12MB"처럼 완전히 지어낸 가짜
+    트래픽 데이터를 만들고 "확인해보지 못했지만 정상입니다"라는 자기모순
+    문장까지 덧붙이는 심각한 할루시네이션을 확인했다. 코드 버그를 고친 뒤
+    실제 결과는 고정 구조이므로, 재발 방지를 위해 이 결과도 코드로 직접
+    문장을 만든다."""
+    m = _TRAFFIC_HEADER.match(raw_results.strip())
+    if not m:
+        return None
+    dur = m.group('dur')
+    up_kb, up_rate = m.group('up_kb'), m.group('up_rate')
+    down_kb, down_rate = m.group('down_kb'), m.group('down_rate')
+    top_n = int(m.group('top_n'))
+    body_lines = m.group('body').split('\n')
+
+    proc_lines = []
+    idx = 0
+    if top_n == 0:
+        if idx < len(body_lines) and body_lines[idx] == _TRAFFIC_NONE_PROC:
+            idx += 1
+        else:
+            return None
+    else:
+        for _ in range(top_n):
+            if idx >= len(body_lines):
+                return None
+            pm = _TRAFFIC_PROC_ITEM.match(body_lines[idx])
+            if not pm:
+                return None
+            proc_lines.append((pm.group('rank'), pm.group('name'), pm.group('cnt')))
+            idx += 1
+
+    warnings = []
+    for ln in body_lines[idx:]:
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith('⚠️'):
+            warnings.append(s)
+        else:
+            return None  # 예상 못한 형식이면 안전하게 LLM 경로로 폴백
+
+    lines = [
+        f"최근 {dur}초 동안 네트워크 트래픽을 확인해봤는데, "
+        f"업로드 {up_kb}KB({up_rate}KB/초), 다운로드 {down_kb}KB({down_rate}KB/초)였어요."
+    ]
+    if proc_lines:
+        lines.append("외부와 가장 많이 통신한 프로그램은:")
+        lines.extend(f"- {rank}위 {name} (외부 연결 {cnt}개)" for rank, name, cnt in proc_lines)
+    else:
+        lines.append("외부와 연결 중인 프로그램은 없었어요.")
+    lines.extend(warnings)
+    return "\n".join(lines)
+
+
+_DETERMINISTIC_REPLY_BUILDERS = (
+    _build_score_report_reply,
+    _build_single_verdict_reply,
+    _build_realtime_status_reply,
+    _build_realtime_stop_reply,
+    _build_calendar_confirmation_reply,
+    _build_calendar_empty_reply,
+    _build_iot_no_devices_reply,
+    _build_iot_control_reply,
+    _build_port_scan_reply,
+    _build_dns_check_reply,
+    _build_network_connections_reply,
+    _build_firewall_rules_reply,
+    _build_traffic_monitor_reply,
+)
+
+
+def _build_deterministic_reply(raw_result: str):
+    """단일 도구 결과 하나를 위 결정론적 빌더들에 순서대로 통과시켜 본다 —
+    전부 고정 구조를 못 찾으면 None."""
+    for builder in _DETERMINISTIC_REPLY_BUILDERS:
+        reply = builder(raw_result)
+        if reply is not None:
+            return reply
+    return None
+
+
+def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
+    """자유형 LLM 요약 — _summarize_tool_results가 결정론적 처리로 못 거른
+    나머지 결과에 대해서만 이 함수를 호출한다. 원래 이 로직 전체가
+    _summarize_tool_results였는데, 2026-09-12 재검증에서 "포트랑 방화벽 상태
+    확인해줘"처럼 한 턴에 도구가 여러 개 호출되면(get_firewall_rules +
+    scan_open_ports) 두 결과가 합쳐진 문자열이 어느 결정론적 빌더의 정규식과도
+    안 맞아 통째로 이 자유형 경로로 빠지고, 그 결과 한쪽 주제(방화벽)가
+    통째로 누락되고 "위치된 항목 중 하나라도 문제를 가지고 있는 것으로
+    나타났으니, 지금 조치를 취해야겠군요?"처럼 문법이 깨진 자기 확인성
+    질문까지 나오는 걸 확인했다. 그래서 이 함수는 이제 "결정론적으로 처리
+    못 한 나머지"만 받고, 결정론적으로 처리된 부분은 _summarize_tool_results가
+    따로 문장을 이어붙인다 — 도구가 여러 개라도 처리 가능한 것들은 각자 제
+    갈 길로 가고, LLM은 정말 자유형이 필요한 부분만 맡는다."""
     summary_messages = chat_history + [{
         'role': 'user',
         'content': (
@@ -1047,6 +1243,54 @@ def _summarize_tool_results(chat_history: list, raw_results: str) -> str:
         result = f"결과를 자연스러운 문장으로 정리하진 못했지만, 확인된 내용은 다음과 같아요:\n\n{raw_results}"
 
     return result
+
+
+def _summarize_tool_results(chat_history: list, tool_results) -> str:
+    """실제 도구 실행 결과를 받아 대화체 답변으로 정리한다. 정상적인
+    tool_calls 경로와, _extract_faked_tool_call로 복구해서 실제 실행한
+    경우가 이 함수를 공유해서 쓴다 — 어느 경로든 '진짜 결과'가 있을 때만
+    이 함수를 타므로 지어낼 여지가 없다.
+
+    tool_results는 도구별 원본 결과 문자열의 리스트다(문자열 하나만 와도
+    되도록 자동으로 리스트로 감싼다 — 기존 호출부와의 호환용). 결과를
+    미리 한 문자열로 합쳐버리면 "포트랑 방화벽 상태 확인해줘"처럼 한
+    턴에 도구가 여러 개 호출됐을 때 결정론적 빌더들이 전부 매치에
+    실패해서 자유형 LLM 요약으로 통째로 빠지고, 그 결과 한쪽 주제가
+    누락되는 버그로 이어진다(2026-09-12 재검증에서 실측). 그래서 여기서는
+    도구 결과 하나하나를 개별적으로 결정론적 빌더에 먼저 통과시키고,
+    거기서 처리되지 않은 것들만 모아 자유형 LLM 요약(_summarize_tool_results_llm)
+    에 넘긴다 — 순서는 원래 도구 호출 순서를 그대로 유지한다."""
+    if isinstance(tool_results, str):
+        tool_results = [tool_results]
+
+    output_parts = []
+    pending_leftover = []
+
+    def _flush_pending():
+        if pending_leftover:
+            # 2026-09-13 ChatGPT 검수 지적: 결정론적으로 처리 못 한 결과가
+            # 2개 이상이면 그냥 개행으로 이어붙일 경우 LLM 입장에서 서로
+            # 다른 도구의 결과라는 경계가 사라져 뒤섞어 요약할 위험이 있다
+            # — "[도구 결과 N]" 라벨로 명확히 구분해준다.
+            if len(pending_leftover) == 1:
+                batch_raw = pending_leftover[0]
+            else:
+                batch_raw = "\n\n".join(
+                    f"[도구 결과 {i+1}]\n{raw}" for i, raw in enumerate(pending_leftover)
+                )
+            output_parts.append(_summarize_tool_results_llm(chat_history, batch_raw))
+            pending_leftover.clear()
+
+    for raw in tool_results:
+        deterministic_reply = _build_deterministic_reply(raw)
+        if deterministic_reply is not None:
+            _flush_pending()
+            output_parts.append(deterministic_reply)
+        else:
+            pending_leftover.append(raw)
+    _flush_pending()
+
+    return "\n\n".join(output_parts)
 
 
 def _extract_faked_tool_call(text: str):
@@ -1976,6 +2220,11 @@ class AIWorker(QThread):
                     "다시 부르지 말고 block_suspicious_process를 호출하세요. 종료할 프로세스 이름을 "
                     "아직 모르면 먼저 detect_suspicious_processes나 get_malware_report로 탐지부터 "
                     "하고, 그 결과에 실제로 있던 이름으로 block_suspicious_process를 호출하세요.\n"
+                    "8. 사용자가 한 문장에서 '~랑 ~', '~하고 ~', '~와 ~'처럼 두 가지 이상을 "
+                    "동시에 확인해달라고 하면(예: '포트랑 방화벽 상태 확인해줘' → 포트 확인 + "
+                    "방화벽 확인 두 가지), 그중 하나만 호출하고 끝내지 말고 언급된 항목에 "
+                    "해당하는 함수를 전부 호출하세요 — 한 번에 하나씩 나눠서 물어본 게 아니라 "
+                    "이미 한 문장에서 다 물어봤으니, 이번 턴에 관련 함수를 모두 호출해야 합니다.\n"
                     "\n"
                     f"날짜 계산 규칙: 오늘={_today}, 내일={_tomorrow}, 모레={_day_after_tomorrow}. "
                     f"사용자가 '내일'이라고 하면 반드시 {_tomorrow}를, '모레'라고 하면 반드시 {_day_after_tomorrow}를 사용하세요. "
@@ -2178,8 +2427,7 @@ class AIWorker(QThread):
                 # ── 3단계: 안전한 도구 결과가 있으면 모델에게 다시 보내 자연어로 정리 ──
                 self.status_update.emit("📋  결과 정리 중")
                 if tool_results:
-                    raw_results = "\n".join(tool_results)
-                    safe_reply = _summarize_tool_results(self.chat_history, raw_results)
+                    safe_reply = _summarize_tool_results(self.chat_history, tool_results)
                 elif not pending_dangerous:
                     safe_reply = "명령을 수행했습니다."
                 else:

@@ -253,10 +253,25 @@ def _parse_fw_block(rule: dict, out: list):
     name    = rule.get("Rule Name",  rule.get("규칙 이름", "알 수 없음"))
     enabled = rule.get("Enabled",    rule.get("사용", "")).lower()
     action  = rule.get("Action",     rule.get("작업", "")).lower()
-    lport   = rule.get("LocalPort",  rule.get("로컬 포트", "모든 포트"))
+    # 2026-09-13 ChatGPT 검수 지적: rule.get()이 문자열이라는 보장이 이
+    # 딕셔너리 생성부(get_firewall_rules의 "rule[k.strip()] = v.strip()")
+    # 만 봐서는 명확하지만, 이 함수만 따로 떼어 보면 그 보장이 없어 보여서
+    # str()로 명시적으로 감싸 방어적으로 만든다 — int/None이 들어와도
+    # AttributeError 없이 동작.
+    lport   = str(rule.get("LocalPort",  rule.get("로컬 포트", "모든 포트"))).strip()
     prog    = rule.get("Program",    rule.get("프로그램", "모든 프로그램"))
     if enabled in ("yes", "예") and action in ("allow", "허용"):
-        out.append(f"  - {name} | 포트: {lport} | 대상: {prog}")
+        # 2026-09-12 재검증에서 발견: 원래 이 결과엔 위험 표시가 전혀 없어서,
+        # 요약 단계 llama3.1이 "Any 포트를 전부 쓸 수 있어 위험하다"는 판단을
+        # 스스로 지어내(결과에 없는 위험 판정 금지 규칙 위반) 위험 규칙마다
+        # 거의 똑같은 "조치해드릴까요?" 질문을 반복하고 결국 응답이 잘려
+        # "-(생략)" 같은 텍스트까지 노출되는 걸 확인했다. 포트 스캔처럼
+        # 여기서도 위험(인바운드 전체 포트 허용) 여부를 코드가 직접 판단해
+        # 명시적으로 표시해두면, LLM이 짐작할 필요가 없어진다.
+        if lport.lower() in ("any", "모든 포트"):
+            out.append(f"  🚨 {name} | 포트: {lport} | 대상: {prog} — 모든 포트가 열려 있어 위험할 수 있음")
+        else:
+            out.append(f"  ✅ {name} | 포트: {lport} | 대상: {prog}")
 
 
 # ─────────────────────────────────────────────
@@ -413,9 +428,15 @@ def get_firewall_rules() -> str:
             if not rules:
                 return "[🛡️ 방화벽 규칙]\n활성화된 인바운드 허용 규칙이 없습니다."
 
+            # 위험(🚨) 규칙을 앞으로 정렬 — 규칙이 많아 결과가 잘려도(_truncate_tool_result)
+            # 위험 항목은 항상 앞부분에 남아 누락되지 않는다 (get_network_connections의
+            # 의심스러운 연결 섹션과 같은 이유).
+            risky_rules  = [r for r in rules if r.startswith("  🚨")]
+            normal_rules = [r for r in rules if not r.startswith("  🚨")]
+
             header = (f"[🛡️ 방화벽 규칙 — 인바운드 허용 {len(rules)}개]\n"
                       "※ 외부에서 이 PC로 들어올 수 있는 규칙 목록입니다.\n\n")
-            return header + "\n".join(rules)
+            return header + "\n".join(risky_rules + normal_rules)
 
         else:
             return f"⚠️ 지원하지 않는 OS입니다: {system}"
@@ -428,10 +449,21 @@ def get_firewall_rules() -> str:
 
 
 def manage_firewall(action: str, port: int, protocol: str = "tcp") -> str:
-    print(f"\n[네트워크 보안] 방화벽 규칙 {action} 적용 중... (포트 {port}/{protocol})")
-
     if action not in ("allow", "deny", "delete"):
         return "action은 'allow', 'deny', 'delete' 중 하나여야 합니다."
+
+    # 2026-09-13 재검증에서 발견: block_suspicious_process는 이 함수를
+    # 호출하기 전에 이미 port를 int로 정규화해두지만, manage_firewall이
+    # LLM tool_calls로 직접 호출되는 경로(예: 포트 차단 확인 흐름)는 이
+    # 정규화를 거치지 않아 문자열 포트 번호가 그대로 들어오면 아래
+    # "1 <= port <= 65535" 비교에서 TypeError가 날 수 있었다.
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return f"⚠️ 포트 번호({port})가 올바르지 않습니다. 숫자로 다시 알려주세요."
+
+    print(f"\n[네트워크 보안] 방화벽 규칙 {action} 적용 중... (포트 {port}/{protocol})")
+
     if not (1 <= port <= 65535):
         return "유효하지 않은 포트 번호입니다. (1~65535)"
 
@@ -680,6 +712,18 @@ def get_network_connections() -> str:
 
 
 def monitor_network_traffic(duration_seconds: int = 5) -> str:
+    # 2026-09-13 재검증에서 발견: local_calendar/calendar_tool에서 이미 확인된
+    # 것과 동일한 패턴 — ollama tool-calling이 정수 인자를 문자열('10')로
+    # 넘기면 아래 min(max(...))에서 TypeError가 나며 조용히 실패하고, 그
+    # 실패 메시지를 요약하던 LLM이 완전히 지어낸 가짜 트래픽 데이터("네이버
+    # 12MB" 등)로 답하는 심각한 할루시네이션까지 이어지는 걸 확인했다.
+    # 2026-09-13 ChatGPT 검수 지적: int()도 "abc" 같은 진짜 숫자가 아닌
+    # 문자열엔 여전히 ValueError를 낼 수 있으니, manage_firewall과
+    # 일관되게 여기서도 명시적으로 잡아서 안내 메시지로 바꾼다.
+    try:
+        duration_seconds = int(duration_seconds)
+    except (TypeError, ValueError):
+        return "측정 시간은 숫자로 알려주세요."
     duration_seconds = min(max(duration_seconds, 1), 30)
     print(f"\n[네트워크 보안] {duration_seconds}초간 네트워크 트래픽 측정 중...")
 
