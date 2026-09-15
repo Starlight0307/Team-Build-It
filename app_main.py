@@ -8,7 +8,7 @@ import uuid
 # 죽는 문제가 있었음 — 특히 kill_process/delete_event처럼 위험 동작 확인 후
 # 실행되는 함수 안에서 발생하면, 실제 동작은 시도조차 못 했는데 사용자에게는
 # "요청하신 작업을 처리하지 못했습니다"라는 오탐 오류만 보임. 프로그램 시작
-# 시점에 표준출력/에러 인코딩을 UTF-8로 고정해서 원천 차단.
+# 시점에 표준출력/에러 인코딩을 UTF-8로 고정해서 원천 차단. 1
 if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
