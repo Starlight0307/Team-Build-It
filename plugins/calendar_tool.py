@@ -644,6 +644,12 @@ def create_recurring_event(
     print(f"\n🔁 [캘린더] 반복 일정 등록 중: {title}")
     if recurrence_type.upper() not in ("DAILY", "WEEKLY", "MONTHLY", "YEARLY"):
         return "반복 주기는 매일/매주/매월/매년 중 하나로 말씀해주세요."
+    # 2026-09-14 재검증에서 발견한 버그: recurrence_count가 int로 변환되지
+    # 않은 채 그대로 RRULE COUNT에 들어가고, 상한도 없어서 LLM이 지어낸
+    # 비현실적으로 큰 값(예: 1000)이 그대로 구글 캘린더 서버에 전송될 위험이
+    # 있었다(local_calendar.py의 local_create_recurring_event와 같은 원인 —
+    # 거기서는 실제로 1000개가 저장되는 걸 실측 확인). 여기서도 동일하게 방어.
+    recurrence_count = max(1, min(104, int(recurrence_count)))
     try:
         service = _get_service()
         event_body = {

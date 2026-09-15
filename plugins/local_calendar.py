@@ -533,6 +533,12 @@ def local_create_recurring_event(
     if login_error:
         return login_error
     recurrence_count = int(recurrence_count)  # local_get_upcoming_events와 같은 이유로 명시 변환
+    # 2026-09-14 calendar_tool 재검증에서 발견한 버그: LLM이 사용자가 명시하지
+    # 않은 반복 횟수를 스스로 지어내면서 1000처럼 비현실적으로 큰 값을 넘기는
+    # 걸 실측으로 확인했다(그 결과 이벤트 1000개가 실제로 저장됨) — ai_worker.py
+    # 쪽에서도 clamp하지만, 이 함수가 다른 경로로 직접 호출돼도 안전하도록
+    # 여기서도 상한을 둔다(매주 2년치 ≈ 104회).
+    recurrence_count = max(1, min(104, recurrence_count))
     recurrence_type = recurrence_type.upper()
     if recurrence_type not in _RECURRENCE_STEP:
         return "반복 주기는 매일/매주/매월/매년 중 하나로 말씀해주세요."

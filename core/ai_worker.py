@@ -298,6 +298,50 @@ _TOOL_CATEGORIES = {
 }
 
 
+# 2026-09-14 system_security 2차 재검증에서 발견한 버그: _build_score_report_reply가
+# 위험 항목 하나를 콕 집어 "Windows 업데이트를 자세히 봐드릴까요?"라고 먼저 물어봤는데,
+# "응 자세히 봐줘"처럼 짧게 승낙하면 — 이 짧은 대답 자체엔 특정 카테고리를 가리키는
+# 단어가 없어서 _keyword_search_text가 직전 AI 메시지 전체를 검색 텍스트에 붙이는데,
+# 그 메시지에 있는 "보안"/"종합"/"점수"/"리포트" 같은 범용 단어가 network_security/
+# malware_detection/system_security 세 카테고리 키워드에 전부 겹쳐서 세 카테고리의
+# 도구가 한꺼번에 노출된다. 그 결과 llama3.1이 방금 제안한 Windows 업데이트가 아니라
+# 완전히 다른 카테고리의 get_malware_report를 대신 호출하는 걸 실측으로 확인했다
+# (원본 화제를 통째로 무시하고 엉뚱한 리포트로 답변). 이 제안 문구는
+# _build_score_report_reply만 만들어내는 고유한 패턴이고, 항목명은 아래처럼 세
+# 플러그인의 _score_report() 호출에 쓰인 이름과 정확히 같으므로, 짧은 승낙 대답이면
+# 그 항목 하나의 함수만 노출해서 LLM에게 고를 여지 자체를 없앤다.
+_REPORT_DETAIL_TARGETS = {
+    # network_security._score_report checks
+    "포트 스캔": "scan_open_ports",
+    "방화벽 규칙": "get_firewall_rules",
+    "DNS 설정": "check_dns_settings",
+    "네트워크 연결": "get_network_connections",
+    # malware_detection._score_report checks
+    "의심 프로세스": "detect_suspicious_processes",
+    "시작프로그램": "scan_startup_items",
+    "자동 시작 서비스": "scan_suspicious_services",
+    # system_security._score_report checks
+    "Windows 업데이트": "check_update_status",
+    "공유 폴더": "scan_shared_folders",
+    "로그인 실패 이력": "get_login_failures",
+}
+_REPORT_DETAIL_OFFER = re.compile(
+    r'(?P<name>' + '|'.join(re.escape(n) for n in _REPORT_DETAIL_TARGETS) + r')'
+    r'를\s*자세히\s*봐드릴까요\?\s*$'
+)
+# 부분 문자열로 대충 걸면 "네트워크"의 "네", "있어"의 "어"처럼 전혀 무관한 새
+# 요청까지 오탐(false positive)하는 걸 실측으로 확인해서, 메시지 전체가 "짧은
+# 승낙 표현( + 자세히/봐줘류 동사)"으로만 이루어졌을 때만 매치하도록 fullmatch로
+# 엄격하게 제한한다.
+_FOLLOWUP_ACCEPT_PATTERN = re.compile(
+    r'^(?:'
+    r'(?:응|네|그래|좋아|어|오케이|오케|콜)[,.!~]*(?:자세히)?(?:봐줘|보여줘|알려줘|볼래|볼게|보자|부탁해?요?|부탁)?'
+    r'|'
+    r'(?:자세히)?(?:봐줘|보여줘|알려줘|볼래|볼게|보자|부탁해?요?|부탁)'
+    r')$'
+)
+
+
 def _looks_like_json_leak(text: str) -> bool:
     """모델이 자연어 대신 tool_calls 형식을 흉내 낸 JSON/코드 조각을 그대로
     출력했는지 검사한다. 원래는 첫 모델 응답에서만 썼는데, _summarize_tool_results
@@ -467,7 +511,7 @@ def _build_score_report_reply(raw_results: str):
     return " ".join(parts)
 
 
-_SINGLE_VERDICT_LINE = re.compile(r'^(✅|⚠️|🚨)\s*(.+)$')
+_SINGLE_VERDICT_LINE = re.compile(r'^(?:(✅|⚠️|🚨)\s*)?(.+)$')
 
 
 def _build_single_verdict_reply(raw_results: str):
@@ -479,9 +523,18 @@ def _build_single_verdict_reply(raw_results: str):
     있는 기록이 아직 없어요. 재인증해 보시는 건 어떨까요?"처럼 원본에 전혀
     없는 '시도/인증 실패' 이야기를 만들어내고 엉뚱하게 재인증을 권유했다.
     원본이 이미 '결론 한 줄'뿐이라 자연어로 다듬을 내용 자체가 없으므로,
-    헤더([...]) 줄을 뺀 본문이 ✅/⚠️/🚨로 시작하는 문장 딱 한 줄뿐이면 LLM을
-    거치지 않고 그 문장을 그대로 전달한다 (score report와 같은 원칙:
-    Deterministic-first summary rule)."""
+    헤더([...]) 줄을 뺀 본문이 한 줄뿐이면 LLM을 거치지 않고 그 문장을 그대로
+    전달한다 (score report와 같은 원칙: Deterministic-first summary rule).
+
+    2026-09-14 system_security 2차 재검증에서 발견한 버그: scan_shared_folders()가
+    사용자 공유 폴더가 없을 때 반환하는 "[📁 공유 폴더 점검]\\n사용자가 만든 공유
+    폴더가 없습니다. (시스템 기본 공유만 존재)"는 결론 한 줄뿐인 같은 구조인데
+    ✅/⚠️/🚨로 시작하지 않아서 이 빌더가 못 잡았다 — 그 결과 LLM 요약이 재시도까지
+    실패해서 "결과를 자연스러운 문장으로 정리하진 못했지만..."이라는 사과성
+    문구와 함께 원본 괄호 표기([...])가 그대로 채팅에 노출되는 걸 실측으로
+    확인했다. 이모지 표시는 '위험 여부를 눈에 띄게 하려는 부가 장식'일 뿐, 문장
+    자체가 이미 결론이라는 본질은 이모지 유무와 무관하므로 이모지를 선택 사항으로
+    바꿔 두 경우 모두 잡는다."""
     body_lines = [ln.strip() for ln in raw_results.strip().split('\n')
                   if ln.strip() and not ln.strip().startswith('[')]
     if len(body_lines) != 1:
@@ -609,6 +662,41 @@ def _build_calendar_confirmation_reply(raw_results: str):
     return f"'{title}' 일정을 {start_str}부터 {end_str}까지로 {verb}."
 
 
+_RECURRING_CONFIRM_MARKERS = ("[✅ 반복 일정 등록 완료 (내부 캘린더)]", "[✅ 반복 일정 등록 완료]")
+_RECURRING_CALENDAR_FIELD_LINE = re.compile(r'^- (제목|시작): (.+)$', re.MULTILINE)
+_RECURRING_CALENDAR_FIELD = re.compile(r'^- 반복: (?P<label>.+) × (?P<count>\d+)회$', re.MULTILINE)
+
+
+def _build_recurring_calendar_confirmation_reply(raw_results: str):
+    """2026-09-14 calendar_tool 재검증에서 발견한 버그: local_create_recurring_event/
+    create_recurring_event가 반환하는 "[✅ 반복 일정 등록 완료 (내부 캘린더)]"
+    마커가 기존 _CALENDAR_CONFIRM_MARKERS 목록에 없어서 _build_calendar_confirmation_reply가
+    처리하지 못하고 일반 LLM 요약으로 빠졌다. 그 결과 "매주 월요일 오전 10시에
+    주간회의 반복 일정 추가해줘"라는 요청에 실제로는(title 결정론적 추출이 이
+    함수에는 적용 안 되고 있던 또 다른 버그와 겹쳐) "검시시일우의 안호요"라는
+    의미 없는 제목으로 1000개(!)의 인스턴스가 실제 저장됐는데도, LLM 요약
+    단계가 그 이상한 원본 텍스트를 무시하고 "월요일 오전 10시에 주간 회의가
+    반복 일정으로 등록되셨습니다!"라며 완전히 다른(그리고 실제로 틀린) 내용을
+    지어내 마치 정상 등록된 것처럼 확신 있게 거짓 보고하는 걸 실측으로
+    확인했다 — 실제로 하지 않은 일을 했다고 보고하는 최고위험 패턴. 이제
+    title/날짜가 결정론적으로 고정되므로(위 run() 수정 참고) 저장되는 값
+    자체가 항상 정확하고, 이 빌더가 그 정확한 값을 그대로 문장으로 relay해서
+    LLM이 끼어들 틈 자체를 없앤다."""
+    if not any(raw_results.startswith(m) for m in _RECURRING_CONFIRM_MARKERS):
+        return None
+    fields = dict(_RECURRING_CALENDAR_FIELD_LINE.findall(raw_results))
+    title = fields.get("제목")
+    start_raw = fields.get("시작")
+    rm = _RECURRING_CALENDAR_FIELD.search(raw_results)
+    if not title or not start_raw or not rm:
+        return None
+    start_dt = _parse_calendar_dt(start_raw)
+    if not start_dt:
+        return None
+    start_str = _format_calendar_dt_korean(start_dt)
+    return f"'{title}' 일정을 {start_str}부터 {rm.group('label')} {rm.group('count')}회 반복으로 등록했어요."
+
+
 _CALENDAR_EMPTY_HEADER_MARKERS = ("[📋", "[🔍", "[📊")
 
 
@@ -633,6 +721,221 @@ def _build_calendar_empty_reply(raw_results: str):
     if len(body_lines) != 1 or "없습니다" not in body_lines[0]:
         return None
     return f"확인해봤는데, {body_lines[0]}"
+
+
+_LOCAL_SEARCH_HEADER = re.compile(
+    r"^\[🔍 검색 결과(?: \(내부 캘린더\))?\] '(?P<keyword>.+)' \(±(?P<days>\d+)일, (?P<count>\d+)건\)\n\n(?P<body>.+)$",
+    re.DOTALL
+)
+_LOCAL_SEARCH_NONE = re.compile(
+    r"^\[🔍 검색 결과(?: \(내부 캘린더\))?\] '(?P<keyword>.+)'\n±(?P<days>\d+)일 범위에서 일치하는 일정이 없습니다\.$"
+)
+_LOCAL_SEARCH_ITEM = re.compile(r'^(?P<idx>\d+)\. (?P<title>.+) \| (?P<dt>.+) \| 🆔 (?P<id>\S+)$')
+
+
+def _build_local_search_events_reply(raw_results: str):
+    """2026-09-14 local_calendar 재검증에서 발견한 버그: local_search_events()가
+    "1. 팀 회의 | 2026-09-10(목) 15:00 | 🆔 ...\\n2. 팀 회의 | 2026-09-15(화)
+    15:00 | 🆔 ...\\n3. 팀 회의 | 2026-09-20(일) 10:00 | 🆔 ..."처럼 고정
+    구조로 검색 결과를 반환하는데도, llama3.1이 이를 "1W./2W./3W." 같은
+    원본에 없는 자체 라벨링으로 재구성하려다가 (1) "이번주 화요일과 목요일
+    모두있어요"처럼 띄어쓰기가 깨진 문장을 만들고, (2) 세 번째 항목에서
+    날짜/시간을 통째로 누락시켜 "3W. 팀 회의 |"처럼 빈 채로 표시하는 걸
+    실측으로 확인했다. 원본이 이미 "번호. 제목 | 날짜(요일) 시간 | 🆔 id"
+    고정 형식이라 LLM이 재구성할 필요가 없으므로, 코드가 직접 각 줄을
+    파싱해서 문장을 만든다 — 항목 개수가 헤더에 적힌 건수와 다르면(원본
+    형식이 예상과 다르면) 안전하게 None을 반환해 LLM 경로로 폴백한다.
+
+    2026-09-14 calendar_tool(구글 캘린더) 코드 검토에서 확인: search_events/
+    get_upcoming_events/get_events_by_date/get_daily_briefing 4개 함수 모두
+    "(내부 캘린더)" 라벨만 없을 뿐 local_calendar.py와 완전히 동일한 고정
+    포맷을 반환한다(반환 텍스트 직접 대조 확인) — 헤더의 "(내부 캘린더)"를
+    선택 사항으로 바꿔서 이 빌더들이 구글 캘린더 쪽 결과도 함께 처리하게
+    했다. 구글 계정 미연동 상태라 실제 GUI 재현은 못 했지만, 두 플러그인의
+    반환 포맷이 100% 동일하므로 코드 대조만으로도 안전하게 선제 적용."""
+    stripped = raw_results.strip()
+    m_none = _LOCAL_SEARCH_NONE.match(stripped)
+    if m_none:
+        return (f"'{m_none.group('keyword')}' 일정을 찾아봤는데, "
+                 f"최근 {m_none.group('days')}일 범위에는 없었어요.")
+    m = _LOCAL_SEARCH_HEADER.match(stripped)
+    if not m:
+        return None
+    keyword = m.group('keyword')
+    count = int(m.group('count'))
+    lines_raw = m.group('body').strip().split('\n')
+    items = []
+    for ln in lines_raw:
+        im = _LOCAL_SEARCH_ITEM.match(ln)
+        if not im:
+            return None
+        items.append((im.group('title'), im.group('dt')))
+    if len(items) != count:
+        return None
+    lines = [f"'{keyword}' 일정을 찾아봤는데, {count}건 있어요."]
+    for title, dt in items:
+        lines.append(f"- {title}: {dt}")
+    return "\n".join(lines)
+
+
+_LOCAL_EVENT_BLOCK = re.compile(
+    r'(?P<idx>\d+)\. (?P<title>.+)\n'
+    r'   🕐 (?P<start>.+) ~ (?P<end>.+)\n'
+    r'(?:   📍 (?P<location>.+)\n)?'
+    r'(?:   📝 (?P<desc>.+)\n)?'
+    r'   🆔 (?P<id>\S+)\n?'
+)
+
+
+def _parse_local_event_blocks(body: str):
+    """_format_event_line()이 만든 이벤트 블록들을 순서대로 전부 파싱한다.
+    블록 사이/뒤에 이 정규식이 소비하지 못하는 낯선 텍스트가 조금이라도
+    남아있으면(포맷이 예상과 다르면) None을 반환해 안전하게 LLM 폴백시킨다."""
+    events = []
+    pos = 0
+    n = len(body)
+    while pos < n:
+        while pos < n and body[pos] == '\n':
+            pos += 1
+        if pos >= n:
+            break
+        m = _LOCAL_EVENT_BLOCK.match(body, pos)
+        if not m:
+            return None
+        events.append({
+            'title': m.group('title'), 'start': m.group('start'), 'end': m.group('end'),
+            'location': m.group('location'), 'desc': m.group('desc'),
+        })
+        pos = m.end()
+    return events
+
+
+def _format_local_events_lines(events):
+    lines = []
+    for ev in events:
+        piece = f"- {ev['title']}: {ev['start']} ~ {ev['end']}"
+        if ev['location']:
+            piece += f" ({ev['location']})"
+        lines.append(piece)
+    return lines
+
+
+_LOCAL_UPCOMING_HEADER = re.compile(
+    r"^\[📋 향후 (?P<days>\d+)일 일정 목록(?: \(내부 캘린더\))?\] \(총 (?P<count>\d+)건\)\n\n(?P<body>.+)$", re.DOTALL)
+_LOCAL_UPCOMING_EMPTY = re.compile(
+    r"^\[📋 일정 조회 결과(?: \(내부 캘린더\))?\]\n향후 (?P<days>\d+)일 내 일정이 없습니다\.$")
+_LOCAL_BYDATE_HEADER = re.compile(
+    r"^\[📋 (?P<date>[\d-]+) \((?P<weekday>.)요일\) 일정(?: \(내부 캘린더\))?\] \(총 (?P<count>\d+)건\)\n\n(?P<body>.+)$", re.DOTALL)
+_LOCAL_BYDATE_EMPTY = re.compile(
+    r"^\[📋 (?P<date>[\d-]+) \((?P<weekday>.)요일\) 일정(?: \(내부 캘린더\))?\]\n일정이 없습니다\.$")
+_LOCAL_BRIEFING_HEADER = re.compile(
+    r"^\[🔔 (?P<label>오늘|내일) 일정 브리핑(?: \(내부 캘린더\))?\] (?P<date>[\d-]+)\n"
+    r"현재 시각: (?P<time>[\d:]+)\n"
+    r"─+\n"
+    r"(?P<rest>.*)$", re.DOTALL
+)
+
+
+def _build_local_upcoming_events_reply(raw_results: str):
+    """2026-09-14 local_calendar 재검증에서 발견한 버그: local_get_daily_briefing()
+    (내부적으로 local_get_events_by_date를 재사용)이 반환하는 고정 구조를 LLM에게
+    맡겼더니, "'팀 회의' 일정이 3건 있어요" 처럼 요청하지도 않은 검색 결과와
+    뒤섞고, 없는 시간(10시)을 지어내고, 급기야 "이전 답변에서 이미 결과가
+    없다고 말한 걸로 기억하는데, 다시 확인해 봤는데... 아무 일정이었어요..."
+    라며 AI 본인의 내부 추론을 사용자에게 그대로 노출하는 비서답지 않은
+    응답을 만드는 걸 실측으로 확인했다(사용자 지적: "비서로서의 태도가
+    아님"). local_get_upcoming_events/local_get_events_by_date/
+    local_get_daily_briefing 셋 다 `_format_event_line()`이 만드는 동일한
+    "번호. 제목\\n   🕐 시작 ~ 종료\\n   (📍 장소)\\n   (📝 설명)\\n   🆔 id"
+    블록 구조를 공유하므로, 이 구조를 코드로 직접 파싱해서 LLM을 거치지
+    않는다."""
+    stripped = raw_results.strip()
+    m_empty = _LOCAL_UPCOMING_EMPTY.match(stripped)
+    if m_empty:
+        return f"확인해봤는데, 앞으로 {m_empty.group('days')}일 안에는 등록된 일정이 없어요."
+    m = _LOCAL_UPCOMING_HEADER.match(stripped)
+    if not m:
+        return None
+    events = _parse_local_event_blocks(m.group('body'))
+    if events is None or len(events) != int(m.group('count')):
+        return None
+    lines = [f"앞으로 {m.group('days')}일 동안 일정이 {m.group('count')}건 있어요."]
+    lines.extend(_format_local_events_lines(events))
+    return "\n".join(lines)
+
+
+def _build_local_events_by_date_reply(raw_results: str):
+    """위 _build_local_upcoming_events_reply와 같은 원인/원칙 — local_get_events_by_date
+    전용 헤더 형식만 다르게 매칭한다."""
+    stripped = raw_results.strip()
+    m_empty = _LOCAL_BYDATE_EMPTY.match(stripped)
+    if m_empty:
+        return f"확인해봤는데, {m_empty.group('date')}({m_empty.group('weekday')}요일)에는 일정이 없어요."
+    m = _LOCAL_BYDATE_HEADER.match(stripped)
+    if not m:
+        return None
+    events = _parse_local_event_blocks(m.group('body'))
+    if events is None or len(events) != int(m.group('count')):
+        return None
+    lines = [f"{m.group('date')}({m.group('weekday')}요일) 일정이 {m.group('count')}건 있어요."]
+    lines.extend(_format_local_events_lines(events))
+    return "\n".join(lines)
+
+
+def _build_local_daily_briefing_reply(raw_results: str):
+    """위 _build_local_upcoming_events_reply와 같은 원인/원칙 — 이번 라운드에서
+    실측으로 실제 재현된 버그(비서 태도 붕괴)가 바로 이 함수의 출력이었다.
+    local_get_daily_briefing()은 local_get_events_by_date()의 헤더 줄만 갈아
+    끼워 재사용하므로 "총 N건" 선언이 없어, 선언된 개수와 대조 검증하는 대신
+    파싱된 이벤트 블록이 rest 전체를 빈틈없이 소비했는지(= _parse_local_event_blocks가
+    None이 아님)로 안전성을 확인한다."""
+    m = _LOCAL_BRIEFING_HEADER.match(raw_results.strip())
+    if not m:
+        return None
+    label, date, time_now, rest = m.group('label'), m.group('date'), m.group('time'), m.group('rest')
+    if rest.strip() == "일정이 없습니다.":
+        return f"지금 {time_now}인데, {label}({date}) 일정은 없어요."
+    events = _parse_local_event_blocks(rest)
+    if events is None or not events:
+        return None
+    lines = [f"지금 {time_now}인데, {label}({date}) 일정이 {len(events)}건 있어요."]
+    lines.extend(_format_local_events_lines(events))
+    return "\n".join(lines)
+
+
+_LOCAL_SUMMARY_HEADER = re.compile(
+    r"^\[📊 일정 통계(?: \(내부 캘린더\))?\] 최근 (?P<days>\d+)일\n\n"
+    r"- 총 일정 수: (?P<count>\d+)건\n"
+    r"- 총 소요 시간: (?P<total_hours>[\d.]+)시간\n"
+    r"- 평균 일정 길이: (?P<avg_min>\d+)분\n"
+    r"- 가장 바쁜 요일: (?P<busiest_day>.)요일\n"
+    r"- 가장 많은 시간대: (?P<busiest_hour>\d{2}:00)\n\n"
+    r"요일별: (?P<weekday_detail>.+)$"
+)
+_LOCAL_SUMMARY_EMPTY = re.compile(
+    r"^\[📊 일정 통계(?: \(내부 캘린더\))?\]\n최근 (?P<days>\d+)일 내 일정이 없습니다\.$"
+)
+
+
+def _build_local_schedule_summary_reply(raw_results: str):
+    """local_get_schedule_summary()/calendar_tool.get_schedule_summary()는
+    총 일정 수·소요 시간·평균 길이·가장 바쁜 요일/시간대를 전부 Python
+    코드로 미리 계산해서 고정 문구에 채워 넣은 결과다 — LLM이 판단할
+    여지가 전혀 없는 순수 통계 relay이므로, 재해석/재계산 유혹으로 숫자를
+    바꿔 말하는 위험(system_info 버그48과 같은 계열) 자체를 원천 차단하기
+    위해 코드로 직접 문장을 만든다."""
+    stripped = raw_results.strip()
+    m_empty = _LOCAL_SUMMARY_EMPTY.match(stripped)
+    if m_empty:
+        return f"최근 {m_empty.group('days')}일 일정을 확인해봤는데, 등록된 일정이 없어요."
+    m = _LOCAL_SUMMARY_HEADER.match(stripped)
+    if not m:
+        return None
+    return (
+        f"최근 {m.group('days')}일 일정을 분석해봤는데, 총 {m.group('count')}건이었고 "
+        f"소요 시간은 총 {m.group('total_hours')}시간, 평균 {m.group('avg_min')}분이었어요. "
+        f"{m.group('busiest_day')}요일에 가장 바빴고, {m.group('busiest_hour')} 시간대에 일정이 가장 많았어요."
+    )
 
 
 _IOT_NO_DEVICES_TEXT = (
@@ -1095,13 +1398,306 @@ def _build_traffic_monitor_reply(raw_results: str):
     return "\n".join(lines)
 
 
+_SUSPICIOUS_PROC_HEADER = re.compile(
+    r'^\[🚨 의심 프로그램 점검 결과\] \([^)]*\)\n'
+    r'실행 중인 프로그램 (?P<scanned>\d+)개를 확인했습니다\.\n\n'
+    r'(?P<body>.+)$',
+    re.DOTALL
+)
+_SUSPICIOUS_PROC_NONE = "✅ 의심스러운 프로그램이 발견되지 않았습니다."
+_SUSPICIOUS_PROC_COUNT = re.compile(r'^⛔ 의심스러운 프로그램 (?P<count>\d+)개 발견:$')
+_SUSPICIOUS_PROC_ITEM = re.compile(
+    r'^ {2}⚠️ (?P<name>.+?)(?: \(인터넷 연결 중\))? \(실행 번호: (?P<pid>\d+)\) \| 사용자: .+$',
+    re.MULTILINE
+)
+_SUSPICIOUS_PROC_REASON = re.compile(r'^ {5}발견 이유: (?P<reasons>.+)$', re.MULTILINE)
+_SUSPICIOUS_PROC_FOOTER = "💡 종료하고 싶은 프로그램의 이름이나 번호를 말씀해주시면 종료해드릴게요."
+
+
+def _build_suspicious_process_reply(raw_results: str):
+    """2026-09-14 malware_detection 재검증(대화 품질 라운드)에서 발견한
+    버그: "의심스러운 프로세스 있으면 찾아서 막아줘"에
+    detect_suspicious_processes()가 "[🚨 의심 프로그램 점검 결과]
+    (타임스탬프)\\n실행 중인 프로그램 252개를 확인했습니다.\\n\\n✅
+    의심스러운 프로그램이 발견되지 않았습니다."처럼 이미 결론이 난 고정
+    구조를 반환하는데도, 이 포맷을 처리하는 결정론적 빌더가 없어서 자유형
+    요약으로 빠져 "확인은 끝났어요처럼 다시 한번 물어볼 것도 아니고 위에
+    적힌 결과를 그대로 전달해야지"처럼 내부 지시문을 패러프레이즈한
+    문장이 그대로 새어나오는 걸 확인했다(버그28과 같은 유형). 이 결과도
+    고정 구조이므로 코드로 직접 문장을 만든다."""
+    m = _SUSPICIOUS_PROC_HEADER.match(raw_results.strip())
+    if not m:
+        return None
+    scanned = m.group('scanned')
+    body = m.group('body').strip()
+    if body == _SUSPICIOUS_PROC_NONE:
+        return f"지금 실행 중인 프로그램 {scanned}개를 확인해봤는데, 의심스러운 프로그램은 없었어요."
+
+    lines = body.split('\n')
+    if not lines or not (cm := _SUSPICIOUS_PROC_COUNT.match(lines[0])):
+        return None
+    count = int(cm.group('count'))
+    if not lines[-1].strip() == _SUSPICIOUS_PROC_FOOTER:
+        return None
+    item_block = '\n'.join(lines[1:-1]).strip('\n')
+
+    names = _SUSPICIOUS_PROC_ITEM.findall(item_block)
+    reasons = _SUSPICIOUS_PROC_REASON.findall(item_block)
+    if len(names) != count or len(reasons) != count:
+        return None  # 예상 밖 형식 — 안전하게 LLM 경로로 폴백
+
+    result_lines = [
+        f"지금 실행 중인 프로그램 {scanned}개를 확인해봤는데, 그중 {count}개가 의심스러워요:"
+    ]
+    for (name, pid), reason in zip(names, reasons):
+        result_lines.append(f"- {name} (실행 번호: {pid}) — {reason}")
+    result_lines.append("종료하고 싶은 프로그램의 이름이나 번호를 말씀해주시면 바로 종료해드릴게요.")
+    return "\n".join(result_lines)
+
+
+_SYSINFO_HEADER = re.compile(
+    r'^\[🖥️ 현재 컴퓨터 상태 상세 보고\]\n'
+    r'- 운영체제\(OS\): (?P<os>.+)\n'
+    r'- CPU: (?P<cores>\d+)코어 \(점유율: (?P<cpu_pct>[\d.]+)% / 온도: (?P<cpu_temp>.+)\)\n'
+    r'- GPU: (?P<gpu>.+) \(온도: (?P<gpu_temp>.+)\)\n'
+    r'- 메모리\(RAM\): 총 (?P<ram_total>[\d.]+)GB 중 (?P<ram_used>[\d.]+)GB 사용 중\n'
+    r'- 디스크\(Disk\): 총 (?P<disk_total>[\d.]+)GB 중 (?P<disk_free>[\d.]+)GB 여유 공간$'
+)
+_SYSINFO_UNAVAILABLE = "측정 불가 (이 컴퓨터에서는 지원하지 않음)"
+_SYSINFO_GPU_UNAVAILABLE = "측정 불가"
+
+
+def _build_system_info_reply(raw_results: str):
+    """2026-09-14 system_info 재검증(대화 품질 라운드)에서 발견한 버그:
+    "내 컴퓨터 상태 어때?"에 get_system_info()가 "CPU: 16코어 (점유율:
+    15.6% / 온도: 측정 불가...)"처럼 정확한 수치를 반환하는데도, 요약
+    단계 llama3.1이 (1) 15.6%를 21.2%로 바꿔 말하고(숫자 왜곡 — CPU
+    사용률이 시시각각 바뀌는 값이라 재호출 시차 때문일 가능성도 있지만
+    원본 호출 결과와 다른 숫자를 답했다는 사실 자체가 재현 불가능한
+    응답을 만든다는 문제는 동일), (2) 원본에 전혀 없는 "점유율이 조금
+    높아 보이는데요"라는 위험 판정을 스스로 지어내는(15~21%는 전혀 높은
+    수치가 아님 — 결과에 없는 판정 금지 규칙 위반) 걸 확인했다. 이
+    결과도 고정 구조이므로 코드로 직접 문장을 만들어 재현 가능한 숫자와
+    판정 없는 사실 전달만 하도록 한다."""
+    m = _SYSINFO_HEADER.match(raw_results.strip())
+    if not m:
+        return None
+    g = m.groupdict()
+
+    lines = [
+        f"지금 컴퓨터 상태를 확인해봤는데, 운영체제는 {g['os']}이고 "
+        f"CPU는 {g['cores']}코어에 점유율 {g['cpu_pct']}%예요."
+    ]
+    if g['cpu_temp'] == _SYSINFO_UNAVAILABLE:
+        lines.append("CPU 온도는 이 컴퓨터에서 측정할 수 없었어요.")
+    else:
+        lines.append(f"CPU 온도는 {g['cpu_temp']}예요.")
+
+    if g['gpu'] == _SYSINFO_GPU_UNAVAILABLE and g['gpu_temp'] == _SYSINFO_UNAVAILABLE:
+        lines.append("GPU 정보는 이 컴퓨터에서 측정할 수 없었어요.")
+    else:
+        lines.append(f"GPU는 {g['gpu']}이고 온도는 {g['gpu_temp']}예요.")
+
+    lines.append(
+        f"메모리는 총 {g['ram_total']}GB 중 {g['ram_used']}GB를 사용 중이고, "
+        f"디스크는 총 {g['disk_total']}GB 중 {g['disk_free']}GB가 남아있어요."
+    )
+    return " ".join(lines)
+
+
+_STARTUP_HEADER = re.compile(r'^\[🔁 자동 실행 프로그램 점검 결과\] \(총 (?P<total>\d+)개\)\n\n(?P<body>.+)$', re.DOTALL)
+_STARTUP_EMPTY = "[🔁 자동 실행 프로그램 점검 결과]\n컴퓨터를 켤 때 자동으로 실행되도록 등록된 프로그램이 없습니다."
+_STARTUP_SUS_HEADER = re.compile(r'^🚨 의심 항목 (?P<count>\d+)개:$')
+_STARTUP_NORMAL_HEADER = re.compile(r'^📋 전체 목록 (?P<count>\d+)개:$')
+_STARTUP_ITEM_LINE = re.compile(r'^ {2}- \[(?P<source>[^\]]+)\] (?P<name>.+?) → (?P<command>.+)$')
+_STARTUP_MORE_LINE = re.compile(r'^ {2}\.\.\. 외 (?P<more>\d+)개$')
+
+
+def _build_startup_items_reply(raw_results: str):
+    """2026-09-14 malware_detection 재검증(대화 품질 라운드)에서 발견한
+    버그: "시작프로그램 검사해줘"에 scan_startup_items()가 항목 12개짜리
+    긴 경로 목록("C:\\Program Files (x86)\\Kakao\\KakaoTalk\\KakaoTalk.exe"
+    같은 따옴표·괄호·백슬래시가 섞인 문자열)을 반환하면, 요약 단계
+    llama3.1이 (1) 12개 중 7개만 보여주고 5개를 조용히 누락시키고(그중
+    Riot Vanguard처럼 커널 드라이버가 빠짐), (2) 파일 경로를 "번역"하듯
+    망가뜨리고("Program Files"→"프로그램", 따옴표를 유니코드로 바꿈,
+    이상한 공백 삽입), (3) "위험으로 표시되지 않은 항목은 모두
+    정상입니다" 직후 "그런데 위험이 있는지 확인할 거요?"처럼 방금 한
+    말과 모순되게 되묻고, (4) 문장이 중간에 잘리는 걸 확인했다. 원본은
+    "🚨 의심 항목 N개:"(있을 때만)와 "📋 전체 목록 N개:" 두 섹션 모두
+    고정 구조라 코드로 직접 문장을 만든다."""
+    raw = raw_results.strip()
+    if raw == _STARTUP_EMPTY:
+        return "자동으로 실행되도록 등록된 프로그램이 없어요."
+    m = _STARTUP_HEADER.match(raw)
+    if not m:
+        return None
+    total = int(m.group('total'))
+    body = m.group('body')
+
+    blocks = body.split('\n\n')
+    if len(blocks) == 2:
+        sus_block, normal_block = blocks
+    elif len(blocks) == 1:
+        sus_block, normal_block = None, blocks[0]
+    else:
+        return None
+
+    suspicious_items = []
+    if sus_block is not None:
+        sus_lines = sus_block.split('\n')
+        sm = _STARTUP_SUS_HEADER.match(sus_lines[0])
+        if not sm:
+            return None
+        sus_count = int(sm.group('count'))
+        rest = '\n'.join(sus_lines[1:])
+        chunks = re.split(r'\n(?=  - \[)', rest) if rest else []
+        for chunk in chunks:
+            first_line = chunk.split('\n', 1)[0]
+            im = _STARTUP_ITEM_LINE.match(first_line)
+            if not im:
+                return None
+            suspicious_items.append((im.group('source'), im.group('name'), im.group('command')))
+        if len(suspicious_items) != sus_count:
+            return None  # 예상 밖 형식 — 안전하게 LLM 경로로 폴백
+
+    normal_lines = normal_block.split('\n')
+    nm = _STARTUP_NORMAL_HEADER.match(normal_lines[0])
+    if not nm:
+        return None
+    normal_declared = int(nm.group('count'))
+    rest_lines = normal_lines[1:]
+    normal_more = 0
+    if rest_lines:
+        mm = _STARTUP_MORE_LINE.match(rest_lines[-1])
+        if mm:
+            normal_more = int(mm.group('more'))
+            rest_lines = rest_lines[:-1]
+    normal_items = []
+    for ln in rest_lines:
+        im = _STARTUP_ITEM_LINE.match(ln)
+        if not im:
+            return None
+        normal_items.append((im.group('source'), im.group('name'), im.group('command')))
+    if len(normal_items) + normal_more != normal_declared:
+        return None
+    if len(suspicious_items) + normal_declared != total:
+        return None
+
+    lines = [f"자동으로 실행되도록 등록된 프로그램을 확인해봤는데, 총 {total}개가 있어요."]
+    if suspicious_items:
+        lines.append(f"그중 {len(suspicious_items)}개가 임시/다운로드 폴더에서 실행되고 있어서 의심스러워요:")
+        for source, name, command in suspicious_items:
+            lines.append(f"- {name}({source}) — {command}")
+        lines.append("이 프로그램들을 지금 확인해드릴까요?")
+    else:
+        lines.append("의심스러운 항목은 없었어요. 등록된 프로그램은:")
+
+    for source, name, command in normal_items:
+        lines.append(f"- {name} — {command}")
+    if normal_more:
+        lines.append(f"- 그 외에도 {normal_more}개가 더 있어요")
+
+    return "\n".join(lines)
+
+
+_PRICE_CARD_NAME_LABEL = "📦 상품명:"
+_PRICE_CARD_PRICE_LABEL = "💰 최저가:"
+_PRICE_HEADER = re.compile(r"🛒 '(?P<query>.+)' 최저가 검색 결과")
+_PRICE_MATCH_SUCCESS = re.compile(
+    r'\[💡 검색어와 이름이 일치하는 상품 중 최저가 — 이미 계산됨\]\n'
+    r'(?P<name>.+?): (?P<price>[\d,]+원)'
+    r"(?:\n\(참고: 위 \d+개 중 \d+개는 검색어 '.+?'와 이름이 다른 상품이라 "
+    r"이 최저가 비교에서 제외함 — (?P<excluded>.+?)\))?"
+)
+_PRICE_MATCH_NONE = re.compile(
+    r"\[💡 참고\] 위 \d+개 상품 중 검색어 '.+?'와 이름이 정확히 일치하는 상품을 찾지 못했습니다"
+)
+
+
+def _parse_price_cards(raw_results: str):
+    """search_product_price()의 카드 형식(#idx/📦 상품명/💰 최저가/🔗 링크/
+    🖼️ 이미지)에서 이름·가격만 뽑아낸다 — 링크·이미지 URL은 의도적으로
+    버린다(버그49 원인)."""
+    lines = raw_results.split("\n")
+    products = []
+    i, n = 0, len(lines)
+    while i < n:
+        if _PRICE_CARD_NAME_LABEL in lines[i]:
+            j = i + 1
+            name_parts = []
+            while j < n:
+                stripped = lines[j].lstrip("│").strip()
+                if lines[j].strip() == "│" or stripped == "" or _PRICE_CARD_PRICE_LABEL in lines[j]:
+                    break
+                name_parts.append(stripped)
+                j += 1
+            name = "".join(name_parts)
+            price = None
+            k = j
+            while k < n and k < j + 6:
+                if _PRICE_CARD_PRICE_LABEL in lines[k]:
+                    price = lines[k].split(_PRICE_CARD_PRICE_LABEL, 1)[1].strip()
+                    break
+                k += 1
+            if name and price:
+                products.append((name, price))
+            i = k + 1
+        else:
+            i += 1
+    return products
+
+
+def _build_price_search_reply(raw_results: str):
+    """2026-09-14 price_search 재검증(대화 품질 라운드)에서 발견한 버그49:
+    이 결과를 요약하는 "빠른 감지 1" 단축 경로가 결정론적 처리 없이
+    LLM에게 "상품마다 이름과 가격을 그대로 알려줘"라고만 지시하고 있어서,
+    llama3.1이 카드에 있던 다나와 링크·이미지 URL까지 통째로 그대로
+    베껴 답변에 넣어(인코딩된 쿼리스트링 포함) 채팅창이 읽기 힘든
+    URL 덩어리로 뒤덮이는 걸 실측으로 확인했다(예: '그래픽카드' 검색).
+    최저가 판정은 이미 price_search.py의 _build_match_summary가 결정론적
+    으로 계산해 "[💡 ... 이미 계산됨]" 마커에 박아두고 있으므로, 이름·
+    가격·최저가 판정 모두 LLM 없이 코드로 직접 문장을 만든다(링크·이미지는
+    이미 카드 UI로 따로 표시되므로 채팅 텍스트에서는 아예 뺀다)."""
+    if _PRICE_CARD_NAME_LABEL not in raw_results:
+        return None
+    header_m = _PRICE_HEADER.search(raw_results)
+    if not header_m:
+        return None
+    query = header_m.group("query")
+    products = _parse_price_cards(raw_results)
+    if not products:
+        return None
+
+    lines = [f"'{query}' 검색 결과, 이런 상품들이 나왔어요."]
+    for idx, (name, price) in enumerate(products, 1):
+        lines.append(f"{idx}. {name}: {price}")
+
+    m = _PRICE_MATCH_SUCCESS.search(raw_results)
+    if m:
+        lines.append(f"이 중에서는 {m.group('name')}가 {m.group('price')}으로 가장 저렴해요.")
+        if m.group('excluded'):
+            lines.append(f"({m.group('excluded')}는 검색어와 이름이 달라서 이 비교에서는 제외했어요.)")
+    elif _PRICE_MATCH_NONE.search(raw_results):
+        lines.append("다만 검색어와 이름이 정확히 일치하는 상품은 없어서 최저가를 딱 집어 말씀드리긴 어려워요 — 위 상품명을 직접 확인해주세요.")
+    else:
+        return None  # 예상 밖 형식 — 안전하게 LLM 경로로 폴백
+    return "\n".join(lines)
+
+
 _DETERMINISTIC_REPLY_BUILDERS = (
     _build_score_report_reply,
     _build_single_verdict_reply,
     _build_realtime_status_reply,
     _build_realtime_stop_reply,
     _build_calendar_confirmation_reply,
+    _build_recurring_calendar_confirmation_reply,
     _build_calendar_empty_reply,
+    _build_local_search_events_reply,
+    _build_local_upcoming_events_reply,
+    _build_local_events_by_date_reply,
+    _build_local_daily_briefing_reply,
+    _build_local_schedule_summary_reply,
     _build_iot_no_devices_reply,
     _build_iot_control_reply,
     _build_port_scan_reply,
@@ -1109,6 +1705,10 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_network_connections_reply,
     _build_firewall_rules_reply,
     _build_traffic_monitor_reply,
+    _build_suspicious_process_reply,
+    _build_startup_items_reply,
+    _build_system_info_reply,
+    _build_price_search_reply,
 )
 
 
@@ -1477,6 +2077,16 @@ class AIWorker(QThread):
         # 시간 부사 제거
         for kw in ['내일', '모레', '오늘', '이번주', '다음주']:
             t = t.replace(kw, '')
+        # 2026-09-14 calendar_tool 재검증에서 발견: 이 함수를 반복 일정
+        # 등록(local_create_recurring_event/create_recurring_event)에도
+        # 적용하면서, "매주 화요일 오전 10시에 주간회의 반복 일정
+        # 추가해줘"처럼 반복 주기 부사가 title에 그대로 남아 "매주 화요일
+        # 주간회의 반복"처럼 지저분한 제목이 되는 걸 실측으로 확인했다 —
+        # "매주/매일/매월/매년"과 "반복"을 요일 이름과 함께 제거한다.
+        for kw in ['매주', '매일', '매월', '매년']:
+            t = t.replace(kw, '')
+        for kw in self._WEEKDAY_NAME_TO_INDEX:
+            t = t.replace(kw, '')
         # 문장 맨 앞 주어(대명사) 제거 — "저" 뒤에 공백/끝이 와야만 대명사로 보고
         # 지운다(경계 확인 없이 지우면 "저녁약속"의 "저"까지 잘라먹어 "녁약속"이
         # 되는 걸 실측으로 확인함 — "저"가 "저녁/저기/저거" 같은 다른 단어의
@@ -1493,9 +2103,10 @@ class AIWorker(QThread):
         )
         # 요청 표현 제거 (긴 것부터) — 위 정규식에 안 걸리는 나머지 고정 표현들
         for kw in ['캘린더에 추가해줘', '캘린더에 넣어줘', '캘린더에 등록해줘',
+                   '반복 일정 추가해줘', '반복 일정 등록해줘', '반복 일정 잡아줘',
                    '일정 추가해줘', '일정 등록해줘', '일정 잡아줘', '일정 넣어줘',
                    '일정 추가해', '일정 등록해', '추가해줘', '등록해줘', '잡아줘', '넣어줘',
-                   '일정']:
+                   '반복 일정', '일정', '반복']:
             t = t.replace(kw, '')
         # 문장 끝 연결형 어미 제거 (생겼는데, 있어, 인데 등)
         t = re.sub(r'(생겼는데|생겼어요|생겼어|잡혔어요|잡혔어|있는데|있어요|있어|'
@@ -1507,24 +2118,51 @@ class AIWorker(QThread):
 
     # 상대 날짜 표현 → 오늘 기준 며칠 뒤인지
     _RELATIVE_DAY_OFFSETS = {"오늘": 0, "내일": 1, "모레": 2, "글피": 3}
+    # 요일 이름 → weekday() 값(월=0 ~ 일=6)
+    _WEEKDAY_NAME_TO_INDEX = {
+        "월요일": 0, "화요일": 1, "수요일": 2, "목요일": 3,
+        "금요일": 4, "토요일": 5, "일요일": 6,
+    }
 
     def _resolve_event_date(self, text: str):
-        """일정 등록 문장에 "내일"/"모레"/"N월 N일"/"YYYY-MM-DD" 같은 날짜
-        표현이 있으면, 실제 오늘 날짜를 기준으로 결정론적으로 계산한 날짜
-        문자열("YYYY-MM-DD")을 반환한다. 없으면 None(=모델이 만든 날짜를
-        그대로 신뢰).
+        """일정 등록 문장에 "내일"/"모레"/"월요일"/"N월 N일"/"YYYY-MM-DD"
+        같은 날짜 표현이 있으면, 실제 오늘 날짜를 기준으로 결정론적으로
+        계산한 날짜 문자열("YYYY-MM-DD")을 반환한다. 없으면 None(=모델이
+        만든 날짜를 그대로 신뢰).
 
         시스템 프롬프트에 오늘/내일 날짜를 명시해서 넘겨줘도, llama3.1이
         그 값을 안 쓰고 스스로 계산한(가끔 완전히 엉뚱한 연도의) 날짜를
         만들어내는 걸 실측으로 확인함 — "내일"이라고 했는데 2023-03-09를
         만들어낸 사례. 제목(_extract_event_title)과 같은 이유로, 프롬프트
-        지시만으론 안 되니 정규식으로 날짜만큼은 강제로 맞춰준다."""
+        지시만으론 안 되니 정규식으로 날짜만큼은 강제로 맞춰준다.
+
+        2026-09-14 calendar_tool 재검증에서 추가로 발견한 버그: "매주
+        월요일 오전 10시에 주간회의 반복 일정 추가해줘"처럼 요일 이름으로
+        날짜를 지정하면 이 함수가 처리하는 패턴("내일"/"N월 N일"/
+        "YYYY-MM-DD") 어디에도 안 걸려서 None을 반환하고, 결국 LLM이
+        스스로 계산한 날짜(월요일이 아니라 실제로는 토요일인 9/19)가 그대로
+        쓰이는 걸 실측으로 확인했다 — "오늘 이후 가장 가까운 그 요일(오늘
+        포함)"을 결정론적으로 계산해서 이 구멍을 막는다.
+
+        ChatGPT 검수 지적으로 선제 발견한 버그: "다음주 월요일에"처럼
+        "다음주"가 명시돼 있으면 이번 주가 아니라 다음 주의 그 요일을
+        의미하는데, 위 요일 계산이 "다음주"를 무시하고 그냥 "가장 가까운
+        요일"만 찾으면 오늘이 월요일일 때 "다음주 월요일"이 엉뚱하게
+        오늘로 계산되는 걸 직접 재현해서 확인했다 — "다음주"/"다음 주"가
+        같이 있으면 일주일을 더해서 진짜 다음 주로 보낸다."""
         from datetime import datetime
         now = datetime.now()
         for word, offset in self._RELATIVE_DAY_OFFSETS.items():
             if word in text:
                 from datetime import timedelta
                 return (now + timedelta(days=offset)).strftime("%Y-%m-%d")
+        for word, target_weekday in self._WEEKDAY_NAME_TO_INDEX.items():
+            if word in text:
+                from datetime import timedelta
+                days_ahead = (target_weekday - now.weekday()) % 7
+                if "다음주" in text.replace(" ", ""):
+                    days_ahead += 7
+                return (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
         m = re.search(r'(\d{1,2})월\s*(\d{1,2})일', text)
         if m:
             month, day = int(m.group(1)), int(m.group(2))
@@ -1802,9 +2440,31 @@ class AIWorker(QThread):
 
         return False
 
+    def _report_detail_followup_func(self):
+        """직전 AI 메시지가 "{항목명}를 자세히 봐드릴까요?"로 끝났고, 지금 답이 그걸
+        승낙하는 짧은 대답이면 그 항목에 해당하는 함수 이름 하나만 반환한다(버그
+        발견 경위는 위 _REPORT_DETAIL_TARGETS 설명 참고). 해당 없으면 None."""
+        if self._is_decline_reply():
+            return None
+        text = self.user_text.replace(" ", "")
+        if len(text) > 20 or not _FOLLOWUP_ACCEPT_PATTERN.match(text):
+            return None
+        for msg in reversed(self.chat_history):
+            if msg.get('role') == 'assistant':
+                m = _REPORT_DETAIL_OFFER.search(str(msg.get('content', '')).strip())
+                if not m:
+                    return None
+                return _REPORT_DETAIL_TARGETS.get(m.group('name').strip())
+            if msg.get('role') == 'user':
+                return None
+        return None
+
     def _allowed_category_funcs(self):
         """메시지(+ 필요시 직전 AI 답변)와 관련 있는 카테고리의 함수 이름만 모아서 반환.
         어느 카테고리에도 안 걸리면 None(=전체 노출, 안전장치)을 반환한다."""
+        followup_func = self._report_detail_followup_func()
+        if followup_func:
+            return {followup_func}
         text = self._keyword_search_text()
         allowed = set()
         for keywords, funcs in _TOOL_CATEGORIES.values():
@@ -1929,7 +2589,16 @@ class AIWorker(QThread):
                         if '🛒' in tool_result:
                             self.price_result.emit(_track_price_search(query) + tool_result)
 
-                        # AI 요약
+                        # 버그49: 결정론적 처리 먼저 시도 — 성공하면 LLM을 아예
+                        # 거치지 않아 다나와 링크/이미지 URL이 채팅 답변에 섞여
+                        # 들어갈 여지 자체가 없다.
+                        deterministic_reply = _build_price_search_reply(tool_result)
+                        if deterministic_reply is not None:
+                            self.response_ready.emit(f"🤖 로컬 비서: {deterministic_reply}")
+                            return
+
+                        # AI 요약 (결정론적 처리가 실패한 경우의 폴백 — 정상적으로는
+                        # search_product_price 출력이 고정 구조라 항상 위에서 처리된다)
                         self.status_update.emit("📋  결과 정리 중")
                         summary_messages = [{
                             'role': 'system',
@@ -2057,7 +2726,27 @@ class AIWorker(QThread):
                         self.status_update.emit("💻  시스템 정보 수집 중")
                         tool_result = func_map['get_system_info']()
 
-                        # AI 요약
+                        # 2026-09-14 system_info 재검증(대화 품질 라운드)에서 발견한
+                        # 버그: 이 "빠른 감지" 경로가 _summarize_tool_results/
+                        # _build_deterministic_reply를 거치지 않고 독자적으로 LLM
+                        # 요약을 호출하고 있어서, get_system_info의 고정 구조를
+                        # 처리하는 _build_system_info_reply가 적용되지 않았다. 그
+                        # 결과 CPU 점유율 숫자가 왜곡되고, 심지어 "총 31.1GB 중
+                        # 17.3GB 사용"이 "17.3GB 중 31.1GB 사용"처럼 총량/사용량
+                        # 순서가 뒤바뀌어 산수적으로 말이 안 되는 문장이 나오고,
+                        # "여유 공간 1332GB/1862GB"(72% 여유)를 "여유 공간이
+                        # 부족하다"고 정반대로 판단하는 걸 확인했다 — 바로 아래
+                        # 프롬프트의 "사용량이 높거나 여유 공간이 부족한 항목이
+                        # 있으면 물어봐줘"라는 지시 자체가 근거 없는 판단을 유도하는
+                        # 원인이었다. 다른 경로들과 동일하게 결정론적 빌더를 먼저
+                        # 시도한다.
+                        deterministic_reply = _build_system_info_reply(tool_result)
+                        if deterministic_reply is not None:
+                            self.response_ready.emit(f"🤖 로컬 비서: {deterministic_reply}")
+                            return
+
+                        # AI 요약 (결정론적 처리가 실패한 경우의 폴백 — 정상적으로는
+                        # get_system_info 출력이 고정이라 항상 위에서 처리된다)
                         self.status_update.emit("📋  결과 정리 중")
                         summary_messages = [{
                             'role': 'system',
@@ -2219,7 +2908,14 @@ class AIWorker(QThread):
                     "탐지 결과에 따라 대응까지 요청하면, detect_suspicious_processes 같은 탐지 함수만 "
                     "다시 부르지 말고 block_suspicious_process를 호출하세요. 종료할 프로세스 이름을 "
                     "아직 모르면 먼저 detect_suspicious_processes나 get_malware_report로 탐지부터 "
-                    "하고, 그 결과에 실제로 있던 이름으로 block_suspicious_process를 호출하세요.\n"
+                    "하고, 그 결과에 실제로 있던 이름으로 block_suspicious_process를 호출하세요. "
+                    "**절대로 detect_suspicious_processes/get_malware_report와 block_suspicious_process를 "
+                    "같은 턴에 동시에 호출하지 마세요** — 탐지 함수의 실제 결과를 아직 못 본 상태에서는 "
+                    "종료할 진짜 프로세스 이름을 알 수 없으니, 이번 턴엔 탐지 함수만 호출하고 그 결과가 "
+                    "돌아온 다음 턴에서 결과에 적힌 이름을 보고 나서만 block_suspicious_process를 "
+                    "호출하세요. process_name에는 결과 텍스트에 문자 그대로 적힌 이름만 넣어야지, "
+                    "'탐지된 프로세스 이름'처럼 무엇을 넣어야 하는지 설명하는 말 자체를 값으로 넣으면 "
+                    "안 됩니다.\n"
                     "8. 사용자가 한 문장에서 '~랑 ~', '~하고 ~', '~와 ~'처럼 두 가지 이상을 "
                     "동시에 확인해달라고 하면(예: '포트랑 방화벽 상태 확인해줘' → 포트 확인 + "
                     "방화벽 확인 두 가지), 그중 하나만 호출하고 끝내지 말고 언급된 항목에 "
@@ -2311,14 +3007,79 @@ class AIWorker(QThread):
                 pending_dangerous = []
                 self.chat_history.append(response['message'])
 
+                # 2026-09-14 실사용 재검증에서 발견한 버그: "의심스러운 프로세스
+                # 있으면 찾아서 막아줘"에 llama3.1이 detect_suspicious_processes와
+                # block_suspicious_process를 같은 턴에 동시에 호출했다 — 이 시점엔
+                # 아직 탐지 함수의 실제 결과를 못 봤으므로 종료할 진짜 프로세스
+                # 이름을 알 리가 없는데도, process_name='탐지된 프로세스 이름'처럼
+                # 파라미터 설명 문구 자체를 값으로 지어내 호출했다. 기존
+                # _looks_like_bogus_dangerous_action은 "비어있음/단순 긍정부정/
+                # 사용자 입력 그대로/함수 이름"만 걸러내서 이 패턴은 못 잡았다.
+                # 값의 내용을 추측해서 걸러내는 대신, 애초에 이 조합(같은 턴에
+                # 탐지+차단 동시 호출)을 구조적으로 차단하는 게 더 확실하다.
+                _tool_call_names_this_turn = {
+                    t['function']['name'] for t in response['message']['tool_calls']
+                }
+                # 2026-09-14 ChatGPT 검수 지적(malware_detection 라운드): 버그42가
+                # block_suspicious_process에 국한된 문제가 아니라 "LLM이 조회 결과를
+                # 아직 못 본 상태에서 위험 행동을 같은 턴에 미리 연결해버리는" 구조적
+                # 문제이므로, 같은 패턴이 가능한 다른 위험 함수도 점검하라는 지적을
+                # 받았다. kill_process도 process_name_or_number를 받는 위험 함수라
+                # "CPU 많이 먹는 프로세스 찾아서 꺼줘"처럼 조회+종료를 한 문장에 요청하면
+                # 같은 턴에 get_top_cpu_processes/detect_suspicious_processes와
+                # kill_process가 동시 호출되어 실제 결과를 보지 않은 채 지어낸
+                # 프로세스 이름으로 종료 확인창이 뜰 위험이 있어 함께 등록한다.
+                # 같은 이유로 _DANGEROUS_FUNCS 전체(kill_process/manage_firewall/
+                # block_suspicious_process/delete_event/local_delete_event)를 훑어서
+                # manage_firewall("포트 스캔해서 위험한거 있으면 막아줘" — scan_open_ports/
+                # get_firewall_rules에 의존)과 delete_event/local_delete_event("회의
+                # 일정 있으면 지워줘" — search_events 계열에 의존)도 같은 패턴이
+                # 가능해 함께 등록한다(이번엔 GUI 재현은 안 됐지만 구조적으로 가능한
+                # 경로라 방어적으로 추가 — 실제 재현되기 전에 선제 차단).
+                _DETECTION_BEFORE_ACTION = {
+                    'block_suspicious_process': ('detect_suspicious_processes', 'get_malware_report'),
+                    'kill_process': ('get_top_cpu_processes', 'detect_suspicious_processes', 'get_malware_report'),
+                    'manage_firewall': ('scan_open_ports', 'get_firewall_rules'),
+                    'delete_event': ('search_events', 'get_events_by_date', 'get_upcoming_events'),
+                    'local_delete_event': ('local_search_events', 'local_get_events_by_date', 'local_get_upcoming_events'),
+                }
+
                 for tool in response['message']['tool_calls']:
                     func_name = tool['function']['name']
                     args      = tool['function']['arguments']
 
+                    _required_detect = _DETECTION_BEFORE_ACTION.get(func_name)
+                    if _required_detect and any(d in _tool_call_names_this_turn for d in _required_detect):
+                        # func_name별로 "무엇을 어떻게 다시 말해달라고 안내할지"가 다
+                        # 다르다 — 프로세스는 이름, 포트는 번호, 일정은 제목이 필요.
+                        if func_name == 'kill_process':
+                            action_verb, target_noun = "종료", "프로세스 이름"
+                        elif func_name == 'block_suspicious_process':
+                            action_verb, target_noun = "차단", "프로세스 이름"
+                        elif func_name == 'manage_firewall':
+                            action_verb, target_noun = "차단", "포트 번호"
+                        else:  # delete_event, local_delete_event
+                            action_verb, target_noun = "삭제", "일정 제목"
+                        tool_results.append(
+                            "먼저 조회 결과부터 확인해주세요 — 결과를 보여드릴게요. "
+                            f"{action_verb}하고 싶은 게 있으면 그 {target_noun}으로 다시 말씀해주시면 바로 {action_verb}할게요."
+                        )
+                        continue
+
                     # ── 일정 등록: title은 LLM 대신 정규식으로 결정론적 추출 ──
                     # (작은 로컬 모델이 title을 자유 생성하면 의미 없는 텍스트를 만드는 경우가 있음)
                     # 구글/내부 캘린더 둘 다 동일하게 적용 — 백엔드만 다를 뿐 같은 문제를 겪음.
-                    if func_name in ('create_event', 'local_create_event'):
+                    # 2026-09-14 calendar_tool 재검증에서 발견한 버그: 이 튜플에
+                    # (local_)create_recurring_event가 빠져 있어서 "매주 월요일 오전
+                    # 10시에 주간회의 반복 일정 추가해줘"에 title이 "검시시일우의
+                    # 안호요"라는 완전히 의미 없는 텍스트로 만들어지고, 날짜도 다음
+                    # "월요일"이 아니라 토요일(9/19)로 계산되는 걸 실측으로 확인했다
+                    # (실제로 1000개 인스턴스가 이 잘못된 값으로 생성돼 저장 파일이
+                    # 오염되는 것까지 실측 확인 — 아래 recurrence_count 상한과 함께
+                    # 근본 원인). create_event와 똑같은 이유로 반복 일정도 title/날짜
+                    # 결정론적 처리 대상에 포함해야 한다.
+                    if func_name in ('create_event', 'local_create_event',
+                                      'create_recurring_event', 'local_create_recurring_event'):
                         extracted_title = self._extract_event_title(self.user_text)
                         if extracted_title:
                             args['title'] = extracted_title
@@ -2327,12 +3088,40 @@ class AIWorker(QThread):
                     # (title과 같은 이유 — "내일"이라고 했는데 모델이 스스로 계산해서
                     # 엉뚱한 연도/날짜를 만들어내는 걸 실측으로 확인함. 시간(시:분)은
                     # 모델이 비교적 잘 뽑아내므로 그대로 두고 날짜만 교체한다.)
-                    if func_name in ('create_event', 'local_create_event'):
+                    if func_name in ('create_event', 'local_create_event',
+                                      'create_recurring_event', 'local_create_recurring_event'):
                         resolved_date = self._resolve_event_date(self.user_text)
                         if resolved_date:
                             for _dt_key in ('start_datetime', 'end_datetime'):
                                 if args.get(_dt_key):
                                     args[_dt_key] = self._apply_resolved_date(args[_dt_key], resolved_date)
+
+                    # ── 반복 일정: recurrence_count에 상한 clamp ──
+                    # 2026-09-14 calendar_tool 재검증에서 발견한 버그: 사용자가 반복
+                    # 횟수를 명시하지 않았는데도(기본값 10이 있는데도) LLM이
+                    # recurrence_count=1000처럼 비현실적으로 큰 값을 스스로 지어내서,
+                    # 실제로 1000개의 이벤트가 로컬 캘린더 데이터 파일에 그대로
+                    # 저장되는 걸 실측으로 확인했다(데이터 오염 + 성능 저하 위험).
+                    # 사용자가 명시적으로 많은 횟수를 요청하는 경우(예: "1년치")도
+                    # 있을 수 있으니 함수 자체를 막지는 않되, 상한을 넉넉하게
+                    # (104회 ≈ 매주 2년치) 잡아 실수로 생긴 큰 값만 clamp한다.
+                    if func_name in ('create_recurring_event', 'local_create_recurring_event'):
+                        _MAX_RECURRENCE_COUNT = 104
+                        if 'recurrence_count' in args:
+                            try:
+                                if int(args['recurrence_count']) > _MAX_RECURRENCE_COUNT:
+                                    args['recurrence_count'] = _MAX_RECURRENCE_COUNT
+                            except (TypeError, ValueError):
+                                pass
+                        # 2026-09-14 calendar_tool 재검증에서 발견한 버그: 사용자가
+                        # "매주 화요일에 반복 일정 추가해줘"처럼 반복 횟수를 전혀
+                        # 언급하지 않았는데도 LLM이 recurrence_count=1처럼 "반복"이라는
+                        # 말 자체와 모순되는 값을 스스로 채워 넣는 걸 실측으로 확인했다
+                        # (실제로 1회만 등록됨 — 사용자가 기대한 "매주 반복"과 다름).
+                        # 사용자 텍스트에 명시적인 횟수 표현(숫자+번/회/차례)이 없으면
+                        # LLM이 준 값을 버리고 함수 기본값(10회)이 적용되게 한다.
+                        if not re.search(r'\d+\s*(번|회|차례)', self.user_text):
+                            args.pop('recurrence_count', None)
 
                     # ── 일정 등록: 소요 시간 처리 ──
                     if func_name in ('create_event', 'local_create_event') and 'end_datetime' not in args:

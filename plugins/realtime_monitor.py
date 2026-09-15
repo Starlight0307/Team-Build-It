@@ -72,7 +72,9 @@ TOOL_SCHEMAS = {
             "name": "get_realtime_monitor_status",
             "description": (
                 "실시간 감시가 현재 실행 중인지, 얼마나 됐는지 확인합니다. "
-                "사용자가 '실시간 감시 상태 확인', '감시 켜져있어?' 등을 말할 때 호출하세요."
+                "사용자가 '실시간 감시 상태 확인', '감시 켜져있어?' 등을 말할 때 호출하세요. "
+                "'백그라운드 서비스 확인해줘'처럼 Windows 서비스 점검을 뜻하는 요청에는 이 함수가 "
+                "아니라 scan_suspicious_services를 호출해야 합니다 — 헷갈리지 마세요."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
