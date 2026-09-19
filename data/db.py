@@ -253,6 +253,69 @@ def register_user(username, password, email, name, phone, birthday):
         print(f"[회원가입 오류] {e}")
 
 
+# ==========================================
+# 🔵 구글 로그인 (OAuth)
+#
+# 구글 계정으로 로그인/회원가입 — 비밀번호 없이 google_id로 식별한다.
+# 이미 같은 이메일로 가입된 로컬 계정이 있으면 그 계정에 google_id만
+# 연결(link)하고, 없으면 새 계정을 만든다. 회원번호(member_no)는
+# 로컬 가입(RUMI-######)과 구분되도록 구글 고유 ID(sub) 기반으로
+# 'RUMI-G-########' 형식을 쓴다.
+# ==========================================
+
+def find_or_create_google_user(google_id: str, email: str, name: str) -> str:
+    """구글 계정으로 로그인. 이미 연결된 계정이 있으면 그 아이디를,
+    없으면 새로 만들어서 아이디를 반환한다. 실패하면 예외를 던진다
+    (호출부에서 사용자에게 실패 사유를 보여줘야 하므로 여기서는
+    조용히 삼키지 않는다)."""
+    conn = _supabase_connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT username FROM users WHERE google_id=%s", (google_id,))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+
+        # 같은 이메일로 이미 가입된 로컬 계정이 있으면 구글 계정만 연결
+        if email:
+            cur.execute("SELECT id, username FROM users WHERE email=%s", (email,))
+            row = cur.fetchone()
+            if row:
+                user_id, username = row
+                cur.execute("UPDATE users SET google_id=%s WHERE id=%s", (google_id, user_id))
+                conn.commit()
+                return username
+
+        # 신규 계정 생성 — 아이디는 이메일 앞부분에서 유도, 중복이면 숫자를 붙인다
+        base_username = email.split("@")[0] if email else f"google{google_id[-6:]}"
+        base_username = "".join(c for c in base_username if c.isalnum()) or "google"
+        base_username = base_username[:14]
+        username = base_username
+        n = 1
+        while True:
+            cur.execute("SELECT id FROM users WHERE username=%s", (username,))
+            if not cur.fetchone():
+                break
+            n += 1
+            username = f"{base_username}{n}"
+
+        member_no = f"RUMI-G-{google_id[-8:]}"
+        cur.execute("SELECT id FROM users WHERE member_no=%s", (member_no,))
+        if cur.fetchone():
+            import random, string
+            member_no = f"RUMI-G-{''.join(random.choices(string.digits, k=8))}"
+
+        cur.execute(
+            "INSERT INTO users (username, password, email, name, phone, birthday, member_no, google_id) "
+            "VALUES (%s, NULL, %s, %s, NULL, NULL, %s, %s)",
+            (username, email, name or username, member_no, google_id)
+        )
+        conn.commit()
+        return username
+    finally:
+        cur.close(); conn.close()
+
+
 def get_username_by_email(email: str):
     """수파베이스 이메일로 아이디 찾기 - 구버전 호환용"""
     try:

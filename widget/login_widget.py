@@ -1,10 +1,28 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLineEdit, QPushButton, QLabel, QMessageBox,
                              QSizePolicy, QGraphicsDropShadowEffect)
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
 from PyQt6.QtGui import QColor
 
 from data.db import verify_login
+
+
+class GoogleLoginWorker(QThread):
+    """구글 로그인(OAuth) — 브라우저 인증이 끝날 때까지 블로킹되는 작업이라
+    UI 스레드가 멈추지 않도록 별도 스레드에서 실행한다."""
+    result_ready = pyqtSignal(bool, str, str)  # success, username_or_empty, error_message
+
+    def run(self):
+        try:
+            from auth.google_auth import sign_in_with_google
+            from data.db import find_or_create_google_user
+            profile  = sign_in_with_google()
+            username = find_or_create_google_user(
+                profile["google_id"], profile["email"], profile["name"]
+            )
+            self.result_ready.emit(True, username, "")
+        except Exception as e:
+            self.result_ready.emit(False, "", str(e))
 
 
 def get_stylesheet(is_dark: bool) -> str:
@@ -51,6 +69,13 @@ def get_stylesheet(is_dark: bool) -> str:
             padding: 7px; font-size: 12px; font-weight: 500; min-height: 30px;
         }}
         QPushButton#S:hover {{ background-color: {b2hv}; }}
+        QPushButton#G {{
+            background-color: {card}; color: {text};
+            border: 1px solid {brd}; border-radius: 7px;
+            padding: 8px; font-size: 13px; font-weight: 600; min-height: 34px;
+        }}
+        QPushButton#G:hover {{ background-color: {b2hv}; }}
+        QPushButton#G:disabled {{ color: {sub}; }}
         QPushButton#L {{
             background: transparent; color: {acc};
             border: none; padding: 1px 3px;
@@ -68,6 +93,7 @@ class LoginWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._google_worker = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
         self.update_theme(True)
@@ -116,7 +142,12 @@ class LoginWidget(QWidget):
         btn = QPushButton("로그인"); btn.setObjectName("P")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(self._handle_login)
-        L.addWidget(btn); L.addSpacing(14)
+        L.addWidget(btn); L.addSpacing(10)
+
+        self.btn_google = QPushButton("G  Google로 로그인"); self.btn_google.setObjectName("G")
+        self.btn_google.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_google.clicked.connect(self._handle_google_login)
+        L.addWidget(self.btn_google); L.addSpacing(14)
 
         sep = QFrame(); sep.setObjectName("Sep"); sep.setFrameShape(QFrame.Shape.HLine)
         L.addWidget(sep); L.addSpacing(14)
@@ -153,6 +184,22 @@ class LoginWidget(QWidget):
                 QMessageBox.warning(self, "실패", "아이디 또는 비밀번호가 틀렸습니다.")
         except Exception as e:
             QMessageBox.warning(self, "DB 오류", str(e))
+
+    def _handle_google_login(self):
+        self.btn_google.setEnabled(False)
+        self.btn_google.setText("구글 인증 중... (브라우저 확인)")
+        self._google_worker = GoogleLoginWorker()
+        self._google_worker.result_ready.connect(self._on_google_login_done)
+        self._google_worker.start()
+
+    @pyqtSlot(bool, str, str)
+    def _on_google_login_done(self, ok, username, err):
+        self.btn_google.setEnabled(True)
+        self.btn_google.setText("G  Google로 로그인")
+        if ok:
+            self.login_success.emit(username)
+        else:
+            QMessageBox.warning(self, "구글 로그인 실패", f"구글 로그인에 실패했습니다.\n{err}")
 
     def clear_fields(self):
         self.input_id.clear(); self.input_pw.clear()
