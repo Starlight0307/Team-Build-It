@@ -1,10 +1,10 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
-                             QLabel, QPushButton, QSizePolicy,
-                             QGraphicsDropShadowEffect)
+                             QLabel, QPushButton, QLineEdit, QMessageBox,
+                             QSizePolicy, QGraphicsDropShadowEffect)
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
-from data.db import count_sessions
+from data.db import count_sessions, get_user_profile, update_profile
 
 
 class MyPageWidget(QWidget):
@@ -12,6 +12,7 @@ class MyPageWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._username = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
 
@@ -77,7 +78,32 @@ class MyPageWidget(QWidget):
         stat_layout.addWidget(count_label)
         stat_row.addWidget(stat_box)
         L.addLayout(stat_row)
-        L.addSpacing(24)
+        L.addSpacing(20)
+
+        # 추가 정보 (구글 가입 계정은 휴대폰번호/생년월일이 비어있을 수 있어
+        # 여기서 채우거나 수정할 수 있게 함)
+        self.lbl_profile_hdr = QLabel("추가 정보")
+        self.lbl_profile_hdr.setObjectName("MPCountSub")
+        L.addWidget(self.lbl_profile_hdr)
+        L.addSpacing(6)
+
+        self.input_phone = QLineEdit()
+        self.input_phone.setPlaceholderText("휴대폰번호 ('-' 제외 11자리)")
+        L.addWidget(self.input_phone)
+        L.addSpacing(8)
+
+        self.input_birthday = QLineEdit()
+        self.input_birthday.setPlaceholderText("생년월일 (YYYY-MM-DD)")
+        L.addWidget(self.input_birthday)
+        L.addSpacing(8)
+
+        self.btn_save_profile = QPushButton("정보 저장")
+        self.btn_save_profile.setObjectName("MPSave")
+        self.btn_save_profile.setMinimumHeight(36)
+        self.btn_save_profile.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_save_profile.clicked.connect(self._save_profile)
+        L.addWidget(self.btn_save_profile)
+        L.addSpacing(20)
 
         # 로그아웃 버튼
         self.btn_logout = QPushButton("🚪  로그아웃")
@@ -91,8 +117,43 @@ class MyPageWidget(QWidget):
 
     def refresh(self, username: str):
         """로그인 후 호출 — 유저 정보 갱신"""
+        self._username = username
         self.lbl_username.setText(username)
         self.lbl_count.setText(str(count_sessions(username)))
+
+        try:
+            profile = get_user_profile(username)
+        except Exception as e:
+            profile = None
+            print(f"[프로필 조회 오류] {e}")
+
+        self.input_phone.setText(profile["phone"] if profile else "")
+        self.input_birthday.setText(profile["birthday"] if profile else "")
+
+    def _save_profile(self):
+        if not self._username:
+            return
+        phone = self.input_phone.text().strip()
+        birthday = self.input_birthday.text().strip()
+
+        if phone and (not phone.isdigit() or len(phone) != 11):
+            QMessageBox.warning(self, "오류", "휴대폰번호는 '-' 제외 11자리 숫자로 입력하세요.")
+            return
+        if birthday:
+            import re
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", birthday):
+                QMessageBox.warning(self, "오류", "생년월일은 YYYY-MM-DD 형식으로 입력하세요.")
+                return
+
+        try:
+            update_profile(
+                self._username,
+                phone=phone or None,
+                birthday=birthday or None,
+            )
+            QMessageBox.information(self, "완료", "정보가 저장되었습니다.")
+        except Exception as e:
+            QMessageBox.warning(self, "오류", f"저장에 실패했습니다.\n{e}")
 
     def update_theme(self, is_dark: bool):
         if is_dark:
@@ -107,6 +168,10 @@ class MyPageWidget(QWidget):
             sub_color   = "#6B7280"
             logout_bg   = "#DC2626"
             logout_hover= "#B91C1C"
+            input_bg    = "#252830"
+            input_brd   = "#2E3340"
+            save_bg     = "#2EA043"
+            save_hover  = "#3FB855"
         else:
             root_bg     = "#F0F2F7"
             card_bg     = "#FFFFFF"
@@ -119,6 +184,10 @@ class MyPageWidget(QWidget):
             sub_color   = "#6B7280"
             logout_bg   = "#DC2626"
             logout_hover= "#B91C1C"
+            input_bg    = "#F8F9FC"
+            input_brd   = "#E5E7EB"
+            save_bg     = "#16A34A"
+            save_hover  = "#15803D"
 
         self.setStyleSheet(f"""
             QFrame#MPRoot {{
@@ -142,6 +211,7 @@ class MyPageWidget(QWidget):
             QLabel {{
                 background: transparent;
                 border: none;
+                color: {name_color};
             }}
             QLabel#MPName {{
                 font-size: 20px;
@@ -156,6 +226,22 @@ class MyPageWidget(QWidget):
             QLabel#MPCountSub {{
                 font-size: 11px;
                 color: {sub_color};
+            }}
+            QLineEdit {{
+                background-color: {input_bg}; color: {name_color};
+                border: 1px solid {input_brd}; border-radius: 7px;
+                padding: 8px 11px; font-size: 12px;
+            }}
+            QPushButton#MPSave {{
+                background-color: {save_bg};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+            QPushButton#MPSave:hover {{
+                background-color: {save_hover};
             }}
             QPushButton#MPLogout {{
                 background-color: {logout_bg};

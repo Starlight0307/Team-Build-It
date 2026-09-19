@@ -316,6 +316,53 @@ def find_or_create_google_user(google_id: str, email: str, name: str) -> str:
         cur.close(); conn.close()
 
 
+# ==========================================
+# 👤 프로필 조회/수정
+#
+# 구글 로그인으로 가입한 계정은 휴대폰번호/생년월일을 수집하지 않아
+# NULL로 남아있는데, 마이페이지에서 나중에 채울 수 있게 해준다.
+# ==========================================
+
+def get_user_profile(username: str) -> dict | None:
+    """마이페이지 표시용 프로필 정보 반환."""
+    conn = _supabase_connect()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT email, phone, birthday, google_id FROM users WHERE username=%s",
+            (username,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        email, phone, birthday, google_id = row
+        return {
+            "email": email,
+            "phone": phone or "",
+            "birthday": birthday.isoformat() if birthday else "",
+            "is_google": google_id is not None,
+        }
+    finally:
+        cur.close(); conn.close()
+
+
+def update_profile(username: str, phone: str = None, birthday: str = None) -> bool:
+    """휴대폰번호/생년월일 갱신. phone은 '-' 없는 숫자 11자리,
+    birthday는 'YYYY-MM-DD' 형식이어야 한다 (호출부에서 검증)."""
+    conn = _supabase_connect()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE users SET phone=COALESCE(%s, phone), birthday=COALESCE(%s, birthday) "
+            "WHERE username=%s",
+            (phone, birthday, username)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        cur.close(); conn.close()
+
+
 def get_username_by_email(email: str):
     """수파베이스 이메일로 아이디 찾기 - 구버전 호환용"""
     try:
