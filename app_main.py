@@ -57,6 +57,13 @@ def _sync_calendar_user(user_id: str):
         set_local_user(user_id)
     except ImportError:
         pass
+    try:
+        # 신규 기능 5(가계부/지출 관리) — 가계부도 local_calendar와 같은 이유로
+        # 로그인한 사용자만 쓸 수 있으므로, 로그인/로그아웃 시 같이 동기화한다.
+        from plugins.expense_tracker import set_current_user as set_expense_user
+        set_expense_user(user_id)
+    except ImportError:
+        pass
 
 
 # ==========================================
@@ -160,6 +167,13 @@ class AssistantApp(QWidget):
         self._alert_poll_timer.timeout.connect(self._poll_realtime_alerts)
         self._alert_poll_timer.start(15000)
 
+        # 신규 기능 4(범용 타이머/리마인더) — 만료된 타이머를 주기적으로 확인해서
+        # 팝업으로 알린다. 타이머는 "몇 분 뒤" 정확도가 중요한 기능이라 실시간
+        # 감시(15초)보다 짧은 5초 주기로 확인한다.
+        self._timer_poll_timer = QTimer(self)
+        self._timer_poll_timer.timeout.connect(self._poll_due_timers)
+        self._timer_poll_timer.start(5000)
+
     # ─────────────────────────────────────────────
     # 🔄 앱 실행 시 1회 자동 업데이트 상태 체크
     # ─────────────────────────────────────────────
@@ -199,6 +213,24 @@ class AssistantApp(QWidget):
     def _show_realtime_alert_toast(self, delta: int):
         toast = self._show_toast(f"🛰️ 실시간 감시: 새 알림 {delta}건 발생\n클릭하면 상세 내용을 확인합니다")
         toast.clicked.connect(lambda t=toast: self._on_toast_clicked(t))
+
+    # ─────────────────────────────────────────────
+    # ⏱️ 타이머/리마인더 — 만료된 타이머를 확인해 토스트로 알림
+    # ─────────────────────────────────────────────
+    def _poll_due_timers(self):
+        """get_due_timers()는 채팅 도구로 노출되지 않는 내부 전용 함수 —
+        get_realtime_alert_count()와 같은 패턴으로 앱이 직접 폴링만 한다."""
+        func = next((f for f in self.installed_tools if f.__name__ == 'get_due_timers'), None)
+        if not func:
+            return
+        try:
+            due = func()
+        except Exception:
+            return
+        for timer in due:
+            label = timer.get('label')
+            message = f"⏱️ 타이머 종료: '{label}'" if label else "⏱️ 타이머가 끝났어요!"
+            self._show_toast(message)
 
     def _show_toast(self, message: str) -> "NotificationToast":
         """화면 오른쪽 위에 잠깐 떴다 사라지는 알림(토스트)을 띄운다."""

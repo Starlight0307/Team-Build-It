@@ -31,6 +31,16 @@ PLUGIN_PILLS = {
     "iot_control": [
         ("🏠 스마트 기기 검색", "연결된 스마트 기기 찾아줘"),
     ],
+    "pc_optimizer": [
+        ("🧹 임시 파일 정리", "임시 파일 얼마나 있어?"),
+        ("📦 대용량 파일 찾기", "용량 큰 파일 찾아줘"),
+    ],
+    "reminder": [
+        ("⏱️ 타이머 목록", "지금 설정된 타이머 뭐 있어?"),
+    ],
+    "expense_tracker": [
+        ("💰 이번달 지출", "이번달 얼마 썼어?"),
+    ],
 }
 
 # 대화창 중앙에 뜨는 커맨드 카드 후보 (아이콘, 제목, 설명, 전송할 명령어)
@@ -62,6 +72,16 @@ PLUGIN_CARDS = {
     "iot_control": [
         ("🏠", "스마트 기기 검색", "로컬 네트워크의 Kasa 스마트 기기를 검색합니다.", "연결된 스마트 기기 찾아줘"),
     ],
+    "pc_optimizer": [
+        ("🧹", "임시 파일 정리", "임시 파일 개수와 용량을 확인하고 정리합니다.", "임시 파일 얼마나 있어?"),
+        ("📦", "대용량/중복 파일 찾기", "용량이 큰 파일이나 중복 파일을 찾습니다.", "용량 큰 파일 찾아줘"),
+    ],
+    "reminder": [
+        ("⏱️", "타이머 설정", "지금부터 N분/시간 뒤에 알려주는 타이머를 설정합니다.", "10분 뒤에 알려줘"),
+    ],
+    "expense_tracker": [
+        ("💰", "지출 통계", "최근 지출을 집계해서 보여줍니다.", "이번달 얼마 썼어?"),
+    ],
 }
 
 AVAILABLE_PLUGINS = [
@@ -91,6 +111,7 @@ AVAILABLE_PLUGINS = [
             "block_suspicious_process", "preview_matching_processes",
             "get_network_connections", "monitor_network_traffic", "check_dns_settings",
             "get_network_security_report",
+            "disable_firewall_rule", "disable_risky_firewall_rules",
         ],
         "module_name": "network_security",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/network_security.py",
@@ -115,6 +136,7 @@ AVAILABLE_PLUGINS = [
         "func_names": [
             "check_update_status", "scan_shared_folders", "get_login_failures",
             "get_system_security_report",
+            "restrict_shared_folder_permission",
         ],
         "module_name": "system_security",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_security.py",
@@ -142,7 +164,7 @@ AVAILABLE_PLUGINS = [
             "get_upcoming_events", "get_events_by_date", "search_events",
             "update_event", "delete_event", "create_recurring_event",
             "get_calendar_list", "get_schedule_summary", "get_daily_briefing",
-            "open_calendar_website",
+            "open_calendar_website", "delete_recurring_series",
         ],
         "module_name": "calendar_tool",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/calendar_tool.py",
@@ -156,10 +178,45 @@ AVAILABLE_PLUGINS = [
             "local_create_event", "local_get_upcoming_events", "local_get_events_by_date",
             "local_search_events", "local_update_event", "local_delete_event",
             "local_create_recurring_event", "local_get_schedule_summary", "local_get_daily_briefing",
+            "local_delete_recurring_series",
         ],
         "module_name": "local_calendar",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/local_calendar.py",
         "sha256": "f576160d6e652232b3d49308ff96850fcb4651574e2711ef7dd63e5dcd4104f5",
+        "dependencies": []
+    },
+    {
+        "name": "PC 최적화/정리",
+        "desc": "중복/대용량 파일 탐색, 임시 파일 정리, 시작프로그램 부팅 영향 분석",
+        "func_names": [
+            "find_duplicate_files", "find_large_files", "scan_temp_files",
+            "clean_temp_files", "analyze_startup_impact",
+        ],
+        "module_name": "pc_optimizer",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/pc_optimizer.py",
+        "sha256": "6a96ce1870d1047748cd0196c51b1bd3d38efb57628de6b7209387e2c5c12801",
+        "dependencies": []
+    },
+    {
+        "name": "범용 타이머/리마인더",
+        "desc": "캘린더와 독립적인 가벼운 상대 시간 타이머 — '10분 뒤에 알려줘' 같은 알림",
+        "func_names": [
+            "set_timer", "list_timers", "cancel_timer", "get_due_timers",
+        ],
+        "module_name": "reminder",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/reminder.py",
+        "sha256": "d68d076b505e9d58f824a6938ff938ac8e55a1b3c68dde5a9f75cfed930f3836",
+        "dependencies": []
+    },
+    {
+        "name": "가계부/지출 관리",
+        "desc": "최저가 검색 결과를 구매 기록으로 남기고 지출을 집계/조회",
+        "func_names": [
+            "mark_as_purchased", "get_spending_summary", "list_purchases",
+        ],
+        "module_name": "expense_tracker",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/expense_tracker.py",
+        "sha256": "c6802d25c63e75f0087cb95c3365fcd99f9b7ef1771de8f388dddce5017713d9",
         "dependencies": []
     },
     {

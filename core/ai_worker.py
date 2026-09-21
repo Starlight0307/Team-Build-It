@@ -131,12 +131,13 @@ def _load_recent_context(user_id: str, exclude_session_id: str = None) -> str:
 # 연결 상태 확인/재연결은 항상 가능해야 함.
 _GOOGLE_CALENDAR_CRUD_FUNCS = (
     "create_event", "get_upcoming_events", "get_events_by_date", "search_events",
-    "update_event", "delete_event", "create_recurring_event",
+    "update_event", "delete_event", "delete_recurring_series", "create_recurring_event",
     "get_schedule_summary", "get_daily_briefing",
 )
 _LOCAL_CALENDAR_CRUD_FUNCS = (
     "local_create_event", "local_get_upcoming_events", "local_get_events_by_date",
     "local_search_events", "local_update_event", "local_delete_event",
+    "local_delete_recurring_series",
     "local_create_recurring_event", "local_get_schedule_summary", "local_get_daily_briefing",
 )
 
@@ -191,12 +192,64 @@ def _repeat_kill_hint(process_name: str) -> str:
     return ""
 
 
+def _describe_disable_risky_firewall_rules(a: dict, func_map: dict) -> str:
+    """disable_risky_firewall_rules()는 인자가 없어 "무엇을 바꿀지"가 확인창
+    문구만 봐서는 안 보인다 — _describe_block_suspicious_process와 같은 이유로,
+    실행 전에 실제로 비활성화될 규칙 이름을 직접 조회해서 확인창에 정확히
+    보여준다(값을 추측하지 않고 실제 대상을 relay하는 원칙)."""
+    desc = "현재 확인되는, 위험(모든 포트 개방)으로 표시된 방화벽 규칙을 모두 비활성화"
+    getter = func_map.get('disable_risky_firewall_rules')
+    if getter is None:
+        return desc
+    try:
+        from plugins.network_security import _get_risky_firewall_rules
+        risky = _get_risky_firewall_rules()
+    except Exception:
+        risky = None
+    if risky is not None:
+        if risky:
+            lines = [f"  · {r['name']}" for r in risky]
+            desc += f"\n\n실제로 비활성화될 규칙 ({len(risky)}개 확인됨):\n" + "\n".join(lines)
+        else:
+            desc += "\n\n(현재 위험으로 표시되는 규칙이 없습니다)"
+    desc += "\n\n※ 규칙은 삭제하지 않고 비활성화합니다(필요하면 나중에 다시 켤 수 있음)."
+    return desc
+
+
+def _describe_clean_temp_files(a: dict, func_map: dict) -> str:
+    """clean_temp_files()도 인자가 없어 확인창 문구만으론 "얼마나 지워질지"가
+    안 보인다 — _describe_disable_risky_firewall_rules와 같은 이유로, 실행 전에
+    scan_temp_files()를 호출해서 실제 파일 개수/용량을 확인창에 보여준다."""
+    desc = "Windows 임시 폴더의 파일을 정리(삭제)"
+    scanner = func_map.get('scan_temp_files')
+    if scanner is None:
+        return desc
+    try:
+        preview = scanner()
+    except Exception:
+        preview = None
+    if preview is not None:
+        m = re.search(r'임시 파일 (\d+)개, 총 ([\d.]+[A-Za-z]+)를 확인했습니다', preview)
+        if m:
+            desc += f"\n\n실제로 삭제될 대상: 약 {m.group(1)}개 파일, {m.group(2)}"
+        elif '정리할 임시 파일이 없습니다' in preview:
+            desc += "\n\n(현재 삭제할 임시 파일이 없습니다)"
+    desc += "\n\n※ 삭제된 파일은 복구할 수 없습니다. 사용 중인 파일은 건너뜁니다."
+    return desc
+
+
 _DANGEROUS_FUNCS = {
     "kill_process":             lambda a, fm: f"'{a.get('process_name_or_number', '')}' 프로세스 강제 종료" + _repeat_kill_hint(a.get('process_name_or_number', '')),
     "manage_firewall":          lambda a, fm: f"방화벽 규칙 변경 (포트 {a.get('port', '?')}/{a.get('protocol', 'tcp')}, 동작: {a.get('action', '?')})",
     "block_suspicious_process": _describe_block_suspicious_process,
     "delete_event":             lambda a, fm: "구글 캘린더 일정 삭제 (되돌릴 수 없음)",
     "local_delete_event":       lambda a, fm: "내부 캘린더 일정 삭제 (되돌릴 수 없음)",
+    "delete_recurring_series":       lambda a, fm: "구글 캘린더 반복 일정 시리즈 전체 삭제 (모든 회차, 되돌릴 수 없음)",
+    "local_delete_recurring_series": lambda a, fm: "내부 캘린더 반복 일정 시리즈 전체 삭제 (모든 회차, 되돌릴 수 없음)",
+    "clean_temp_files": _describe_clean_temp_files,
+    "restrict_shared_folder_permission": lambda a, fm: f"공유 폴더 '{a.get('share_name', '')}'의 Everyone(누구나) 공유 권한 제거 (NTFS 파일 권한은 변경되지 않음)",
+    "disable_firewall_rule":    lambda a, fm: f"방화벽 규칙 '{a.get('rule_name', '')}' 비활성화 (삭제가 아니라 꺼두는 것이라 나중에 다시 켤 수 있음)",
+    "disable_risky_firewall_rules": _describe_disable_risky_firewall_rules,
     # control_iot_device는 여기 넣지 않는다 — 처음엔 "물리적 기기에 영향을 주니
     # 위험하다"고 넣었는데, 실제로 켜보니 사용자 입장에서 이상한 UX였다:
     # kill_process/manage_firewall/block_suspicious_process는 AI가 스스로
@@ -257,17 +310,24 @@ _TOOL_CATEGORIES = {
          "웹사이트", "웹페이지", "브라우저", "사이트"),
         ("setup_calendar_auth", "get_login_status", "create_event", "get_upcoming_events",
          "get_events_by_date", "search_events", "update_event", "delete_event",
+         "delete_recurring_series",
          "create_recurring_event", "get_calendar_list", "get_schedule_summary",
          "get_daily_briefing", "open_calendar_website",
          "local_create_event", "local_get_upcoming_events", "local_get_events_by_date",
          "local_search_events", "local_update_event", "local_delete_event",
+         "local_delete_recurring_series",
          "local_create_recurring_event", "local_get_schedule_summary", "local_get_daily_briefing"),
     ),
     "network_security": (
         ("포트", "방화벽", "네트워크", "dns", "보안", "스캔", "연결", "트래픽", "종합", "점수", "리포트"),
+        # disable_firewall_rule/disable_risky_firewall_rules 둘 다 위 _DANGEROUS_FUNCS +
+        # _DETECTION_BEFORE_ACTION에 이미 등록되어 있어(확인창 없이는 절대 실행되지
+        # 않음), 여기 노출 목록에 추가하는 것 자체는 "AI가 이 함수를 볼 수 있다"는
+        # 뜻일 뿐 "확인 없이 실행된다"는 뜻이 아니다 — manage_firewall과 동일한 안전
+        # 수준으로 카테고리에 포함한다.
         ("scan_open_ports", "get_firewall_rules", "manage_firewall", "get_network_connections",
          "monitor_network_traffic", "check_dns_settings", "get_network_security_report",
-         "block_suspicious_process"),
+         "block_suspicious_process", "disable_firewall_rule", "disable_risky_firewall_rules"),
     ),
     "malware_detection": (
         ("의심", "악성", "시작프로그램", "자동실행", "자동 실행", "서비스", "해킹",
@@ -278,7 +338,10 @@ _TOOL_CATEGORIES = {
     "system_security": (
         ("업데이트", "패치", "공유폴더", "공유 폴더", "로그인실패", "로그인 실패",
          "보안", "종합", "점수", "리포트"),
-        ("check_update_status", "scan_shared_folders", "get_login_failures", "get_system_security_report"),
+        # restrict_shared_folder_permission도 _DANGEROUS_FUNCS + _DETECTION_BEFORE_ACTION에
+        # 등록되어 있어 확인창 없이는 실행되지 않는다 — 위 network_security와 동일한 원칙.
+        ("check_update_status", "scan_shared_folders", "get_login_failures",
+         "get_system_security_report", "restrict_shared_folder_permission"),
     ),
     "realtime_monitor": (
         ("실시간", "감시", "모니터링", "백그라운드"),
@@ -294,6 +357,22 @@ _TOOL_CATEGORIES = {
         ("스마트", "iot", "전등", "조명", "플러그", "가전", "기기", "켜줘", "켜",
          "전원", "보일러", "에어컨", "온도조절"),
         ("discover_iot_devices", "control_iot_device"),
+    ),
+    "pc_optimizer": (
+        ("최적화", "정리", "중복", "용량", "대용량", "저장공간", "저장 공간", "느려",
+         "느린", "임시파일", "임시 파일", "부팅", "느려졌", "청소"),
+        # clean_temp_files는 _DANGEROUS_FUNCS에 등록되어 있어 확인창 없이는 실행되지
+        # 않는다 — network_security/system_security와 동일한 원칙으로 노출 목록에 포함.
+        ("find_duplicate_files", "find_large_files", "scan_temp_files",
+         "clean_temp_files", "analyze_startup_impact"),
+    ),
+    "reminder": (
+        ("타이머", "알람", "리마인더", "알려줘", "분뒤", "분 뒤", "시간뒤", "시간 뒤", "초뒤", "초 뒤"),
+        ("set_timer", "list_timers", "cancel_timer"),
+    ),
+    "expense_tracker": (
+        ("구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼", "얼마 썼", "구매내역", "구매 내역"),
+        ("mark_as_purchased", "get_spending_summary", "list_purchases"),
     ),
 }
 
@@ -609,6 +688,12 @@ def _build_realtime_stop_reply(raw_results: str):
 _CALENDAR_CONFIRM_MARKERS = ("[✅ 일정 등록 완료 (내부 캘린더)]", "[✅ 일정 수정 완료 (내부 캘린더)]")
 _CALENDAR_FIELD_LINE = re.compile(r'^- (제목|시작|종료): (.+)$', re.MULTILINE)
 _CALENDAR_DT_FORMATS = ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M")
+# 2026-09-21 신기능(캘린더 반복 일정 고도화) 추가 시 발견한 위험: local_create_event가
+# 겹치는 일정 경고를 원본 결과에 추가 줄로 덧붙였는데, 이 함수는 제목/시작/종료
+# 필드만 뽑아 완전히 새 문장을 만들기 때문에 그 경고 줄을 아무 처리 없이 두면
+# 조용히 버려진다(_build_score_report_reply 계열과 같은 "원본에만 있고 빌드된
+# 문장에는 없는 정보" 패턴) — 경고 줄이 있으면 반드시 결과에 그대로 붙인다.
+_CALENDAR_CONFLICT_LINE = re.compile(r'^⚠️ 같은 시간에 다른 일정이 있어요: (.+)$', re.MULTILINE)
 
 
 def _parse_calendar_dt(s: str):
@@ -659,12 +744,23 @@ def _build_calendar_confirmation_reply(raw_results: str):
     start_str = _format_calendar_dt_korean(start_dt)
     same_day = start_dt.date() == end_dt.date()
     end_str = _format_calendar_dt_korean(end_dt, include_date=not same_day)
-    return f"'{title}' 일정을 {start_str}부터 {end_str}까지로 {verb}."
+    reply = f"'{title}' 일정을 {start_str}부터 {end_str}까지로 {verb}."
+    conflict_m = _CALENDAR_CONFLICT_LINE.search(raw_results)
+    if conflict_m:
+        reply += f" ⚠️ 같은 시간에 다른 일정이 있어요: {conflict_m.group(1)}"
+    return reply
 
 
 _RECURRING_CONFIRM_MARKERS = ("[✅ 반복 일정 등록 완료 (내부 캘린더)]", "[✅ 반복 일정 등록 완료]")
 _RECURRING_CALENDAR_FIELD_LINE = re.compile(r'^- (제목|시작): (.+)$', re.MULTILINE)
 _RECURRING_CALENDAR_FIELD = re.compile(r'^- 반복: (?P<label>.+) × (?P<count>\d+)회$', re.MULTILINE)
+# local_create_recurring_event(회차별 겹침 검사, 몇 개가 겹치는지까지 셈)와
+# create_recurring_event(첫 회차만 검사, RRULE 특성상 나머지 회차는 확인 안 함)의
+# 겹침 경고 문구 형식이 서로 달라 별도 정규식으로 각각 잡는다 — 둘 다
+# _CALENDAR_CONFLICT_LINE 위쪽에서 정의한 것과 같은 이유로, 원본에만 있고
+# 새로 만든 문장에는 없는 정보를 조용히 버리지 않기 위함이다.
+_RECURRING_CONFLICT_LINE_LOCAL = re.compile(r'^⚠️ 반복 일정 중 (\d+)개 회차가 기존 일정과 겹쳐요 \((.+)\)$', re.MULTILINE)
+_RECURRING_CONFLICT_LINE_GOOGLE = re.compile(r'^⚠️ 첫 회차와 같은 시간에 다른 일정이 있어요: (.+)$', re.MULTILINE)
 
 
 def _build_recurring_calendar_confirmation_reply(raw_results: str):
@@ -694,7 +790,14 @@ def _build_recurring_calendar_confirmation_reply(raw_results: str):
     if not start_dt:
         return None
     start_str = _format_calendar_dt_korean(start_dt)
-    return f"'{title}' 일정을 {start_str}부터 {rm.group('label')} {rm.group('count')}회 반복으로 등록했어요."
+    reply = f"'{title}' 일정을 {start_str}부터 {rm.group('label')} {rm.group('count')}회 반복으로 등록했어요."
+    local_conflict_m = _RECURRING_CONFLICT_LINE_LOCAL.search(raw_results)
+    google_conflict_m = _RECURRING_CONFLICT_LINE_GOOGLE.search(raw_results)
+    if local_conflict_m:
+        reply += f" ⚠️ 이 중 {local_conflict_m.group(1)}개 회차가 기존 일정과 겹쳐요 ({local_conflict_m.group(2)})"
+    elif google_conflict_m:
+        reply += f" ⚠️ 첫 회차와 같은 시간에 다른 일정이 있어요: {google_conflict_m.group(1)}"
+    return reply
 
 
 _CALENDAR_EMPTY_HEADER_MARKERS = ("[📋", "[🔍", "[📊")
@@ -1685,6 +1788,341 @@ def _build_price_search_reply(raw_results: str):
     return "\n".join(lines)
 
 
+_DISABLE_RISKY_FW_NONE = "[✅ 방화벽 점검 완료]\n현재 위험(모든 포트 개방)으로 표시되는 방화벽 규칙이 없습니다."
+_DISABLE_RISKY_FW_HEADER = re.compile(
+    r"^\[✅ 위험한 방화벽 규칙 일괄 비활성화 완료\] \(총 (?P<total>\d+)개 중 (?P<success>\d+)개 성공\)\n(?P<body>.+)$",
+    re.DOTALL
+)
+_DISABLE_RISKY_FW_ITEM = re.compile(r'^  ✅ (?P<name>.+)$')
+_DISABLE_RISKY_FW_FAILED_HEADER = re.compile(
+    r'^⚠️ 다음 (?P<count>\d+)개는 실패했습니다\(관리자 권한 필요할 수 있음\):$'
+)
+_DISABLE_RISKY_FW_FAILED_ITEM = re.compile(r'^  ⚠️ (?P<name>.+)$')
+
+
+def _build_disable_risky_firewall_reply(raw_results: str):
+    """disable_risky_firewall_rules()가 여러 규칙을 한 번에 처리한 결과(성공/실패
+    개수, 규칙 이름 목록)를 LLM에게 맡기면 개수를 잘못 세거나 규칙 이름을
+    누락시킬 위험이 있다(malware_detection 버그44와 같은 계열) — 고정 구조를
+    코드가 직접 파싱해서 "선언된 개수 == 실제 파싱된 항목 수"까지 검증한 뒤에만
+    문장을 만든다. 검증에 실패하면(원본 형식이 예상과 다르면) None을 반환해
+    안전하게 LLM 경로로 폴백한다."""
+    stripped = raw_results.strip()
+    if stripped == _DISABLE_RISKY_FW_NONE:
+        return "확인해봤는데, 현재 위험으로 표시되는 방화벽 규칙이 없어서 따로 바꿀 게 없었어요."
+
+    m = _DISABLE_RISKY_FW_HEADER.match(stripped)
+    if not m:
+        return None
+    total, success = int(m.group('total')), int(m.group('success'))
+
+    # 규칙 이름 자체에 쉼표가 포함될 수 있어(콤마 join 시 파서가 이름 하나를
+    # 여러 개로 잘못 쪼갤 위험) 실패 목록도 성공 목록과 동일하게 한 줄에
+    # 한 규칙씩 파싱한다 — 쉼표는 더 이상 구분자 역할을 하지 않는다.
+    disabled_names, failed_names = [], []
+    expected_failed_count = None
+    for ln in m.group('body').split('\n'):
+        im = _DISABLE_RISKY_FW_ITEM.match(ln)
+        if im:
+            disabled_names.append(im.group('name'))
+            continue
+        hm = _DISABLE_RISKY_FW_FAILED_HEADER.match(ln)
+        if hm:
+            expected_failed_count = int(hm.group('count'))
+            continue
+        fim = _DISABLE_RISKY_FW_FAILED_ITEM.match(ln)
+        if fim:
+            failed_names.append(fim.group('name'))
+            continue
+        return None  # 예상 밖 줄 — 안전하게 LLM 경로로 폴백
+
+    if expected_failed_count is not None and expected_failed_count != len(failed_names):
+        return None
+    if len(disabled_names) != success or len(failed_names) != (total - success):
+        return None
+
+    lines = [f"위험한 방화벽 규칙 {total}개 중 {success}개를 비활성화했어요."]
+    for name in disabled_names:
+        lines.append(f"- {name}")
+    if failed_names:
+        lines.append(f"다음 {len(failed_names)}개는 실패했어요(관리자 권한이 필요할 수 있어요):")
+        for name in failed_names:
+            lines.append(f"- {name}")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# 📦 PC 최적화(신규 기능 3) 결정론적 빌더
+# ─────────────────────────────────────────────
+# find_duplicate_files/find_large_files/analyze_startup_impact 전부 "개수 +
+# 목록" 구조라 malware_detection 버그44(개수를 잘못 세거나 항목을 누락)와 같은
+# 위험이 있다 — 선언된 개수와 실제 파싱된 항목 수가 일치할 때만 문장을 만든다.
+
+_DUP_FILES_HEADER = re.compile(
+    r"^\[📦 중복 파일 탐색 완료\] \(그룹 (?P<groups>\d+)개, 파일 (?P<scanned>\d+)개 확인\)\n"
+    r"  절약 가능 용량: 약 (?P<wasted>[\d.]+[A-Za-z]+)\n"
+    r"(?P<body>.+)$", re.DOTALL
+)
+_DUP_FILES_NONE = re.compile(r"^\[✅ 중복 파일 탐색 완료\]\n중복된 파일을 찾지 못했습니다\. \(파일 (?P<scanned>\d+)개 확인\)$")
+_DUP_GROUP_HEADER = re.compile(r"^  (?P<count>\d+)개 중복, 각 (?P<size>[\d.]+[A-Za-z]+):$")
+_DUP_GROUP_ITEM = re.compile(r"^    - (?P<path>.+)$")
+
+
+def _build_duplicate_files_reply(raw_results: str):
+    """find_duplicate_files()의 결과(그룹 수, 그룹별 파일 개수·경로)를 LLM에게
+    맡기면 경로를 손상시키거나 파일을 누락시킬 위험이 있다 — 고정 구조를
+    코드가 직접 파싱해서 "선언된 그룹 수 == 실제 파싱된 그룹 수"이고 "그룹별
+    선언 개수 == 그 그룹의 실제 경로 수"까지 검증한 뒤에만 문장을 만든다."""
+    stripped = raw_results.strip()
+    m_none = _DUP_FILES_NONE.match(stripped)
+    if m_none:
+        return f"확인해봤는데, 중복된 파일을 찾지 못했어요. (파일 {m_none.group('scanned')}개 확인)"
+
+    m = _DUP_FILES_HEADER.match(stripped)
+    if not m:
+        return None
+    declared_groups = int(m.group('groups'))
+    body_lines = m.group('body').split('\n')
+    i, n = 0, len(body_lines)
+    groups_found = 0
+    lines = [
+        f"중복 파일 그룹을 {declared_groups}개 찾았어요 "
+        f"(총 {m.group('scanned')}개 파일 확인, 절약 가능 용량 약 {m.group('wasted')})."
+    ]
+    while i < n:
+        ln = body_lines[i]
+        if not ln.strip():
+            i += 1
+            continue
+        gh = _DUP_GROUP_HEADER.match(ln)
+        if not gh:
+            return None  # 예상 밖 줄 — 안전하게 LLM 경로로 폴백
+        count = int(gh.group('count'))
+        size = gh.group('size')
+        i += 1
+        paths = []
+        while i < n and _DUP_GROUP_ITEM.match(body_lines[i]):
+            paths.append(_DUP_GROUP_ITEM.match(body_lines[i]).group('path'))
+            i += 1
+        if len(paths) != count:
+            return None
+        groups_found += 1
+        lines.append(f"- {size}짜리 파일 {count}개가 겹쳐요:")
+        for p in paths:
+            lines.append(f"    {p}")
+    if groups_found != declared_groups:
+        return None
+    return "\n".join(lines)
+
+
+_LARGE_FILES_HEADER = re.compile(
+    r"^\[📦 대용량 파일 목록\] \(총 (?P<count>\d+)개, (?P<min_mb>[\d.]+)MB 이상, 파일 (?P<scanned>\d+)개 확인\)\n"
+    r"(?P<body>.+)$", re.DOTALL
+)
+_LARGE_FILES_NONE = re.compile(
+    r"^\[✅ 대용량 파일 탐색 완료\]\n(?P<min_mb>[\d.]+)MB 이상인 파일을 찾지 못했습니다\. \(파일 (?P<scanned>\d+)개 확인\)$"
+)
+_LARGE_FILE_ITEM = re.compile(r"^  - (?P<size>[\d.]+[A-Za-z]+)  (?P<path>.+)$")
+_LARGE_FILES_NOTE = re.compile(r"^※ (?P<note>.+)$")
+
+
+def _build_large_files_reply(raw_results: str):
+    """find_large_files() 결과도 위 중복 파일과 같은 이유(개수 오산/경로 누락
+    위험)로 개수를 직접 검증한다. 스캔 상한에 걸렸을 때 붙는 "※ ..." 안내
+    줄도 무시하지 않고 그대로 relay한다 — 재구성 과정에서 원본에만 있는
+    정보가 조용히 버려지는 걸 막기 위함(신규 기능 2에서 확립한 원칙과 동일)."""
+    stripped = raw_results.strip()
+    m_none = _LARGE_FILES_NONE.match(stripped)
+    if m_none:
+        return (f"확인해봤는데, {m_none.group('min_mb')}MB 이상인 파일을 찾지 못했어요. "
+                f"(파일 {m_none.group('scanned')}개 확인)")
+
+    m = _LARGE_FILES_HEADER.match(stripped)
+    if not m:
+        return None
+    declared_count = int(m.group('count'))
+    items, notes = [], []
+    for ln in m.group('body').split('\n'):
+        if not ln.strip():
+            continue
+        im = _LARGE_FILE_ITEM.match(ln)
+        if im:
+            items.append((im.group('size'), im.group('path')))
+            continue
+        nm = _LARGE_FILES_NOTE.match(ln)
+        if nm:
+            notes.append(nm.group('note'))
+            continue
+        return None  # 예상 밖 줄 — 안전하게 LLM 경로로 폴백
+    if len(items) != declared_count:
+        return None
+
+    lines = [f"{m.group('min_mb')}MB 이상인 파일을 {declared_count}개 찾았어요 (총 {m.group('scanned')}개 파일 확인)."]
+    for size, path in items:
+        lines.append(f"- {size}  {path}")
+    for note in notes:
+        lines.append(f"※ {note}")
+    return "\n".join(lines)
+
+
+_STARTUP_IMPACT_EMPTY = "[🚀 시작프로그램 부팅 영향 분석]\n등록된 시작프로그램이 없습니다. 부팅 속도에 영향 없음."
+_STARTUP_IMPACT_HEADER = re.compile(
+    r"^\[🚀 시작프로그램 부팅 영향 분석\] \(총 (?P<total>\d+)개, 영향도: (?P<level>.+)\)\n(?P<body>.+)$",
+    re.DOTALL
+)
+_STARTUP_IMPACT_ITEM = re.compile(r'^  - (?P<name>.+)$')
+_STARTUP_IMPACT_MORE = re.compile(r'^ {2}\.\.\. 외 (?P<more>\d+)개$')
+
+
+def _build_startup_impact_reply(raw_results: str):
+    """analyze_startup_impact()도 malware_detection.scan_startup_items()의
+    기존 결정론적 빌더(_build_startup_items_reply)와 같은 "표시 20개 + 나머지는
+    '... 외 N개'" 구조를 쓴다 — 선언된 총 개수와 (표시된 항목 수 + 나머지 수)가
+    일치할 때만 문장을 만든다."""
+    stripped = raw_results.strip()
+    if stripped == _STARTUP_IMPACT_EMPTY:
+        return "확인해봤는데, 등록된 시작프로그램이 없어서 부팅 속도에는 영향이 없어요."
+
+    m = _STARTUP_IMPACT_HEADER.match(stripped)
+    if not m:
+        return None
+    total = int(m.group('total'))
+    level = m.group('level')
+    body_lines = m.group('body').split('\n')
+
+    more = 0
+    if body_lines and _STARTUP_IMPACT_MORE.match(body_lines[-1]):
+        more = int(_STARTUP_IMPACT_MORE.match(body_lines[-1]).group('more'))
+        body_lines = body_lines[:-1]
+
+    items = []
+    for ln in body_lines:
+        im = _STARTUP_IMPACT_ITEM.match(ln)
+        if not im:
+            return None
+        items.append(im.group('name'))
+    if len(items) + more != total:
+        return None
+
+    lines = [f"시작프로그램이 총 {total}개 등록되어 있어요 (부팅 영향도: {level})."]
+    for name in items:
+        lines.append(f"- {name}")
+    if more:
+        lines.append(f"- 그 외에도 {more}개가 더 있어요")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# ⏱️ 타이머/리마인더(신규 기능 4) 결정론적 빌더
+# ─────────────────────────────────────────────
+
+_TIMER_LIST_EMPTY = "[⏱️ 타이머 목록]\n설정된 타이머가 없습니다."
+_TIMER_LIST_HEADER = re.compile(r"^\[⏱️ 타이머 목록\] \(총 (?P<count>\d+)개\)\n(?P<body>.+)$", re.DOTALL)
+_TIMER_LIST_ITEM = re.compile(r"^  - (?P<remaining>\d+분 \d+초) 후(?: \('(?P<label>.+)'\))? \(id: (?P<id>\S+)\)$")
+
+
+def _build_timer_list_reply(raw_results: str):
+    """list_timers()의 "개수 + 목록" 구조도 malware_detection 버그44와 같은
+    위험(개수 오산/항목 누락)이 있어 선언된 개수와 실제 파싱된 항목 수가
+    일치할 때만 문장을 만든다."""
+    stripped = raw_results.strip()
+    if stripped == _TIMER_LIST_EMPTY:
+        return "확인해봤는데, 설정된 타이머가 없어요."
+
+    m = _TIMER_LIST_HEADER.match(stripped)
+    if not m:
+        return None
+    declared = int(m.group('count'))
+    items = []
+    for ln in m.group('body').split('\n'):
+        if not ln.strip():
+            continue
+        im = _TIMER_LIST_ITEM.match(ln)
+        if not im:
+            return None  # 예상 밖 줄 — 안전하게 LLM 경로로 폴백
+        items.append((im.group('remaining'), im.group('label')))
+    if len(items) != declared:
+        return None
+
+    lines = [f"지금 설정된 타이머가 {declared}개 있어요."]
+    for remaining, label in items:
+        if label:
+            lines.append(f"- '{label}' — {remaining} 후")
+        else:
+            lines.append(f"- {remaining} 후")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# 💰 가계부/지출 관리(신규 기능 5) 결정론적 빌더
+# ─────────────────────────────────────────────
+
+_PURCHASE_LIST_EMPTY = re.compile(r"^\[💰 구매 내역\] \(최근 (?P<days>\d+)일\)\n구매 기록이 없습니다\.$")
+_PURCHASE_LIST_HEADER = re.compile(
+    r"^\[💰 구매 내역\] \(최근 (?P<days>\d+)일, 총 (?P<count>\d+)건\)\n(?P<body>.+)$", re.DOTALL
+)
+_PURCHASE_LIST_ITEM = re.compile(
+    r"^  - (?P<date>\d{4}-\d{2}-\d{2} \d{2}:\d{2})  (?P<item>.+?)  (?P<price>[\d,]+원)$"
+)
+
+
+def _build_purchase_list_reply(raw_results: str):
+    """list_purchases()의 "개수 + 목록" 구조도 malware_detection 버그44와
+    같은 위험(개수 오산/항목 누락)이 있어 선언된 개수와 실제 파싱된 항목
+    수가 일치할 때만 문장을 만든다."""
+    stripped = raw_results.strip()
+    m_empty = _PURCHASE_LIST_EMPTY.match(stripped)
+    if m_empty:
+        return f"확인해봤는데, 최근 {m_empty.group('days')}일 동안 구매 기록이 없어요."
+
+    m = _PURCHASE_LIST_HEADER.match(stripped)
+    if not m:
+        return None
+    declared = int(m.group('count'))
+    items = []
+    for ln in m.group('body').split('\n'):
+        if not ln.strip():
+            continue
+        im = _PURCHASE_LIST_ITEM.match(ln)
+        if not im:
+            return None  # 예상 밖 줄 — 안전하게 LLM 경로로 폴백
+        items.append((im.group('date'), im.group('item'), im.group('price')))
+    if len(items) != declared:
+        return None
+
+    lines = [f"최근 {m.group('days')}일 동안 {declared}건 구매했어요."]
+    for date, item, price in items:
+        lines.append(f"- {date}  {item}  {price}")
+    return "\n".join(lines)
+
+
+_SPENDING_SUMMARY_EMPTY = re.compile(r"^\[📊 지출 통계 \(최근 (?P<days>\d+)일\)\]\n구매 기록이 없습니다\.$")
+_SPENDING_SUMMARY_HEADER = re.compile(
+    r"^\[📊 지출 통계\] \(최근 (?P<days>\d+)일\)\n"
+    r"- 총 지출: (?P<total>[\d,]+원)\n"
+    r"- 구매 건수: (?P<count>\d+)건\n"
+    r"- 평균 구매액: (?P<avg>[\d,]+원)$"
+)
+
+
+def _build_spending_summary_reply(raw_results: str):
+    """get_spending_summary()는 고정된 3개 필드(총 지출/구매 건수/평균
+    구매액)로만 이루어져 있어, 각 필드를 정규식으로 그대로 relay한다 —
+    LLM에게 숫자 계산(특히 평균)을 다시 맡기지 않는다."""
+    stripped = raw_results.strip()
+    m_empty = _SPENDING_SUMMARY_EMPTY.match(stripped)
+    if m_empty:
+        return f"확인해봤는데, 최근 {m_empty.group('days')}일 동안 구매 기록이 없어요."
+
+    m = _SPENDING_SUMMARY_HEADER.match(stripped)
+    if not m:
+        return None
+    return (
+        f"최근 {m.group('days')}일 동안 총 {m.group('total')}을 쓰셨어요 "
+        f"({m.group('count')}건 구매, 평균 {m.group('avg')})."
+    )
+
+
 _DETERMINISTIC_REPLY_BUILDERS = (
     _build_score_report_reply,
     _build_single_verdict_reply,
@@ -1698,6 +2136,13 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_local_events_by_date_reply,
     _build_local_daily_briefing_reply,
     _build_local_schedule_summary_reply,
+    _build_disable_risky_firewall_reply,
+    _build_duplicate_files_reply,
+    _build_large_files_reply,
+    _build_startup_impact_reply,
+    _build_timer_list_reply,
+    _build_purchase_list_reply,
+    _build_spending_summary_reply,
     _build_iot_no_devices_reply,
     _build_iot_control_reply,
     _build_port_scan_reply,
@@ -1949,6 +2394,8 @@ TOOL_STATUS_NAMES = {
     "detect_suspicious_processes":"🔒  의심 프로세스 탐지 중",
     "get_firewall_rules":        "🛡️  방화벽 규칙 조회 중",
     "manage_firewall":           "🛡️  방화벽 설정 변경 중",
+    "disable_firewall_rule":     "🛡️  방화벽 규칙 비활성화 중",
+    "disable_risky_firewall_rules": "🛡️  위험한 방화벽 규칙 정리 중",
     "get_network_connections":   "🌐  네트워크 연결 확인 중",
     "monitor_network_traffic":   "📡  네트워크 트래픽 분석 중",
     "check_dns_settings":        "🌐  DNS 설정 확인 중",
@@ -1958,6 +2405,7 @@ TOOL_STATUS_NAMES = {
     "get_malware_report":        "📊  악성코드 탐지 리포트 생성 중",
     "check_update_status":       "🔄  업데이트 상태 확인 중",
     "scan_shared_folders":       "📁  공유 폴더 점검 중",
+    "restrict_shared_folder_permission": "📁  공유 폴더 권한 제한 중",
     "get_login_failures":        "🔑  로그인 실패 이력 조회 중",
     "get_system_security_report":"📊  시스템 보안 리포트 생성 중",
     "start_realtime_monitor":    "🛰️  실시간 감시 시작 중",
@@ -1972,6 +2420,7 @@ TOOL_STATUS_NAMES = {
     "search_events":             "🔍  일정 검색 중",
     "update_event":              "✏️  일정 수정 중",
     "delete_event":              "🗑️  일정 삭제 중",
+    "delete_recurring_series":   "🗑️  반복 일정 시리즈 삭제 중",
     "create_recurring_event":    "🔁  반복 일정 등록 중",
     "get_calendar_list":         "📆  캘린더 목록 조회 중",
     "get_schedule_summary":      "📊  일정 통계 분석 중",
@@ -1983,9 +2432,21 @@ TOOL_STATUS_NAMES = {
     "local_search_events":             "🔍  일정 검색 중",
     "local_update_event":              "✏️  일정 수정 중",
     "local_delete_event":              "🗑️  일정 삭제 중",
+    "local_delete_recurring_series":   "🗑️  반복 일정 시리즈 삭제 중",
     "local_create_recurring_event":    "🔁  반복 일정 등록 중",
     "local_get_schedule_summary":      "📊  일정 통계 분석 중",
     "local_get_daily_briefing":        "🔔  일정 브리핑 준비 중",
+    "find_duplicate_files":            "📦  중복 파일 탐색 중",
+    "find_large_files":                "📦  대용량 파일 탐색 중",
+    "scan_temp_files":                 "🧹  임시 파일 확인 중",
+    "clean_temp_files":                "🧹  임시 파일 정리 중",
+    "analyze_startup_impact":          "🚀  시작프로그램 부팅 영향 분석 중",
+    "set_timer":                       "⏱️  타이머 설정 중",
+    "list_timers":                     "⏱️  타이머 목록 조회 중",
+    "cancel_timer":                    "⏱️  타이머 취소 중",
+    "mark_as_purchased":               "💰  구매 기록 중",
+    "get_spending_summary":            "📊  지출 집계 중",
+    "list_purchases":                  "📋  구매 내역 조회 중",
 }
 
 
@@ -2036,6 +2497,14 @@ class AIWorker(QThread):
         # 문제를 확인함(할루시네이션). 자연스러운 IoT 요청 표현을 최대한 포함.
         "스마트", "iot", "전등", "조명", "플러그", "가전", "기기", "켜줘", "켜",
         "전원", "보일러", "에어컨", "온도조절",
+        # PC 최적화 — IoT 때와 같은 이유로, 이 키워드들이 빠지면 "임시 파일
+        # 정리해줘"/"중복 파일 찾아줘"/"부팅이 느려" 같은 요청이 use_tools=False로
+        # 들어가 도구 호출 자체가 불가능해진다.
+        "최적화", "정리", "중복", "임시", "임시파일", "부팅", "청소", "공간",
+        # 타이머/리마인더 — 같은 이유로 미리 점검해서 선제 추가.
+        "타이머", "알람", "리마인더", "분뒤", "분 뒤", "시간뒤", "시간 뒤", "초뒤", "초 뒤",
+        # 가계부/지출 관리 — 같은 이유로 미리 점검해서 선제 추가.
+        "구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼",
     )
 
     # 실행/상태확인이 아니라 '방법 설명'을 원하는 요청 — 프롬프트로 아무리 지시해도
@@ -2123,6 +2592,56 @@ class AIWorker(QThread):
         "월요일": 0, "화요일": 1, "수요일": 2, "목요일": 3,
         "금요일": 4, "토요일": 5, "일요일": 6,
     }
+
+    # "10분"/"1시간 30분"/"30초" 같은 시간 단위 표현에서 분(minute)을 뽑아낸다.
+    _DURATION_UNIT = re.compile(r'(\d+(?:\.\d+)?)\s*(시간|분|초)')
+
+    def _resolve_timer_duration(self, text: str):
+        """타이머 요청 문장에서 "시간/분/초" 표현을 찾아 총 분(minute)을
+        직접 계산해서 반환한다. 없으면 None(=모델이 넘긴 minutes 인자를
+        그대로 신뢰). 반복 일정 recurrence_count/날짜 계산과 같은 이유 —
+        단순한 단위 환산(예: "1시간 30분"에서 시간 부분을 놓치고 30만
+        반영하는 것)도 LLM에게 맡기지 않고 정규식으로 직접 합산해
+        틀릴 여지를 없앤다."""
+        matches = self._DURATION_UNIT.findall(text)
+        if not matches:
+            return None
+        total_minutes = 0.0
+        for value, unit in matches:
+            v = float(value)
+            if unit == "시간":
+                total_minutes += v * 60
+            elif unit == "분":
+                total_minutes += v
+            elif unit == "초":
+                total_minutes += v / 60
+        return total_minutes if total_minutes > 0 else None
+
+    # "5만원"/"3천원"/"12000원" 같은 표현에서 정수 금액(원)을 뽑아낸다.
+    _PRICE_UNIT = re.compile(r'([\d,]+(?:\.\d+)?)\s*(만원|천원|원)')
+
+    def _resolve_purchase_price(self, text: str):
+        """구매 기록 요청 문장에서 "만원/천원/원" 표현을 찾아 정수 금액을
+        직접 계산해서 반환한다. 없으면 None(=모델이 넘긴 price 인자를
+        그대로 신뢰하거나, 그것도 없으면 함수가 LAST_SEARCH로 대체함).
+        _resolve_timer_duration과 같은 이유 — "만원"→10000 같은 단위
+        환산을 LLM에게 맡기지 않고 정규식으로 직접 계산해 틀릴 여지를
+        없앤다. "5만 3천원"처럼 단위(만/천)가 원과 떨어져 있는 복합
+        표현은 의도적으로 범위 밖으로 둔다(타이머의 "반 시간"과 같은
+        스코프 결정)."""
+        matches = self._PRICE_UNIT.findall(text)
+        if not matches:
+            return None
+        total = 0.0
+        for value, unit in matches:
+            v = float(value.replace(',', ''))
+            if unit == "만원":
+                total += v * 10000
+            elif unit == "천원":
+                total += v * 1000
+            else:  # "원"
+                total += v
+        return total if total > 0 else None
 
     def _resolve_event_date(self, text: str):
         """일정 등록 문장에 "내일"/"모레"/"월요일"/"N월 N일"/"YYYY-MM-DD"
@@ -3036,12 +3555,25 @@ class AIWorker(QThread):
                 # 일정 있으면 지워줘" — search_events 계열에 의존)도 같은 패턴이
                 # 가능해 함께 등록한다(이번엔 GUI 재현은 안 됐지만 구조적으로 가능한
                 # 경로라 방어적으로 추가 — 실제 재현되기 전에 선제 차단).
+                # 2026-09-21 신기능(system_security 실제 조치) 추가 시 같은 원칙 적용:
+                # restrict_shared_folder_permission(share_name)/disable_firewall_rule
+                # (rule_name) 둘 다 LLM이 지어낼 수 있는 문자열 인자를 받으므로, 각각의
+                # 조회 함수(scan_shared_folders/get_firewall_rules)와 같은 턴에 불리면
+                # 구조적으로 막는다. disable_risky_firewall_rules는 인자가 없어(내부에서
+                # 직접 재조회) 이 목록에 넣지 않는다 — 애초에 지어낼 대상 자체가 없다.
                 _DETECTION_BEFORE_ACTION = {
                     'block_suspicious_process': ('detect_suspicious_processes', 'get_malware_report'),
                     'kill_process': ('get_top_cpu_processes', 'detect_suspicious_processes', 'get_malware_report'),
                     'manage_firewall': ('scan_open_ports', 'get_firewall_rules'),
                     'delete_event': ('search_events', 'get_events_by_date', 'get_upcoming_events'),
                     'local_delete_event': ('local_search_events', 'local_get_events_by_date', 'local_get_upcoming_events'),
+                    'restrict_shared_folder_permission': ('scan_shared_folders',),
+                    'disable_firewall_rule': ('get_firewall_rules', 'scan_open_ports'),
+                    # 2026-09-21 신기능(캘린더 반복 일정 고도화) 추가 시 같은 원칙 적용:
+                    # delete_recurring_series/local_delete_recurring_series도 event_id를
+                    # 받는 삭제 함수라 같은 턴에 조회 없이 지어낸 id로 불릴 위험이 있다.
+                    'delete_recurring_series': ('search_events', 'get_events_by_date', 'get_upcoming_events'),
+                    'local_delete_recurring_series': ('local_search_events', 'local_get_events_by_date', 'local_get_upcoming_events'),
                 }
 
                 for tool in response['message']['tool_calls']:
@@ -3056,9 +3588,11 @@ class AIWorker(QThread):
                             action_verb, target_noun = "종료", "프로세스 이름"
                         elif func_name == 'block_suspicious_process':
                             action_verb, target_noun = "차단", "프로세스 이름"
-                        elif func_name == 'manage_firewall':
-                            action_verb, target_noun = "차단", "포트 번호"
-                        else:  # delete_event, local_delete_event
+                        elif func_name in ('manage_firewall', 'disable_firewall_rule'):
+                            action_verb, target_noun = "차단", "포트 번호나 방화벽 규칙 이름"
+                        elif func_name == 'restrict_shared_folder_permission':
+                            action_verb, target_noun = "제한", "공유 폴더 이름"
+                        else:  # delete_event, local_delete_event, delete_recurring_series, local_delete_recurring_series
                             action_verb, target_noun = "삭제", "일정 제목"
                         tool_results.append(
                             "먼저 조회 결과부터 확인해주세요 — 결과를 보여드릴게요. "
@@ -3152,6 +3686,20 @@ class AIWorker(QThread):
                                 "(예: '1시간', '30분', '2시간 반')"
                             )
                             return
+
+                    # ── 타이머: 시간(분)은 LLM 대신 정규식으로 결정론적 계산 ──
+                    # (recurrence_count/날짜와 같은 이유 — "1시간 30분 뒤에"처럼
+                    # 여러 단위가 섞이면 LLM이 일부만 반영해 틀린 값을 넘길 위험이 있음)
+                    if func_name == 'set_timer':
+                        resolved_minutes = self._resolve_timer_duration(self.user_text)
+                        if resolved_minutes is not None:
+                            args['minutes'] = resolved_minutes
+
+                    # ── 가계부: 가격(원)은 LLM 대신 정규식으로 결정론적 계산 ──
+                    if func_name == 'mark_as_purchased':
+                        resolved_price = self._resolve_purchase_price(self.user_text)
+                        if resolved_price is not None:
+                            args['price'] = resolved_price
 
                     # ── 2단계: 각 도구 실행 ──
                     status_msg = TOOL_STATUS_NAMES.get(func_name, f"⚙️  {func_name} 실행 중")

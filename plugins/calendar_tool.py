@@ -202,10 +202,34 @@ TOOL_SCHEMAS = {
         "type": "function",
         "function": {
             "name": "delete_event",
-            "description": "일정을 삭제합니다.",
+            "description": (
+                "일정을 삭제합니다. 반복 일정이어도 이 함수는 지정한 event_id 회차 "
+                "'한 건만' 삭제합니다 — 사용자가 '이번 것만' 삭제해달라고 할 때 "
+                "사용하세요. 반복 일정 전체(모든 회차)를 삭제하려면 "
+                "delete_recurring_series를 대신 사용하세요."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"event_id": {"type": "string"}},
+                "required": ["event_id"]
+            }
+        }
+    },
+    "delete_recurring_series": {
+        "type": "function",
+        "function": {
+            "name": "delete_recurring_series",
+            "description": (
+                "반복 일정 시리즈 전체(해당 일정이 속한 모든 회차)를 삭제합니다. "
+                "사용자가 '이번 것만 말고 전체 다 삭제해줘', '반복 일정 전체 "
+                "취소해줘'처럼 시리즈 전체를 지워달라고 명확히 말할 때만 호출하세요. "
+                "'이번 일정만' 삭제해달라고 하면 대신 delete_event를 사용하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id": {"type": "string", "description": "삭제할 시리즈에 속한 회차 하나의 event_id (어느 회차든 상관없음)"}
+                },
                 "required": ["event_id"]
             }
         }
@@ -369,6 +393,42 @@ def setup_calendar_auth() -> str:
 # 📅 일정 등록
 # ─────────────────────────────────────────────
 
+def _find_conflicts(service, start_iso: str, end_iso: str, calendar_id: str = "primary", exclude_id: str = None) -> list:
+    """새 일정 시간대와 겹치는 기존 일정을 구글 캘린더에서 조회한다. 종일
+    일정(date만 있고 dateTime이 없는 이벤트)은 시:분 단위 겹침 판단 대상이
+    아니므로 건너뛴다 — local_calendar.py의 _find_conflicts와 같은 겹침
+    조건(기존 시작 < 새 종료 and 기존 종료 > 새 시작)을 그대로 쓴다."""
+    try:
+        resp = service.events().list(
+            calendarId=calendar_id,
+            timeMin=start_iso, timeMax=end_iso,
+            singleEvents=True, orderBy="startTime"
+        ).execute()
+    except Exception:
+        return []
+    try:
+        new_start = datetime.fromisoformat(start_iso)
+        new_end = datetime.fromisoformat(end_iso)
+    except Exception:
+        return []
+    conflicts = []
+    for ev in resp.get("items", []):
+        if exclude_id and ev.get("id") == exclude_id:
+            continue
+        s_raw = ev["start"].get("dateTime")
+        e_raw = ev["end"].get("dateTime")
+        if not s_raw or not e_raw:
+            continue
+        try:
+            ev_start = datetime.fromisoformat(s_raw)
+            ev_end = datetime.fromisoformat(e_raw)
+        except Exception:
+            continue
+        if ev_start < new_end and ev_end > new_start:
+            conflicts.append(ev)
+    return conflicts
+
+
 def create_event(
     title: str,
     start_datetime: str,
@@ -419,7 +479,23 @@ def create_event(
         if color and color in color_names:
             event_body["colorId"] = color
 
+        # 저장 전에 겹치는 일정을 확인한다 — local_calendar.py와 같은 이유로
+        # 등록 자체를 막지는 않고 경고만 결과 메시지에 덧붙인다.
+        conflicts = _find_conflicts(service, start, end, calendar_id)
+
         event = service.events().insert(calendarId=calendar_id, body=event_body).execute()
+
+        conflict_note = ""
+        if conflicts:
+            c = conflicts[0]
+            extra = f" 외 {len(conflicts) - 1}건" if len(conflicts) > 1 else ""
+            c_start = c["start"].get("dateTime")
+            c_end = c["end"].get("dateTime")
+            conflict_note = (
+                f"\n⚠️ 같은 시간에 다른 일정이 있어요: '{c.get('summary', '(제목 없음)')}' "
+                f"({_format_datetime(c_start)}~{_format_datetime(c_end)}){extra}"
+            )
+
         return (
             f"[✅ 일정 등록 완료]\n"
             f"- 제목: {title}\n"
@@ -427,6 +503,7 @@ def create_event(
             f"- 종료: {end_datetime}\n"
             f"- 장소: {location or '없음'}\n"
             f"- 알림: {reminder_minutes}분 전"
+            f"{conflict_note}"
         )
     except Exception as e:
         print(f"[캘린더] 일정 등록 오류: {e}")
@@ -464,7 +541,11 @@ def get_upcoming_events(days = 7, calendar_id: str = "primary", max_results: int
             loc       = event.get("location", "")
             desc      = event.get("description", "")
             eid       = event.get("id", "")
-            result += f"{i}. {title_e}\n   🕐 {_format_datetime(start_raw)} ~ {_format_datetime(end_raw)}\n"
+            # recurringEventId가 있으면 이 이벤트가 반복 일정의 한 회차라는 뜻 —
+            # 사용자가 삭제를 요청할 때 "이번 것만"과 "전체 시리즈" 중 뭘
+            # 원하는지 판단할 근거가 되도록 목록에서부터 표시한다.
+            marker    = "🔁 " if event.get("recurringEventId") else ""
+            result += f"{i}. {marker}{title_e}\n   🕐 {_format_datetime(start_raw)} ~ {_format_datetime(end_raw)}\n"
             if loc:  result += f"   📍 {loc}\n"
             if desc: result += f"   📝 {desc[:60] + '...' if len(desc) > 60 else desc}\n"
             result += f"   🆔 {eid}\n\n"
@@ -502,7 +583,8 @@ def get_events_by_date(date_str: str, calendar_id: str = "primary") -> str:
             title_e   = event.get("summary", "(제목 없음)")
             loc       = event.get("location", "")
             eid       = event.get("id", "")
-            result += f"{i}. {title_e}\n   🕐 {_format_datetime(start_raw)} ~ {_format_datetime(end_raw)}\n"
+            marker    = "🔁 " if event.get("recurringEventId") else ""
+            result += f"{i}. {marker}{title_e}\n   🕐 {_format_datetime(start_raw)} ~ {_format_datetime(end_raw)}\n"
             if loc: result += f"   📍 {loc}\n"
             result += f"   🆔 {eid}\n\n"
         return result.strip()
@@ -619,11 +701,44 @@ def delete_event(event_id: str, calendar_id: str = "primary") -> str:
         service = _get_service()
         event   = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
         title   = event.get("summary", "(제목 없음)")
+        # 구글 캘린더 API는 반복 일정의 개별 회차 id로 delete를 호출하면 그
+        # 회차 하나만 지우고 나머지는 그대로 둔다(API의 기본 동작) — 별도
+        # 처리 없이도 "이번 것만 삭제"가 이미 성립하므로, 여기서는 사용자에게
+        # 그 사실과 전체 삭제 방법만 안내한다.
+        recurring_id = event.get("recurringEventId")
         service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
-        return f"[🗑️ 일정 삭제 완료]\n제목 '{title}' 일정이 삭제되었습니다."
+        hint = ""
+        if recurring_id:
+            hint = (" (반복 일정의 일부였어요 — 나머지 회차는 그대로 있어요. "
+                    "전체 삭제를 원하시면 반복 일정 전체를 삭제해달라고 말씀해주세요)")
+        return f"[🗑️ 일정 삭제 완료]\n제목 '{title}' 일정이 삭제되었습니다.{hint}"
     except Exception as e:
         print(f"[캘린더] 일정 삭제 오류: {e}")
         return "❌ 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요."
+
+
+def delete_recurring_series(event_id: str, calendar_id: str = "primary") -> str:
+    """event_id로 넘어온 회차(또는 시리즈의 master 이벤트) 전체를 삭제한다.
+    구글 캘린더는 반복 일정을 'master 이벤트(recurrence 필드 보유) + 개별
+    회차(recurringEventId로 master를 가리킴)' 구조로 관리하므로, 넘어온
+    id가 개별 회차면 recurringEventId를 따라가 master를 찾고, master의
+    id를 삭제하면 API가 모든 회차를 한꺼번에 정리해준다."""
+    print(f"\n🗑️ [캘린더] 반복 일정 시리즈 삭제 중: {event_id}")
+    try:
+        service = _get_service()
+        event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+        master_id = event.get("recurringEventId") or event_id
+        master = service.events().get(calendarId=calendar_id, eventId=master_id).execute()
+        if not master.get("recurrence"):
+            return (f"'{master.get('summary', '(제목 없음)')}' 일정은 반복 일정이 아니라서 "
+                     "시리즈 전체 삭제를 할 수 없어요. 이 일정 하나만 삭제하려면 다시 삭제해달라고 말씀해주세요.")
+        title = master.get("summary", "(제목 없음)")
+        service.events().delete(calendarId=calendar_id, eventId=master_id).execute()
+        return (f"[🗑️ 반복 일정 시리즈 삭제 완료]\n"
+                f"'{title}' 반복 일정 시리즈 전체가 삭제되었습니다.")
+    except Exception as e:
+        print(f"[캘린더] 반복 일정 시리즈 삭제 오류: {e}")
+        return "❌ 반복 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -652,20 +767,37 @@ def create_recurring_event(
     recurrence_count = max(1, min(104, int(recurrence_count)))
     try:
         service = _get_service()
+        start_iso = _parse_datetime(start_datetime, timezone)
+        end_iso   = _parse_datetime(end_datetime,   timezone)
         event_body = {
             "summary": title, "description": description, "location": location,
-            "start": {"dateTime": _parse_datetime(start_datetime, timezone), "timeZone": timezone},
-            "end":   {"dateTime": _parse_datetime(end_datetime,   timezone), "timeZone": timezone},
+            "start": {"dateTime": start_iso, "timeZone": timezone},
+            "end":   {"dateTime": end_iso,   "timeZone": timezone},
             "recurrence": [f"RRULE:FREQ={recurrence_type.upper()};COUNT={recurrence_count}"],
             "reminders": {"useDefault": True},
         }
+        # 반복 일정은 단일 insert 호출(RRULE)로 여러 회차를 한 번에 만들기
+        # 때문에, local_calendar.py처럼 회차마다 개별 겹침 검사를 하려면
+        # 별도로 모든 회차를 계산/조회해야 한다 — 범위를 좁혀 "첫 회차"만
+        # 겹침을 확인한다(가장 임박한 회차라 실질적으로 가장 중요함). 이후
+        # 회차의 겹침까지 보려면 이 기능의 확장이 필요하다는 걸 검수에서
+        # 명시적으로 짚고 넘어간다.
+        conflicts = _find_conflicts(service, start_iso, end_iso, calendar_id)
+
         event = service.events().insert(calendarId=calendar_id, body=event_body).execute()
+
+        conflict_note = ""
+        if conflicts:
+            c = conflicts[0]
+            conflict_note = f"\n⚠️ 첫 회차와 같은 시간에 다른 일정이 있어요: '{c.get('summary', '(제목 없음)')}'"
+
         label = {"DAILY":"매일","WEEKLY":"매주","MONTHLY":"매월","YEARLY":"매년"}
         return (
             f"[✅ 반복 일정 등록 완료]\n"
             f"- 제목: {title}\n"
             f"- 시작: {start_datetime}\n"
             f"- 반복: {label[recurrence_type.upper()]} × {recurrence_count}회"
+            f"{conflict_note}"
         )
     except Exception as e:
         print(f"[캘린더] 반복 일정 등록 오류: {e}")

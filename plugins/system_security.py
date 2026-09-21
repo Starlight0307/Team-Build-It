@@ -67,6 +67,28 @@ TOOL_SCHEMAS = {
             ),
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
+    },
+    "restrict_shared_folder_permission": {
+        "type": "function",
+        "function": {
+            "name": "restrict_shared_folder_permission",
+            "description": (
+                "지정한 공유 폴더에서 'Everyone'(비밀번호 없이 누구나) 접근 권한을 제거합니다. "
+                "반드시 scan_shared_folders로 먼저 위험한 공유 폴더 이름을 확인한 뒤, "
+                "사용자가 그 폴더 이름을 콕 집어 제한해달라고 말할 때만 호출하세요. "
+                "시스템 기본 관리용 공유(ADMIN$, C$, IPC$ 등 $로 끝나는 이름)는 절대 대상으로 삼지 마세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "share_name": {
+                        "type": "string",
+                        "description": "권한을 제한할 공유 폴더 이름 (scan_shared_folders 결과에 나온 정확한 이름)"
+                    }
+                },
+                "required": ["share_name"]
+            }
+        }
     }
 }
 
@@ -178,6 +200,63 @@ def scan_shared_folders() -> str:
     except Exception as e:
         print(f"[시스템 보안] 공유 폴더 확인 오류: {e}")
         return "⚠️ 공유 폴더 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
+
+
+# 시스템 기본 관리용 공유(ADMIN$/C$/IPC$ 등 $로 끝나는 이름)는 Windows가 내부적으로
+# 쓰는 공유라, 실수로라도 여기에 Everyone 권한 변경을 시도하면 원격 관리/네트워크
+# 기능이 깨질 수 있다 — scan_shared_folders()가 애초에 이런 공유는 결과에서
+# 제외하는 것과 동일한 이유로, 이 함수도 이름 자체로 한 번 더 방어한다.
+def restrict_shared_folder_permission(share_name: str) -> str:
+    print(f"\n[시스템 보안] 공유 폴더 '{share_name}' 권한 제한 중...")
+    if platform.system() != "Windows":
+        return "⚠️ 이 기능은 Windows 전용입니다."
+
+    name = share_name.strip()
+    if not name:
+        return "⚠️ 공유 폴더 이름을 알려주세요."
+    if name.endswith("$"):
+        return f"⚠️ '{name}'은(는) Windows 시스템 기본 공유라 변경할 수 없습니다."
+
+    # PowerShell single-quoted 문자열에 그대로 삽입하면 이름에 '가 포함될 때
+    # 구문이 깨질 수 있다 — PowerShell 관례대로 '를 ''로 이스케이프해서 안전하게 만든다.
+    safe_name = name.replace("'", "''")
+
+    try:
+        # 공유 자체가 존재하는지 먼저 확인 — 없는 이름이면 Revoke가 조용히
+        # 아무 일도 안 하고 성공한 것처럼 보일 수 있어(PowerShell 특성상),
+        # "성공했다고 말하지만 실제로는 아무 폴더도 못 찾았다"는 환각과
+        # 같은 결과를 낳을 위험이 있다 — 존재 여부를 명시적으로 갈라서 확인한다.
+        exists_proc = _run_powershell(
+            f"Get-SmbShare -Name '{safe_name}' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name",
+            timeout=10
+        )
+        if not exists_proc.stdout.strip():
+            return f"'{name}'이라는 이름의 공유 폴더를 찾지 못했습니다. scan_shared_folders로 정확한 이름을 먼저 확인해주세요."
+
+        everyone_proc = _run_powershell(
+            f"Get-SmbShareAccess -Name '{safe_name}' | "
+            "Where-Object {$_.AccountName -eq 'Everyone'} | "
+            "Select-Object -ExpandProperty AccessRight",
+            timeout=10
+        )
+        if not everyone_proc.stdout.strip():
+            return f"[✅ 공유 폴더 권한 확인 (변경 없음)]\n'{name}'은(는) 이미 Everyone 권한이 없어서 그대로 두었습니다."
+
+        revoke_proc = _run_powershell(
+            f"Revoke-SmbShareAccess -Name '{safe_name}' -AccountName 'Everyone' -Force",
+            timeout=10
+        )
+        if revoke_proc.returncode != 0:
+            print(f"[시스템 보안] 공유 폴더 권한 제한 오류: {revoke_proc.stderr}")
+            return f"⚠️ '{name}' 권한 변경에 실패했습니다. 관리자 권한으로 앱을 실행해야 할 수 있습니다."
+
+        return f"[✅ 공유 폴더 권한 제한 완료]\n'{name}' 공유 폴더에서 Everyone(누구나)의 공유 권한을 제거했습니다. (NTFS 파일 권한은 별도이며 변경되지 않았습니다)"
+
+    except subprocess.TimeoutExpired:
+        return "⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요."
+    except Exception as e:
+        print(f"[시스템 보안] 공유 폴더 권한 제한 오류: {e}")
+        return "⚠️ 공유 폴더 권한을 변경하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────

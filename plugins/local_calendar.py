@@ -65,6 +65,30 @@ def _save_events(events: list, user_id: str = None):
         print(f"[내부 캘린더] 저장 오류: {e}")
 
 
+def _find_conflicts(start_iso: str, end_iso: str, exclude_id: str = None) -> list:
+    """새 일정 시간대와 겹치는 기존 일정을 찾는다. 두 구간이 겹치는 조건은
+    "기존 시작 < 새 종료" 이면서 "기존 종료 > 새 시작"인 경우 — 경계가 정확히
+    맞닿는 경우(예: 10시에 끝나는 일정과 10시에 시작하는 일정)는 충돌로 보지
+    않는다(현실에서 흔히 있는 정상적인 뒷 일정 배치이므로)."""
+    try:
+        new_start = datetime.fromisoformat(start_iso)
+        new_end = datetime.fromisoformat(end_iso)
+    except Exception:
+        return []
+    conflicts = []
+    for ev in _load_events():
+        if exclude_id and ev.get("id") == exclude_id:
+            continue
+        try:
+            ev_start = datetime.fromisoformat(ev["start"])
+            ev_end = datetime.fromisoformat(ev["end"])
+        except Exception:
+            continue
+        if ev_start < new_end and ev_end > new_start:
+            conflicts.append(ev)
+    return conflicts
+
+
 def get_all_events() -> list:
     """캘린더 화면(UI) 전용 함수 — AI 도구 목록(TOOL_SCHEMAS)에는 올리지 않는다.
     로그인 안 한 상태면 빈 리스트를 반환(에러 문자열이 아니라 화면에서 직접
@@ -177,10 +201,33 @@ TOOL_SCHEMAS = {
         "type": "function",
         "function": {
             "name": "local_delete_event",
-            "description": "내부 캘린더의 일정을 삭제합니다.",
+            "description": (
+                "내부 캘린더의 일정을 삭제합니다. 반복 일정이어도 이 함수는 지정한 "
+                "event_id 회차 '한 건만' 삭제합니다 — 사용자가 '이번 것만' 삭제해달라고 "
+                "할 때 사용하세요. 반복 일정 전체(모든 회차)를 삭제하려면 "
+                "local_delete_recurring_series를 대신 사용하세요."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"event_id": {"type": "string"}},
+                "required": ["event_id"]
+            }
+        }
+    },
+    "local_delete_recurring_series": {
+        "type": "function",
+        "function": {
+            "name": "local_delete_recurring_series",
+            "description": (
+                "내부 캘린더에서 반복 일정 시리즈 전체(해당 일정이 속한 모든 회차)를 "
+                "삭제합니다. 사용자가 '이번 것만 말고 전체 다 삭제해줘', '반복 일정 "
+                "전체 취소해줘'처럼 시리즈 전체를 지워달라고 명확히 말할 때만 "
+                "호출하세요. '이번 일정만'/'이번 주만' 삭제해달라고 하면 대신 "
+                "local_delete_event를 사용하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"event_id": {"type": "string", "description": "삭제할 시리즈에 속한 회차 하나의 event_id (어느 회차든 상관없음)"}},
                 "required": ["event_id"]
             }
         }
@@ -261,6 +308,10 @@ def local_create_event(
             end_datetime = end_dt.strftime("%Y-%m-%d %H:%M")
 
         events = _load_events()
+        # 저장 전에 겹치는 일정을 확인한다 — 저장 자체를 막지는 않고(사용자가
+        # 의도적으로 겹치는 일정을 넣고 싶을 수도 있으므로) 결과 메시지에
+        # 경고만 덧붙인다.
+        conflicts = _find_conflicts(start, end)
         event = {
             "id": uuid.uuid4().hex[:8],
             "title": title,
@@ -273,6 +324,15 @@ def local_create_event(
         events.append(event)
         _save_events(events)
 
+        conflict_note = ""
+        if conflicts:
+            c = conflicts[0]
+            extra = f" 외 {len(conflicts) - 1}건" if len(conflicts) > 1 else ""
+            conflict_note = (
+                f"\n⚠️ 같은 시간에 다른 일정이 있어요: '{c['title']}' "
+                f"({_format_datetime(c['start'])}~{_format_datetime(c['end'])}){extra}"
+            )
+
         return (
             f"[✅ 일정 등록 완료 (내부 캘린더)]\n"
             f"- 제목: {title}\n"
@@ -280,6 +340,7 @@ def local_create_event(
             f"- 종료: {end_datetime}\n"
             f"- 장소: {location or '없음'}\n"
             f"- 알림: {reminder_minutes}분 전"
+            f"{conflict_note}"
         )
     except ValueError:
         return "날짜 형식이 잘못되었습니다. 예: '2025-07-20 14:00'"
@@ -293,7 +354,10 @@ def local_create_event(
 # ─────────────────────────────────────────────
 
 def _format_event_line(i: int, event: dict) -> str:
-    line = (f"{i}. {event['title']}\n"
+    # 반복 일정의 한 회차임을 표시 — 사용자가 삭제를 요청할 때 "이번 것만"과
+    # "전체 시리즈" 중 뭘 원하는지 판단할 근거가 되도록 목록에서부터 알려준다.
+    marker = "🔁 " if event.get("recurrence_group") else ""
+    line = (f"{i}. {marker}{event['title']}\n"
             f"   🕐 {_format_datetime(event['start'])} ~ {_format_datetime(event['end'])}\n")
     if event.get("location"):
         line += f"   📍 {event['location']}\n"
@@ -499,12 +563,57 @@ def local_delete_event(event_id: str) -> str:
         if not event:
             return "❌ 삭제할 일정을 찾을 수 없습니다."
 
+        group_id = event.get("recurrence_group")
         events = [e for e in events if e["id"] != event_id]
         _save_events(events)
-        return f"[🗑️ 일정 삭제 완료 (내부 캘린더)]\n제목 '{event['title']}' 일정이 삭제되었습니다."
+
+        # 반복 일정의 한 회차만 지운 거라면, 나머지 회차가 그대로 남아있다는
+        # 것과 전체를 지우고 싶으면 어떻게 해야 하는지를 같은 줄에 덧붙인다
+        # (줄을 나누면 _build_single_verdict_reply가 "본문 한 줄" 조건에서
+        # 벗어나 LLM 요약으로 빠지므로, 일부러 한 줄에 이어 쓴다).
+        hint = ""
+        if group_id:
+            remaining = sum(1 for e in events if e.get("recurrence_group") == group_id)
+            if remaining:
+                hint = (f" (반복 일정의 일부였어요 — 나머지 {remaining}건은 그대로 있어요. "
+                        f"전체 삭제를 원하시면 반복 일정 전체를 삭제해달라고 말씀해주세요)")
+
+        return f"[🗑️ 일정 삭제 완료 (내부 캘린더)]\n제목 '{event['title']}' 일정이 삭제되었습니다.{hint}"
     except Exception as e:
         print(f"[내부 캘린더] 일정 삭제 오류: {e}")
         return "❌ 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요."
+
+
+def local_delete_recurring_series(event_id: str) -> str:
+    """지정한 event_id가 속한 반복 일정 시리즈 전체(같은 recurrence_group을
+    가진 모든 회차)를 삭제한다. local_delete_event(한 건만 삭제)와 명확히
+    구분되는 별도 함수로 둔 이유 — 삭제는 되돌릴 수 없는 동작이라, "이번
+    것만"과 "전체"를 함수 선택 자체로 구조적으로 갈라야 LLM이 애매한 요청을
+    잘못 해석해도 최소한 삭제 범위가 잘못 뒤섞이지는 않는다."""
+    print(f"\n🗑️ [내부 캘린더] 반복 일정 시리즈 삭제 중: {event_id}")
+    login_error = _require_login()
+    if login_error:
+        return login_error
+    try:
+        events = _load_events()
+        event = next((e for e in events if e["id"] == event_id), None)
+        if not event:
+            return "❌ 삭제할 일정을 찾을 수 없습니다."
+
+        group_id = event.get("recurrence_group")
+        if not group_id:
+            return (f"'{event['title']}' 일정은 반복 일정이 아니라서 시리즈 전체 삭제를 "
+                     "할 수 없어요. 이 일정 하나만 삭제하려면 다시 삭제해달라고 말씀해주세요.")
+
+        title = event["title"]
+        remaining = [e for e in events if e.get("recurrence_group") != group_id]
+        deleted_count = len(events) - len(remaining)
+        _save_events(remaining)
+        return (f"[🗑️ 반복 일정 시리즈 삭제 완료 (내부 캘린더)]\n"
+                f"'{title}' 반복 일정 시리즈 전체({deleted_count}건)가 삭제되었습니다.")
+    except Exception as e:
+        print(f"[내부 캘린더] 반복 일정 시리즈 삭제 오류: {e}")
+        return "❌ 반복 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요."
 
 
 # ─────────────────────────────────────────────
@@ -549,9 +658,19 @@ def local_create_recurring_event(
         group_id = uuid.uuid4().hex[:8]
 
         events = _load_events()
+        # 회차마다 기존 일정과 겹치는지 확인한다 — 로컬 JSON 비교라 회차 수
+        # (최대 104회)만큼 반복해도 비용이 낮다. 등록 자체를 막지는 않고
+        # 몇 개 회차가 겹치는지만 요약해서 알려준다.
+        conflict_occurrence_count = 0
+        first_conflict = None
         for i in range(max(1, recurrence_count)):
             occ_start = start + step * i
             occ_end   = end + step * i
+            occ_conflicts = _find_conflicts(occ_start.isoformat(), occ_end.isoformat())
+            if occ_conflicts:
+                conflict_occurrence_count += 1
+                if first_conflict is None:
+                    first_conflict = occ_conflicts[0]
             events.append({
                 "id": uuid.uuid4().hex[:8],
                 "title": title,
@@ -564,12 +683,21 @@ def local_create_recurring_event(
             })
         _save_events(events)
 
+        conflict_note = ""
+        if conflict_occurrence_count:
+            conflict_note = (
+                f"\n⚠️ 반복 일정 중 {conflict_occurrence_count}개 회차가 기존 일정과 겹쳐요 "
+                f"(예: '{first_conflict['title']}' "
+                f"{_format_datetime(first_conflict['start'])}~{_format_datetime(first_conflict['end'])})"
+            )
+
         label = {"DAILY": "매일", "WEEKLY": "매주", "MONTHLY": "매월", "YEARLY": "매년"}
         return (
             f"[✅ 반복 일정 등록 완료 (내부 캘린더)]\n"
             f"- 제목: {title}\n"
             f"- 시작: {start_datetime}\n"
             f"- 반복: {label[recurrence_type]} × {recurrence_count}회"
+            f"{conflict_note}"
         )
     except ValueError:
         return "날짜 형식이 잘못되었습니다. 예: '2025-07-20 14:00'"

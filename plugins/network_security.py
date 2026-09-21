@@ -174,6 +174,39 @@ TOOL_SCHEMAS = {
             ),
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
+    },
+    "disable_firewall_rule": {
+        "type": "function",
+        "function": {
+            "name": "disable_firewall_rule",
+            "description": (
+                "지정한 이름의 방화벽 규칙 하나를 비활성화합니다(삭제가 아니라 끄는 것이라 "
+                "나중에 다시 켤 수 있음). 반드시 get_firewall_rules로 먼저 정확한 규칙 이름을 "
+                "확인한 뒤, 사용자가 그 규칙 이름을 콕 집어 막아달라고 말할 때만 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "rule_name": {
+                        "type": "string",
+                        "description": "비활성화할 방화벽 규칙 이름 (get_firewall_rules 결과에 나온 정확한 이름)"
+                    }
+                },
+                "required": ["rule_name"]
+            }
+        }
+    },
+    "disable_risky_firewall_rules": {
+        "type": "function",
+        "function": {
+            "name": "disable_risky_firewall_rules",
+            "description": (
+                "현재 위험(🚨)으로 표시되는 방화벽 규칙(모든 포트가 열려 있는 인바운드 허용 규칙)을 "
+                "한꺼번에 비활성화합니다. 이름을 하나씩 지정할 필요 없이, 위험한 규칙을 통째로 "
+                "정리해달라는 요청('위험한 방화벽 규칙 다 막아줘', '방화벽 자동으로 정리해줘')에 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
     }
 }
 
@@ -538,6 +571,146 @@ def manage_firewall(action: str, port: int, protocol: str = "tcp") -> str:
     except Exception as e:
         print(f"[네트워크 보안] 방화벽 변경 오류: {e}")
         return "⚠️ 방화벽 설정 변경에 실패했습니다. 관리자 권한이 필요할 수 있습니다."
+
+
+def _get_risky_firewall_rules() -> list:
+    """get_firewall_rules()와 같은 netsh 조회 + _parse_fw_block과 같은 위험 판정
+    기준(인바운드 허용 + 모든 포트 개방)을 재사용해서, 이름/포트/프로그램 정보를
+    구조화된 리스트로 반환한다. disable_risky_firewall_rules()가 "지금 실제로
+    무엇이 위험한지"를 LLM에게 맡기지 않고 직접 재조회해서 결정하는 데 쓴다 —
+    get_firewall_rules()의 텍스트 출력을 다시 문자열 파싱하는 대신 원본 조회
+    로직만 복제해서, 두 함수가 서로 다른 시점에 호출돼도(예: 조회 이후 규칙이
+    바뀐 경우) 항상 "지금 이 순간" 기준으로 정확하게 판단한다."""
+    if platform.system() != "Windows":
+        return []
+    proc = subprocess.run(
+        ["netsh", "advfirewall", "firewall", "show", "rule", "name=all", "dir=in"],
+        capture_output=True
+    )
+    raw_bytes = proc.stdout or b""
+    raw = ""
+    for enc in ("cp949", "utf-8", "utf-8-sig"):
+        try:
+            raw = raw_bytes.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if not raw:
+        raw = raw_bytes.decode("cp949", errors="replace")
+
+    blocks, current_lines = [], []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("---"):
+            if current_lines:
+                blocks.append(current_lines)
+            current_lines = []
+        elif stripped:
+            current_lines.append(stripped)
+    if current_lines:
+        blocks.append(current_lines)
+
+    risky = []
+    for block_lines in blocks:
+        rule = {}
+        for line in block_lines:
+            if ":" in line:
+                k, _, v = line.partition(":")
+                rule[k.strip()] = v.strip()
+        name    = rule.get("Rule Name",  rule.get("규칙 이름", "알 수 없음"))
+        enabled = rule.get("Enabled",    rule.get("사용", "")).lower()
+        action  = rule.get("Action",     rule.get("작업", "")).lower()
+        lport   = str(rule.get("LocalPort",  rule.get("로컬 포트", "모든 포트"))).strip()
+        prog    = rule.get("Program",    rule.get("프로그램", "모든 프로그램"))
+        if enabled in ("yes", "예") and action in ("allow", "허용") and lport.lower() in ("any", "모든 포트"):
+            risky.append({"name": name, "port": lport, "program": prog})
+    return risky
+
+
+def disable_firewall_rule(rule_name: str) -> str:
+    """규칙을 삭제하지 않고 비활성화(enable=no)만 한다 — manage_firewall의
+    delete와 달리, 나중에 필요하면 그대로 다시 켤 수 있어 되돌리기 쉬운 방향을
+    택했다. LLM이 지어낼 수 있는 인자(rule_name)를 받으므로, ai_worker.py의
+    _DETECTION_BEFORE_ACTION 정책에 get_firewall_rules를 선행 조건으로 등록해
+    조회 없이 이 함수가 먼저 불리는 걸 구조적으로 막는다(버그42와 동일 원칙)."""
+    print(f"\n[네트워크 보안] 방화벽 규칙 '{rule_name}' 비활성화 중...")
+    if platform.system() != "Windows":
+        return "⚠️ 이 기능은 Windows 전용입니다."
+
+    name = rule_name.strip()
+    if not name:
+        return "⚠️ 방화벽 규칙 이름을 알려주세요."
+
+    try:
+        check_proc = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={name}"],
+            capture_output=True
+        )
+        check_out = check_proc.stdout.decode("cp949", errors="replace")
+        if "찾을 수 없습니다" in check_out or "No rules match" in check_out:
+            return (f"'{name}'이라는 이름의 방화벽 규칙을 찾지 못했습니다. "
+                    "get_firewall_rules로 정확한 이름을 먼저 확인해주세요.")
+
+        proc = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "set", "rule", f"name={name}", "new", "enable=no"],
+            capture_output=True
+        )
+        if proc.returncode != 0:
+            err = proc.stderr.decode("cp949", errors="replace").strip()
+            print(f"[네트워크 보안] 방화벽 규칙 비활성화 오류: {err}")
+            return f"⚠️ '{name}' 규칙 비활성화에 실패했습니다. 관리자 권한으로 앱을 실행해야 할 수 있습니다."
+
+        return (f"[✅ 방화벽 규칙 비활성화 완료]\n"
+                f"'{name}' 규칙을 비활성화했습니다. (삭제된 게 아니라 꺼둔 것이라 필요하면 다시 켤 수 있습니다)")
+
+    except Exception as e:
+        print(f"[네트워크 보안] 방화벽 규칙 비활성화 오류: {e}")
+        return "⚠️ 방화벽 규칙을 변경하지 못했습니다. 잠시 후 다시 시도해주세요."
+
+
+def disable_risky_firewall_rules() -> str:
+    """인자가 없어 LLM이 지어낼 대상 자체가 없다 — "지금 위험한 규칙이 뭔지"를
+    항상 이 함수 내부에서 직접 재조회해서 결정하므로(_get_risky_firewall_rules),
+    get_firewall_rules를 먼저 호출했는지 여부와 무관하게 항상 실제 현재 상태
+    기준으로 안전하다. 다만 여러 규칙을 한꺼번에 바꾸는 동작이라
+    _DANGEROUS_FUNCS에 등록해 실행 전 확인창에 "무엇을 비활성화할지" 정확한
+    목록을 보여준다."""
+    print("\n[네트워크 보안] 위험한 방화벽 규칙 일괄 비활성화 중...")
+    if platform.system() != "Windows":
+        return "⚠️ 이 기능은 Windows 전용입니다."
+
+    try:
+        risky = _get_risky_firewall_rules()
+        if not risky:
+            return "[✅ 방화벽 점검 완료]\n현재 위험(모든 포트 개방)으로 표시되는 방화벽 규칙이 없습니다."
+
+        disabled, failed = [], []
+        for rule in risky:
+            proc = subprocess.run(
+                ["netsh", "advfirewall", "firewall", "set", "rule",
+                 f"name={rule['name']}", "new", "enable=no"],
+                capture_output=True
+            )
+            if proc.returncode == 0:
+                disabled.append(rule["name"])
+            else:
+                failed.append(rule["name"])
+
+        lines = [f"[✅ 위험한 방화벽 규칙 일괄 비활성화 완료] (총 {len(risky)}개 중 {len(disabled)}개 성공)"]
+        for name in disabled:
+            lines.append(f"  ✅ {name}")
+        if failed:
+            # 규칙 이름 자체에 쉼표가 포함될 수 있어 콤마로 join하면 파서가
+            # 이름 하나를 여러 개로 잘못 쪼갤 위험이 있다 — 한 줄에 한 규칙만 적어서
+            # 파싱이 이름 안의 쉼표에 영향받지 않게 한다.
+            lines.append(f"⚠️ 다음 {len(failed)}개는 실패했습니다(관리자 권한 필요할 수 있음):")
+            for name in failed:
+                lines.append(f"  ⚠️ {name}")
+        return "\n".join(lines)
+
+    except Exception as e:
+        print(f"[네트워크 보안] 방화벽 일괄 비활성화 오류: {e}")
+        return "⚠️ 방화벽 규칙을 정리하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
 def preview_matching_processes(process_name: str) -> dict:
