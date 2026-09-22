@@ -413,20 +413,26 @@ _TOOL_CATEGORIES = {
     ),
     "pc_optimizer": (
         ("최적화", "정리", "중복", "용량", "대용량", "저장공간", "저장 공간", "느려",
-         "느린", "임시파일", "임시 파일", "부팅", "느려졌", "청소"),
+         "느린", "임시파일", "임시 파일", "부팅", "느려졌", "청소",
+         "설치된 프로그램", "설치 프로그램", "프로그램 목록", "뭐 설치", "인스톨"),
         # clean_temp_files/delete_duplicate_files는 _DANGEROUS_FUNCS에 등록되어
         # 있어 확인창 없이는 실행되지 않는다 — network_security/system_security와
         # 동일한 원칙으로 노출 목록에 포함.
         ("find_duplicate_files", "delete_duplicate_files", "find_large_files",
-         "scan_temp_files", "clean_temp_files", "analyze_startup_impact"),
+         "scan_temp_files", "clean_temp_files", "analyze_startup_impact",
+         "list_installed_programs"),
     ),
     "reminder": (
-        ("타이머", "알람", "리마인더", "알려줘", "분뒤", "분 뒤", "시간뒤", "시간 뒤", "초뒤", "초 뒤"),
-        ("set_timer", "list_timers", "cancel_timer"),
+        ("타이머", "알람", "리마인더", "알려줘", "분뒤", "분 뒤", "시간뒤", "시간 뒤", "초뒤", "초 뒤",
+         "매일", "정기 알림", "정기알림", "매일 알림"),
+        ("set_timer", "list_timers", "cancel_timer",
+         "set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder"),
     ),
     "expense_tracker": (
-        ("구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼", "얼마 썼", "구매내역", "구매 내역"),
-        ("mark_as_purchased", "get_spending_summary", "list_purchases"),
+        ("구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼", "얼마 썼", "구매내역", "구매 내역",
+         "예산"),
+        ("mark_as_purchased", "get_spending_summary", "list_purchases",
+         "set_monthly_budget", "get_budget_status"),
     ),
     "file_search": (
         ("받은", "다운로드", "다운받", "pdf", "파일 찾", "파일찾", "문서 찾", "사진 찾", "이미지 찾",
@@ -435,8 +441,10 @@ _TOOL_CATEGORIES = {
     ),
     "app_usage": (
         ("사용 시간", "사용시간", "화면 시간", "화면시간", "앱 사용", "앱사용", "몇 시간", "몇시간",
-         "얼마나 썼", "얼마나썼", "사용량", "많이 썼", "많이 쓴", "기록 시작", "기록 꺼", "측정"),
-        ("start_usage_tracking", "stop_usage_tracking", "get_usage_status", "get_usage_report"),
+         "얼마나 썼", "얼마나썼", "사용량", "많이 썼", "많이 쓴", "기록 시작", "기록 꺼", "측정",
+         "목표"),
+        ("start_usage_tracking", "stop_usage_tracking", "get_usage_status", "get_usage_report",
+         "set_usage_goal", "get_goal_status"),
     ),
 }
 
@@ -2076,6 +2084,54 @@ def _build_startup_impact_reply(raw_results: str):
     return "\n".join(lines)
 
 
+_INSTALLED_PROGRAMS_HEADER = re.compile(
+    r"^\[💿 설치된 프로그램 목록\] \(총 (?P<total>\d+)개 확인, (?P<shown>\d+)개 표시, 정렬: (?P<sort_by>\S+)\)\n"
+    r"(?P<body>.+)$", re.DOTALL
+)
+_INSTALLED_PROGRAM_ITEM = re.compile(r'^  - (?P<entry>.+)$')
+_INSTALLED_PROGRAMS_MORE = re.compile(r'^ {2}\.\.\. 외 (?P<more>\d+)개$')
+
+
+def _build_installed_programs_reply(raw_results: str):
+    """list_installed_programs()도 위 시작프로그램/대용량 파일과 같은 "표시 개수 +
+    '... 외 N개'" 구조라 같은 원칙(선언된 총 개수 == 표시된 항목 수 + 나머지 수)을
+    적용한다. 개별 항목(프로그램명/버전/용량/설치일)까지 필드별로 재파싱하지는
+    않는다 — 이름에 괄호가 섞인 경우가 실측으로 확인돼(예: "Microsoft Visual
+    Studio Code (User)") 필드 경계가 모호할 수 있어서, 목록 줄 자체를 그대로
+    옮겨 적는 것으로 충분하다(어차피 LLM이 내용을 바꿔 쓰게 하지 않는 게
+    목적이지, 필드를 재구성해서 보여줄 필요는 없음)."""
+    stripped = raw_results.strip()
+    m = _INSTALLED_PROGRAMS_HEADER.match(stripped)
+    if not m:
+        return None
+    total = int(m.group('total'))
+    shown_declared = int(m.group('shown'))
+    sort_by = m.group('sort_by')
+    body_lines = m.group('body').split('\n')
+
+    more = 0
+    if body_lines and _INSTALLED_PROGRAMS_MORE.match(body_lines[-1]):
+        more = int(_INSTALLED_PROGRAMS_MORE.match(body_lines[-1]).group('more'))
+        body_lines = body_lines[:-1]
+
+    items = []
+    for ln in body_lines:
+        im = _INSTALLED_PROGRAM_ITEM.match(ln)
+        if not im:
+            return None
+        items.append(im.group('entry'))
+    if len(items) != shown_declared or len(items) + more != total:
+        return None
+
+    sort_label = {"name": "이름순", "size": "용량이 큰 순", "date": "최근 설치순"}.get(sort_by, sort_by)
+    lines = [f"설치된 프로그램을 확인해봤는데, 총 {total}개 중 {shown_declared}개를 {sort_label}으로 보여드릴게요."]
+    for entry in items:
+        lines.append(f"- {entry}")
+    if more:
+        lines.append(f"- 그 외에도 {more}개가 더 있어요")
+    return "\n".join(lines)
+
+
 # ─────────────────────────────────────────────
 # ⏱️ 타이머/리마인더(신규 기능 4) 결정론적 빌더
 # ─────────────────────────────────────────────
@@ -2114,6 +2170,46 @@ def _build_timer_list_reply(raw_results: str):
             lines.append(f"- '{label}' — {remaining} 후")
         else:
             lines.append(f"- {remaining} 후")
+    return "\n".join(lines)
+
+
+_DAILY_REMINDER_LIST_EMPTY = "[🔁 정기 알림 목록]\n등록된 정기 알림이 없습니다."
+_DAILY_REMINDER_LIST_HEADER = re.compile(
+    r"^\[🔁 정기 알림 목록\] \(총 (?P<count>\d+)개\)\n(?P<body>.+)$", re.DOTALL
+)
+_DAILY_REMINDER_LIST_ITEM = re.compile(
+    r"^  - 매일 (?P<time>\d{2}:\d{2})(?: \('(?P<label>.+)'\))? \(id: (?P<id>\S+)\)$"
+)
+
+
+def _build_daily_reminder_list_reply(raw_results: str):
+    """list_daily_reminders()도 list_timers()와 같은 "개수 + 목록" 구조 —
+    선언된 개수와 실제 파싱된 항목 수가 일치할 때만 문장을 만든다."""
+    stripped = raw_results.strip()
+    if stripped == _DAILY_REMINDER_LIST_EMPTY:
+        return "확인해봤는데, 등록된 정기 알림이 없어요."
+
+    m = _DAILY_REMINDER_LIST_HEADER.match(stripped)
+    if not m:
+        return None
+    declared = int(m.group('count'))
+    items = []
+    for ln in m.group('body').split('\n'):
+        if not ln.strip():
+            continue
+        im = _DAILY_REMINDER_LIST_ITEM.match(ln)
+        if not im:
+            return None  # 예상 밖 줄 — 안전하게 LLM 경로로 폴백
+        items.append((im.group('time'), im.group('label')))
+    if len(items) != declared:
+        return None
+
+    lines = [f"등록된 정기 알림이 {declared}개 있어요."]
+    for time_str, label in items:
+        if label:
+            lines.append(f"- 매일 {time_str} — '{label}'")
+        else:
+            lines.append(f"- 매일 {time_str}")
     return "\n".join(lines)
 
 
@@ -2187,6 +2283,39 @@ def _build_spending_summary_reply(raw_results: str):
     )
 
 
+_BUDGET_STATUS_NOT_SET = re.compile(
+    r"^\[💰 이번달 예산 현황\]\n"
+    r"아직 설정된 예산이 없어요\. (?P<hint>.+)$"
+)
+_BUDGET_STATUS_HEADER = re.compile(
+    r"^\[💰 이번달 예산 현황\] \((?P<month>[\d-]+)\)\n"
+    r"- 예산: (?P<budget>[\d,]+원)\n"
+    r"- 지출: (?P<spent>[\d,]+원) \((?P<percent>\d+)%\)\n"
+    r"- 남은 예산: (?P<remaining>[\d,]+원)\n"
+    r"(?P<marker>🚨|⚠️|✅) (?P<verdict>.+)$"
+)
+
+
+def _build_budget_status_reply(raw_results: str):
+    """get_budget_status()도 고정된 필드(예산/지출/퍼센트/남은 예산/판정)로만
+    이루어진 구조라, 퍼센트 계산과 🚨/⚠️/✅ 판정을 LLM이 다시 하지 않도록
+    그대로 relay한다 — 이 프로젝트에서 반복 확인된 위험(점수/퍼센트 판정을
+    LLM에 맡기면 원본과 다른 판정을 내리거나 항목을 뒤바꾸는 것)과 같은 종류."""
+    stripped = raw_results.strip()
+    m_not_set = _BUDGET_STATUS_NOT_SET.match(stripped)
+    if m_not_set:
+        return f"확인해봤는데, 아직 설정된 예산이 없어요. {m_not_set.group('hint')}"
+
+    m = _BUDGET_STATUS_HEADER.match(stripped)
+    if not m:
+        return None
+    return (
+        f"{m.group('month')} 예산은 {m.group('budget')}이고, 지금까지 {m.group('spent')}"
+        f"({m.group('percent')}%)를 쓰셨어요. 남은 예산은 {m.group('remaining')}이에요. "
+        f"{m.group('marker')} {m.group('verdict')}"
+    )
+
+
 # ─────────────────────────────────────────────
 # ⏳ 화면 시간/앱 사용 통계(신규 기능 6) 결정론적 빌더
 # ─────────────────────────────────────────────
@@ -2233,6 +2362,59 @@ def _build_app_usage_reply(raw_results: str):
     lines.append("※ LUMI가 실행 중이고 기록이 켜져 있는 동안, 화면 맨 앞에 있던 프로그램 기준의 시간이에요.")
     if target == "게임":
         lines.append("※ 게임 시간은 등록된 게임/게임 런처 프로세스 이름 기준이라 실제 플레이 시간과 다를 수 있어요.")
+    return "\n".join(lines)
+
+
+_GOAL_STATUS_NONE_SET = (
+    "[🎯 오늘 사용 목표 현황]\n아직 설정된 목표가 없어요. "
+    "'유튜브 하루 1시간까지만 보고 싶어'처럼 말씀하시면 목표를 설정해드려요."
+)
+_GOAL_STATUS_NOT_FOUND = re.compile(
+    r"^\[🎯 오늘 사용 목표 현황\]\n'(?P<target>.+)'에는 설정된 목표가 없어요\. "
+    r"설정된 목표: (?P<known>.+)$"
+)
+_GOAL_STATUS_HEADER = re.compile(
+    r"^\[🎯 오늘 사용 목표 현황\] \(총 (?P<total>\d+)개\)\n(?P<body>.+)$", re.DOTALL
+)
+_GOAL_STATUS_ITEM = re.compile(
+    r"^  - (?P<name>.+?): (?P<used>.+?) / (?P<goal>.+?) 목표 \((?P<percent>\d+)%\) "
+    r"(?P<marker>🚨|⚠️|✅)$"
+)
+
+
+def _build_goal_status_reply(raw_results: str):
+    """get_goal_status()의 "총 N개 목표 + 목록" 구조도 다른 "개수+목록" 도구들과
+    같은 원칙 — 퍼센트/마커 판정을 LLM이 다시 계산하게 하지 않고 그대로 relay한다."""
+    stripped = raw_results.strip()
+    if stripped == _GOAL_STATUS_NONE_SET:
+        return "확인해봤는데, 아직 설정된 목표가 없어요. '유튜브 하루 1시간까지만 보고 싶어'처럼 말씀해주시면 설정해드릴게요."
+
+    m_not_found = _GOAL_STATUS_NOT_FOUND.match(stripped)
+    if m_not_found:
+        return (f"'{m_not_found.group('target')}'에는 설정된 목표가 없어요. "
+                f"설정된 목표는 {m_not_found.group('known')}이에요.")
+
+    m = _GOAL_STATUS_HEADER.match(stripped)
+    if not m:
+        return None
+    declared = int(m.group('total'))
+    items = []
+    for ln in m.group('body').split('\n'):
+        if not ln.strip():
+            continue
+        im = _GOAL_STATUS_ITEM.match(ln)
+        if not im:
+            return None
+        items.append(im)
+    if len(items) != declared:
+        return None
+
+    lines = [f"오늘 사용 목표 현황이에요 (총 {declared}개)."]
+    for im in items:
+        lines.append(
+            f"- {im.group('name')}: {im.group('used')} 사용, 목표는 {im.group('goal')} "
+            f"({im.group('percent')}%) {im.group('marker')}"
+        )
     return "\n".join(lines)
 
 
@@ -2286,7 +2468,6 @@ def _build_file_search_reply(raw_results: str):
 
 _DETERMINISTIC_REPLY_BUILDERS = (
     _build_score_report_reply,
-    _build_single_verdict_reply,
     _build_realtime_status_reply,
     _build_realtime_stop_reply,
     _build_calendar_confirmation_reply,
@@ -2301,10 +2482,14 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_duplicate_files_reply,
     _build_large_files_reply,
     _build_startup_impact_reply,
+    _build_installed_programs_reply,
     _build_timer_list_reply,
+    _build_daily_reminder_list_reply,
     _build_purchase_list_reply,
     _build_spending_summary_reply,
+    _build_budget_status_reply,
     _build_app_usage_reply,
+    _build_goal_status_reply,
     _build_file_search_reply,
     _build_iot_no_devices_reply,
     _build_iot_control_reply,
@@ -2317,6 +2502,14 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_startup_items_reply,
     _build_system_info_reply,
     _build_price_search_reply,
+    # _build_single_verdict_reply는 맨 마지막에 둔다 — "헤더 한 줄 + 본문 한 줄"이면
+    # 무조건 걸리는 범용 catch-all이라, 더 앞에 있으면 다른 도구의 결과가 우연히
+    # "본문 한 줄"이 되는 경우(예: 목표/설치 프로그램이 딱 1개만 있을 때)를 가로채서
+    # 그 도구 전용 빌더가 아예 시도되지도 못하게 막아버리는 걸 실측으로 확인했다
+    # (get_goal_status()가 목표 1개일 때 "확인해봤는데, - 게임: ..."처럼 원본 형식이
+    # 깨진 문장이 나옴). 각 도구 전용 빌더가 자기 형식을 먼저 인식할 기회를 가진
+    # 뒤에도 아무도 못 알아본 경우에만 이 범용 빌더가 마지막 안전망으로 동작해야 한다.
+    _build_single_verdict_reply,
 )
 
 
@@ -2730,17 +2923,25 @@ TOOL_STATUS_NAMES = {
     "scan_temp_files":                 "🧹  임시 파일 확인 중",
     "clean_temp_files":                "🧹  임시 파일 정리 중",
     "analyze_startup_impact":          "🚀  시작프로그램 부팅 영향 분석 중",
+    "list_installed_programs":         "💿  설치 프로그램 목록 조회 중",
     "set_timer":                       "⏱️  타이머 설정 중",
     "list_timers":                     "⏱️  타이머 목록 조회 중",
     "cancel_timer":                    "⏱️  타이머 취소 중",
+    "set_daily_reminder":              "🔁  정기 알림 설정 중",
+    "list_daily_reminders":            "🔁  정기 알림 목록 조회 중",
+    "cancel_daily_reminder":           "🔁  정기 알림 취소 중",
     "mark_as_purchased":               "💰  구매 기록 중",
     "get_spending_summary":            "📊  지출 집계 중",
     "list_purchases":                  "📋  구매 내역 조회 중",
+    "set_monthly_budget":              "💰  예산 설정 중",
+    "get_budget_status":               "📊  예산 현황 조회 중",
     "start_usage_tracking":            "⏳  앱 사용 기록 시작 중",
     "stop_usage_tracking":             "⏳  앱 사용 기록 중지 중",
     "search_files":                    "🔎  파일 검색 중",
     "get_usage_status":                "⏳  앱 사용 기록 상태 확인 중",
     "get_usage_report":                "⏳  앱 사용 시간 조회 중",
+    "set_usage_goal":                  "🎯  사용 목표 설정 중",
+    "get_goal_status":                 "🎯  사용 목표 현황 조회 중",
 }
 
 

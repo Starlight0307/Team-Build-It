@@ -44,10 +44,42 @@ def _require_login() -> str | None:
     return None
 
 
+def _safe_user_id(user_id: str = None) -> str:
+    """파일 이름에 쓸 수 있게 사용자 식별자를 정규화한다. _expenses_file과
+    _budget_file 둘 다 이 함수를 통해서만 정규화하도록 공유한다 — ChatGPT
+    검수 지적: 처음엔 각자 안에서 같은 로직(`"".join(c if c.isalnum() ...)`)을
+    복붙해서 썼는데, 이러면 나중에 한쪽만 규칙이 바뀌었을 때 같은 사용자인데
+    두 파일이 서로 다른 이름으로 갈라지는 위험이 있다."""
+    uid = user_id or _current_user_id
+    return "".join(c if c.isalnum() else "_" for c in uid)
+
+
 def _expenses_file(user_id: str = None) -> str:
-    uid      = user_id or _current_user_id
-    safe_uid = "".join(c if c.isalnum() else "_" for c in uid)
-    return os.path.join(EXPENSES_DIR, f"{safe_uid}.json")
+    return os.path.join(EXPENSES_DIR, f"{_safe_user_id(user_id)}.json")
+
+
+def _budget_file(user_id: str = None) -> str:
+    # 지출 내역(expenses)과 별도 파일로 둔다 — expenses 파일은 최상위가
+    # 리스트(list) 구조라, 예산 값을 그 안에 같이 넣으려면 기존 파일 구조
+    # 자체를 바꿔야 해서 이미 저장된 사용자 데이터와의 호환성 문제가 생긴다.
+    return os.path.join(EXPENSES_DIR, f"{_safe_user_id(user_id)}_budget.json")
+
+
+def _load_budget(user_id: str = None) -> int | None:
+    try:
+        with open(_budget_file(user_id), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return int(data.get("monthly_budget")) if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _save_budget(amount: int, user_id: str = None):
+    try:
+        with open(_budget_file(user_id), "w", encoding="utf-8") as f:
+            json.dump({"monthly_budget": amount}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[가계부] 예산 저장 오류: {e}")
 
 
 def _load_expenses(user_id: str = None) -> list:
@@ -122,6 +154,33 @@ TOOL_SCHEMAS = {
                 "properties": {"days": {"type": "integer", "description": "조회할 최근 일수. 기본 30"}},
                 "required": []
             }
+        }
+    },
+    "set_monthly_budget": {
+        "type": "function",
+        "function": {
+            "name": "set_monthly_budget",
+            "description": (
+                "이번달부터 적용할 월별 지출 예산을 설정합니다. 사용자가 '이번달 예산 "
+                "50만원으로 잡아줘', '한달에 30만원까지만 쓰고 싶어' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"amount": {"type": "number", "description": "월 예산 금액(원)"}},
+                "required": ["amount"]
+            }
+        }
+    },
+    "get_budget_status": {
+        "type": "function",
+        "function": {
+            "name": "get_budget_status",
+            "description": (
+                "설정해둔 이번달 예산 대비 지금까지 쓴 금액과 남은 예산을 확인합니다. "
+                "사용자가 '이번달 예산 얼마나 남았어', '예산 초과했어?' 등을 말할 때 호출하세요. "
+                "예산이 설정되어 있지 않으면 그 사실을 안내합니다."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
 }
@@ -249,3 +308,69 @@ def list_purchases(days: int = 30) -> str:
     except Exception as e:
         print(f"[가계부] 구매 내역 조회 오류: {e}")
         return "❌ 구매 내역을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
+
+
+def set_monthly_budget(amount: float) -> str:
+    print(f"\n💰 [가계부] 월 예산 설정 중: {amount}")
+    login_error = _require_login()
+    if login_error:
+        return login_error
+
+    try:
+        amount = int(round(float(amount)))
+    except (TypeError, ValueError):
+        return "⚠️ 예산 금액을 이해하지 못했습니다. '50만원', '300000원'처럼 다시 말씀해주세요."
+    if amount < 0:
+        return "⚠️ 예산은 0 이상이어야 해요."
+
+    _save_budget(amount)
+    return f"[✅ 예산 설정 완료]\n이번달부터 월 예산을 {_format_price(amount)}으로 설정했어요."
+
+
+def get_budget_status() -> str:
+    print("\n📊 [가계부] 이번달 예산 현황 조회 중...")
+    login_error = _require_login()
+    if login_error:
+        return login_error
+
+    budget = _load_budget()
+    if budget is None:
+        return ("[💰 이번달 예산 현황]\n"
+                "아직 설정된 예산이 없어요. '이번달 예산 50만원으로 잡아줘'처럼 "
+                "말씀해주시면 그때부터 예산 대비 지출을 알려드릴 수 있어요.")
+
+    try:
+        tz  = ZoneInfo(DEFAULT_TIMEZONE)
+        now = datetime.now(tz)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        expenses = _load_expenses()
+        spent = 0
+        for e in expenses:
+            try:
+                d = datetime.strptime(e["date"], "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            except Exception:
+                continue
+            if month_start <= d <= now:
+                spent += e["price"]
+
+        percent = (spent / budget * 100) if budget > 0 else 0
+        remaining = budget - spent
+
+        if percent >= 100:
+            marker, verdict = "🚨", "예산을 초과했어요."
+        elif percent >= 80:
+            marker, verdict = "⚠️", "예산에 거의 다 썼어요."
+        else:
+            marker, verdict = "✅", "예산 안에서 잘 쓰고 있어요."
+
+        return (
+            f"[💰 이번달 예산 현황] ({now.strftime('%Y-%m')})\n"
+            f"- 예산: {_format_price(budget)}\n"
+            f"- 지출: {_format_price(spent)} ({percent:.0f}%)\n"
+            f"- 남은 예산: {_format_price(max(remaining, 0))}\n"
+            f"{marker} {verdict}"
+        )
+    except Exception as e:
+        print(f"[가계부] 예산 현황 조회 오류: {e}")
+        return "❌ 예산 현황을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."

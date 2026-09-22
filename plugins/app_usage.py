@@ -113,6 +113,42 @@ TOOL_SCHEMAS = {
             }
         }
     },
+    "set_usage_goal": {
+        "type": "function",
+        "function": {
+            "name": "set_usage_goal",
+            "description": (
+                "특정 프로그램이나 분류(게임/브라우저/메신저/개발/영상/음악)의 하루 사용 시간 "
+                "목표(상한)를 설정합니다. 사용자가 '유튜브 하루 1시간까지만 보고 싶어', '게임 "
+                "하루 2시간으로 제한하고 싶어' 등을 말할 때 호출하세요. daily_minutes는 분 "
+                "단위로 넣으세요(예: '2시간'이면 120)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "목표를 설정할 프로그램 이름 또는 분류"},
+                    "daily_minutes": {"type": "integer", "description": "하루 목표 시간(분 단위)"}
+                },
+                "required": ["target", "daily_minutes"]
+            }
+        }
+    },
+    "get_goal_status": {
+        "type": "function",
+        "function": {
+            "name": "get_goal_status",
+            "description": (
+                "설정해둔 하루 사용 목표 대비 오늘 얼마나 썼는지 확인합니다. 사용자가 '오늘 "
+                "게임 목표 얼마나 채웠어', '유튜브 목표 초과했어?' 등을 말할 때 호출하세요. "
+                "target을 비우면 설정된 모든 목표의 현황을 보여줍니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"target": {"type": "string", "description": "확인할 프로그램 이름 또는 분류. 비우면 전체"}},
+                "required": []
+            }
+        }
+    },
 }
 
 
@@ -367,4 +403,99 @@ def get_usage_report(target: str = "", period: str = "today") -> str:
         lines.append(f"  - {_display_name(name)}  {_fmt_duration(secs)}")
     if len(ranked) > _TOP_N:
         lines.append(f"  ... 외 {len(ranked) - _TOP_N}개")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# 🎯 하루 사용 목표
+# ─────────────────────────────────────────────
+# usage.json(_usage, 매일 누적되는 기록)과 별도 파일로 둔다 — 목표는 사용자가
+# 명시적으로 설정/변경하는 작은 설정 값이라, 매일 계속 커지는 기록 파일과
+# 같이 두면 목적이 다른 데이터가 섞인다(expense_tracker의 예산/지출 분리와
+# 같은 이유). 다만 expense_tracker에서 있었던 실수(사용자 ID 정규화 로직을
+# 파일별로 복붙)는 여기선 해당 없음 — app_usage는 로그인 계정별이 아니라
+# 이 컴퓨터 전체에서 하나의 기록만 쓰기 때문에 사용자 식별자 자체가 없다.
+
+GOALS_FILE = os.path.join(USAGE_DIR, "goals.json")
+_goals: dict = {}          # {target(소문자): 하루 목표(분)}
+_goals_loaded = False
+
+
+def _ensure_goals_loaded():
+    global _goals, _goals_loaded
+    if _goals_loaded:
+        return
+    try:
+        with open(GOALS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _goals = data if isinstance(data, dict) else {}
+    except Exception:
+        _goals = {}
+    _goals_loaded = True
+
+
+def _save_goals():
+    try:
+        with open(GOALS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_goals, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[앱 사용 통계] 목표 저장 오류: {e}")
+
+
+def set_usage_goal(target: str = "", daily_minutes: int = None) -> str:
+    print(f"\n[앱 사용 통계] 목표 설정: {target} {daily_minutes}분/일")
+    target = (target or "").strip()
+    if not target:
+        return "⚠️ 목표를 설정할 프로그램 이름이나 분류를 알려주세요."
+    try:
+        daily_minutes = int(round(float(daily_minutes)))
+    except (TypeError, ValueError):
+        return "⚠️ 목표 시간을 이해하지 못했습니다. 분 단위 숫자로 다시 말씀해주세요(예: 2시간 → 120)."
+    if daily_minutes <= 0:
+        return "⚠️ 목표 시간은 0분보다 커야 해요."
+
+    _ensure_goals_loaded()
+    _goals[target.lower()] = daily_minutes
+    _save_goals()
+    return f"[✅ 목표 설정 완료]\n'{target}' 하루 사용 목표를 {_fmt_duration(daily_minutes * 60)}으로 설정했어요."
+
+
+def get_goal_status(target: str = "") -> str:
+    target = (target or "").strip()
+    print(f"\n[앱 사용 통계] 목표 현황 조회: {target or '전체'}")
+    _ensure_loaded()
+    _ensure_goals_loaded()
+
+    if not _goals:
+        return ("[🎯 오늘 사용 목표 현황]\n아직 설정된 목표가 없어요. "
+                "'유튜브 하루 1시간까지만 보고 싶어'처럼 말씀하시면 목표를 설정해드려요.")
+
+    if target:
+        key = target.lower()
+        if key not in _goals:
+            return (f"[🎯 오늘 사용 목표 현황]\n'{target}'에는 설정된 목표가 없어요. "
+                    f"설정된 목표: {', '.join(_goals.keys())}")
+        check_targets = {key: _goals[key]}
+    else:
+        check_targets = dict(_goals)
+
+    today_key = datetime.now().date().strftime("%Y-%m-%d")
+    with _lock:
+        today_apps = dict(_usage.get(today_key, {}))
+
+    lines = [f"[🎯 오늘 사용 목표 현황] (총 {len(check_targets)}개)"]
+    for key, minutes_goal in check_targets.items():
+        used_seconds = sum(secs for name, secs in today_apps.items() if _matches_target(name, key))
+        used_minutes = used_seconds / 60
+        percent = (used_minutes / minutes_goal * 100) if minutes_goal > 0 else 0
+        if percent >= 100:
+            marker = "🚨"
+        elif percent >= 80:
+            marker = "⚠️"
+        else:
+            marker = "✅"
+        lines.append(
+            f"  - {key}: {_fmt_duration(used_seconds)} / {_fmt_duration(minutes_goal * 60)} "
+            f"목표 ({percent:.0f}%) {marker}"
+        )
     return "\n".join(lines)

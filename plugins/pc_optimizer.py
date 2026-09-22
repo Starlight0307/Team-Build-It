@@ -11,10 +11,12 @@ PC 최적화/정리 플러그인
 """
 
 import os
+import re
 import platform
 import hashlib
 import tempfile
 from pathlib import Path
+from datetime import datetime
 
 try:
     import winreg
@@ -199,6 +201,27 @@ TOOL_SCHEMAS = {
                 "'시작프로그램이 부팅에 얼마나 영향 줘' 등을 말할 때 호출하세요."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "list_installed_programs": {
+        "type": "function",
+        "function": {
+            "name": "list_installed_programs",
+            "description": (
+                "현재 로그인한 계정 기준으로, 이 컴퓨터에 설치된 프로그램 목록을 보여줍니다"
+                "(제거는 하지 않고 조회만 합니다). 다른 사용자 계정에만 설치된 프로그램은 "
+                "포함되지 않을 수 있습니다. 사용자가 '설치된 프로그램 뭐 있어', '용량 큰 "
+                "프로그램 뭐야', '최근에 뭐 설치했어' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sort_by": {"type": "string", "enum": ["name", "size", "date"],
+                                "description": "name=이름순, size=용량이 큰 순, date=최근 설치순. 기본 name"},
+                    "top_n": {"type": "integer", "description": "몇 개까지 보여줄지. 기본 30"}
+                },
+                "required": []
+            }
         }
     },
 }
@@ -589,3 +612,184 @@ def analyze_startup_impact() -> str:
     except Exception as e:
         print(f"[PC 최적화] 시작프로그램 부팅 영향 분석 오류: {e}")
         return "❌ 시작프로그램을 분석하지 못했습니다. 잠시 후 다시 시도해주세요."
+
+
+# ─────────────────────────────────────────────
+# 💿 설치된 프로그램 목록
+# ─────────────────────────────────────────────
+# 범위: 이번 라운드는 "찾기"까지만 — 실제 제거(언인스톨)는 하지 않는다. 이유는
+# find_duplicate_files와 다르다: 언인스톨러 실행 문자열(UninstallString)은
+# 레지스트리에 저장된 임의의 명령어라 그대로 실행하면 사실상 코드 실행에
+# 가깝고, 실패해도 휴지통처럼 되돌릴 방법이 없다(제거된 프로그램은 복구 불가).
+# "설치는 돼있는데 최근에 안 쓴 것 같다"는 판단(app_usage 사용 기록과의
+# 교차 대조)도 이번엔 포함하지 않았다 — 설치 이름("Google Chrome")과 실제
+# 실행 파일 이름("chrome.exe")이 문자열로 안 겹치는 경우가 흔해서, 이름
+# 매칭만으로 "안 쓴다"고 단정하면 실제로 쓰고 있는 프로그램을 안 쓴다고
+# 잘못 판단할 위험이 있다 — 이건 이 세션 내내 경계해온 '근거 부족한 판단을
+# 코드가 대신 내려버리는' 문제와 같은 종류라, 매칭 전략을 더 제대로 설계할
+# 때까지는 손대지 않는다.
+#
+# ChatGPT 검수 반영(2026-09-22): HKLM\...\Uninstall과 HKLM\...\WOW6432Node\
+# ...\Uninstall을 경로 문자열로 직접 여는 방식이, KEY_WOW64_64KEY/32KEY
+# 플래그로 두 "뷰"를 여는 정석적인 방식보다 덜 정확하다는 지적을 받았다 —
+# 32비트 Python으로 실행되는 환경 등에서는 어긋날 수 있다는 게 이유. 다만
+# 이 앱은 사실상 항상 64비트 Python으로 64비트 Windows에서 돈다는 실제
+# 배포 조건을 감안하면, 지금 구조(두 경로를 각각 직접 여는 것)가 실제로
+# 틀린 결과를 낼 시나리오는 없다고 판단해 이번 라운드에서는 그대로 뒀다 —
+# 32비트 배포를 지원하게 되면 그때 KEY_WOW64_64KEY/32KEY로 바꿔야 한다.
+
+_UNINSTALL_KEYS = None
+if winreg:
+    _UNINSTALL_KEYS = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+
+
+def _iter_installed_programs():
+    """설치된 프로그램 목록을 레지스트리 Uninstall 키에서 읽는다.
+    DisplayName이 없는 항목(설치 프로그램이 아니라 업데이트/패치 등인 경우가
+    많음), SystemComponent=1인 항목("일반 프로그램 목록에는 안 보여달라"는
+    메타데이터 — 반드시 OS 구성요소만을 뜻하진 않지만 실질적으로 그런
+    경우가 대부분), ParentDisplayName이 있는 항목(다른 프로그램에 딸린 하위
+    구성요소)은 "사용자가 설치한 프로그램"이라고 부르기 부적절해 제외한다.
+    HKLM/WOW6432Node/HKCU 세 위치를 다 훑다 보면 같은 프로그램이 여러 번
+    등록된 경우가 있어 표시용으로는 이름 기준 중복도 제거한다 — 단, 이름이
+    같다고 반드시 같은 설치라는 보장은 없다(ChatGPT 검수 지적)는 걸 알고
+    쓰는 단순화다. 나중에 제거(언인스톨) 기능을 붙일 때를 대비해 표시에는
+    안 쓰지만 subkey_name/hive/uninstall_string도 같이 담아둔다 — 지금
+    버리면 그 기능을 만들 때 이 스캔 로직을 다시 만들어야 한다."""
+    if not winreg or not _UNINSTALL_KEYS:
+        return
+    seen_names = set()
+    for hive, path in _UNINSTALL_KEYS:
+        try:
+            key = winreg.OpenKey(hive, path)
+        except OSError:
+            continue
+        with key:
+            i = 0
+            while True:
+                try:
+                    subkey_name = winreg.EnumKey(key, i)
+                except OSError:
+                    break
+                i += 1
+                try:
+                    sub = winreg.OpenKey(key, subkey_name)
+                except OSError:
+                    continue
+                with sub:
+                    def _get(name, default=None):
+                        try:
+                            return winreg.QueryValueEx(sub, name)[0]
+                        except OSError:
+                            return default
+
+                    display_name = _get("DisplayName")
+                    if not display_name:
+                        continue
+                    if _to_int(_get("SystemComponent", 0)) == 1:
+                        continue
+                    if _get("ParentDisplayName"):
+                        continue
+                    if display_name in seen_names:
+                        continue
+                    seen_names.add(display_name)
+                    yield {
+                        "name": str(display_name),
+                        "version": str(_get("DisplayVersion", "") or ""),
+                        # 레지스트리 표준 단위: KB. 이름 그대로 "추정치"라
+                        # 실제 디스크 사용량과 다를 수 있고, 타입도 항상
+                        # 정수라는 보장이 없어(ChatGPT 검수 지적 — 실측으로
+                        # InstallDate 형식 오염을 이미 한 번 확인했으니
+                        # 여기도 같은 종류의 오염 가능성을 방어) 안전하게
+                        # 정수로 변환한다.
+                        "size_kb": _to_int(_get("EstimatedSize", 0)),
+                        "install_date": _normalize_install_date(_get("InstallDate", "")),
+                        # 표시에는 안 쓰지만 향후 제거 기능을 위해 보존.
+                        "hive": "HKLM" if hive == winreg.HKEY_LOCAL_MACHINE else "HKCU",
+                        "subkey_name": subkey_name,
+                        "uninstall_string": str(_get("UninstallString", "") or ""),
+                    }
+
+
+def _to_int(value) -> int:
+    """레지스트리 값은 보통 winreg가 알맞은 타입(REG_DWORD → int)으로
+    돌려주지만, 손상되거나 비표준적으로 기록된 값(문자열로 저장된 숫자 등)이
+    있을 수 있다는 걸 InstallDate 필드에서 이미 실측으로 확인했다 — 같은
+    위험이 EstimatedSize/SystemComponent에도 있을 수 있어 방어적으로
+    정수 변환한다. 변환 실패 시 0(=크기 미상/구성요소 아님으로 취급)."""
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_install_date(raw) -> str:
+    """레지스트리 InstallDate는 표준 형식이 'YYYYMMDD'지만, 실제로는 설치
+    프로그램마다 'MM/DD/YYYY' 같은 다른 형식을 쓰기도 하고 아예 존재하지 않는
+    날짜(예: 실측으로 확인한 '20262917' — 29월 17일은 없음)가 들어있는 경우도
+    있다. 원본 문자열을 그대로 정렬에 쓰면(사전식 문자열 비교) 형식이 섞여서
+    최신순 정렬이 완전히 틀어진다 — 'MM/DD/YYYY'는 항상 '1'로 시작해 '2'로
+    시작하는 'YYYYMMDD'보다 사전순으로 앞에 오고, 존재하지 않는 날짜값이 실제
+    날짜보다 문자열상 더 크게 취급될 수 있다. 실제 유효한 날짜로 파싱되는
+    값만 'YYYY-MM-DD'로 정규화해서 반환하고, 파싱 실패(형식 불명 또는
+    존재하지 않는 날짜)면 빈 문자열을 반환해 정렬에서 맨 뒤로 보낸다."""
+    raw = str(raw or "").strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y%m%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return ""
+
+
+def list_installed_programs(sort_by: str = "name", top_n: int = 30) -> str:
+    print(f"\n[PC 최적화] 설치 프로그램 목록 조회 중 (정렬: {sort_by})...")
+    if platform.system() != "Windows" or not winreg:
+        return "⚠️ 이 기능은 Windows 전용입니다."
+
+    try:
+        programs = list(_iter_installed_programs())
+        if not programs:
+            return "설치된 프로그램 목록을 확인하지 못했습니다."
+
+        sort_by = (sort_by or "name").strip().lower()
+        if sort_by == "size":
+            programs.sort(key=lambda p: p["size_kb"], reverse=True)
+        elif sort_by == "date":
+            # install_date는 이미 "YYYY-MM-DD"로 정규화돼 있거나(_normalize_install_date)
+            # 파싱 실패 시 빈 문자열 — 날짜를 아는 항목은 최신순으로, 모르는 항목은
+            # 순서를 주장할 근거가 없으니 뒤섞지 않고 통째로 맨 뒤에 둔다.
+            has_date = [p for p in programs if p["install_date"]]
+            no_date = [p for p in programs if not p["install_date"]]
+            has_date.sort(key=lambda p: p["install_date"], reverse=True)
+            programs = has_date + no_date
+        else:
+            sort_by = "name"
+            programs.sort(key=lambda p: p["name"].lower())
+
+        top_n = max(int(top_n), 1)
+        total = len(programs)
+        shown = programs[:top_n]
+
+        lines = [f"[💿 설치된 프로그램 목록] (총 {total}개 확인, {len(shown)}개 표시, 정렬: {sort_by})"]
+        for p in shown:
+            # "설치일"이 아니라 "등록일"로 표현한다 — Windows Installer 계열에서는
+            # 패치/복구가 적용될 때 이 레지스트리 값이 최초 설치일이 아니라 최근
+            # 서비스(변경) 시점으로 갱신될 수 있어서(ChatGPT 검수 지적), "설치일"이라고
+            # 단정하면 실제보다 더 정확한 의미로 오해될 수 있다.
+            size_str = _format_size(p["size_kb"] * 1024) if p["size_kb"] else "크기 미상"
+            date_str = f", 등록일 {p['install_date']}" if p["install_date"] else ""
+            version_str = f" v{p['version']}" if p["version"] else ""
+            lines.append(f"  - {p['name']}{version_str} ({size_str}{date_str})")
+        if total > len(shown):
+            lines.append(f"  ... 외 {total - len(shown)}개")
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"[PC 최적화] 설치 프로그램 목록 조회 오류: {e}")
+        return "❌ 설치 프로그램 목록을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."

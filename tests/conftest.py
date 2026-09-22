@@ -59,6 +59,21 @@ def isolated_local_calendar(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def isolated_expense_tracker(tmp_path, monkeypatch):
+    """plugins/expense_tracker.py의 저장 폴더(EXPENSES_DIR)를 테스트용 임시
+    폴더로 바꿔치기하고 로그인 사용자를 테스트 계정으로 설정한다 — 이 fixture
+    없이 테스트하면 실제 plugins/expense_tracker/ 폴더에 테스트 지출/예산
+    데이터가 남는다."""
+    import plugins.expense_tracker as expense_tracker
+    fake_dir = tmp_path / "expense_tracker"
+    fake_dir.mkdir()
+    monkeypatch.setattr(expense_tracker, "EXPENSES_DIR", str(fake_dir))
+    expense_tracker.set_current_user("testuser")
+    yield fake_dir
+    expense_tracker.set_current_user(None)
+
+
+@pytest.fixture
 def isolated_calendar_preference(tmp_path, monkeypatch):
     """calendar_feature/calendar_preference.py의 저장 파일을 테스트용 임시
     파일로 바꿔치기 (실제 사용자의 캘린더 백엔드 설정을 건드리지 않도록)."""

@@ -176,6 +176,12 @@ class AssistantApp(QWidget):
         self._timer_poll_timer.timeout.connect(self._poll_due_timers)
         self._timer_poll_timer.start(5000)
 
+        # 정기 알림(매일 반복) — "몇 시 정각"처럼 분 단위 정확도면 충분해서
+        # 일반 타이머(5초)보다 느슨한 30초 주기로 확인한다.
+        self._routine_poll_timer = QTimer(self)
+        self._routine_poll_timer.timeout.connect(self._poll_due_daily_reminders)
+        self._routine_poll_timer.start(30000)
+
     # ─────────────────────────────────────────────
     # 🔄 앱 실행 시 1회 자동 업데이트 상태 체크
     # ─────────────────────────────────────────────
@@ -241,6 +247,28 @@ class AssistantApp(QWidget):
         for timer in due:
             label = timer.get('label')
             message = f"⏱️ 타이머 종료: '{label}'" if label else "⏱️ 타이머가 끝났어요!"
+            self._show_toast(message)
+
+    def _poll_due_daily_reminders(self):
+        """get_due_daily_reminders()도 get_due_timers()와 같은 패턴의 내부
+        전용 함수 — 실제 점검을 자동 실행하지 않고 토스트로만 알린다(사용자가
+        보고 직접 다시 요청해야 실제 실행됨 — plugins/reminder.py 설계 원칙 참고)."""
+        func = next((f for f in self.installed_tools if f.__name__ == 'get_due_daily_reminders'), None)
+        if not func:
+            return
+        try:
+            due = func()
+        except Exception:
+            return
+        for routine in due:
+            label = routine.get('label')
+            # ChatGPT 검수 반영: 토스트만 띄우고 끝나면 사용자가 다음에 뭘 해야
+            # 할지 모호하다는 지적 — 자동 실행은 여전히 하지 않되, 채팅으로
+            # 다시 요청하면 된다는 행동 안내를 덧붙인다.
+            if label:
+                message = f"🔁 정기 알림: '{label}' — 필요하면 채팅으로 요청해주세요."
+            else:
+                message = "🔁 정기 알림 시간이에요! 필요하면 채팅으로 요청해주세요."
             self._show_toast(message)
 
     def _show_toast(self, message: str) -> "NotificationToast":

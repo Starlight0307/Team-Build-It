@@ -201,6 +201,7 @@ AVAILABLE_PLUGINS = [
         "func_names": [
             "find_duplicate_files", "delete_duplicate_files", "find_large_files",
             "scan_temp_files", "clean_temp_files", "analyze_startup_impact",
+            "list_installed_programs",
         ],
         "module_name": "pc_optimizer",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/pc_optimizer.py",
@@ -212,6 +213,8 @@ AVAILABLE_PLUGINS = [
         "desc": "캘린더와 독립적인 가벼운 상대 시간 타이머 — '10분 뒤에 알려줘' 같은 알림",
         "func_names": [
             "set_timer", "list_timers", "cancel_timer", "get_due_timers",
+            "set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder",
+            "get_due_daily_reminders",
         ],
         "module_name": "reminder",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/reminder.py",
@@ -223,6 +226,7 @@ AVAILABLE_PLUGINS = [
         "desc": "최저가 검색 결과를 구매 기록으로 남기고 지출을 집계/조회",
         "func_names": [
             "mark_as_purchased", "get_spending_summary", "list_purchases",
+            "set_monthly_budget", "get_budget_status",
         ],
         "module_name": "expense_tracker",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/expense_tracker.py",
@@ -234,7 +238,7 @@ AVAILABLE_PLUGINS = [
         "desc": "프로그램별 사용 시간을 기록하고 '오늘 게임 몇 시간 했어?' 같은 질문에 답변(명시적으로 시작해야 기록)",
         "func_names": [
             "start_usage_tracking", "stop_usage_tracking", "get_usage_status", "get_usage_report",
-            "resume_usage_tracking_if_enabled",
+            "resume_usage_tracking_if_enabled", "set_usage_goal", "get_goal_status",
         ],
         "module_name": "app_usage",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/app_usage.py",
