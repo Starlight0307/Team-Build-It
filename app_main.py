@@ -161,6 +161,8 @@ class AssistantApp(QWidget):
         self.initUI()
         QTimer.singleShot(50, self.apply_theme)
         QTimer.singleShot(800, self._run_startup_update_check)
+        # 신규 기능 6(앱 사용 통계) — 사용자가 이전에 기록을 켜둔 경우에만 이어서 기록한다.
+        QTimer.singleShot(1500, self._resume_usage_tracking)
 
         # 실시간 감시 알림을 주기적으로 확인 — 새 알림이 생겼을 때만 조용히 토스트로 알림
         self._alert_poll_timer = QTimer(self)
@@ -213,6 +215,15 @@ class AssistantApp(QWidget):
     def _show_realtime_alert_toast(self, delta: int):
         toast = self._show_toast(f"🛰️ 실시간 감시: 새 알림 {delta}건 발생\n클릭하면 상세 내용을 확인합니다")
         toast.clicked.connect(lambda t=toast: self._on_toast_clicked(t))
+
+    def _resume_usage_tracking(self):
+        func = next((f for f in self.installed_tools if f.__name__ == 'resume_usage_tracking_if_enabled'), None)
+        if not func:
+            return
+        try:
+            func()
+        except Exception as e:
+            print(f"[앱 사용 통계] 자동 재개 오류: {e}")
 
     # ─────────────────────────────────────────────
     # ⏱️ 타이머/리마인더 — 만료된 타이머를 확인해 토스트로 알림

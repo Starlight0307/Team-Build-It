@@ -41,6 +41,11 @@ PLUGIN_PILLS = {
     "expense_tracker": [
         ("💰 이번달 지출", "이번달 얼마 썼어?"),
     ],
+    "app_usage": [
+        ("⏳ 오늘 앱 사용 시간", "오늘 앱 사용 시간 알려줘"),
+    ],    "file_search": [
+        ("🔎 최근 받은 파일", "이번주에 받은 파일 찾아줘"),
+    ],
 }
 
 # 대화창 중앙에 뜨는 커맨드 카드 후보 (아이콘, 제목, 설명, 전송할 명령어)
@@ -81,6 +86,11 @@ PLUGIN_CARDS = {
     ],
     "expense_tracker": [
         ("💰", "지출 통계", "최근 지출을 집계해서 보여줍니다.", "이번달 얼마 썼어?"),
+    ],
+    "app_usage": [
+        ("⏳", "앱 사용 시간", "프로그램별 사용 시간을 기록하고 조회합니다.", "오늘 앱 사용 시간 알려줘"),
+    ],    "file_search": [
+        ("🔎", "파일 찾기", "'지난주에 받은 PDF'처럼 이름·종류·기간으로 파일을 찾습니다.", "지난주에 받은 PDF 찾아줘"),
     ],
 }
 
@@ -216,7 +226,28 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "expense_tracker",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/expense_tracker.py",
-        "sha256": "c6802d25c63e75f0087cb95c3365fcd99f9b7ef1771de8f388dddce5017713d9",
+        "sha256": "0403bb7eaae1a958413d0255f96bbfa9105a407fef46c2c82bccc5ba8b3a437f",
+        "dependencies": []
+    },
+    {
+        "name": "화면 시간/앱 사용 통계",
+        "desc": "프로그램별 사용 시간을 기록하고 '오늘 게임 몇 시간 했어?' 같은 질문에 답변(명시적으로 시작해야 기록)",
+        "func_names": [
+            "start_usage_tracking", "stop_usage_tracking", "get_usage_status", "get_usage_report",
+            "resume_usage_tracking_if_enabled",
+        ],
+        "module_name": "app_usage",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/app_usage.py",
+        "sha256": "0e5349b798aa75c60c11f8536e5ab480d0ed2c6f144b276eea8c001d9e864525",
+        "dependencies": ["psutil"]
+    },
+    {
+        "name": "파일 자연어 검색",
+        "desc": "'지난주에 받은 PDF 찾아줘'처럼 이름·종류·기간 조건으로 내 폴더의 파일을 검색(읽기 전용)",
+        "func_names": ["search_files"],
+        "module_name": "file_search",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/file_search.py",
+        "sha256": "72e3df49458deb0c6a276b97c6f2a22b4d7c6be7f020d986413007f90a881d5d",
         "dependencies": []
     },
     {

@@ -374,6 +374,16 @@ _TOOL_CATEGORIES = {
         ("구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼", "얼마 썼", "구매내역", "구매 내역"),
         ("mark_as_purchased", "get_spending_summary", "list_purchases"),
     ),
+    "file_search": (
+        ("받은", "다운로드", "다운받", "pdf", "파일 찾", "파일찾", "문서 찾", "사진 찾", "이미지 찾",
+         "동영상 찾", "엑셀", "한글파일", "워드", "만든 파일", "수정한 파일"),
+        ("search_files",),
+    ),
+    "app_usage": (
+        ("사용 시간", "사용시간", "화면 시간", "화면시간", "앱 사용", "앱사용", "몇 시간", "몇시간",
+         "얼마나 썼", "얼마나썼", "사용량", "많이 썼", "많이 쓴", "기록 시작", "기록 꺼", "측정"),
+        ("start_usage_tracking", "stop_usage_tracking", "get_usage_status", "get_usage_report"),
+    ),
 }
 
 
@@ -2123,6 +2133,103 @@ def _build_spending_summary_reply(raw_results: str):
     )
 
 
+# ─────────────────────────────────────────────
+# ⏳ 화면 시간/앱 사용 통계(신규 기능 6) 결정론적 빌더
+# ─────────────────────────────────────────────
+
+_USAGE_HEADER = re.compile(
+    r"^\[⏳ 앱 사용 시간\] \((?P<label>[^,]+), 대상: (?P<target>.+), 총 (?P<total>\d+)개 앱, "
+    r"합계 (?P<sum>[^)]+)\)\n(?P<body>.+)$", re.DOTALL
+)
+_USAGE_ITEM = re.compile(r"^  - (?P<name>.+?)  (?P<dur>(?:\d+시간 \d+분|\d+분|\d+초))$")
+_USAGE_MORE = re.compile(r"^ {2}\.\.\. 외 (?P<more>\d+)개$")
+
+
+def _build_app_usage_reply(raw_results: str):
+    """get_usage_report()의 "총 N개 앱 + 목록" 구조를 코드가 직접 파싱해 선언된 개수와
+    (표시된 항목 수 + '... 외 N개')가 일치할 때만 문장을 만든다 — 시간 값을 LLM이 다시
+    계산/환산하다 틀리지 않게 그대로 relay한다."""
+    m = _USAGE_HEADER.match(raw_results.strip())
+    if not m:
+        return None
+    total = int(m.group('total'))
+    body_lines = m.group('body').split('\n')
+    more = 0
+    if body_lines and _USAGE_MORE.match(body_lines[-1]):
+        more = int(_USAGE_MORE.match(body_lines[-1]).group('more'))
+        body_lines = body_lines[:-1]
+    items = []
+    for ln in body_lines:
+        im = _USAGE_ITEM.match(ln)
+        if not im:
+            return None  # 예상 밖 줄 — 안전하게 LLM 경로로 폴백
+        items.append((im.group('name'), im.group('dur')))
+    if len(items) + more != total:
+        return None
+
+    target = m.group('target')
+    scope = "전체 프로그램" if target == "전체" else f"'{target}'"
+    lines = [f"{m.group('label')} {scope} 사용 시간은 합계 {m.group('sum')}이에요 (총 {total}개 프로그램)."]
+    for name, dur in items:
+        lines.append(f"- {name}: {dur}")
+    if more:
+        lines.append(f"- 그 외에도 {more}개가 더 있어요")
+    # 측정 범위를 항상 밝힌다(1라운드 검수 권고) — "컴퓨터 전체 사용 시간"이나 "정확한
+    # 게임 플레이 시간"으로 오해하지 않게.
+    lines.append("※ LUMI가 실행 중이고 기록이 켜져 있는 동안, 화면 맨 앞에 있던 프로그램 기준의 시간이에요.")
+    if target == "게임":
+        lines.append("※ 게임 시간은 등록된 게임/게임 런처 프로세스 이름 기준이라 실제 플레이 시간과 다를 수 있어요.")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# 🔎 파일 자연어 검색(신규 기능 7) 결정론적 빌더
+# ─────────────────────────────────────────────
+
+_FILE_SEARCH_HEADER = re.compile(
+    r"^\[🔎 파일 검색 결과\] \(조건: (?P<cond>.+), 일치 (?P<total>\d+)개, 표시 (?P<shown>\d+)개, "
+    r"파일 (?P<scanned>\d+)개 확인\)\n(?P<body>.+)$", re.DOTALL
+)
+_FILE_SEARCH_ITEM = re.compile(
+    r"^  - (?P<date>\d{4}-\d{2}-\d{2} \d{2}:\d{2})  (?P<size>[\d.]+(?:B|KB|MB|GB|TB))  (?P<path>.+)$"
+)
+_FILE_SEARCH_NOTE = re.compile(r"^※ (?P<note>.+)$")
+
+
+def _build_file_search_reply(raw_results: str):
+    """search_files() 결과("일치 N개, 표시 M개" + 파일 목록)를 LLM에게 맡기면 경로를 손상시키거나
+    파일을 누락/지어낼 위험이 있다 — 선언된 표시 개수와 실제 파싱된 항목 수가 일치할 때만 문장을
+    만들고, 스캔 상한 안내("※ ...")도 버리지 않고 그대로 relay한다."""
+    m = _FILE_SEARCH_HEADER.match(raw_results.strip())
+    if not m:
+        return None
+    total, shown = int(m.group('total')), int(m.group('shown'))
+    items, notes = [], []
+    for ln in m.group('body').split('\n'):
+        if not ln.strip():
+            continue
+        im = _FILE_SEARCH_ITEM.match(ln)
+        if im:
+            items.append((im.group('date'), im.group('size'), im.group('path')))
+            continue
+        nm = _FILE_SEARCH_NOTE.match(ln)
+        if nm:
+            notes.append(nm.group('note'))
+            continue
+        return None  # 예상 밖 줄 — 안전하게 LLM 경로로 폴백
+    if len(items) != shown or shown > total:
+        return None
+
+    head = f"{m.group('cond')} 파일을 {total}개 찾았어요"
+    head += f" (최근 순으로 {shown}개만 보여드려요)." if total > shown else "."
+    lines = [head]
+    for date, size, path in items:
+        lines.append(f"- {date}  {size}  {path}")
+    for note in notes:
+        lines.append(f"※ {note}")
+    return "\n".join(lines)
+
+
 _DETERMINISTIC_REPLY_BUILDERS = (
     _build_score_report_reply,
     _build_single_verdict_reply,
@@ -2143,6 +2250,8 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_timer_list_reply,
     _build_purchase_list_reply,
     _build_spending_summary_reply,
+    _build_app_usage_reply,
+    _build_file_search_reply,
     _build_iot_no_devices_reply,
     _build_iot_control_reply,
     _build_port_scan_reply,
@@ -2447,6 +2556,11 @@ TOOL_STATUS_NAMES = {
     "mark_as_purchased":               "💰  구매 기록 중",
     "get_spending_summary":            "📊  지출 집계 중",
     "list_purchases":                  "📋  구매 내역 조회 중",
+    "start_usage_tracking":            "⏳  앱 사용 기록 시작 중",
+    "stop_usage_tracking":             "⏳  앱 사용 기록 중지 중",
+    "search_files":                    "🔎  파일 검색 중",
+    "get_usage_status":                "⏳  앱 사용 기록 상태 확인 중",
+    "get_usage_report":                "⏳  앱 사용 시간 조회 중",
 }
 
 
@@ -2505,6 +2619,12 @@ class AIWorker(QThread):
         "타이머", "알람", "리마인더", "분뒤", "분 뒤", "시간뒤", "시간 뒤", "초뒤", "초 뒤",
         # 가계부/지출 관리 — 같은 이유로 미리 점검해서 선제 추가.
         "구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼",
+        # 화면 시간/앱 사용 통계 — 같은 이유로 미리 점검해서 선제 추가.
+        "사용 시간", "사용시간", "화면 시간", "화면시간", "앱 사용", "앱사용", "몇 시간", "몇시간",
+        "얼마나 썼", "얼마나썼", "사용량", "많이 썼", "많이 쓴",
+        # 파일 자연어 검색 — 같은 이유로 미리 점검해서 선제 추가.
+        "받은", "다운로드", "다운받", "pdf", "파일 찾", "파일찾", "문서 찾", "사진 찾", "이미지 찾",
+        "동영상 찾", "엑셀", "한글파일", "워드", "만든 파일", "수정한 파일",
     )
 
     # 실행/상태확인이 아니라 '방법 설명'을 원하는 요청 — 프롬프트로 아무리 지시해도
@@ -2642,6 +2762,81 @@ class AIWorker(QThread):
             else:  # "원"
                 total += v
         return total if total > 0 else None
+
+    # 앱 사용 시간 조회의 기간 표현 — 긴 표현부터 검사해야 "이번주"가 "오늘"보다 먼저 잡힌다.
+    _USAGE_PERIOD_KEYWORDS = (
+        ("month", ("이번달", "이번 달", "한달", "한 달", "30일", "최근 한달")),
+        ("week",  ("이번주", "이번 주", "일주일", "최근 7일", "7일")),
+        ("yesterday", ("어제",)),
+        ("today",  ("오늘", "지금까지")),
+    )
+
+    def _resolve_usage_period(self, text: str):
+        """"어제/이번주/이번달/오늘" 같은 기간 표현을 결정론적으로 고른다. 없으면 None
+        (=모델이 넘긴 period 인자를 신뢰하되 enum 밖 값은 함수가 today로 처리)."""
+        for period, words in self._USAGE_PERIOD_KEYWORDS:
+            if any(w in text for w in words):
+                return period
+        return None
+
+    # ── 파일 자연어 검색: 조건(종류/기간/기준)을 사용자 문장에서 결정론적으로 뽑는다 ──
+    # 앞쪽 항목이 먼저 매칭된다("pdf"가 "문서"보다, "동영상"이 "영상"보다 우선).
+    _FILE_TYPE_WORDS = (
+        ("pdf", ("pdf",)), ("한글", ("한글파일", "hwp")), ("워드", ("워드", "docx")),
+        ("엑셀", ("엑셀", "xlsx", "csv")), ("ppt", ("ppt", "파워포인트", "발표자료")),
+        ("이미지", ("사진", "이미지", "그림파일", "jpg", "png")),
+        ("동영상", ("동영상", "영상", "비디오", "mp4")), ("음악", ("음악", "노래", "mp3")),
+        ("압축", ("압축", "zip")), ("설치파일", ("설치파일", "exe", "msi")), ("문서", ("문서",)),
+    )
+    _FILE_PERIOD_WORDS = (
+        ("last_week", ("지난주",)), ("this_week", ("이번주",)),
+        ("last_month", ("지난달",)), ("this_month", ("이번달",)),
+        ("yesterday", ("어제",)), ("today", ("오늘",)),
+        ("last_7_days", ("일주일", "최근7일", "7일")), ("last_30_days", ("한달", "최근30일", "30일")),
+    )
+    _FILE_CREATED_WORDS = ("받은", "다운", "만든", "저장한", "생성")
+    _FILE_MODIFIED_WORDS = ("수정", "편집", "고친", "작업한", "바꾼")
+    # 파일 이름 키워드에 섞여 들어오면 안 되는 말(종류/기간/동작 표현)
+    _FILE_KEYWORD_STOPWORDS = (
+        "pdf", "파일", "문서", "사진", "이미지", "동영상", "영상", "엑셀", "워드", "한글", "음악", "압축",
+        "지난주", "이번주", "지난달", "이번달", "어제", "오늘", "최근", "일주일", "한달",
+        "받은", "다운로드", "만든", "수정한", "찾아", "찾아줘", "검색", "있어", "줘",
+    )
+
+    _FILE_KEYWORD_PARTICLES = ("에", "에서", "을", "를", "은", "는", "이", "가", "의", "로", "만", "도", "좀", "만요")
+
+    def _resolve_file_search_conditions(self, text: str) -> dict:
+        """"지난주에 받은 PDF 찾아줘"에서 file_type/period/time_basis를 코드가 직접 고른다
+        (없는 항목은 키를 빼서 모델 인자를 그대로 둔다). 날짜 범위 계산은 함수 쪽에서 한다."""
+        compact = text.replace(" ", "").lower()
+        out = {}
+        for label, words in self._FILE_TYPE_WORDS:
+            if any(w in compact for w in words):
+                out["file_type"] = label
+                break
+        for period, words in self._FILE_PERIOD_WORDS:
+            if any(w in compact for w in words):
+                out["period"] = period
+                break
+        if any(w in compact for w in self._FILE_MODIFIED_WORDS):
+            out["time_basis"] = "modified"
+        elif any(w in compact for w in self._FILE_CREATED_WORDS):
+            out["time_basis"] = "created"
+        return out
+
+    def _sanitize_file_keyword(self, keyword: str) -> str:
+        """LLM이 "PDF"/"지난주"/"받은" 같은 종류·기간 단어를 파일 이름 키워드로 넣으면 그 단어가
+        이름에 없는 파일을 전부 탈락시켜 결과가 0건이 되므로, 그런 단어는 버리고 이름 단서만 남긴다."""
+        # 단어 단위로만 제거한다(1라운드 검수 권고) — "한글날_계획서"처럼 조건 단어가 더 긴 파일명
+        # 토큰의 일부일 때는 지우지 않고, 토큰이 조건 단어 자체이거나 "지난주에"처럼 조건 단어 + 조사일
+        # 때만 지운다.
+        def _is_condition_word(token: str) -> bool:
+            t = token.lower().strip(".,!?\"'")
+            for sw in self._FILE_KEYWORD_STOPWORDS:
+                if t == sw or (t.startswith(sw) and t[len(sw):] in self._FILE_KEYWORD_PARTICLES):
+                    return True
+            return False
+        return " ".join(t for t in (keyword or "").split() if not _is_condition_word(t))
 
     def _resolve_event_date(self, text: str):
         """일정 등록 문장에 "내일"/"모레"/"월요일"/"N월 N일"/"YYYY-MM-DD"
@@ -3700,6 +3895,20 @@ class AIWorker(QThread):
                         resolved_price = self._resolve_purchase_price(self.user_text)
                         if resolved_price is not None:
                             args['price'] = resolved_price
+
+                    # ── 파일 검색: 조건은 LLM 대신 사용자 문장에서 결정론적으로 추출 ──
+                    if func_name == 'search_files':
+                        args.update(self._resolve_file_search_conditions(self.user_text))
+                        args['keyword'] = self._sanitize_file_keyword(args.get('keyword', ''))
+                        # 폴더는 사용자가 문장에 직접 적은 경로일 때만 인정(LLM이 지어낸 경로 차단)
+                        if args.get('folder') and args['folder'] not in self.user_text:
+                            args.pop('folder', None)
+
+                    # ── 앱 사용 통계: 기간은 LLM 대신 키워드로 결정론적 선택 ──
+                    if func_name == 'get_usage_report':
+                        resolved_period = self._resolve_usage_period(self.user_text)
+                        if resolved_period is not None:
+                            args['period'] = resolved_period
 
                     # ── 2단계: 각 도구 실행 ──
                     status_msg = TOOL_STATUS_NAMES.get(func_name, f"⚙️  {func_name} 실행 중")

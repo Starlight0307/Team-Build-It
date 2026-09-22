@@ -1,0 +1,370 @@
+"""
+화면 시간/앱 사용 통계 플러그인
+────────────────────────────────────────────────────────
+● "오늘 게임 몇 시간 했어?" 같은 질문에 답하기 위해, 지금 화면 맨 앞(포그라운드)에
+  있는 프로그램이 무엇인지 주기적으로 확인해서 프로그램별 사용 시간을 집계한다.
+● 개인정보 원칙:
+  - 사용자가 "앱 사용 기록 시작해줘"라고 명시적으로 요청해야만 추적을 시작한다
+    (켜둔 상태는 저장돼서 앱을 다시 켜면 이어서 기록 — resume_usage_tracking_if_enabled).
+  - 창 제목/화면 내용/입력 내용은 절대 저장하지 않고 "프로세스 이름"과 초 단위 누적
+    시간만 이 컴퓨터의 파일에 저장한다(외부 전송 없음).
+● 5분 이상 키보드/마우스 입력이 없으면 화면을 안 보고 있는 것으로 보고 시간을 더하지 않는다.
+● 포그라운드 프로세스 조회는 ctypes(Windows API) + psutil(PID → 프로세스 이름)로 한다.
+"""
+
+import os
+import json
+import atexit
+import platform
+import threading
+import time
+from datetime import datetime, timedelta
+
+try:
+    import psutil
+except ImportError:  # pragma: no cover
+    psutil = None
+
+BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+USAGE_DIR  = os.path.join(BASE_DIR, "app_usage")
+os.makedirs(USAGE_DIR, exist_ok=True)
+USAGE_FILE = os.path.join(USAGE_DIR, "usage.json")
+
+_SAMPLE_INTERVAL_SECONDS = 5
+_IDLE_LIMIT_SECONDS      = 5 * 60
+_FLUSH_INTERVAL_SECONDS  = 60
+_TOP_N                   = 10
+
+_lock = threading.Lock()
+_usage: dict = {}                 # {"YYYY-MM-DD": {"chrome.exe": 초}}
+_loaded = False
+_thread = None
+_stop_event = threading.Event()
+_last_flush = 0.0
+
+# 프로그램(프로세스 이름) → 분류. 정확한 분류가 아니라 "게임 몇 시간?" 같은 흔한
+# 질문에 답하기 위한 소문자 부분 문자열 표다.
+_CATEGORIES = {
+    "게임":   ("steam", "riotclient", "valorant", "leagueclient", "league of legends", "overwatch",
+               "minecraft", "genshin", "epicgameslauncher", "battle.net", "lostark", "maplestory"),
+    "브라우저": ("chrome", "msedge", "firefox", "whale", "brave", "opera"),
+    "메신저":  ("kakaotalk", "discord", "slack", "telegram", "line.exe", "teams"),
+    "개발":   ("code.exe", "pycharm", "idea64", "devenv", "sublime", "notepad++"),
+    "영상/음악": ("vlc", "potplayer", "spotify", "melon", "youtube"),
+}
+
+
+# ==========================================
+# 🛠️ Tool Schemas (ollama tool calling용)
+# ==========================================
+TOOL_SCHEMAS = {
+    "start_usage_tracking": {
+        "type": "function",
+        "function": {
+            "name": "start_usage_tracking",
+            "description": (
+                "앱(프로그램)별 사용 시간 기록을 시작합니다. 화면 맨 앞에 있는 프로그램의 이름과 "
+                "시간만 이 컴퓨터에 저장합니다(창 제목/화면 내용은 저장 안 함). 사용자가 '앱 사용 "
+                "기록 시작해줘', '화면 시간 측정해줘' 등을 말할 때만 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "stop_usage_tracking": {
+        "type": "function",
+        "function": {
+            "name": "stop_usage_tracking",
+            "description": (
+                "앱 사용 시간 기록을 중지합니다(이미 쌓인 기록은 유지). "
+                "사용자가 '앱 사용 기록 꺼줘', '화면 시간 측정 그만' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "get_usage_status": {
+        "type": "function",
+        "function": {
+            "name": "get_usage_status",
+            "description": (
+                "앱 사용 시간 기록이 지금 켜져 있는지 확인합니다. 사용자가 '앱 사용 기록 켜져 있어?', "
+                "'화면 시간 측정 중이야?' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "get_usage_report": {
+        "type": "function",
+        "function": {
+            "name": "get_usage_report",
+            "description": (
+                "기록된 앱 사용 시간을 조회합니다. 사용자가 '오늘 게임 몇 시간 했어', '이번주 크롬 "
+                "얼마나 썼어', '어제 뭘 제일 많이 썼어' 등을 말할 때 호출하세요. target에는 "
+                "프로그램 이름(chrome, discord 등)이나 분류(게임/브라우저/메신저/개발/영상/음악)를 "
+                "넣고, 전체를 보려면 비워두세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "프로그램 이름 또는 분류. 비우면 전체"},
+                    "period": {"type": "string", "enum": ["today", "yesterday", "week", "month"],
+                               "description": "today=오늘, yesterday=어제, week=최근 7일, month=최근 30일. 기본 today"}
+                },
+                "required": []
+            }
+        }
+    },
+}
+
+
+# ─────────────────────────────────────────────
+# 💾 저장/불러오기
+# ─────────────────────────────────────────────
+
+def _ensure_loaded():
+    global _usage, _loaded
+    if _loaded:
+        return
+    try:
+        with open(USAGE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _usage = data.get("usage", {}) if isinstance(data, dict) else {}
+        _state["enabled"] = bool(data.get("enabled", False)) if isinstance(data, dict) else False
+    except FileNotFoundError:
+        _usage = {}
+    except Exception:
+        # 파일이 손상됐으면 다음 저장이 그 파일을 덮어써서 기존 기록을 완전히 잃지 않도록
+        # 먼저 옆에 백업해 둔다.
+        _usage = {}
+        try:
+            os.replace(USAGE_FILE, USAGE_FILE + ".corrupt")
+        except OSError:
+            pass
+    _loaded = True
+
+
+_state = {"enabled": False}
+
+
+def _flush(force: bool = False):
+    """임시 파일에 쓴 뒤 교체(atomic write) — 쓰는 도중 종료돼도 기존 기록이 깨지지 않게 한다."""
+    global _last_flush
+    now = time.time()
+    if not force and now - _last_flush < _FLUSH_INTERVAL_SECONDS:
+        return
+    _last_flush = now
+    with _lock:
+        payload = {"enabled": _state["enabled"], "usage": _usage}
+    tmp = USAGE_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, USAGE_FILE)
+    except Exception as e:
+        print(f"[앱 사용 통계] 저장 오류: {e}")
+
+
+atexit.register(lambda: _loaded and _flush(force=True))
+
+
+# ─────────────────────────────────────────────
+# 🔍 포그라운드 프로세스/유휴 시간 (Windows)
+# ─────────────────────────────────────────────
+
+def _get_foreground_process_name():
+    if platform.system() != "Windows" or psutil is None:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return psutil.Process(pid.value).name()
+    except Exception:
+        return None
+
+
+def _get_idle_seconds() -> float:
+    if platform.system() != "Windows":
+        return 0.0
+    try:
+        import ctypes
+
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        info = LASTINPUTINFO()
+        info.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            return 0.0
+        return (ctypes.windll.kernel32.GetTickCount() - info.dwTime) / 1000.0
+    except Exception:
+        return 0.0
+
+
+def _sample_once(get_foreground=_get_foreground_process_name, get_idle=_get_idle_seconds,
+                 now=None, interval=_SAMPLE_INTERVAL_SECONDS) -> bool:
+    """한 번 표본을 뽑아 해당 프로그램에 interval초를 더한다. 더했으면 True.
+    포그라운드/유휴 조회 함수를 바꿔 끼울 수 있게 분리해 테스트 가능하게 했다."""
+    if get_idle() >= _IDLE_LIMIT_SECONDS:
+        return False
+    name = get_foreground()
+    if not name:
+        return False
+    day = (now or datetime.now()).strftime("%Y-%m-%d")
+    with _lock:
+        day_map = _usage.setdefault(day, {})
+        day_map[name] = day_map.get(name, 0) + interval
+    return True
+
+
+def _tracking_loop():
+    while not _stop_event.wait(_SAMPLE_INTERVAL_SECONDS):
+        try:
+            _sample_once()
+            _flush()
+        except Exception as e:
+            print(f"[앱 사용 통계] 표본 오류: {e}")
+    _flush(force=True)
+
+
+def _start_thread():
+    global _thread
+    if _thread is not None and _thread.is_alive():
+        if not _stop_event.is_set():
+            return False
+        _thread.join(timeout=3)   # 멈추는 중인 이전 스레드가 끝난 뒤 새로 시작(이중 누적 방지)
+    _stop_event.clear()
+    _thread = threading.Thread(target=_tracking_loop, name="app-usage-tracker", daemon=True)
+    _thread.start()
+    return True
+
+
+# ─────────────────────────────────────────────
+# ▶️ 시작/중지
+# ─────────────────────────────────────────────
+
+def start_usage_tracking() -> str:
+    print("\n[앱 사용 통계] 기록 시작 요청")
+    if platform.system() != "Windows" or psutil is None:
+        return "⚠️ 이 기능은 Windows 전용입니다."
+    _ensure_loaded()
+    already = _thread is not None and _thread.is_alive()
+    _state["enabled"] = True
+    _start_thread()
+    _flush(force=True)
+    if already:
+        return "[⏳ 앱 사용 기록]\n이미 앱 사용 시간을 기록하고 있어요."
+    return ("[⏳ 앱 사용 기록]\n지금부터 앱 사용 시간을 기록할게요. "
+            "창 제목이나 화면 내용은 저장하지 않고 프로그램 이름과 시간만 이 컴퓨터에 남겨요.")
+
+
+def stop_usage_tracking() -> str:
+    print("\n[앱 사용 통계] 기록 중지 요청")
+    _ensure_loaded()
+    was_running = _thread is not None and _thread.is_alive()
+    _state["enabled"] = False
+    _stop_event.set()
+    if _thread is not None:
+        _thread.join(timeout=3)   # 멈춘 뒤에는 표본이 더 쌓이지 않도록 스레드 종료를 기다린다
+    _flush(force=True)
+    if not was_running:
+        return "[⏳ 앱 사용 기록]\n지금은 기록 중이 아니에요."
+    return "[⏳ 앱 사용 기록]\n앱 사용 시간 기록을 멈췄어요. 지금까지 쌓인 기록은 그대로 남아 있어요."
+
+
+def get_usage_status() -> str:
+    _ensure_loaded()
+    running = _thread is not None and _thread.is_alive() and not _stop_event.is_set()
+    if running:
+        return ("[⏳ 앱 사용 기록]\n앱 사용 기록: 켜짐 — LUMI가 실행 중인 동안 화면 맨 앞 프로그램의 "
+                "이름과 사용 시간만 이 컴퓨터에 기록하고 있어요.")
+    return "[⏳ 앱 사용 기록]\n앱 사용 기록: 꺼짐 — 지금은 아무것도 기록하지 않아요."
+
+
+def resume_usage_tracking_if_enabled() -> bool:
+    """앱 시작 시 app_main이 부르는 내부용(TOOL_SCHEMAS에 없음) — 사용자가 켜둔 적이
+    있을 때만 이어서 기록한다."""
+    _ensure_loaded()
+    if _state["enabled"] and platform.system() == "Windows" and psutil is not None:
+        return _start_thread()
+    return False
+
+
+# ─────────────────────────────────────────────
+# 📊 조회
+# ─────────────────────────────────────────────
+
+def _fmt_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    hours, rem = divmod(seconds, 3600)
+    minutes = rem // 60
+    if hours:
+        return f"{hours}시간 {minutes}분"
+    if minutes:
+        return f"{minutes}분"
+    return f"{seconds}초"
+
+
+def _display_name(process_name: str) -> str:
+    return process_name[:-4] if process_name.lower().endswith(".exe") else process_name
+
+
+def _period_days(period: str):
+    period = (period or "today").strip().lower()
+    today = datetime.now().date()
+    if period == "yesterday":
+        return "어제", [today - timedelta(days=1)]
+    if period == "week":
+        return "최근 7일", [today - timedelta(days=i) for i in range(7)]
+    if period == "month":
+        return "최근 30일", [today - timedelta(days=i) for i in range(30)]
+    return "오늘", [today]
+
+
+def _matches_target(process_name: str, target: str) -> bool:
+    if not target:
+        return True
+    t = target.strip().lower()
+    n = process_name.lower()
+    for category, keywords in _CATEGORIES.items():
+        if t == category.lower() or t in category.lower().split("/"):
+            return any(k in n for k in keywords)
+    return t in n
+
+
+def get_usage_report(target: str = "", period: str = "today") -> str:
+    target = (target or "").strip()
+    print(f"\n[앱 사용 통계] 조회: 대상={target or '전체'}, 기간={period}")
+    _ensure_loaded()
+    label, days = _period_days(period)
+    keys = {d.strftime("%Y-%m-%d") for d in days}
+
+    totals: dict = {}
+    with _lock:
+        for day, apps in _usage.items():
+            if day in keys:
+                for name, secs in apps.items():
+                    if _matches_target(name, target):
+                        totals[name] = totals.get(name, 0) + secs
+
+    target_label = target or "전체"
+    if not totals:
+        running = _thread is not None and _thread.is_alive()
+        if not running and not _state["enabled"] and not _usage:
+            return ("[⏳ 앱 사용 시간]\n아직 기록이 없어요. '앱 사용 기록 시작해줘'라고 말씀하시면 "
+                    "그때부터 프로그램별 사용 시간을 기록해요.")
+        return f"[⏳ 앱 사용 시간] ({label}, 대상: {target_label})\n기록된 사용 시간이 없습니다."
+
+    ranked = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+    total_seconds = sum(totals.values())
+    lines = [f"[⏳ 앱 사용 시간] ({label}, 대상: {target_label}, 총 {len(ranked)}개 앱, "
+             f"합계 {_fmt_duration(total_seconds)})"]
+    for name, secs in ranked[:_TOP_N]:
+        lines.append(f"  - {_display_name(name)}  {_fmt_duration(secs)}")
+    if len(ranked) > _TOP_N:
+        lines.append(f"  ... 외 {len(ranked) - _TOP_N}개")
+    return "\n".join(lines)

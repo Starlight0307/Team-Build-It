@@ -1,4 +1,5 @@
 import re
+import time
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
@@ -25,7 +26,9 @@ _QUERY_TRAILING_WORDS = (
 # system_info.py의 LAST_TOP_PROCESSES와 같은 방식으로, 가장 최근 검색에서
 # 이미 계산된 최저가 정보를 모듈 전역에 기억해뒀다가 ai_worker.py가 후속
 # 질문에서 새로 검색하지 않고 바로 재사용할 수 있게 한다.
-LAST_SEARCH = {"query": None, "cheapest_name": None, "cheapest_price": None}
+# saved_at(time.time())은 신규 기능 5(가계부)가 "그거 샀어"를 이 값으로 자동
+# 채울 때 오래된 검색 결과를 쓰지 않도록 유효기간을 판단하는 데 쓴다.
+LAST_SEARCH = {"query": None, "cheapest_name": None, "cheapest_price": None, "saved_at": None}
 
 
 def _query_core(query: str) -> str:
@@ -68,10 +71,12 @@ def _build_match_summary(parsed_products: list, search_query: str) -> str:
         LAST_SEARCH["query"] = search_query
         LAST_SEARCH["cheapest_name"] = cheapest_name
         LAST_SEARCH["cheapest_price"] = cheapest_price
+        LAST_SEARCH["saved_at"] = time.time()
     else:
         LAST_SEARCH["query"] = search_query
         LAST_SEARCH["cheapest_name"] = None
         LAST_SEARCH["cheapest_price"] = None
+        LAST_SEARCH["saved_at"] = time.time()
         lines.append(
             f"[💡 참고] 위 5개 상품 중 검색어 '{search_query}'와 이름이 정확히 일치하는 "
             "상품을 찾지 못했습니다 — 관련은 있지만 다른 모델/등급일 수 있으니 상품명을 "

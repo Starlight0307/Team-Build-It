@@ -14,6 +14,7 @@
 
 import os
 import json
+import time
 import uuid
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -24,6 +25,11 @@ os.makedirs(EXPENSES_DIR, exist_ok=True)
 
 DEFAULT_TIMEZONE = "Asia/Seoul"
 _current_user_id: str = "guest"
+
+# "그거 샀어"처럼 상품/가격을 생략했을 때 직전 최저가 검색 결과를 자동으로
+# 쓸 수 있는 최대 경과 시간(초) — 이보다 오래된 검색은 다른 화제 사이에 남은
+# 낡은 문맥일 가능성이 커서 사용하지 않는다.
+_LAST_SEARCH_MAX_AGE_SECONDS = 30 * 60
 
 
 def set_current_user(user_id: str):
@@ -130,6 +136,13 @@ def mark_as_purchased(item_name: str = "", price: float = None) -> str:
     item_name = (item_name or "").strip()
     if not item_name or price is None:
         from plugins.price_search import LAST_SEARCH
+        # 1라운드 검수 지적: "어제 검색한 상품"이 LAST_SEARCH에 남아 있는데 오늘
+        # "그거 샀어"라고 하면 엉뚱한 상품이 금전 기록으로 남는다 — 검색한 지
+        # 얼마 안 됐을 때만 자동으로 채우고, 오래됐으면 기록하지 않고 되묻는다.
+        saved_at = LAST_SEARCH.get("saved_at")
+        if saved_at is not None and (time.time() - saved_at) > _LAST_SEARCH_MAX_AGE_SECONDS:
+            return ("⚠️ 방금 검색한 상품이 아니라서 자동으로 기록하기 어려워요. "
+                    "무엇을 얼마에 구매하셨는지 알려주세요. (예: '이어폰 5만원에 샀어')")
         if not item_name:
             item_name = LAST_SEARCH.get("cheapest_name") or ""
         if price is None:
@@ -139,9 +152,11 @@ def mark_as_purchased(item_name: str = "", price: float = None) -> str:
         return "⚠️ 무엇을 얼마에 구매하셨는지 알려주세요. (예: '이어폰 5만원에 샀어')"
 
     try:
-        price = float(price)
+        # 원화는 소수점이 없으므로 float 대신 정수로 저장한다(1라운드 검수 지적 —
+        # 금액 계산에서 부동소수점 오차 여지를 없앰).
+        price = int(round(float(price)))
     except (TypeError, ValueError):
-        return "⚠️ 가격을 이해하지 못했습니다. 숫자로 다시 말씀해주세요."
+        return "⚠️ 가격을 이해하지 못했습니다. '5만원', '3천원', '12,000원'처럼 다시 말씀해주세요."
     if price < 0:
         return "⚠️ 가격은 0 이상이어야 해요."
 
