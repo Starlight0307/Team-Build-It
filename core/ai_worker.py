@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import inspect
 from collections import Counter
 from datetime import datetime
@@ -412,9 +413,16 @@ _TOOL_CATEGORIES = {
         ("discover_iot_devices", "control_iot_device"),
     ),
     "pc_optimizer": (
+        # 2026-09-22 Agent 평가셋(tests/llm_smoke/)으로 실제 llama3.1을 호출해
+        # 발견한 버그: "프로그램 목록"이 너무 넓은 부분 문자열이라 "시작프로그램
+        # 목록 보여줘"(malware_detection의 scan_startup_items 의도)에도
+        # "프로그램 목록"이 그대로 포함돼("시작" + "프로그램 목록") 두 카테고리가
+        # 동시에 노출되고, 실측으로 llama3.1이 엉뚱하게 list_installed_programs를
+        # 고르는 걸 확인했다. "설치된 프로그램"/"설치 프로그램"이 이미 자연스러운
+        # 표현을 충분히 커버하므로 "프로그램 목록"은 제거한다.
         ("최적화", "정리", "중복", "용량", "대용량", "저장공간", "저장 공간", "느려",
          "느린", "임시파일", "임시 파일", "부팅", "느려졌", "청소",
-         "설치된 프로그램", "설치 프로그램", "프로그램 목록", "뭐 설치", "인스톨"),
+         "설치된 프로그램", "설치 프로그램", "뭐 설치", "인스톨"),
         # clean_temp_files/delete_duplicate_files는 _DANGEROUS_FUNCS에 등록되어
         # 있어 확인창 없이는 실행되지 않는다 — network_security/system_security와
         # 동일한 원칙으로 노출 목록에 포함.
@@ -424,9 +432,13 @@ _TOOL_CATEGORIES = {
     ),
     "reminder": (
         ("타이머", "알람", "리마인더", "알려줘", "분뒤", "분 뒤", "시간뒤", "시간 뒤", "초뒤", "초 뒤",
-         "매일", "정기 알림", "정기알림", "매일 알림"),
+         "매일", "정기 알림", "정기알림", "매일 알림",
+         # 조건부 알림 — "넘으면"/"초과하면" 류는 이 프로젝트 다른 카테고리
+         # 키워드와 겹치지 않는, 조건 표현에서만 자연스럽게 쓰이는 어구라 좁게 잡아도 안전.
+         "넘으면", "넘게", "넘을 때", "초과하면", "이상이면", "조건 알림", "조건알림"),
         ("set_timer", "list_timers", "cancel_timer",
-         "set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder"),
+         "set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder",
+         "set_usage_condition", "set_spending_condition", "list_conditions", "cancel_condition"),
     ),
     "expense_tracker": (
         ("구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼", "얼마 썼", "구매내역", "구매 내역",
@@ -447,6 +459,32 @@ _TOOL_CATEGORIES = {
          "set_usage_goal", "get_goal_status"),
     ),
 }
+
+# AIWorker._needs_tools()가 쓰는 "도구 호출 모드로 전환할지" 게이트 키워드.
+# 2026-09-22 Agent 평가셋(실제 llama3.1 호출)으로 발견한 버그: 이 게이트
+# 키워드가 _TOOL_CATEGORIES와 별개의 손으로 쓴 목록이었는데, 이번 세션에
+# list_installed_programs/set_monthly_budget·get_budget_status/
+# set_usage_goal·get_goal_status/set_daily_reminder 등을 추가하면서
+# _TOOL_CATEGORIES에는 해당 키워드("설치된 프로그램", "예산", "목표", "매일",
+# "정기 알림" 등)를 등록했지만 이 게이트 목록엔 반영을 빼먹었다. 그 결과
+# "매일 아침 9시에 알림 설정해줘", "유튜브 목표 달성률 확인해줘",
+# "설치된 프로그램 목록 보여줘" 같은 요청이 use_tools=False로 빠져서 도구
+# 호출 자체가 물리적으로 불가능했다 — 정작 카테고리 필터는 정상인데 그
+# 앞단 게이트에서 이미 막혀 있어 unit 테스트(func_map을 직접 주입)로는 이
+# 클래스의 버그를 잡을 수 없었다(그래서 실제 Ollama를 호출하는 Agent
+# 평가셋이 필요했던 것). 이 게이트는 "도구가 필요할 가능성이 있는가"라는
+# _TOOL_CATEGORIES보다 더 넓은 질문이므로, _TOOL_CATEGORIES의 모든 키워드를
+# 반드시 포함해야 논리적으로 일관된다 — 손으로 두 목록을 계속 동기화하는
+# 대신 _TOOL_CATEGORIES에서 자동으로 파생시켜 이 버그 클래스 자체를
+# 구조적으로 막는다.
+_EXTRA_NEEDS_TOOLS_KEYWORDS = (
+    # _TOOL_CATEGORIES에는 일부러 안 넣은(카테고리 라우팅에 쓰기엔 너무
+    # 범용적인) 단어들 — 그래도 "도구가 필요할 수 있다"는 신호로는 유효하다.
+    "상태", "있어", "취약점", "해킹", "백그라운드",
+)
+_DERIVED_TOOL_KEYWORDS = tuple(sorted(set(
+    kw for keywords, _funcs in _TOOL_CATEGORIES.values() for kw in keywords
+) | set(_EXTRA_NEEDS_TOOLS_KEYWORDS)))
 
 
 # 2026-09-14 system_security 2차 재검증에서 발견한 버그: _build_score_report_reply가
@@ -2213,6 +2251,48 @@ def _build_daily_reminder_list_reply(raw_results: str):
     return "\n".join(lines)
 
 
+_CONDITION_LIST_EMPTY = "[🎯🔁 조건부 알림 목록]\n등록된 조건부 알림이 없습니다."
+_CONDITION_LIST_HEADER = re.compile(
+    r"^\[🎯🔁 조건부 알림 목록\] \(총 (?P<count>\d+)개\)\n(?P<body>.+)$", re.DOTALL
+)
+_CONDITION_LIST_ITEM = re.compile(
+    r"^  - (?P<desc>.+?)(?: \('(?P<label>.+)'\))? \(id: (?P<id>\S+)\)$"
+)
+
+
+def _build_condition_list_reply(raw_results: str):
+    """list_conditions()도 다른 "개수 + 목록" 도구들과 같은 원칙 — 선언된
+    개수와 실제 파싱된 항목 수가 일치할 때만 문장을 만든다. desc(예: "'게임'
+    사용 240분 초과", "이번달 지출 500,000원 초과")는 list_conditions()가
+    이미 사람이 읽는 문장으로 만들어둔 것을 그대로 relay한다."""
+    stripped = raw_results.strip()
+    if stripped == _CONDITION_LIST_EMPTY:
+        return "확인해봤는데, 등록된 조건부 알림이 없어요."
+
+    m = _CONDITION_LIST_HEADER.match(stripped)
+    if not m:
+        return None
+    declared = int(m.group('count'))
+    items = []
+    for ln in m.group('body').split('\n'):
+        if not ln.strip():
+            continue
+        im = _CONDITION_LIST_ITEM.match(ln)
+        if not im:
+            return None
+        items.append((im.group('desc'), im.group('label')))
+    if len(items) != declared:
+        return None
+
+    lines = [f"등록된 조건부 알림이 {declared}개 있어요."]
+    for desc, label in items:
+        if label:
+            lines.append(f"- {desc} — '{label}'")
+        else:
+            lines.append(f"- {desc}")
+    return "\n".join(lines)
+
+
 # ─────────────────────────────────────────────
 # 💰 가계부/지출 관리(신규 기능 5) 결정론적 빌더
 # ─────────────────────────────────────────────
@@ -2485,6 +2565,7 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_installed_programs_reply,
     _build_timer_list_reply,
     _build_daily_reminder_list_reply,
+    _build_condition_list_reply,
     _build_purchase_list_reply,
     _build_spending_summary_reply,
     _build_budget_status_reply,
@@ -2603,7 +2684,13 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
         try:
             raw = func_map[calendar_func_name]()
             built = _build_deterministic_reply(raw)
-            if built:
+            # ChatGPT 검수 반영(2026-09-22): 다른 5개 섹션(지출/사용시간/예산/목표)은
+            # 전부 "로그인 필요"/"설정한 적 없음" 안내문을 매일 뜨는 잡음으로 보고
+            # 조용히 억제하는데, 캘린더 섹션만 이 정책이 빠져 있었다 — 새 기능이
+            # 아니라 기존 브리핑의 출력 정책을 통일하는 수정. get_spending_summary
+            # 억제와 동일하게 '로그인' 부분 문자열로 판정한다(local_calendar.py의
+            # 실제 비로그인 메시지 "❌ 내부 캘린더는 로그인한 사용자만...").
+            if built and '로그인' not in raw:
                 sections.append(built)
         except Exception as e:
             print(f"[AI 워커] 브리핑 - 일정 조회 오류: {e}")
@@ -2641,11 +2728,157 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
         except Exception as e:
             print(f"[AI 워커] 브리핑 - 사용시간 조회 오류: {e}")
 
+    # 5) 예산 현황 — "Context/State 전문화" 1호: 사용자가 명시적으로 설정한
+    # 예산(set_monthly_budget)은 "사용자가 지금 신경 쓰고 있는 것"이라는
+    # 구조화된 신호다. 지금까지 이 신호가 하루 브리핑에는 전혀 연결되지
+    # 않고 get_budget_status를 따로 물어봐야만 보였다 — 자유형 NLU로 "사용자가
+    # 걱정하는 것"을 추측하는 대신, 이미 명시적으로 설정해둔 예산/목표만
+    # 결정론적으로 우선 노출한다(자유 추측은 이 프로젝트의 Deterministic-first
+    # 원칙과 반대 방향이라는 ChatGPT 검수 기조와 일치). 예산 자체를 설정한
+    # 적 없으면(비로그인 포함) 매일 뜨는 잡음이라 조용히 뺀다.
+    if 'get_budget_status' in func_map:
+        try:
+            raw = func_map['get_budget_status']()
+            built = _build_deterministic_reply(raw)
+            if built and '로그인' not in raw and '아직 설정된 예산이 없어요' not in raw:
+                sections.append(built)
+        except Exception as e:
+            print(f"[AI 워커] 브리핑 - 예산 조회 오류: {e}")
+
+    # 6) 사용 목표 현황 — 같은 원칙(설정한 적 없으면 조용히 뺌).
+    if 'get_goal_status' in func_map:
+        try:
+            raw = func_map['get_goal_status']()
+            built = _build_deterministic_reply(raw)
+            if built and '아직 설정된 목표가 없어요' not in raw:
+                sections.append(built)
+        except Exception as e:
+            print(f"[AI 워커] 브리핑 - 사용 목표 조회 오류: {e}")
+
     if not sections:
         return ""
 
     intro = "안녕하세요! 오늘 하루를 정리해드릴게요."
     return f"{intro}\n\n" + "\n\n".join(sections)
+
+
+# ─────────────────────────────────────────────
+# 🩺 PC 종합 점검 — "멀티 툴 워크플로우"의 첫 사례
+# ─────────────────────────────────────────────
+# system_info/system_security/malware_detection/network_security 네 플러그인은
+# 지금까지 각자 따로만 호출됐다(예: "보안 점검해줘"는 network_security 하나만).
+# 이 넷을 한 번에 묶어서 "PC 전체적으로 어때?"에 답하는 게 이 기능의 목적.
+#
+# _build_daily_summary와 똑같은 이유로 LLM 자유 요약을 타지 않는다 — 특히
+# 여기 묶이는 3개(system_security/malware_detection/network_security)는
+# 전부 _build_score_report_reply가 처리하는 "고정 점수 리포트" 형식인데,
+# _summarize_tool_results_llm의 docstring에 이미 적혀있듯 이런 리포트가 한
+# 턴에 여러 개 섞이면 LLM이 한쪽 주제를 통째로 누락하거나 엉뚱한 항목에
+# 위험 표시를 새로 지어붙이는 게 실측으로 확인된 패턴이다. 4개 리포트를
+# 동시에 자유 요약시키면 그 위험이 더 커지므로, 이미 검증된 개별 빌더
+# 결과를 그대로 이어붙이는 이 방식이 훨씬 안전하다.
+_PC_HEALTH_CHECK_KEYWORDS = (
+    '종합 점검', '전체 점검', '다 점검', '전부 점검', '총점검',
+    '종합 진단', '전체 진단', '한번에 점검', '한 번에 점검', '전체적으로 점검',
+)
+
+
+_PC_HEALTH_CHECK_NEGATION_MARKERS = ('하지 마', '하지마', '하지 말', '말고', '필요 없', '필요없')
+
+# ChatGPT 검수(2026-09-22) 지적: 부분 문자열 매칭이라 "전체 점검 하지 마"나
+# "전체 점검 말고 네트워크만 봐줘"에도 "전체 점검"이 그대로 들어있어서
+# 실행 의도가 아닌데도 걸릴 위험이 있었다. "과거 결과 조회"("지난번 전체
+# 점검 결과 보여줘")까지 완벽히 구분하려면 별도 의도 분류가 필요해 이번
+# 범위 밖으로 남겨두지만(= _is_daily_summary_request의 메타 질문 한계와
+# 같은 종류의, 문서화된 알려진 한계), "하지 마/말고/필요 없다" 같은 명시적
+# 부정 표현은 문자열 검사만으로도 값싸게 막을 수 있어서 반영한다.
+def _is_pc_health_check_request(text_lower: str) -> bool:
+    """"PC 종합 점검" fast-path를 태울지 판단한다. _is_daily_summary_request와
+    동일한 설계 원칙: "점검"이나 "보안"처럼 흔한 단어 하나만으로 걸면
+    "포트 445 보안 점검해줘"(network_security 단일 의도) 같은 기존 요청까지
+    가로채는 회귀가 생긴다 — 반드시 "종합/전체/다/한번에" 같은 "전부 다"를
+    뜻하는 수식어 + "점검/진단"이 함께 있는, 명시적으로 다중 영역을 가리키는
+    표현만 좁게 잡는다."""
+    if not any(kw in text_lower for kw in _PC_HEALTH_CHECK_KEYWORDS):
+        return False
+    if any(neg in text_lower for neg in _PC_HEALTH_CHECK_NEGATION_MARKERS):
+        return False
+    return True
+
+
+def _build_pc_health_check(func_map: dict) -> str:
+    """PC 종합 점검 — 시스템 정보/보안/악성코드/네트워크 네 리포트를 각자
+    도구로 조회한 뒤, 이미 검증된 개별 결정론적 빌더(_build_deterministic_reply)로
+    그대로 이어붙인다. _build_daily_summary와 동일한 설계: func_map만 주입받는
+    순수 함수라 AIWorker/실제 플러그인 실행 없이 유닛 테스트 가능.
+
+    섹션 하나가 실패해도(예외, 또는 설치 안 된 플러그인이라 func_map에 아예
+    없는 경우) 나머지 섹션은 계속 만든다 — _build_daily_summary와 동일한
+    이유(브리핑류 기능에서 부분 실패가 전체 실패보다 낫다).
+
+    ChatGPT 검수(2026-09-22) 지적 반영: 맨 위 종합 상태 한 줄(🚨/⚠️/✅)은
+    raw 결과 문자열에서 직접 집계한다 — _build_score_report_reply는 🚨/⚠️
+    마커를 "위험 표시가 있어서 확인이 필요해 보여요" 같은 문장으로 풀어
+    쓰기 때문에, 빌드된(사람이 읽는) 섹션 문자열에는 이모지가 그대로 남아
+    있지 않다. 새 점수를 계산하지 않는다는 원칙(서로 다른 기준의 점수를
+    평균 내면 근거 없는 가짜 정밀도가 됨)은 그대로 지키면서, "이미 원본에
+    찍혀 있는 마커의 유무"만 집계한다."""
+    sections = []
+    has_critical = False
+    has_warning = False
+
+    def _run_section(func_name: str, label: str):
+        nonlocal has_critical, has_warning
+        if func_name not in func_map:
+            return
+        # ChatGPT 검수(2026-09-22) 지적 반영: 4개를 순차 동기 호출하는 구조라
+        # 전체 소요 시간이 늘어질 수 있다는 지적 — 실측 결과 네트워크 보안(포트
+        # 스캔 1-1024)이 병목이라 전체 9초대까지 걸리는 걸 확인했다(이 컴퓨터
+        # 기준). GUI는 이미 AIWorker(QThread)에서 도니 멎지는 않지만, 나중에
+        # 최적화 여부를 판단할 근거로 남기기 위해 섹션별 소요 시간만 가볍게
+        # 로그로 남긴다(병렬화 등 구조 변경은 이번 라운드에서 하지 않음 —
+        # 각 플러그인이 프로세스/네트워크/Windows API 같은 외부 상태를
+        # 건드려서 무작정 병렬화하면 새로운 동시성 문제가 생길 수 있다는
+        # 지적에 동의해 순차 실행을 유지함).
+        start = time.monotonic()
+        try:
+            raw = func_map[func_name]()
+        except Exception as e:
+            print(f"[AI 워커] PC 종합 점검 - {label} 조회 오류: {e}")
+            return
+        finally:
+            print(f"[AI 워커] PC 종합 점검 - {label} 소요 시간: {time.monotonic() - start:.2f}초")
+        if "🚨" in raw:
+            has_critical = True
+        elif "⚠️" in raw:
+            has_warning = True
+        built = _build_deterministic_reply(raw)
+        if built:
+            sections.append(built)
+
+    # 1) 시스템 정보(CPU/메모리/디스크) — 점수 리포트 형식이 아니라 고정
+    # 필드 형식이라 별도 빌더(_build_system_info_reply)가 처리하고, 🚨/⚠️
+    # 마커 자체가 없는 형식이라 종합 상태 판단에는 관여하지 않는다.
+    _run_section('get_system_info', '시스템 정보')
+    # 2) 시스템 보안(업데이트/공유폴더/로그인 실패)
+    _run_section('get_system_security_report', '시스템 보안')
+    # 3) 악성코드(의심 프로세스/시작프로그램/자동 시작 서비스)
+    _run_section('get_malware_report', '악성코드')
+    # 4) 네트워크(포트/방화벽/DNS/연결)
+    _run_section('get_network_security_report', '네트워크')
+
+    if not sections:
+        return ""
+
+    if has_critical:
+        overall = "🚨 종합 상태: 조치가 필요한 항목이 있어요."
+    elif has_warning:
+        overall = "⚠️ 종합 상태: 일부 항목에 주의가 필요해요."
+    else:
+        overall = "✅ 종합 상태: 특별히 조치할 항목은 없어요."
+
+    intro = "네, PC 상태를 전체적으로 점검해드릴게요."
+    return f"{intro}\n\n{overall}\n\n" + "\n\n".join(sections)
 
 
 def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
@@ -2930,6 +3163,10 @@ TOOL_STATUS_NAMES = {
     "set_daily_reminder":              "🔁  정기 알림 설정 중",
     "list_daily_reminders":            "🔁  정기 알림 목록 조회 중",
     "cancel_daily_reminder":           "🔁  정기 알림 취소 중",
+    "set_usage_condition":             "🎯🔁  조건부 알림 설정 중",
+    "set_spending_condition":          "🎯🔁  조건부 알림 설정 중",
+    "list_conditions":                 "🎯🔁  조건부 알림 목록 조회 중",
+    "cancel_condition":                "🎯🔁  조건부 알림 취소 중",
     "mark_as_purchased":               "💰  구매 기록 중",
     "get_spending_summary":            "📊  지출 집계 중",
     "list_purchases":                  "📋  구매 내역 조회 중",
@@ -2967,46 +3204,13 @@ class AIWorker(QThread):
         # 스레드에서 돈다. __init__에서 파일 I/O를 하면 GUI가 짧게라도 멈출
         # 수 있다는 ChatGPT 검수 지적에 따라 run() 시작부로 옮김.
 
-    # 도구 사용이 필요한 키워드 — 이 중 하나라도 포함되면 tool 모드로 전환
-    _TOOL_KEYWORDS = (
-        # 시스템
-        "상태", "cpu", "메모리", "ram", "디스크", "프로세스", "느려", "무거", "종료",
-        "컴퓨터", "pc", "사양", "온도", "코어", "속도",
-        "버벅", "렉", "끊겨", "끊김", "꺼줘", "용량", "저장공간",
-        # 가격 검색
-        "검색", "최저가", "가격", "다나와", "얼마", "싸게", "저렴",
-        # 캘린더 / 구글 계정
-        "일정", "캘린더", "schedule", "calendar", "회의", "약속", "예약", "미팅",
-        "오늘", "내일", "모레", "글피", "어제", "이번주", "다음주", "이번달", "다음달",
-        "언제", "추가", "등록", "삭제", "수정", "취소", "미뤄", "연기", "잡아",
-        "브리핑", "알려줘", "있어",
-        "로그인", "로그아웃", "구글", "google", "계정", "인증", "연동", "동기화",
-        "웹사이트", "웹페이지", "브라우저", "사이트",
-        # 보안
-        "포트", "방화벽", "보안", "네트워크", "스캔", "의심", "악성", "업데이트", "패치",
-        "dns", "시작프로그램", "자동실행", "자동 실행", "서비스", "공유폴더", "공유 폴더",
-        "로그인실패", "로그인 실패", "리포트", "종합", "점수", "해킹", "취약점",
-        "실시간", "감시", "모니터링",
-        # IoT — 실측 테스트에서 이 키워드들이 빠져있어 "전등 켜줘" 같은 요청이
-        # use_tools=False로 들어가는 바람에 AI가 도구 호출 없이 답변을 지어내는
-        # 문제를 확인함(할루시네이션). 자연스러운 IoT 요청 표현을 최대한 포함.
-        "스마트", "iot", "전등", "조명", "플러그", "가전", "기기", "켜줘", "켜",
-        "전원", "보일러", "에어컨", "온도조절",
-        # PC 최적화 — IoT 때와 같은 이유로, 이 키워드들이 빠지면 "임시 파일
-        # 정리해줘"/"중복 파일 찾아줘"/"부팅이 느려" 같은 요청이 use_tools=False로
-        # 들어가 도구 호출 자체가 불가능해진다.
-        "최적화", "정리", "중복", "임시", "임시파일", "부팅", "청소", "공간",
-        # 타이머/리마인더 — 같은 이유로 미리 점검해서 선제 추가.
-        "타이머", "알람", "리마인더", "분뒤", "분 뒤", "시간뒤", "시간 뒤", "초뒤", "초 뒤",
-        # 가계부/지출 관리 — 같은 이유로 미리 점검해서 선제 추가.
-        "구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼",
-        # 화면 시간/앱 사용 통계 — 같은 이유로 미리 점검해서 선제 추가.
-        "사용 시간", "사용시간", "화면 시간", "화면시간", "앱 사용", "앱사용", "몇 시간", "몇시간",
-        "얼마나 썼", "얼마나썼", "사용량", "많이 썼", "많이 쓴",
-        # 파일 자연어 검색 — 같은 이유로 미리 점검해서 선제 추가.
-        "받은", "다운로드", "다운받", "pdf", "파일 찾", "파일찾", "문서 찾", "사진 찾", "이미지 찾",
-        "동영상 찾", "엑셀", "한글파일", "워드", "만든 파일", "수정한 파일",
-    )
+    # 도구 사용이 필요한 키워드 — 이 중 하나라도 포함되면 tool 모드로 전환.
+    # 모듈 상단의 _TOOL_CATEGORIES에서 자동 파생된 _DERIVED_TOOL_KEYWORDS를
+    # 그대로 쓴다 — 두 목록을 손으로 동기화하다 생긴 버그(모듈 전역
+    # _DERIVED_TOOL_KEYWORDS 정의부 주석 참고)를 구조적으로 막기 위함. 새
+    # 카테고리/키워드를 추가할 땐 _TOOL_CATEGORIES만 고치면 이 게이트도
+    # 자동으로 따라온다.
+    _TOOL_KEYWORDS = _DERIVED_TOOL_KEYWORDS
 
     # 실행/상태확인이 아니라 '방법 설명'을 원하는 요청 — 프롬프트로 아무리 지시해도
     # llama3.1이 의미가 비슷한 함수(예: get_login_status)를 계속 잘못 호출하는 걸
@@ -3911,6 +4115,35 @@ class AIWorker(QThread):
                     return
 
                 self.response_ready.emit(f"🤖 로컬 비서: {summary}")
+                return
+
+            # ── 빠른 감지 2.6: PC 종합 점검 요청 직접 감지 ──
+            # system_info/system_security/malware_detection/network_security
+            # 네 도구를 한 번에 묶어서 조회한다 — "멀티 툴 워크플로우"의 첫
+            # 사례. 2.5(하루 브리핑)와 완전히 같은 구조로 배치: 키워드 판단과
+            # 실제 빌드를 분리해 각각 독립적으로 테스트 가능하게 했다.
+            has_pc_health_check = _is_pc_health_check_request(text_lower)
+
+            if has_pc_health_check:
+                sys.stderr.write(f"\n🎯 PC 종합 점검 직접 호출 (정규식 감지)\n")
+                sys.stderr.flush()
+
+                func_map = {f.__name__: f for f in self.installed_tools}
+                self.status_update.emit("🩺  PC 종합 점검 중")
+
+                health_report = _build_pc_health_check(func_map)
+                if not health_report:
+                    # ChatGPT 검수 반영: 빈 결과가 "플러그인 미설치"만이 아니라
+                    # "설치는 됐는데 4개 다 조회 실패"에서도 나올 수 있어서,
+                    # 원인을 하나로 단정하지 않는 문구로 바꿨다.
+                    self.response_ready.emit(
+                        "🤖 로컬 비서: 지금은 점검 결과를 가져오지 못했어요. "
+                        "마켓플레이스에서 시스템/보안 관련 플러그인이 설치되어 있는지 "
+                        "확인하거나, 잠시 후 다시 시도해주세요."
+                    )
+                    return
+
+                self.response_ready.emit(f"🤖 로컬 비서: {health_report}")
                 return
 
             # ── 이하 AI tool calling 방식으로 진행 ──

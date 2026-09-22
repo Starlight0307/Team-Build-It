@@ -71,6 +71,18 @@ def test_local_backend_never_calls_google_function():
     assert summary == ""  # local_get_daily_briefing이 없으니 이 섹션은 빈 채로
 
 
+def test_calendar_login_required_message_is_suppressed():
+    """ChatGPT 2차 검수 반영: 다른 섹션들과 동일하게 캘린더도 "로그인 필요"
+    안내문을 매일 뜨는 잡음으로 보고 억제해야 한다 — 예전엔 이 섹션만
+    이 정책이 빠져 있었다."""
+    func_map = {
+        "local_get_daily_briefing": lambda: "❌ 내부 캘린더는 로그인한 사용자만 사용할 수 있어요. 먼저 로그인해주세요.",
+    }
+    summary = _build_daily_summary(func_map, _local_calendar)
+
+    assert summary == ""
+
+
 # ── 조합/필터링 ──────────────────────────────────────────────────────
 
 def test_combines_multiple_sections():
@@ -120,6 +132,87 @@ def test_usage_not_tracked_message_is_suppressed():
     summary = _build_daily_summary(func_map, _local_calendar)
 
     assert summary == ""
+
+
+# ── Context/State 전문화 1호 (2026-09-22): 예산/목표 현황 ────────────────
+# 사용자가 명시적으로 설정한 예산/목표(set_monthly_budget/set_usage_goal)는
+# "사용자가 지금 신경 쓰는 것"이라는 구조화된 신호라, 하루 브리핑에도
+# 연결한다 — 다른 섹션과 동일하게 "설정한 적 없음/비로그인" 안내문은
+# 매일 뜨면 잡음이라 조용히 뺀다.
+
+def test_budget_status_is_included_when_set():
+    func_map = {
+        "get_budget_status": lambda: (
+            "[💰 이번달 예산 현황] (2026-09)\n"
+            "- 예산: 500,000원\n"
+            "- 지출: 450,000원 (90%)\n"
+            "- 남은 예산: 50,000원\n"
+            "⚠️ 예산에 거의 다 썼어요."
+        ),
+    }
+    summary = _build_daily_summary(func_map, _local_calendar)
+
+    assert "500,000원" in summary
+    assert "90" in summary
+
+
+def test_budget_not_set_message_is_suppressed():
+    func_map = {
+        "get_budget_status": lambda: (
+            "[💰 이번달 예산 현황]\n아직 설정된 예산이 없어요. '이번달 예산 50만원으로 "
+            "잡아줘'처럼 말씀해주시면 그때부터 예산 대비 지출을 알려드릴 수 있어요."
+        ),
+    }
+    summary = _build_daily_summary(func_map, _local_calendar)
+
+    assert summary == ""
+
+
+def test_budget_login_required_message_is_suppressed():
+    func_map = {"get_budget_status": lambda: "로그인이 필요한 기능입니다."}
+    summary = _build_daily_summary(func_map, _local_calendar)
+
+    assert summary == ""
+
+
+def test_goal_status_is_included_when_set():
+    func_map = {
+        "get_goal_status": lambda target="": (
+            "[🎯 오늘 사용 목표 현황] (총 1개)\n"
+            "  - 게임: 2시간 10분 / 2시간 0분 목표 (108%) 🚨"
+        ),
+    }
+    summary = _build_daily_summary(func_map, _local_calendar)
+
+    assert "게임" in summary
+
+
+def test_goal_not_set_message_is_suppressed():
+    func_map = {
+        "get_goal_status": lambda target="": (
+            "[🎯 오늘 사용 목표 현황]\n아직 설정된 목표가 없어요. "
+            "'유튜브 하루 1시간까지만 보고 싶어'처럼 말씀하시면 목표를 설정해드려요."
+        ),
+    }
+    summary = _build_daily_summary(func_map, _local_calendar)
+
+    assert summary == ""
+
+
+def test_budget_section_failing_does_not_break_goal_section():
+    def broken_budget():
+        raise RuntimeError("의도적 실패")
+
+    func_map = {
+        "get_budget_status": broken_budget,
+        "get_goal_status": lambda target="": (
+            "[🎯 오늘 사용 목표 현황] (총 1개)\n"
+            "  - 게임: 2시간 10분 / 2시간 0분 목표 (108%) 🚨"
+        ),
+    }
+    summary = _build_daily_summary(func_map, _local_calendar)
+
+    assert "게임" in summary
 
 
 def test_real_usage_data_is_included():

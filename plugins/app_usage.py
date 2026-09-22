@@ -406,6 +406,23 @@ def get_usage_report(target: str = "", period: str = "today") -> str:
     return "\n".join(lines)
 
 
+def get_today_usage_minutes(target: str = "") -> float:
+    """오늘 target(분류/프로그램 이름, 비우면 전체) 사용 시간을 '분' 단위
+    숫자로 반환한다 — plugins/reminder.py의 조건부 알림(예: "게임 하루 4시간
+    넘으면 알려줘")이 get_usage_report()의 사람이 읽는 문자열을 다시 파싱하지
+    않고 정확한 숫자를 바로 쓸 수 있게 하기 위한 내부 전용 함수. get_due_timers
+    와 같은 패턴으로 TOOL_SCHEMAS에 없으므로 AI 도구 호출로는 절대 불릴 수
+    없다 — get_usage_report와 완전히 같은 매칭 로직(_matches_target)을 재사용해
+    "오늘 게임 몇 시간?"에 쓰이는 숫자와 조건 알림에 쓰이는 숫자가 항상
+    일치하도록 보장한다."""
+    _ensure_loaded()
+    today_key = datetime.now().date().strftime("%Y-%m-%d")
+    with _lock:
+        today_apps = dict(_usage.get(today_key, {}))
+    used_seconds = sum(secs for name, secs in today_apps.items() if _matches_target(name, target))
+    return used_seconds / 60
+
+
 # ─────────────────────────────────────────────
 # 🎯 하루 사용 목표
 # ─────────────────────────────────────────────

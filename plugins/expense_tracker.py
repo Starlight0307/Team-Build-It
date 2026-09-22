@@ -374,3 +374,33 @@ def get_budget_status() -> str:
     except Exception as e:
         print(f"[가계부] 예산 현황 조회 오류: {e}")
         return "❌ 예산 현황을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
+
+
+def get_month_spending_amount() -> int:
+    """이번 달 1일부터 지금까지 지출 합계를 원(int)으로 반환한다 —
+    get_budget_status()와 완전히 같은 날짜 필터링 로직(월초~현재)을 재사용해서
+    "이번달 예산 현황"에 나오는 지출액과 조건부 알림(예: "이번달 지출 50만원
+    넘으면 알려줘")이 쓰는 숫자가 항상 같은 값이 되도록 보장한다. get_usage_report
+    의 get_today_usage_minutes와 같은 패턴 — TOOL_SCHEMAS에 없는 내부 전용
+    함수라 AI 도구 호출로는 절대 불릴 수 없다. 비로그인이거나 오류가 나면
+    None을 반환한다(호출하는 쪽에서 "값을 알 수 없음"으로 처리하고 건너뛰게 함)."""
+    if _current_user_id == "guest":
+        return None
+    try:
+        tz  = ZoneInfo(DEFAULT_TIMEZONE)
+        now = datetime.now(tz)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        expenses = _load_expenses()
+        spent = 0
+        for e in expenses:
+            try:
+                d = datetime.strptime(e["date"], "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            except Exception:
+                continue
+            if month_start <= d <= now:
+                spent += e["price"]
+        return spent
+    except Exception as e:
+        print(f"[가계부] 월 지출 합계 조회 오류: {e}")
+        return None

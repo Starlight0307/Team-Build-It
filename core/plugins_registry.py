@@ -215,6 +215,8 @@ AVAILABLE_PLUGINS = [
             "set_timer", "list_timers", "cancel_timer", "get_due_timers",
             "set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder",
             "get_due_daily_reminders",
+            "set_usage_condition", "set_spending_condition", "list_conditions",
+            "cancel_condition", "get_due_conditions",
         ],
         "module_name": "reminder",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/reminder.py",
@@ -226,7 +228,7 @@ AVAILABLE_PLUGINS = [
         "desc": "최저가 검색 결과를 구매 기록으로 남기고 지출을 집계/조회",
         "func_names": [
             "mark_as_purchased", "get_spending_summary", "list_purchases",
-            "set_monthly_budget", "get_budget_status",
+            "set_monthly_budget", "get_budget_status", "get_month_spending_amount",
         ],
         "module_name": "expense_tracker",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/expense_tracker.py",
@@ -239,6 +241,7 @@ AVAILABLE_PLUGINS = [
         "func_names": [
             "start_usage_tracking", "stop_usage_tracking", "get_usage_status", "get_usage_report",
             "resume_usage_tracking_if_enabled", "set_usage_goal", "get_goal_status",
+            "get_today_usage_minutes",
         ],
         "module_name": "app_usage",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/app_usage.py",

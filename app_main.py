@@ -182,6 +182,14 @@ class AssistantApp(QWidget):
         self._routine_poll_timer.timeout.connect(self._poll_due_daily_reminders)
         self._routine_poll_timer.start(30000)
 
+        # 조건부 알림(사용량/지출 임계값) — 정기 알림과 같은 주기(30초)로 확인.
+        # get_due_conditions는 다른 플러그인(app_usage/expense_tracker)의 실제
+        # 값을 봐야 해서 func_map이 필요하다(plugins/reminder.py 모듈 docstring
+        # 참고 — 이 플러그인이 다른 플러그인을 직접 import하지 않는 이유).
+        self._condition_poll_timer = QTimer(self)
+        self._condition_poll_timer.timeout.connect(self._poll_due_conditions)
+        self._condition_poll_timer.start(30000)
+
     # ─────────────────────────────────────────────
     # 🔄 앱 실행 시 1회 자동 업데이트 상태 체크
     # ─────────────────────────────────────────────
@@ -269,6 +277,36 @@ class AssistantApp(QWidget):
                 message = f"🔁 정기 알림: '{label}' — 필요하면 채팅으로 요청해주세요."
             else:
                 message = "🔁 정기 알림 시간이에요! 필요하면 채팅으로 요청해주세요."
+            self._show_toast(message)
+
+    def _poll_due_conditions(self):
+        """get_due_conditions(func_map)도 같은 내부 전용 폴링 패턴이지만,
+        다른 플러그인(app_usage/expense_tracker)의 실제 값을 봐야 해서
+        func_map을 인자로 넘겨야 한다(plugins/reminder.py 모듈 docstring
+        참고). 조건이 계속 참이어도 엣지 트리거라 반복 알림은 안 뜬다."""
+        func = next((f for f in self.installed_tools if f.__name__ == 'get_due_conditions'), None)
+        if not func:
+            return
+        func_map = {f.__name__: f for f in self.installed_tools}
+        try:
+            due = func(func_map)
+        except Exception:
+            return
+        for cond in due:
+            label = cond.get('label')
+            ctype = cond.get('type')
+            value = cond.get('value', 0)
+            threshold = cond.get('threshold', 0)
+            if ctype == 'usage_limit':
+                detail = f"(현재 {int(value)}분 / 기준 {int(threshold)}분)"
+            elif ctype == 'spending_limit':
+                detail = f"(현재 {int(value):,}원 / 기준 {int(threshold):,}원)"
+            else:
+                detail = ""
+            if label:
+                message = f"🎯🔁 조건부 알림: '{label}' {detail} — 필요하면 채팅으로 요청해주세요."
+            else:
+                message = f"🎯🔁 설정하신 조건을 넘었어요! {detail} 필요하면 채팅으로 요청해주세요."
             self._show_toast(message)
 
     def _show_toast(self, message: str) -> "NotificationToast":

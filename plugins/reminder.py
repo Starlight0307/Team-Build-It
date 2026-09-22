@@ -21,6 +21,21 @@
   항상 확인/거부할 수 있음 — 이 세션 내내 지켜온 "위험한 동작은 먼저 확인받고
   실행"이라는 원칙과 같은 이유로, 알림 자체가 뭔가를 자동으로 실행해버리는
   일은 없다).
+● "조건부 알림"(condition reminder)은 시각이 아니라 수치 조건("게임 하루 4시간
+  넘으면 알려줘", "이번달 지출 50만원 넘으면 알려줘")으로 발화한다. 이 플러그인은
+  다른 플러그인(app_usage/expense_tracker)의 상태를 직접 import하지 않는다 —
+  이 프로젝트의 기존 관례대로 func_map(설치된 도구 함수 딕셔너리)을 주입받아서만
+  실제 수치(app_usage.get_today_usage_minutes/expense_tracker.get_month_spending_amount,
+  둘 다 TOOL_SCHEMAS에 없는 내부 전용 함수)를 조회한다(core/ai_worker.py의
+  _build_daily_summary(func_map, ...)와 동일한 의존성 주입 패턴). 조건이 계속
+  참인 동안 30초마다 폴링될 때마다 매번 울리면 알림 폭탄이 되므로, "조건이
+  거짓이었다가 참으로 막 바뀐 순간"(edge-triggered)에만 한 번 울리고, 다시
+  울리려면 조건이 거짓으로 돌아갔다가 다시 참이 돼야 한다(레벨 트리거가 아닌
+  엣지 트리거 — ChatGPT 검수에서 지적된 "문턱값을 오르내리는 조건은 하루
+  1회 같은 단순 규칙으로 못 막는다"는 문제를 이 방식으로 해결). usage_limit는
+  날짜가, spending_limit는 월이 바뀌면 지표 자체가 0으로 리셋되므로 그 시점에
+  발화 상태도 같이 리셋한다. daily reminder와 동일한 안전 원칙 — 조건이 충족돼도
+  실제 점검/조치를 자동 실행하지 않고 알림만 준다.
 """
 
 import os
@@ -44,6 +59,14 @@ ROUTINES_FILE    = os.path.join(ROUTINES_DIR, "routines.json")
 _routines_lock   = threading.Lock()
 _routines: dict  = {}   # id -> {"label": str, "hour": int, "minute": int, "last_fired_date": str|None}
 _routines_loaded = False
+
+# ── 조건부 알림(condition reminder) — 디스크 저장 ──
+CONDITIONS_FILE    = os.path.join(ROUTINES_DIR, "conditions.json")
+_conditions_lock   = threading.Lock()
+# id -> {"type": "usage_limit"|"spending_limit", "target": str, "threshold": float,
+#        "label": str, "last_state": bool, "period_key": str|None}
+_conditions: dict  = {}
+_conditions_loaded = False
 
 
 # ==========================================
@@ -143,6 +166,73 @@ TOOL_SCHEMAS = {
                 "type": "object",
                 "properties": {"routine_id": {"type": "string"}},
                 "required": ["routine_id"]
+            }
+        }
+    },
+    "set_usage_condition": {
+        "type": "function",
+        "function": {
+            "name": "set_usage_condition",
+            "description": (
+                "특정 프로그램/분류의 오늘 사용 시간이 정해진 시간을 넘으면 알려주는 "
+                "조건부 알림을 등록합니다. 사용자가 '게임 하루 4시간 넘으면 알려줘', "
+                "'유튜브 2시간 넘게 보면 알림 줘' 등을 말할 때 호출하세요. 실제 점검을 "
+                "자동 실행하지는 않고 조건이 충족되면 알림만 줍니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "프로그램 이름이나 분류(게임/브라우저 등)"},
+                    "threshold_minutes": {"type": "number", "description": "이 분(分)을 넘으면 알림(예: 4시간=240)"},
+                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"}
+                },
+                "required": ["target", "threshold_minutes"]
+            }
+        }
+    },
+    "set_spending_condition": {
+        "type": "function",
+        "function": {
+            "name": "set_spending_condition",
+            "description": (
+                "이번 달 지출 합계가 정해진 금액을 넘으면 알려주는 조건부 알림을 "
+                "등록합니다. 사용자가 '이번달 지출 50만원 넘으면 알려줘' 등을 말할 때 "
+                "호출하세요. 로그인한 사용자만 사용할 수 있습니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "threshold_amount": {"type": "number", "description": "이 금액(원)을 넘으면 알림"},
+                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"}
+                },
+                "required": ["threshold_amount"]
+            }
+        }
+    },
+    "list_conditions": {
+        "type": "function",
+        "function": {
+            "name": "list_conditions",
+            "description": (
+                "등록된 조건부 알림 목록을 확인합니다. "
+                "사용자가 '조건 알림 뭐 있어', '알림 조건 확인해줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "cancel_condition": {
+        "type": "function",
+        "function": {
+            "name": "cancel_condition",
+            "description": (
+                "등록된 조건부 알림을 취소합니다. 반드시 먼저 list_conditions를 호출해 "
+                "정확한 condition_id를 확인한 뒤 이 함수를 호출하세요. "
+                "사용자가 '조건 알림 취소해줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"condition_id": {"type": "string"}},
+                "required": ["condition_id"]
             }
         }
     },
@@ -335,4 +425,208 @@ def get_due_daily_reminders() -> list:
                 changed = True
         if changed:
             _save_routines()
+    return due
+
+
+# ─────────────────────────────────────────────
+# 🎯🔁 조건부 알림(condition reminder)
+# ─────────────────────────────────────────────
+
+def _ensure_conditions_loaded():
+    global _conditions, _conditions_loaded
+    if _conditions_loaded:
+        return
+    try:
+        with open(CONDITIONS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _conditions = data if isinstance(data, dict) else {}
+    except Exception:
+        _conditions = {}
+    _conditions_loaded = True
+
+
+def _save_conditions():
+    try:
+        with open(CONDITIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_conditions, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[조건부 알림] 저장 오류: {e}")
+
+
+def set_usage_condition(target: str, threshold_minutes: float, label: str = "") -> str:
+    print(f"\n🎯🔁 [조건부 알림] 설정 중: '{target}' {threshold_minutes}분 넘으면" + (f" ('{label}')" if label else ""))
+    target = (target or "").strip()
+    if not target:
+        return "⚠️ 조건을 걸 프로그램 이름이나 분류를 알려주세요."
+    try:
+        threshold_minutes = float(threshold_minutes)
+    except (TypeError, ValueError):
+        return "⚠️ 기준 시간을 이해하지 못했습니다. 분 단위 숫자로 다시 말씀해주세요(예: 4시간 → 240)."
+    if threshold_minutes <= 0:
+        return "⚠️ 기준 시간은 0분보다 커야 해요."
+
+    _ensure_conditions_loaded()
+    condition_id = uuid.uuid4().hex[:8]
+    with _conditions_lock:
+        _conditions[condition_id] = {
+            "type": "usage_limit",
+            "target": target,
+            "threshold": threshold_minutes,
+            "label": (label or "").strip(),
+            "last_state": False,
+            "period_key": None,
+        }
+        _save_conditions()
+
+    label_str = f" ('{label}')" if label else ""
+    friendly = f"{int(threshold_minutes // 60)}시간" if threshold_minutes % 60 == 0 else f"{threshold_minutes:.0f}분"
+    # ChatGPT 검수 반영(2026-09-22): "게임 4시간 넘으면 알려줘"라고만 들으면
+    # 사용자는 백그라운드 상시 감시를 기대하기 쉽지만, 실제로는 이 앱이 켜져
+    # 있는 동안만(app_usage 자체가 이 앱의 스레드로만 사용 시간을 기록하므로
+    # 앱이 꺼져 있으면 사용 시간도 안 늘어남) 30초 주기로 감시한다는 점을
+    # 설정 시점에 명시한다.
+    return (f"[✅ 조건부 알림 설정 완료]\n'{target}' 오늘 사용 시간이 {friendly}을 넘으면{label_str} "
+            f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. "
+            f"(Team-Build-It이 켜져 있는 동안만 감시돼요)")
+
+
+def set_spending_condition(threshold_amount: float, label: str = "") -> str:
+    print(f"\n💰🔁 [조건부 알림] 설정 중: 이번달 지출 {threshold_amount}원 넘으면" + (f" ('{label}')" if label else ""))
+    try:
+        threshold_amount = float(threshold_amount)
+    except (TypeError, ValueError):
+        return "⚠️ 기준 금액을 이해하지 못했습니다. 숫자로 다시 말씀해주세요(예: 50만원 → 500000)."
+    if threshold_amount <= 0:
+        return "⚠️ 기준 금액은 0원보다 커야 해요."
+
+    _ensure_conditions_loaded()
+    condition_id = uuid.uuid4().hex[:8]
+    with _conditions_lock:
+        _conditions[condition_id] = {
+            "type": "spending_limit",
+            "target": "",
+            "threshold": threshold_amount,
+            "label": (label or "").strip(),
+            "last_state": False,
+            "period_key": None,
+        }
+        _save_conditions()
+
+    label_str = f" ('{label}')" if label else ""
+    return (f"[✅ 조건부 알림 설정 완료]\n이번 달 지출이 {int(threshold_amount):,}원을 넘으면{label_str} "
+            f"알려드릴게요. 로그인 상태여야 지출 데이터를 확인할 수 있어요. "
+            f"(Team-Build-It이 켜져 있는 동안만 감시돼요)")
+
+
+def list_conditions() -> str:
+    print("\n🎯🔁 [조건부 알림] 목록 조회 중...")
+    _ensure_conditions_loaded()
+    with _conditions_lock:
+        items = list(_conditions.items())
+    if not items:
+        return "[🎯🔁 조건부 알림 목록]\n등록된 조건부 알림이 없습니다."
+
+    lines = [f"[🎯🔁 조건부 알림 목록] (총 {len(items)}개)"]
+    for cid, c in items:
+        label_part = f" ('{c['label']}')" if c["label"] else ""
+        if c["type"] == "usage_limit":
+            desc = f"'{c['target']}' 사용 {int(c['threshold'])}분 초과"
+        else:
+            desc = f"이번달 지출 {int(c['threshold']):,}원 초과"
+        lines.append(f"  - {desc}{label_part} (id: {cid})")
+    return "\n".join(lines)
+
+
+def cancel_condition(condition_id: str) -> str:
+    print(f"\n🎯🔁 [조건부 알림] 취소 중: {condition_id}")
+    _ensure_conditions_loaded()
+    condition_id = (condition_id or "").strip()
+    with _conditions_lock:
+        c = _conditions.get(condition_id)
+        if not c:
+            return "❌ 취소할 조건부 알림을 찾을 수 없습니다. list_conditions로 먼저 확인해주세요."
+        label = c["label"]
+        del _conditions[condition_id]
+        _save_conditions()
+    label_str = f" ('{label}')" if label else ""
+    return f"[✅ 조건부 알림 취소 완료]\n조건부 알림{label_str}을 취소했습니다."
+
+
+def get_due_conditions(func_map: dict) -> list:
+    """등록된 조건부 알림 중 방금 조건이 '거짓 → 참'으로 바뀐 것만 찾아
+    반환한다(엣지 트리거) — 조건이 계속 참인 동안 폴링될 때마다 매번 울리면
+    알림 폭탄이 된다는 문제(ChatGPT 검수에서 지적된, 시각 기반 daily
+    reminder에는 없던 새로운 위험)를 이렇게 해결한다. app_main.py가 주기적으로
+    호출하는 내부용 폴링 함수(get_due_timers/get_due_daily_reminders와 같은
+    패턴) — TOOL_SCHEMAS에 없으므로 AI 도구 호출로는 절대 불릴 수 없다.
+
+    func_map을 주입받아서만 다른 플러그인의 실제 수치(app_usage.
+    get_today_usage_minutes/expense_tracker.get_month_spending_amount, 둘 다
+    내부 전용 함수)를 조회한다 — 이 플러그인이 다른 플러그인을 직접 import하지
+    않게 하기 위함(모듈 docstring 참고, core/ai_worker.py의 _build_daily_summary와
+    동일한 의존성 주입 패턴). 필요한 함수가 func_map에 없으면(그 플러그인이
+    설치 안 됨) 그 타입의 조건은 조용히 건너뛴다.
+
+    usage_limit는 날짜가, spending_limit는 월이 바뀌면 지표 자체가 0으로
+    리셋되므로, 그 시점에 last_state도 같이 리셋한다 — 안 그러면 어제 조건을
+    이미 넘긴 상태가 새 기간까지 이어져서, 오늘 값이 아직 낮은데도 나중에
+    진짜로 넘는 순간의 '거짓→참 전환'을 놓치게 된다.
+
+    ChatGPT 2차 검수(2026-09-22)에서 "앱이 꺼져 있는 동안 조건이 여러 번
+    거짓↔참을 오가면 그 중 몇 번을 놓쳤는지 알 수 없다"는 이론적 지적을
+    받았다 — 실제 코드를 확인해서 검증한 결과, 이 지적은 usage_limit/
+    spending_limit 둘 다에는 적용되지 않는다: (1) app_usage의 사용 시간은
+    이 앱 자신의 백그라운드 스레드로만 기록되고(plugins/app_usage.py 모듈
+    docstring 참고), (2) expense_tracker의 지출은 mark_as_purchased가
+    TOOL_SCHEMAS 함수라 채팅(=이 앱 실행 중)으로만 호출 가능하다 — 즉 두
+    지표 모두 "이 앱이 꺼져 있는 동안은 값 자체가 절대 안 바뀐다"(얼어붙음)
+    +"켜져 있는 동안은 한 기간 안에서 계속 증가만 한다"(단조 증가, 삭제/환불
+    기능 없음)는 두 성질을 실제로 만족해서, 한 기간에 "거짓→참" 전환은
+    최대 한 번만 존재할 수 있다 — 그래서 이 엣지 트리거 방식으로 이론적
+    손실 없이 충분하다. 이 보장은 이 두 지표에 한정된다 — 나중에 CPU/디스크
+    사용률처럼 앱과 무관하게(외부 요인으로) 자유롭게 오르내리는 지표를
+    추가하면 이 보장이 깨지므로, 그때는 조건 타입별 if/elif 나열 대신
+    "Condition Provider"(값/기간키/가용성을 캡슐화한 어댑터) 구조로 먼저
+    리팩터링해야 한다는 게 ChatGPT 검수의 공통된 결론이었다 — 지금은 타입이
+    2개뿐이라 과설계이므로 미룬다."""
+    _ensure_conditions_loaded()
+    now = datetime.now()
+    today_key = now.date().isoformat()
+    month_key = now.strftime("%Y-%m")
+    due = []
+    with _conditions_lock:
+        changed = False
+        for cid, c in _conditions.items():
+            ctype = c.get("type")
+            if ctype == "usage_limit":
+                period_key = today_key
+                getter = func_map.get("get_today_usage_minutes")
+                current = getter(c.get("target", "")) if getter else None
+            elif ctype == "spending_limit":
+                period_key = month_key
+                getter = func_map.get("get_month_spending_amount")
+                current = getter() if getter else None
+            else:
+                continue
+
+            if current is None:
+                continue  # 값을 못 가져옴(플러그인 미설치/비로그인 등) — 건너뜀
+
+            if c.get("period_key") != period_key:
+                c["period_key"] = period_key
+                c["last_state"] = False
+                changed = True
+
+            was_over = c.get("last_state", False)
+            now_over = current >= c["threshold"]
+            if now_over and not was_over:
+                due.append({
+                    "id": cid, "label": c.get("label", ""), "type": ctype,
+                    "value": current, "threshold": c["threshold"],
+                })
+            if now_over != was_over:
+                c["last_state"] = now_over
+                changed = True
+        if changed:
+            _save_conditions()
     return due

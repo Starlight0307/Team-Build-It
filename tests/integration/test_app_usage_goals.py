@@ -113,3 +113,35 @@ def test_goal_persists_across_calls(isolated_app_usage_goals):
     au._goals_loaded = False
     result = au.get_goal_status()
     assert "게임" in result
+
+
+# ── get_today_usage_minutes() — plugins/reminder.py 조건부 알림이 쓰는
+# 내부 전용 raw 숫자 getter. get_usage_report/get_goal_status와 완전히 같은
+# _matches_target 매칭 로직을 재사용하므로, 여기서는 "숫자가 정확한지"와
+# "get_goal_status와 같은 값을 보는지"만 확인한다.
+
+def test_today_usage_minutes_no_data_is_zero(isolated_app_usage_goals):
+    assert au.get_today_usage_minutes("게임") == 0
+
+
+def test_today_usage_minutes_matches_category(isolated_app_usage_goals):
+    au._usage[_today_key()] = {"steam.exe": 30 * 60, "riotclient.exe": 20 * 60, "chrome.exe": 999 * 60}
+    assert au.get_today_usage_minutes("게임") == 50.0
+
+
+def test_today_usage_minutes_empty_target_means_everything(isolated_app_usage_goals):
+    au._usage[_today_key()] = {"steam.exe": 30 * 60, "chrome.exe": 10 * 60}
+    assert au.get_today_usage_minutes("") == 40.0
+
+
+def test_today_usage_minutes_agrees_with_get_usage_report(isolated_app_usage_goals):
+    """같은 프로젝트 안에서 "게임 몇 분?"에 대한 답이 함수마다 다르면 조건부
+    알림과 실제 사용시간 조회 결과가 어긋나는 혼란스러운 버그가 된다 — 같은
+    원본 데이터를 보고 같은 숫자를 내는지 get_usage_report와 교차 검증한다."""
+    au._usage[_today_key()] = {"steam.exe": 45 * 60}
+
+    minutes = au.get_today_usage_minutes("게임")
+    usage_report = au.get_usage_report("게임")
+
+    assert minutes == 45.0
+    assert "45분" in usage_report

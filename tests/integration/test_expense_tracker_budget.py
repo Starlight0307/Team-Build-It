@@ -9,7 +9,9 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import plugins.expense_tracker as et
-from plugins.expense_tracker import set_monthly_budget, get_budget_status, mark_as_purchased
+from plugins.expense_tracker import (
+    set_monthly_budget, get_budget_status, mark_as_purchased, get_month_spending_amount,
+)
 
 
 def test_no_budget_set_gives_helpful_message(isolated_expense_tracker):
@@ -114,3 +116,55 @@ def test_expenses_and_budget_files_use_same_user_id_normalization(isolated_expen
     expenses_stem = expenses_path.rsplit(".json", 1)[0]
     budget_stem = budget_path.rsplit("_budget.json", 1)[0]
     assert expenses_stem == budget_stem
+
+
+# ── get_month_spending_amount() — plugins/reminder.py 조건부 알림이 쓰는
+# 내부 전용 raw 숫자 getter. get_budget_status()와 완전히 같은 날짜 필터링
+# 로직을 재사용하므로, "이번 달 범위인지"와 "get_budget_status와 같은 값을
+# 보는지"만 확인한다.
+
+def test_month_spending_amount_zero_when_no_purchases(isolated_expense_tracker):
+    assert get_month_spending_amount() == 0
+
+
+def test_month_spending_amount_sums_this_month_purchases(isolated_expense_tracker):
+    mark_as_purchased("커피", 5_000)
+    mark_as_purchased("책", 15_000)
+    assert get_month_spending_amount() == 20_000
+
+
+def test_month_spending_amount_excludes_last_month(isolated_expense_tracker):
+    """get_budget_status()와 동일한 월초~현재 필터링이 적용되는지 확인 —
+    지난달 지출은 이번달 합계에 안 섞여야 한다."""
+    tz = ZoneInfo("Asia/Seoul")
+    now = datetime.now(tz)
+    last_month = (now.replace(day=1) - timedelta(days=1))
+
+    expenses = et._load_expenses()
+    expenses.append({
+        "item": "지난달 지출", "price": 999_000,
+        "date": last_month.strftime("%Y-%m-%d %H:%M"),
+    })
+    et._save_expenses(expenses)
+
+    mark_as_purchased("이번달 지출", 10_000)
+
+    assert get_month_spending_amount() == 10_000
+
+
+def test_month_spending_amount_returns_none_when_logged_out(isolated_expense_tracker):
+    et.set_current_user(None)
+    assert get_month_spending_amount() is None
+
+
+def test_month_spending_amount_agrees_with_get_budget_status(isolated_expense_tracker):
+    """조건부 알림(get_month_spending_amount)과 예산 현황(get_budget_status)이
+    다른 숫자를 보면 사용자 입장에서 앞뒤가 안 맞는 혼란스러운 버그가 된다."""
+    set_monthly_budget(1_000_000)
+    mark_as_purchased("노트북", 300_000)
+
+    amount = get_month_spending_amount()
+    status = get_budget_status()
+
+    assert amount == 300_000
+    assert "300,000원" in status
