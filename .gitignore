@@ -24,3 +24,7 @@ plugins/tokens/
 plugins/client_secret_*.json
 .env
 **/email_config.py
+
+# 사람/기기마다 계속 바뀌는 로컬 런타임 데이터 (chat_logs/와 같은 이유)
+core/preference_memory.json
+plugins/app_usage/

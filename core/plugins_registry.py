@@ -199,8 +199,8 @@ AVAILABLE_PLUGINS = [
         "name": "PC 최적화/정리",
         "desc": "중복/대용량 파일 탐색, 임시 파일 정리, 시작프로그램 부팅 영향 분석",
         "func_names": [
-            "find_duplicate_files", "find_large_files", "scan_temp_files",
-            "clean_temp_files", "analyze_startup_impact",
+            "find_duplicate_files", "delete_duplicate_files", "find_large_files",
+            "scan_temp_files", "clean_temp_files", "analyze_startup_impact",
         ],
         "module_name": "pc_optimizer",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/pc_optimizer.py",

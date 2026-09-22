@@ -238,6 +238,58 @@ def _describe_clean_temp_files(a: dict, func_map: dict) -> str:
     return desc
 
 
+def _describe_delete_duplicate_files(a: dict, func_map: dict) -> str:
+    """delete_duplicate_files()도 인자가 group_index 정수 하나뿐이라 확인창
+    문구만으론 몇 개가 지워질지 안 보인다 — _describe_clean_temp_files와 같은
+    이유. 재스캔하지 않고 find_duplicate_files()가 같은 턴에 이미 채워둔
+    plugins.pc_optimizer._LAST_DUPLICATE_GROUPS 캐시를 그대로 읽어서 삭제
+    대상(개수/용량과 실제 경로 일부)을 미리 보여준다 — 경로까지 보여주는 건
+    ChatGPT 검수 지적 반영: 개수/용량만 보여주면 사용자가 "내가 생각한 그
+    폴더가 맞나"를 확인창에서 검증할 방법이 없었다.
+
+    ChatGPT 검수에서 지적된 "확인창의 목록과 실제 삭제 시점의 목록이 다를 수
+    있다"(전역 캐시가 그 사이 새 스캔으로 덮어써질 수 있음)는 문제 대응: 이
+    함수가 확인창을 만드는 바로 이 시점의 plugins.pc_optimizer._SCAN_GENERATION
+    값을 a(=실행 시점까지 그대로 전달되는 args 딕셔너리)에 찍어 넣는다.
+    delete_duplicate_files()는 실행 직전 이 값이 그때의 최신 값과 같은지
+    검증해서, 다르면(=그 사이 새로 스캔됨) 실행을 거부한다. 모델이 이 값을
+    스스로 지어내 보내더라도 여기서 항상 '지금' 값으로 덮어쓰므로 무의미하다
+    (TOOL_SCHEMAS에도 이 필드는 없어 정상적으로는 모델이 채울 일도 없음)."""
+    desc = "중복 파일 정리 (각 그룹에서 가장 오래된 파일만 남기고 나머지를 휴지통으로 이동)"
+    try:
+        from plugins.pc_optimizer import _LAST_DUPLICATE_GROUPS, _SCAN_GENERATION, _format_size
+    except Exception:
+        return desc
+
+    a['_scan_generation'] = _SCAN_GENERATION
+
+    group_index = a.get('group_index', 0) or 0
+    try:
+        group_index = int(group_index)
+    except (TypeError, ValueError):
+        group_index = 0
+
+    if group_index == 0:
+        target_groups = _LAST_DUPLICATE_GROUPS
+    elif 1 <= group_index <= len(_LAST_DUPLICATE_GROUPS):
+        target_groups = [_LAST_DUPLICATE_GROUPS[group_index - 1]]
+    else:
+        target_groups = []
+
+    to_delete = [f["path"] for g in target_groups for f in g["files"][1:]]
+    total_bytes = sum(g["size"] * max(len(g["files"]) - 1, 0) for g in target_groups)
+    if to_delete:
+        desc += f"\n\n현재 확인된 삭제 대상: {len(to_delete)}개 파일, 약 {_format_size(total_bytes)}"
+        preview_paths = to_delete[:5]
+        desc += "\n" + "\n".join(f"  - {p}" for p in preview_paths)
+        if len(to_delete) > len(preview_paths):
+            desc += f"\n  ... 외 {len(to_delete) - len(preview_paths)}개"
+    else:
+        desc += "\n\n(삭제할 대상이 없습니다 — 먼저 중복 파일을 찾아주세요)"
+    desc += "\n\n※ 휴지통으로 이동합니다(영구 삭제 아님 — 필요하면 휴지통에서 복구할 수 있음)."
+    return desc
+
+
 _DANGEROUS_FUNCS = {
     "kill_process":             lambda a, fm: f"'{a.get('process_name_or_number', '')}' 프로세스 강제 종료" + _repeat_kill_hint(a.get('process_name_or_number', '')),
     "manage_firewall":          lambda a, fm: f"방화벽 규칙 변경 (포트 {a.get('port', '?')}/{a.get('protocol', 'tcp')}, 동작: {a.get('action', '?')})",
@@ -247,6 +299,7 @@ _DANGEROUS_FUNCS = {
     "delete_recurring_series":       lambda a, fm: "구글 캘린더 반복 일정 시리즈 전체 삭제 (모든 회차, 되돌릴 수 없음)",
     "local_delete_recurring_series": lambda a, fm: "내부 캘린더 반복 일정 시리즈 전체 삭제 (모든 회차, 되돌릴 수 없음)",
     "clean_temp_files": _describe_clean_temp_files,
+    "delete_duplicate_files": _describe_delete_duplicate_files,
     "restrict_shared_folder_permission": lambda a, fm: f"공유 폴더 '{a.get('share_name', '')}'의 Everyone(누구나) 공유 권한 제거 (NTFS 파일 권한은 변경되지 않음)",
     "disable_firewall_rule":    lambda a, fm: f"방화벽 규칙 '{a.get('rule_name', '')}' 비활성화 (삭제가 아니라 꺼두는 것이라 나중에 다시 켤 수 있음)",
     "disable_risky_firewall_rules": _describe_disable_risky_firewall_rules,
@@ -361,10 +414,11 @@ _TOOL_CATEGORIES = {
     "pc_optimizer": (
         ("최적화", "정리", "중복", "용량", "대용량", "저장공간", "저장 공간", "느려",
          "느린", "임시파일", "임시 파일", "부팅", "느려졌", "청소"),
-        # clean_temp_files는 _DANGEROUS_FUNCS에 등록되어 있어 확인창 없이는 실행되지
-        # 않는다 — network_security/system_security와 동일한 원칙으로 노출 목록에 포함.
-        ("find_duplicate_files", "find_large_files", "scan_temp_files",
-         "clean_temp_files", "analyze_startup_impact"),
+        # clean_temp_files/delete_duplicate_files는 _DANGEROUS_FUNCS에 등록되어
+        # 있어 확인창 없이는 실행되지 않는다 — network_security/system_security와
+        # 동일한 원칙으로 노출 목록에 포함.
+        ("find_duplicate_files", "delete_duplicate_files", "find_large_files",
+         "scan_temp_files", "clean_temp_files", "analyze_startup_impact"),
     ),
     "reminder": (
         ("타이머", "알람", "리마인더", "알려줘", "분뒤", "분 뒤", "시간뒤", "시간 뒤", "초뒤", "초 뒤"),
@@ -2276,6 +2330,131 @@ def _build_deterministic_reply(raw_result: str):
     return None
 
 
+_DAILY_SUMMARY_KEYWORDS = (
+    '하루 브리핑', '오늘 브리핑', '데일리 브리핑', '모닝 브리핑',
+    '통합 브리핑', '전체 브리핑', '한번에 브리핑', '종합 브리핑',
+)
+
+
+def _is_daily_summary_request(text_lower: str) -> bool:
+    """"하루 통합 브리핑" fast-path를 태울지 판단한다. "브리핑"이라는 단어
+    하나만으로는 calendar_tool/local_calendar의 기존 "오늘 일정 브리핑"과
+    겹치므로, 통합 브리핑임을 명확히 하는 표현만 좁게 잡는다.
+
+    ChatGPT 검수 반영: 처음엔 '오늘 어때'/'오늘 전체적으로'/'오늘 종합'/
+    '오늘 요약'/'오늘 다 알려줘' 같은 표현도 넣었는데, 지적받고 보니 이런
+    일반적인 표현은 "오늘 컴퓨터 상태 전체적으로 알려줘"(시스템 정보),
+    "오늘 가격 검색한 거 정리해줘"(가격 검색) 같은 기존에 이미 잘 동작하던
+    요청까지 하루 브리핑이 가로채버리는 회귀를 만들 위험이 컸다. 미탐(이
+    기능을 놓치는 것)은 그냥 기존 tool-calling 경로로 넘어가 여전히 답을
+    받지만, 오탐(다른 의도를 가로챔)은 이미 동작하던 기능을 망가뜨리는
+    실제 회귀라서 — 애매한 건 다 빼고 "브리핑"이 명시적으로 들어간, 다른
+    의미로 쓰일 가능성이 거의 없는 표현만 남겼다. 독립 함수로 뺀 이유는
+    AIWorker.run() 전체를 구동하지 않고도(Ollama 없이) 이 판단 로직 하나만
+    빠르게 회귀 테스트하기 위함 — 다른 fast-path 키워드 세트와 겹치는지가
+    이 기능에서 가장 위험한 부분이라 직접 테스트가 필요했다."""
+    return any(kw in text_lower for kw in _DAILY_SUMMARY_KEYWORDS)
+
+
+def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
+    """하루 통합 브리핑 — 일정/보안/지출/화면사용시간을 각자 도구로 조회한 뒤,
+    이미 검증된 개별 결정론적 빌더(_build_deterministic_reply)로 각 섹션을
+    그대로 재사용해서 이어붙인다. AIWorker.run()의 "빠른 감지 2.5"에서 호출.
+
+    func_map은 {함수이름: 함수} 딕셔너리(AIWorker.installed_tools 기반),
+    get_active_calendar는 calendar_feature.calendar_preference.get_active_calendar
+    같은 콜러블 — 둘 다 인자로 주입받아서, AIWorker/실제 파일 I/O 없이도
+    이 함수 하나만 유닛 테스트할 수 있게 했다(이 파일의 다른 _build_* 함수들과
+    동일한 설계 원칙).
+
+    섹션 하나가 실패해도(예외) 나머지 섹션은 계속 만든다 — 브리핑 특성상
+    "보안 점검은 실패했지만 일정은 정상 표시"가 "전체 브리핑 실패"보다 낫다.
+    담을 내용이 하나도 없으면 빈 문자열을 반환한다(호출부가 안내 메시지를 낸다).
+
+    ChatGPT 검수 반영 (2026-09-22):
+    - get_active_calendar() 호출 자체가 try/except 밖에 있어서, 이 함수 하나가
+      예외를 던지면 "섹션 하나 실패해도 나머지는 계속 진행"이라는 이 함수의
+      설계 원칙이 깨지고 브리핑 전체가 실패하는 모순이 있었다 — 이제 이 호출도
+      실패 격리 대상에 넣는다.
+    - 캘린더 백엔드 값이 'google'이 아니면 전부 'local'로 취급하는 삼항식이었는데,
+      이러면 설정값이 None/빈 문자열/오타처럼 예상 밖의 값이어도 조용히 local로
+      떨어져서 설정 오류를 정상 동작처럼 위장한다 — 명시적 if/elif/else로 바꾼다.
+    - 개별 빌더가 None을 반환하면(=raw 결과 구조를 못 알아봄) 가공 안 된 raw
+      문자열을 그대로 사용자에게 보여주던 폴백(`or raw`)을 제거했다 — 이 프로젝트의
+      "Deterministic-first summary rule" 원칙상 결정론적으로 못 만든 결과를 굳이
+      화면에 노출할 필요가 없고(raw가 항상 사람이 읽기 좋은 형식이라는 보장이 없음),
+      실제로 get_daily_briefing/local_get_daily_briefing/get_system_security_report
+      모두 이미 전용 빌더가 있어 이 경로를 안 탄다(단위 테스트로 확인)."""
+    sections = []
+
+    # 1) 일정 — 활성 캘린더 백엔드에 맞는 함수를 고른다(구조적 필터,
+    # 이 파일의 다른 곳들과 동일한 원칙 — 안 쓰는 백엔드 함수는 아예 안 건드림).
+    # get_active_calendar() 자체도 실패 격리 대상 — 실패하면 이 섹션만 건너뛴다.
+    try:
+        active_calendar = get_active_calendar()
+    except Exception as e:
+        print(f"[AI 워커] 브리핑 - 캘린더 백엔드 확인 오류: {e}")
+        active_calendar = None
+
+    if active_calendar == 'google':
+        calendar_func_name = 'get_daily_briefing'
+    elif active_calendar == 'local':
+        calendar_func_name = 'local_get_daily_briefing'
+    else:
+        # 예상 밖의 값(None/빈 문자열/오타 등) — 조용히 아무 백엔드로 단정하지
+        # 않고 이 섹션만 건너뛴다. 나머지 섹션(보안/지출/사용시간)은 캘린더
+        # 백엔드와 무관하므로 계속 진행한다.
+        calendar_func_name = None
+
+    if calendar_func_name and calendar_func_name in func_map:
+        try:
+            raw = func_map[calendar_func_name]()
+            built = _build_deterministic_reply(raw)
+            if built:
+                sections.append(built)
+        except Exception as e:
+            print(f"[AI 워커] 브리핑 - 일정 조회 오류: {e}")
+
+    # 2) 보안 — 시스템 보안 종합 리포트(업데이트/공유폴더/로그인 실패)
+    if 'get_system_security_report' in func_map:
+        try:
+            raw = func_map['get_system_security_report']()
+            built = _build_deterministic_reply(raw)
+            if built:
+                sections.append(built)
+        except Exception as e:
+            print(f"[AI 워커] 브리핑 - 보안 조회 오류: {e}")
+
+    # 3) 지출 — 최근 7일(하루치는 대부분 비어서 의미가 적고, 30일 기본값은
+    # 매일 반복되는 브리핑치고 범위가 너무 넓음). 비로그인/구매없음
+    # 안내문은 매일 뜨면 잡음이라 브리핑에서는 조용히 뺀다.
+    if 'get_spending_summary' in func_map:
+        try:
+            raw = func_map['get_spending_summary'](days=7)
+            built = _build_deterministic_reply(raw)
+            if built and '로그인' not in raw and '구매 기록이 없습니다' not in raw:
+                sections.append(built)
+        except Exception as e:
+            print(f"[AI 워커] 브리핑 - 지출 조회 오류: {e}")
+
+    # 4) 화면 사용 시간 — 추적을 켠 적 없으면 함수가 안내 메시지를
+    # 반환한다(예외 아님). 그 안내문도 매일 뜨면 잡음이라 뺀다.
+    if 'get_usage_report' in func_map:
+        try:
+            raw = func_map['get_usage_report']()
+            built = _build_deterministic_reply(raw)
+            if built and '아직 기록이 없어요' not in raw:
+                sections.append(built)
+        except Exception as e:
+            print(f"[AI 워커] 브리핑 - 사용시간 조회 오류: {e}")
+
+    if not sections:
+        return ""
+
+    intro = "안녕하세요! 오늘 하루를 정리해드릴게요."
+    return f"{intro}\n\n" + "\n\n".join(sections)
+
+
 def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
     """자유형 LLM 요약 — _summarize_tool_results가 결정론적 처리로 못 거른
     나머지 결과에 대해서만 이 함수를 호출한다. 원래 이 로직 전체가
@@ -2546,6 +2725,7 @@ TOOL_STATUS_NAMES = {
     "local_get_schedule_summary":      "📊  일정 통계 분석 중",
     "local_get_daily_briefing":        "🔔  일정 브리핑 준비 중",
     "find_duplicate_files":            "📦  중복 파일 탐색 중",
+    "delete_duplicate_files":          "🧹  중복 파일 정리 중",
     "find_large_files":                "📦  대용량 파일 탐색 중",
     "scan_temp_files":                 "🧹  임시 파일 확인 중",
     "clean_temp_files":                "🧹  임시 파일 정리 중",
@@ -3501,6 +3681,37 @@ class AIWorker(QThread):
                         self.response_ready.emit(_diagnose_error(e))
                         return
 
+            # ── 빠른 감지 2.5: 하루 통합 브리핑 요청 직접 감지 ──
+            # 일정/보안/지출/화면사용시간을 각자 도구로 조회한 뒤, 이미 검증된
+            # 개별 결정론적 빌더(_build_deterministic_reply)로 각 섹션을 그대로
+            # 재사용해서 이어붙인다 — LLM 자유 요약을 타지 않는 이유는 이 파일에
+            # 반복해서 남아있는 "Deterministic-first summary rule" 원칙과 동일:
+            # 이미 검증된 개별 빌더가 있는데 굳이 새로 LLM에 맡기면 같은 부류의
+            # 할루시네이션(항목 뒤바뀜, 없는 이모지 등)을 또 만들 위험만 늘어난다.
+            # "브리핑"이라는 단어 하나만으로는 calendar_tool/local_calendar의
+            # 기존 "오늘 일정 브리핑"과 겹치므로, 통합 브리핑임을 명확히 하는
+            # 표현만 좁게 잡는다.
+            #
+            has_daily_summary = _is_daily_summary_request(text_lower)
+
+            if has_daily_summary:
+                sys.stderr.write(f"\n🎯 하루 통합 브리핑 직접 호출 (정규식 감지)\n")
+                sys.stderr.flush()
+
+                func_map = {f.__name__: f for f in self.installed_tools}
+                self.status_update.emit("📋  하루 브리핑 준비 중")
+
+                summary = _build_daily_summary(func_map, calendar_preference.get_active_calendar)
+                if not summary:
+                    self.response_ready.emit(
+                        "🤖 로컬 비서: 지금은 브리핑에 담을 내용이 없어요. "
+                        "일정을 등록하거나 로그인하시면 더 풍부하게 알려드릴 수 있어요."
+                    )
+                    return
+
+                self.response_ready.emit(f"🤖 로컬 비서: {summary}")
+                return
+
             # ── 이하 AI tool calling 방식으로 진행 ──
             func_map = {}
             for func in self.installed_tools:
@@ -3769,6 +3980,15 @@ class AIWorker(QThread):
                     # 받는 삭제 함수라 같은 턴에 조회 없이 지어낸 id로 불릴 위험이 있다.
                     'delete_recurring_series': ('search_events', 'get_events_by_date', 'get_upcoming_events'),
                     'local_delete_recurring_series': ('local_search_events', 'local_get_events_by_date', 'local_get_upcoming_events'),
+                    # 2026-09-22 신기능(pc_optimizer 중복 파일 실제 정리) 추가 시 같은
+                    # 원칙 적용: delete_duplicate_files(group_index)는 정수 인자라
+                    # 다른 함수들처럼 "지어낸 문자열"을 넣을 순 없지만, "중복 파일
+                    # 찾아서 다 지워줘"처럼 한 문장 요청이면 find_duplicate_files
+                    # 결과를 보기도 전에 group_index를 정해버릴 수 있다 — 이 함수는
+                    # 실제로는 캐시(_LAST_DUPLICATE_GROUPS)만 신뢰하고 인자 자체는
+                    # 위험하지 않지만, 다른 위험 함수들과 동일한 "먼저 결과 보여주고
+                    # 확인받기" UX 일관성을 위해 같은 방식으로 등록한다.
+                    'delete_duplicate_files': ('find_duplicate_files',),
                 }
 
                 for tool in response['message']['tool_calls']:
@@ -3787,6 +4007,8 @@ class AIWorker(QThread):
                             action_verb, target_noun = "차단", "포트 번호나 방화벽 규칙 이름"
                         elif func_name == 'restrict_shared_folder_permission':
                             action_verb, target_noun = "제한", "공유 폴더 이름"
+                        elif func_name == 'delete_duplicate_files':
+                            action_verb, target_noun = "정리", "그룹 번호(전체는 '다')"
                         else:  # delete_event, local_delete_event, delete_recurring_series, local_delete_recurring_series
                             action_verb, target_noun = "삭제", "일정 제목"
                         tool_results.append(
