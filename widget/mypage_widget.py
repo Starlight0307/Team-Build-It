@@ -1,3 +1,5 @@
+import re
+
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLabel, QPushButton, QLineEdit, QMessageBox,
                              QSizePolicy, QGraphicsDropShadowEffect)
@@ -7,8 +9,29 @@ from PyQt6.QtGui import QColor
 from data.db import count_sessions, get_user_profile, update_profile
 
 
+def _format_phone(digits: str) -> str:
+    """숫자만 남은 문자열을 010-1234-5678 형태로 조립한다."""
+    if len(digits) < 4:
+        return digits
+    if len(digits) < 8:
+        return f"{digits[:3]}-{digits[3:]}"
+    if len(digits) == 11:
+        return f"{digits[:3]}-{digits[3:7]}-{digits[7:]}"
+    return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
+
+
+def _format_birthday(digits: str) -> str:
+    """숫자만 남은 문자열을 YYYY-MM-DD 형태로 조립한다."""
+    if len(digits) <= 4:
+        return digits
+    if len(digits) <= 6:
+        return f"{digits[:4]}-{digits[4:]}"
+    return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+
+
 class MyPageWidget(QWidget):
     logout_requested = pyqtSignal()
+    go_home           = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -88,12 +111,16 @@ class MyPageWidget(QWidget):
         L.addSpacing(6)
 
         self.input_phone = QLineEdit()
-        self.input_phone.setPlaceholderText("휴대폰번호 ('-' 제외 11자리)")
+        self.input_phone.setPlaceholderText("휴대폰번호 (예: 01012345678)")
+        self.input_phone.setMaxLength(13)
+        self.input_phone.textEdited.connect(self._on_phone_edited)
         L.addWidget(self.input_phone)
         L.addSpacing(8)
 
         self.input_birthday = QLineEdit()
-        self.input_birthday.setPlaceholderText("생년월일 (YYYY-MM-DD)")
+        self.input_birthday.setPlaceholderText("생년월일 (예: 20000101)")
+        self.input_birthday.setMaxLength(10)
+        self.input_birthday.textEdited.connect(self._on_birthday_edited)
         L.addWidget(self.input_birthday)
         L.addSpacing(8)
 
@@ -127,23 +154,33 @@ class MyPageWidget(QWidget):
             profile = None
             print(f"[프로필 조회 오류] {e}")
 
-        self.input_phone.setText(profile["phone"] if profile else "")
+        self.input_phone.setText(_format_phone(profile["phone"]) if profile and profile["phone"] else "")
         self.input_birthday.setText(profile["birthday"] if profile else "")
+
+    def _on_phone_edited(self, text: str):
+        digits = re.sub(r"\D", "", text)[:11]
+        formatted = _format_phone(digits)
+        self.input_phone.setText(formatted)
+        self.input_phone.setCursorPosition(len(formatted))
+
+    def _on_birthday_edited(self, text: str):
+        digits = re.sub(r"\D", "", text)[:8]
+        formatted = _format_birthday(digits)
+        self.input_birthday.setText(formatted)
+        self.input_birthday.setCursorPosition(len(formatted))
 
     def _save_profile(self):
         if not self._username:
             return
-        phone = self.input_phone.text().strip()
+        phone = re.sub(r"\D", "", self.input_phone.text())
         birthday = self.input_birthday.text().strip()
 
-        if phone and (not phone.isdigit() or len(phone) != 11):
-            QMessageBox.warning(self, "오류", "휴대폰번호는 '-' 제외 11자리 숫자로 입력하세요.")
+        if phone and len(phone) != 11:
+            QMessageBox.warning(self, "오류", "휴대폰번호는 11자리 숫자로 입력하세요.")
             return
-        if birthday:
-            import re
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", birthday):
-                QMessageBox.warning(self, "오류", "생년월일은 YYYY-MM-DD 형식으로 입력하세요.")
-                return
+        if birthday and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", birthday):
+            QMessageBox.warning(self, "오류", "생년월일은 YYYY-MM-DD 형식으로 입력하세요.")
+            return
 
         try:
             update_profile(
@@ -152,6 +189,7 @@ class MyPageWidget(QWidget):
                 birthday=birthday or None,
             )
             QMessageBox.information(self, "완료", "정보가 저장되었습니다.")
+            self.go_home.emit()
         except Exception as e:
             QMessageBox.warning(self, "오류", f"저장에 실패했습니다.\n{e}")
 

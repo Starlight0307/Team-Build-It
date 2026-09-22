@@ -705,6 +705,7 @@ class AssistantApp(QWidget):
 
         self.mypage = MyPageWidget(self)                                        # index 5
         self.mypage.logout_requested.connect(self._handle_logout)
+        self.mypage.go_home.connect(self._go_home)
         self.stacked_widget.addWidget(self.mypage)
 
         self.calendar_page = CalendarWidget(lambda: MOCK_USER, self)            # index 6
@@ -952,6 +953,17 @@ class AssistantApp(QWidget):
         self.btn_profile.setChecked(False)
         self.stacked_widget.setCurrentIndex(0)
         self.bottom_input_wrapper.show()
+        self.update_sidebar_ui()
+
+    def _go_home(self):
+        """마이페이지 정보 저장 등, 작업 완료 후 홈(대화창)으로 이동."""
+        for b in self.nav_info: b.setChecked(False)
+        self.btn_chat.setChecked(True)
+        self.btn_profile.setChecked(False)
+        self.stacked_widget.setCurrentIndex(0)
+        self.bottom_input_wrapper.show()
+        if self.chat_main_layout.count() <= 2:
+            self.welcome_widget.show()
         self.update_sidebar_ui()
 
     def on_logout_success(self):

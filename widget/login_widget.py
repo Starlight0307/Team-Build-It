@@ -1,3 +1,5 @@
+import sys
+
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLineEdit, QPushButton, QLabel, QMessageBox,
                              QSizePolicy, QGraphicsDropShadowEffect)
@@ -5,6 +7,49 @@ from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
 from PyQt6.QtGui import QColor
 
 from data.db import verify_login
+
+
+def _force_window_to_front(win):
+    """구글 로그인 완료 후 앱 창을 맨 앞으로 가져온다.
+
+    Windows는 현재 포그라운드가 아닌 프로세스가 SetForegroundWindow를
+    호출해도 무시하고 작업표시줄만 깜빡이게 만드는 정책(foreground lock)이
+    있다 — 브라우저가 포그라운드인 상태에서 로그인 완료 직후가 정확히 이
+    상황이라, Qt의 raise_()/activateWindow()만으로는 실제로 앞에 안 뜨는
+    경우가 많다. 브라우저 창의 입력 스레드에 잠깐 붙었다가 떼는 방식으로
+    이 제한을 우회한다.
+    """
+    win.raise_()
+    win.activateWindow()
+
+    if sys.platform != "win32":
+        return
+
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        hwnd = int(win.winId())
+        foreground_hwnd = user32.GetForegroundWindow()
+        if foreground_hwnd == hwnd:
+            return
+
+        current_thread = ctypes.windll.kernel32.GetCurrentThreadId()
+        foreground_thread = user32.GetWindowThreadProcessId(foreground_hwnd, None)
+
+        if foreground_thread and foreground_thread != current_thread:
+            user32.AttachThreadInput(foreground_thread, current_thread, True)
+            try:
+                user32.SetForegroundWindow(hwnd)
+            finally:
+                user32.AttachThreadInput(foreground_thread, current_thread, False)
+        else:
+            user32.SetForegroundWindow(hwnd)
+
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    except Exception:
+        pass  # 실패해도 위의 raise_()/activateWindow()는 이미 시도했으니 무시
 
 
 class GoogleLoginWorker(QThread):
@@ -197,6 +242,10 @@ class LoginWidget(QWidget):
         self.btn_google.setEnabled(True)
         self.btn_google.setText("G  Google로 로그인")
         if ok:
+            # 브라우저 탭은 보안 정책상 스크립트로 자동으로 못 닫는 경우가
+            # 대부분이라, 대신 앱 창을 앞으로 가져와 사용자가 바로 앱으로
+            # 돌아왔다고 느끼게 한다.
+            _force_window_to_front(self.window())
             self.login_success.emit(username)
         else:
             QMessageBox.warning(self, "구글 로그인 실패", f"구글 로그인에 실패했습니다.\n{err}")

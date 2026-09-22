@@ -32,6 +32,44 @@ SCOPES = [
 
 USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 
+_SUCCESS_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>로그인 완료</title></head>
+<body style="font-family:'Malgun Gothic',sans-serif;text-align:center;padding-top:80px;color:#333;">
+<p style="font-size:16px;">로그인이 완료되었습니다.<br>이 창을 닫고 앱으로 돌아가주세요.</p>
+<script>
+// 크롬/엣지/파이어폭스 모두 스크립트가 열지 않은 탭은 보안 정책상
+// window.close()를 막는다. 그래도 혹시 허용되는 환경(일부 구버전
+// 브라우저, 사용자가 관련 설정을 켠 경우 등)을 위해 시도는 해본다.
+window.open('', '_self');
+window.close();
+</script>
+</body></html>"""
+
+
+class _AutoCloseRedirectWSGIApp:
+    """구글 인증 완료 후 뜨는 로컬 응답 페이지.
+
+    라이브러리 기본 구현(_RedirectWSGIApp)은 text/plain으로 영문 안내
+    문구만 보여준다. 여기서는 text/html로 응답해 한국어 안내 문구를
+    보여주고 window.close()도 시도한다.
+
+    다만 최신 브라우저(Chrome/Edge/Firefox)는 스크립트가 직접 연 탭이
+    아니면 보안 정책상 window.close()를 사실상 항상 차단한다 — 이 탭은
+    OS 기본 브라우저로 열린 것이라 이 조건에 해당한다. 그래서 "닫힙니다"
+    라고 단정하지 않고 "닫아주세요"로 안내하며, 대신 앱 쪽(로그인 완료
+    직후 앱 창을 앞으로 가져오는 처리 — login_widget.py)에서 사용자가
+    브라우저와 씨름하지 않고 바로 앱으로 돌아오도록 보완한다.
+    """
+
+    def __init__(self, success_message):
+        self.last_request_uri = None
+
+    def __call__(self, environ, start_response):
+        import wsgiref.util
+        start_response("200 OK", [("Content-type", "text/html; charset=utf-8")])
+        self.last_request_uri = wsgiref.util.request_uri(environ)
+        return [_SUCCESS_HTML.encode("utf-8")]
+
 
 def _build_client_config() -> dict:
     """.env의 GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET으로 클라이언트 설정을
@@ -66,7 +104,11 @@ def sign_in_with_google() -> dict:
     하므로 여기서 조용히 삼키지 않는다).
     """
     import requests
+    import google_auth_oauthlib.flow as flow_module
     from google_auth_oauthlib.flow import InstalledAppFlow
+
+    # 인증 완료 페이지를 한국어 + 자동 닫힘으로 바꾸기 위한 패치.
+    flow_module._RedirectWSGIApp = _AutoCloseRedirectWSGIApp
 
     if os.path.exists(CREDENTIALS_FILE):
         flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
