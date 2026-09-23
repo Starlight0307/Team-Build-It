@@ -113,6 +113,28 @@ TOOL_SCHEMAS = {
             }
         }
     },
+    "get_usage_trend": {
+        "type": "function",
+        "function": {
+            "name": "get_usage_trend",
+            "description": (
+                "최근 사용 시간을 그 직전 같은 길이의 기간과 비교해서 얼마나 늘었는지/줄었는지 "
+                "알려줍니다. 사용자가 '이번주 게임 지난주보다 많이 했어?', '요즘 유튜브 늘었나', "
+                "'최근 사용량 줄었어?' 등 '늘었다/줄었다/변화/추이'를 물어볼 때 호출하세요. "
+                "그냥 '오늘/이번주 얼마나 썼어'처럼 특정 기간의 총량만 묻는 질문에는 대신 "
+                "get_usage_report를 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "프로그램 이름 또는 분류. 비우면 전체"},
+                    "period": {"type": "string", "enum": ["week", "month"],
+                               "description": "week=최근 7일 vs 그 이전 7일, month=최근 30일 vs 그 이전 30일. 기본 week"}
+                },
+                "required": []
+            }
+        }
+    },
     "set_usage_goal": {
         "type": "function",
         "function": {
@@ -404,6 +426,97 @@ def get_usage_report(target: str = "", period: str = "today") -> str:
     if len(ranked) > _TOP_N:
         lines.append(f"  ... 외 {len(ranked) - _TOP_N}개")
     return "\n".join(lines)
+
+
+def _sum_usage_for_days(target: str, days: list) -> int:
+    """주어진 날짜들(datetime.date 리스트)의 target 사용 시간 합계(초)를 낸다.
+    get_usage_report/get_today_usage_minutes와 동일한 _matches_target 매칭
+    로직을 재사용해서 "오늘 몇 시간"과 "기간 추이 비교"에 쓰이는 숫자가
+    항상 같은 기준으로 계산되게 보장한다(이 프로젝트에서 반복된 "같은
+    계산을 여러 곳에 따로 구현하다 갈라지는" 버그 클래스를 피하려는 목적)."""
+    keys = {d.strftime("%Y-%m-%d") for d in days}
+    total = 0
+    with _lock:
+        for day, apps in _usage.items():
+            if day in keys:
+                for name, secs in apps.items():
+                    if _matches_target(name, target):
+                        total += secs
+    return total
+
+
+def get_usage_trend(target: str = "", period: str = "week") -> str:
+    """이번 기간(최근 7일 또는 30일) 사용 시간을 그 직전 같은 길이의 기간과
+    비교한다.
+
+    Context/State 3단계 모델(ChatGPT 검수에서 확립)의 Level 2(Derived
+    State) — "기간 대비 비교"라는 새로운 파생 상태 유형을 추가한 것이다:
+        Raw State (app_usage._usage, 매일 누적되는 원본 기록)
+            ↓
+        Derived State (get_usage_trend)
+            ├─ current_total  (최근 N일 합계)
+            ├─ previous_total (그 직전 N일 합계)
+            ├─ diff_percent   (결정론적으로 계산한 증감률)
+            └─ marker         (📈/📉/➡️ — 위 계산에서만 파생, 대화 맥락 안 봄)
+    사용자가 명시적으로 설정한 값(Level 1, 예: set_usage_goal)이 아니라,
+    이미 기록된 실제 데이터끼리 결정론적으로 비교한 결과만 보여준다는 점은
+    get_budget_status/get_goal_status(둘 다 "현재 상태 대비" 유형의 Level 2)
+    와 같은 원칙 — 이번엔 "기간 대비" 유형을 처음 추가한 것. "요즘 늘어난
+    것 같아요" 같은 판단을 LLM이 대화 맥락(Level 3)만으로 자유롭게 내리게
+    두지 않고, 항상 실측값 비교로만 답한다.
+
+    period는 달력상의 "이번 주"/"이번 달"이 아니라 롤링(rolling) 기간이다
+    — "week"=오늘부터 거슬러 7일 vs 그 앞 7일, "month"=최근 30일 vs 그 앞
+    30일. 예를 들어 수요일에 실행해도 "이번 주 월~수"가 아니라 "오늘 포함
+    최근 7일"을 본다. TOOL_SCHEMAS의 설명 문구에도 이 정의를 그대로 노출해
+    LLM과 함수 동작이 같은 정의를 쓰게 맞췄다."""
+    target = (target or "").strip()
+    print(f"\n[앱 사용 통계] 추이 비교: 대상={target or '전체'}, 기간={period}")
+    _ensure_loaded()
+
+    period = (period or "week").strip().lower()
+    if period == "month":
+        n, label = 30, "30일"
+    else:
+        n, label = 7, "7일"
+
+    today = datetime.now().date()
+    current_days = [today - timedelta(days=i) for i in range(n)]
+    previous_days = [today - timedelta(days=i) for i in range(n, 2 * n)]
+
+    current_total = _sum_usage_for_days(target, current_days)
+    previous_total = _sum_usage_for_days(target, previous_days)
+    target_label = target or "전체"
+
+    if current_total == 0 and previous_total == 0:
+        return f"[📈 사용 시간 추이] (최근 {label}, 대상: {target_label})\n비교할 기록이 없습니다."
+
+    if previous_total == 0:
+        # 직전 기간 기록이 아예 없는 경우 — 그때 사용량이 진짜 0이었는지,
+        # 그 시점엔 아직 추적을 켜지 않았는지는 저장된 데이터만으로 구분할
+        # 수 없다. 둘 다 "비교 불가"로 정직하게 처리한다(허위 정밀도로
+        # "100% 증가" 같은 숫자를 지어내지 않음).
+        return (
+            f"[📈 사용 시간 추이] (최근 {label} vs 그 이전 {label}, 대상: {target_label})\n"
+            f"최근 {label}: {_fmt_duration(current_total)}\n"
+            f"그 이전 {label}: 비교할 기록이 없어요 (그때 사용량이 0이었는지, 그때는 "
+            f"기록을 안 하고 있었는지 구분할 수 없어 비교하지 않음)"
+        )
+
+    diff_percent = round((current_total - previous_total) / previous_total * 100)
+    if diff_percent > 0:
+        marker = f"📈 {diff_percent}% 증가"
+    elif diff_percent < 0:
+        marker = f"📉 {abs(diff_percent)}% 감소"
+    else:
+        marker = "➡️ 변화 없음"
+
+    return (
+        f"[📈 사용 시간 추이] (최근 {label} vs 그 이전 {label}, 대상: {target_label})\n"
+        f"최근 {label}: {_fmt_duration(current_total)}\n"
+        f"그 이전 {label}: {_fmt_duration(previous_total)}\n"
+        f"{marker}"
+    )
 
 
 def get_today_usage_minutes(target: str = "") -> float:

@@ -368,6 +368,48 @@ def _format_event_line(i: int, event: dict) -> str:
     return line
 
 
+def _matching_upcoming_events(days: int, max_results: int) -> list:
+    """local_get_upcoming_events와 local_get_upcoming_events_titles(내부 전용)가
+    공유하는 날짜 필터링 로직 — 두 함수가 "향후 며칠 내 일정"을 각자 따로
+    계산하면 필터링 로직이 갈라져서 서로 다른 결과를 낼 위험이 있다(이
+    프로젝트에서 반복된 "같은 계산을 여러 곳에 따로 구현하다 하나가
+    어긋나는" 버그 클래스). get_today_usage_minutes가 get_usage_report와
+    같은 _matches_target을 재사용하는 것과 동일한 원칙."""
+    tz  = ZoneInfo(DEFAULT_TIMEZONE)
+    now = datetime.now(tz)
+    end = now + timedelta(days=days)
+    events = _load_events()
+    matched = []
+    for ev in events:
+        try:
+            s = datetime.fromisoformat(ev["start"])
+        except Exception:
+            continue
+        if now <= s <= end:
+            matched.append(ev)
+    matched.sort(key=lambda e: e["start"])
+    return matched[:max_results]
+
+
+def local_get_upcoming_events_titles(days: int = 7, max_results: int = 3) -> list:
+    """캘린더+파일 검색 연계 워크플로우(core/ai_worker.py)가 쓰는 내부 전용
+    함수 — 사람이 읽는 문자열이 아니라 [{"title", "start", "id"}, ...] 구조로
+    돌려준다. TOOL_SCHEMAS에 없으므로 AI 도구 호출로는 절대 불릴 수 없다.
+    로그인 안 됐거나 오류가 나면 빈 리스트(호출하는 쪽에서 "일정 없음"과
+    동일하게 처리하고 건너뛰게 함 — 원인을 구분해서 보여줄 만큼 중요한
+    내부 폴링성 조회가 아니라서 get_month_spending_amount(None 반환)와
+    달리 그냥 빈 리스트로 통일한다)."""
+    login_error = _require_login()
+    if login_error:
+        return []
+    try:
+        matched = _matching_upcoming_events(int(days), int(max_results))
+        return [{"title": ev["title"], "start": ev["start"], "id": ev.get("id", "")} for ev in matched]
+    except Exception as e:
+        print(f"[내부 캘린더] 일정 제목 조회 오류(캘린더+파일 검색 연계용): {e}")
+        return []
+
+
 def local_get_upcoming_events(days=7, max_results: int = 10) -> str:
     days = int(days)
     # ollama tool-calling이 max_results를 JSON 문자열("10")로 넘기는 경우가
@@ -381,21 +423,7 @@ def local_get_upcoming_events(days=7, max_results: int = 10) -> str:
     if login_error:
         return login_error
     try:
-        tz  = ZoneInfo(DEFAULT_TIMEZONE)
-        now = datetime.now(tz)
-        end = now + timedelta(days=days)
-
-        events = _load_events()
-        matched = []
-        for ev in events:
-            try:
-                s = datetime.fromisoformat(ev["start"])
-            except Exception:
-                continue
-            if now <= s <= end:
-                matched.append(ev)
-        matched.sort(key=lambda e: e["start"])
-        matched = matched[:max_results]
+        matched = _matching_upcoming_events(days, max_results)
 
         if not matched:
             return f"[📋 일정 조회 결과 (내부 캘린더)]\n향후 {days}일 내 일정이 없습니다."

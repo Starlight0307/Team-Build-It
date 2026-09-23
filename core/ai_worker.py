@@ -12,6 +12,17 @@ from settings.config import TOOL_SCHEMAS, MOCK_USER
 from calendar_feature import calendar_preference
 from core.preference_memory import get_pref, save_pref
 
+# 실제 호출하는 Ollama 모델 — 이 파일 안에 7곳 넘게 문자열로 직접 박혀
+# 있던 것을 상수 하나로 통합했다(ChatGPT 검수 지적, 2026-09-23): Agent
+# 평가셋(tests/llm_smoke/test_tool_selection.py)이 결과 JSON에 "이 정확도가
+# 어느 모델에서 나왔는지" 기록하는데, 그 기록용 문자열과 실제 여기서 호출하는
+# 모델 문자열이 서로 다른 곳에 따로 적혀 있으면 나중에 한쪽만 바뀌고 다른
+# 쪽은 안 바뀌는 채로 방치될 수 있다 — 이 프로젝트에서 이미 여러 번 반복된
+# "같은 값을 손으로 여러 곳에 따로 관리하다 하나가 누락되는" 버그 클래스와
+# 동일하다(_TOOL_KEYWORDS/_TOOL_CATEGORIES 이원화 버그 참고). 평가 스크립트는
+# 이 상수를 직접 import해서 쓴다.
+OLLAMA_MODEL = "llama3.1"
+
 
 def _diagnose_error(e: Exception) -> str:
     """예외 종류를 보고 사용자가 이해하기 쉬운 원인 설명과 해결 방법을 만든다.
@@ -32,8 +43,8 @@ def _diagnose_error(e: Exception) -> str:
         text = (getattr(e, 'error', '') or str(e)).lower()
         if 'model' in text and ('not found' in text or 'pull' in text):
             return (
-                "⚠️ AI 모델(llama3.1)이 설치되어 있지 않습니다.\n\n"
-                "터미널에서 'ollama pull llama3.1' 명령을 실행해 모델을 내려받은 뒤 다시 시도해주세요."
+                f"⚠️ AI 모델({OLLAMA_MODEL})이 설치되어 있지 않습니다.\n\n"
+                f"터미널에서 'ollama pull {OLLAMA_MODEL}' 명령을 실행해 모델을 내려받은 뒤 다시 시도해주세요."
             )
         return "⚠️ AI 모델 서버에서 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
     return "⚠️ 요청을 처리하는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요."
@@ -314,6 +325,27 @@ _DANGEROUS_FUNCS = {
     # 나머지와 같은 급으로 취급하는 건 과했다 — 실사용자(팀원) 피드백으로 수정.
 }
 
+# 위험한 동작 전에 반드시 먼저 봐야 하는 조회/탐지 함수들 — "같은 턴에
+# 조회 없이 위험한 동작이 요청되면 실행 대신 확인 요청 메시지로 대체"하는
+# 게이트가 이 표를 읽는다. 원래는 AIWorker.run() 메서드 안의 지역 변수로
+# 매 턴마다 새로 만들어졌는데(순수 리터럴이라 지역 변수일 이유가 없었음),
+# ChatGPT 검수에서 "이 표가 _DANGEROUS_FUNCS/실제 등록된 함수와 어긋나지
+# 않는지 교차검증하는 테스트가 없다"는 지적을 받고 나서야 모듈 밖에서
+# import할 수 없다는 걸 알아채 여기로 옮겼다(동작은 동일, 매 턴 재생성만
+# 없앰) — tests/unit/test_tool_metadata_consistency.py가 이 표를 검증한다.
+_DETECTION_BEFORE_ACTION = {
+    'block_suspicious_process': ('detect_suspicious_processes', 'get_malware_report'),
+    'kill_process': ('get_top_cpu_processes', 'detect_suspicious_processes', 'get_malware_report'),
+    'manage_firewall': ('scan_open_ports', 'get_firewall_rules'),
+    'delete_event': ('search_events', 'get_events_by_date', 'get_upcoming_events'),
+    'local_delete_event': ('local_search_events', 'local_get_events_by_date', 'local_get_upcoming_events'),
+    'restrict_shared_folder_permission': ('scan_shared_folders',),
+    'disable_firewall_rule': ('get_firewall_rules', 'scan_open_ports'),
+    'delete_recurring_series': ('search_events', 'get_events_by_date', 'get_upcoming_events'),
+    'local_delete_recurring_series': ('local_search_events', 'local_get_events_by_date', 'local_get_upcoming_events'),
+    'delete_duplicate_files': ('find_duplicate_files',),
+}
+
 # get_realtime_alerts/get_realtime_alert_count는 "이미 실행 중인 백그라운드 감시"가
 # 있을 때만 의미가 있는데, 실측해보니 llama3.1이 "의심스러운 프로세스나 시작프로그램
 # 확인해줘" 같은 지금 당장 검사해달라는 요청에도 이 둘을 잘못 골라서 감시가 켜진 적도
@@ -435,10 +467,15 @@ _TOOL_CATEGORIES = {
          "매일", "정기 알림", "정기알림", "매일 알림",
          # 조건부 알림 — "넘으면"/"초과하면" 류는 이 프로젝트 다른 카테고리
          # 키워드와 겹치지 않는, 조건 표현에서만 자연스럽게 쓰이는 어구라 좁게 잡아도 안전.
-         "넘으면", "넘게", "넘을 때", "초과하면", "이상이면", "조건 알림", "조건알림"),
+         "넘으면", "넘게", "넘을 때", "초과하면", "이상이면", "조건 알림", "조건알림",
+         # ⑥ cpu_limit/disk_limit 추가 — disk_limit는 "많아지면"이 아니라
+         # "적어지면"(여유공간이 떨어지면) 알림이라 기존 "넘으면" 계열과 반대
+         # 방향의 표현이 필요하다. 이것도 다른 카테고리와 안 겹치는 좁은 표현.
+         "떨어지면", "아래로 떨어지면", "밑으로 떨어지면", "부족해지면"),
         ("set_timer", "list_timers", "cancel_timer",
          "set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder",
-         "set_usage_condition", "set_spending_condition", "list_conditions", "cancel_condition"),
+         "set_usage_condition", "set_spending_condition", "set_cpu_condition", "set_disk_condition",
+         "list_conditions", "cancel_condition"),
     ),
     "expense_tracker": (
         ("구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼", "얼마 썼", "구매내역", "구매 내역",
@@ -454,9 +491,14 @@ _TOOL_CATEGORIES = {
     "app_usage": (
         ("사용 시간", "사용시간", "화면 시간", "화면시간", "앱 사용", "앱사용", "몇 시간", "몇시간",
          "얼마나 썼", "얼마나썼", "사용량", "많이 썼", "많이 쓴", "기록 시작", "기록 꺼", "측정",
-         "목표"),
+         "목표",
+         # Context/State Level 2(추이 비교, get_usage_trend) 키워드 — 다른
+         # 카테고리와 겹치지 않는, "늘었다/줄었다/추이" 류 비교 표현에서만
+         # 자연스럽게 쓰이는 어구라 좁게 잡아도 안전(reminder의 "넘으면"과
+         # 동일한 원칙).
+         "늘었", "줄었", "늘어", "줄어", "추이", "지난주보다", "지난달보다"),
         ("start_usage_tracking", "stop_usage_tracking", "get_usage_status", "get_usage_report",
-         "set_usage_goal", "get_goal_status"),
+         "set_usage_goal", "get_goal_status", "get_usage_trend"),
     ),
 }
 
@@ -2687,10 +2729,15 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
             # ChatGPT 검수 반영(2026-09-22): 다른 5개 섹션(지출/사용시간/예산/목표)은
             # 전부 "로그인 필요"/"설정한 적 없음" 안내문을 매일 뜨는 잡음으로 보고
             # 조용히 억제하는데, 캘린더 섹션만 이 정책이 빠져 있었다 — 새 기능이
-            # 아니라 기존 브리핑의 출력 정책을 통일하는 수정. get_spending_summary
-            # 억제와 동일하게 '로그인' 부분 문자열로 판정한다(local_calendar.py의
-            # 실제 비로그인 메시지 "❌ 내부 캘린더는 로그인한 사용자만...").
-            if built and '로그인' not in raw:
+            # 아니라 기존 브리핑의 출력 정책을 통일하는 수정.
+            # 주의(2026-09-23 버그 수정): '로그인' 부분 문자열 판정은 쓰지 않는다 —
+            # 캘린더는 다른 5개 섹션과 달리 raw에 사용자가 직접 지은 실제 일정
+            # 제목이 그대로 섞여 들어간다. 제목에 "로그인"이 포함된 정상 일정
+            # (예: "로그인 페이지 리뷰 회의")이 있으면 부분 문자열 판정이 오탐해
+            # 하루 일정 전체가 통째로 사라지는 버그를 실측으로 확인해 정확한
+            # 접두사 판정으로 교체했다. local_calendar.py의 비로그인 메시지는
+            # 헤더 없이 정확히 이 문자열 하나만 반환한다.
+            if built and not raw.startswith('❌ 내부 캘린더는 로그인한 사용자만'):
                 sections.append(built)
         except Exception as e:
             print(f"[AI 워커] 브리핑 - 일정 조회 오류: {e}")
@@ -2881,6 +2928,141 @@ def _build_pc_health_check(func_map: dict) -> str:
     return f"{intro}\n\n{overall}\n\n" + "\n\n".join(sections)
 
 
+# ─────────────────────────────────────────────
+# 🔗📁 캘린더 + 파일 검색 연계 — "멀티 툴 워크플로우"의 3번째 사례
+# ─────────────────────────────────────────────
+# 위 두 워크플로우(하루 브리핑/PC 종합 점검)는 서로 독립적인 여러 도구를
+# 한 턴에 병렬로 묶어 부르는 형태였다 — 도구 A의 결과가 도구 B의 인자를
+# 결정하지 않는다. 이 워크플로우는 다르다: "회의 관련 파일 찾아줘"에
+# 제대로 답하려면 먼저 캘린더에서 가장 가까운 회의를 찾고, 그 회의 "제목"을
+# search_files의 keyword 인자로 넣어야 한다 — 두 번째 도구 호출이 첫 번째
+# 결과에 의존한다(순차 종속).
+#
+# ChatGPT 검수 지적(2026-09-23): 처음엔 이걸 "일반 tool-calling으로는 처리
+# 불가능"이라고 적었는데, 그건 절반만 맞는 표현이다. Ollama tool-calling
+# 자체가 순차 워크플로우를 지원 못 하는 게 아니라 — LLM을 다시 호출해서
+# "캘린더 결과를 보여주고 다음 tool_call을 새로 받는" 멀티턴 방식으로도
+# 만들 수는 있다. 정확한 표현은: "현재 이 프로젝트의 AIWorker.run()이
+# 한 턴에 tool_call들을 한꺼번에 생성 → 전부 실행하는 단일 batch 구조라서,
+# 이 구조 안에서는(=멀티턴으로 확장하지 않는 한) 결과 의존형 호출을 표현할
+# 수 없다"는 것. tool_selection 평가셋 docstring이 "결과-의존형 워크플로우는
+# 아직 지원 안 함"이라 명시한 것도 같은 현재 구조의 한계를 가리킨다.
+# 멀티턴으로 일반화하는 대신 이 fast-path(애플리케이션이 "이 요청 패턴이면
+# A를 실행하고 A의 특정 결과를 B의 특정 인자로 전달한다"고 직접 오케스트레이션)
+# 를 택한 이유: 이건 엄밀히 말하면 "LLM이 도구를 더 잘 연결하게 하는 것"이
+# 아니라 "이 프로젝트의 Deterministic-first 원칙을 그대로 확장한 결정론적
+# 순차 워크플로우 추가"에 가깝다 — 멀티턴이었다면 두 번째 LLM 호출이 첫
+# 번째 결과를 보고 검색어를 "판단"해야 해서 또 다른 자유형 추론(=할루시네이션
+# 지점)이 생기지만, 이 방식은 제목을 그대로 전달해서 그 지점 자체가 없다.
+#
+# 기능 명세(중요 — 실제로 보장하는 범위를 과장하지 않기 위해 명시):
+# "회의 관련 파일을 찾아준다"가 아니라 "**가장 가까운 예정 회의**의 제목을
+# 검색어로 search_files를 호출한다"이다. 오늘 회의와 3일 뒤 회의가 둘 다
+# 있을 때 사용자가 어느 쪽을 뜻했는지는 판단하지 않고 무조건 가장 가까운
+# 것을 쓴다 — 이 모호성을 LLM에게 다시 맡기면 불확실성만 늘어나므로 의도적
+# 선택이다(발화에 회의명이 포함된 경우 그걸로 매칭하는 확장은 범위 밖).
+_CALENDAR_FILE_SEARCH_EVENT_KEYWORDS = ('회의', '미팅', '약속')
+_CALENDAR_FILE_SEARCH_FILE_KEYWORDS = ('파일', '자료', '문서')
+_CALENDAR_FILE_SEARCH_ACTION_KEYWORDS = ('찾아', '찾을', '검색')
+# _PC_HEALTH_CHECK_NEGATION_MARKERS와 동일한 값 — 새 상수로 또 만들지 않고
+# 재사용한다(같은 부정 표현 목록을 여러 곳에서 따로 관리하면 또 하나만
+# 갱신되고 나머지가 뒤처지는, 이 프로젝트에서 반복된 버그 클래스가 된다).
+_CALENDAR_FILE_SEARCH_NEGATION_MARKERS = _PC_HEALTH_CHECK_NEGATION_MARKERS
+
+
+def _is_calendar_file_search_request(text_lower: str) -> bool:
+    """캘린더+파일 검색 연계 fast-path를 태울지 판단한다. _is_pc_health_check_request와
+    동일한 원칙: "회의"나 "파일" 하나만으로는 각각 기존 calendar/file_search
+    단일 의도(예: "회의 잡아줘", "pdf 파일 찾아줘")를 가로채는 회귀가 생긴다
+    — 일정을 가리키는 단어 + 파일을 가리키는 단어 + 검색 동사가 전부 한
+    문장에 있는, 명시적으로 "연계"를 요청하는 표현만 좁게 잡는다."""
+    if not any(kw in text_lower for kw in _CALENDAR_FILE_SEARCH_EVENT_KEYWORDS):
+        return False
+    if not any(kw in text_lower for kw in _CALENDAR_FILE_SEARCH_FILE_KEYWORDS):
+        return False
+    if not any(kw in text_lower for kw in _CALENDAR_FILE_SEARCH_ACTION_KEYWORDS):
+        return False
+    if any(neg in text_lower for neg in _CALENDAR_FILE_SEARCH_NEGATION_MARKERS):
+        return False
+    return True
+
+
+def _format_event_start(start_raw: str) -> str:
+    """이벤트의 ISO 시각 문자열을 사람이 읽기 좋은 형태로 바꾼다. 하루 종일
+    일정(date만 있고 시각 없음)과 파싱 실패는 원본 문자열을 그대로 보여준다
+    — 표시 실패가 워크플로우 전체를 막으면 안 된다."""
+    try:
+        dt = datetime.fromisoformat(start_raw)
+        return dt.strftime("%m/%d(%a) %H:%M")
+    except Exception:
+        return start_raw
+
+
+def _build_calendar_file_search(func_map: dict, get_active_calendar) -> str:
+    """캘린더에서 가장 가까운 일정을 찾고, 그 제목을 키워드로 search_files를
+    호출해서 이어붙인다. func_map/get_active_calendar를 주입받는 순수 함수라
+    다른 _build_* 워크플로우와 동일하게 AIWorker 없이 유닛 테스트 가능.
+
+    일정 제목을 그대로 search_files의 keyword 인자에 넣는다(예: "3분기
+    마케팅 회의" → keyword="3분기 마케팅 회의") — LLM에게 "이 제목에서
+    검색어를 추출해줘"라고 다시 맡기지 않는다. 이 프로젝트의
+    Deterministic-first 원칙과 같은 이유: 이미 구조화된 값(제목)이 있는데
+    또 자유형 LLM 판단을 끼워넣으면 새로운 할루시네이션 지점만 늘어난다.
+    (search_files의 keyword는 부분 문자열 매칭이라 제목 전체를 그대로
+    넣어도 일부만 일치하는 파일명을 못 찾을 수 있다는 한계는 있음 — 이후
+    실사용 피드백에서 정확도가 낮으면 제목에서 핵심 단어만 추리는 로직을
+    추가할 수 있다는 것을 알려진 한계로 남겨둔다.)"""
+    try:
+        active_calendar = get_active_calendar()
+    except Exception as e:
+        print(f"[AI 워커] 캘린더+파일 검색 - 캘린더 백엔드 확인 오류: {e}")
+        return ""
+
+    if active_calendar == 'google':
+        titles_func_name = 'get_upcoming_events_titles'
+    elif active_calendar == 'local':
+        titles_func_name = 'local_get_upcoming_events_titles'
+    else:
+        titles_func_name = None
+
+    if not titles_func_name or titles_func_name not in func_map:
+        return ""
+
+    try:
+        # 오늘 하루가 아니라 앞으로 2주 — "회의 관련 파일"은 지난주 회의든
+        # 다음주 회의든 물어볼 수 있어서 하루 브리핑보다 넓게 잡는다.
+        events = func_map[titles_func_name](days=14, max_results=3)
+    except Exception as e:
+        print(f"[AI 워커] 캘린더+파일 검색 - 일정 조회 오류: {e}")
+        return ""
+
+    if not events:
+        return (
+            "관련 일정을 찾지 못했어요. 앞으로 2주 안에 등록된 회의/약속이 없거나 "
+            "로그인이 필요할 수 있어요."
+        )
+
+    target_event = events[0]  # 가장 가까운 일정 하나만 — 여러 개를 한꺼번에 묶으면
+    # 어느 파일이 어느 회의 것인지 사용자가 다시 구분해야 해서 오히려 불친절하다.
+    title = target_event.get("title", "")
+    when = _format_event_start(target_event.get("start", ""))
+    event_section = f"[🔗 가장 가까운 관련 일정]\n{title}\n🕐 {when}"
+
+    if not title or 'search_files' not in func_map:
+        return event_section
+
+    try:
+        raw = func_map['search_files'](keyword=title)
+    except Exception as e:
+        print(f"[AI 워커] 캘린더+파일 검색 - 파일 검색 오류: {e}")
+        return event_section
+
+    file_section = _build_deterministic_reply(raw)
+    if not file_section:
+        return event_section
+    return f"{event_section}\n\n{file_section}"
+
+
 def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
     """자유형 LLM 요약 — _summarize_tool_results가 결정론적 처리로 못 거른
     나머지 결과에 대해서만 이 함수를 호출한다. 원래 이 로직 전체가
@@ -2966,7 +3148,7 @@ def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
     # 억제하고 num_predict로 최악의 경우에도 응답 길이에 상한을 둔다.
     _SUMMARY_OPTIONS = {'repeat_penalty': 1.3, 'num_predict': 700}
 
-    final_response = ollama.chat(model='llama3.1', messages=summary_messages, options=_SUMMARY_OPTIONS)
+    final_response = ollama.chat(model=OLLAMA_MODEL, messages=summary_messages, options=_SUMMARY_OPTIONS)
     result = final_response['message']['content'].strip()
 
     if _looks_like_repetition_loop(result):
@@ -2990,7 +3172,7 @@ def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
                 "결과에 없는 내용은 무엇이든 절대 추가하지 마."
             )
         }]
-        retry_response = ollama.chat(model='llama3.1', messages=retry_messages, options=_SUMMARY_OPTIONS)
+        retry_response = ollama.chat(model=OLLAMA_MODEL, messages=retry_messages, options=_SUMMARY_OPTIONS)
         result = retry_response['message']['content'].strip()
 
     if (_looks_like_json_leak(result) or _looks_like_unrelated_topic_leak(result, raw_results)
@@ -3921,7 +4103,7 @@ class AIWorker(QThread):
                         }]
 
                         final_response = ollama.chat(
-                            model='llama3.1',
+                            model=OLLAMA_MODEL,
                             messages=summary_messages,
                             options={'temperature': 0.3}
                         )
@@ -4074,7 +4256,7 @@ class AIWorker(QThread):
                         }]
 
                         final_response = ollama.chat(
-                            model='llama3.1',
+                            model=OLLAMA_MODEL,
                             messages=summary_messages,
                             options={'temperature': 0.3}
                         )
@@ -4144,6 +4326,30 @@ class AIWorker(QThread):
                     return
 
                 self.response_ready.emit(f"🤖 로컬 비서: {health_report}")
+                return
+
+            # ── 빠른 감지 2.7: 캘린더+파일 검색 연계 요청 직접 감지 ──
+            # 위 두 fast-path와 달리 이건 결과-의존형(순차) 워크플로우다 —
+            # _build_calendar_file_search 모듈 docstring 참고. 2.5/2.6과
+            # 동일한 구조로 배치.
+            has_calendar_file_search = _is_calendar_file_search_request(text_lower)
+
+            if has_calendar_file_search:
+                sys.stderr.write(f"\n🎯 캘린더+파일 검색 연계 직접 호출 (정규식 감지)\n")
+                sys.stderr.flush()
+
+                func_map = {f.__name__: f for f in self.installed_tools}
+                self.status_update.emit("🔗  관련 일정·파일 찾는 중")
+
+                combined = _build_calendar_file_search(func_map, calendar_preference.get_active_calendar)
+                if not combined:
+                    self.response_ready.emit(
+                        "🤖 로컬 비서: 지금은 관련 일정·파일을 찾지 못했어요. "
+                        "캘린더나 파일 검색 플러그인이 설치되어 있는지 확인해주세요."
+                    )
+                    return
+
+                self.response_ready.emit(f"🤖 로컬 비서: {combined}")
                 return
 
             # ── 이하 AI tool calling 방식으로 진행 ──
@@ -4344,7 +4550,7 @@ class AIWorker(QThread):
             sys.stderr.flush()
 
             response = ollama.chat(
-                model='llama3.1',
+                model=OLLAMA_MODEL,
                 messages=self.chat_history,
                 tools=ollama_tools if use_tools else None,
                 options={'temperature': 0.1} if use_tools else {'temperature': 0.7}
@@ -4395,35 +4601,10 @@ class AIWorker(QThread):
                 # 일정 있으면 지워줘" — search_events 계열에 의존)도 같은 패턴이
                 # 가능해 함께 등록한다(이번엔 GUI 재현은 안 됐지만 구조적으로 가능한
                 # 경로라 방어적으로 추가 — 실제 재현되기 전에 선제 차단).
-                # 2026-09-21 신기능(system_security 실제 조치) 추가 시 같은 원칙 적용:
-                # restrict_shared_folder_permission(share_name)/disable_firewall_rule
-                # (rule_name) 둘 다 LLM이 지어낼 수 있는 문자열 인자를 받으므로, 각각의
-                # 조회 함수(scan_shared_folders/get_firewall_rules)와 같은 턴에 불리면
-                # 구조적으로 막는다. disable_risky_firewall_rules는 인자가 없어(내부에서
-                # 직접 재조회) 이 목록에 넣지 않는다 — 애초에 지어낼 대상 자체가 없다.
-                _DETECTION_BEFORE_ACTION = {
-                    'block_suspicious_process': ('detect_suspicious_processes', 'get_malware_report'),
-                    'kill_process': ('get_top_cpu_processes', 'detect_suspicious_processes', 'get_malware_report'),
-                    'manage_firewall': ('scan_open_ports', 'get_firewall_rules'),
-                    'delete_event': ('search_events', 'get_events_by_date', 'get_upcoming_events'),
-                    'local_delete_event': ('local_search_events', 'local_get_events_by_date', 'local_get_upcoming_events'),
-                    'restrict_shared_folder_permission': ('scan_shared_folders',),
-                    'disable_firewall_rule': ('get_firewall_rules', 'scan_open_ports'),
-                    # 2026-09-21 신기능(캘린더 반복 일정 고도화) 추가 시 같은 원칙 적용:
-                    # delete_recurring_series/local_delete_recurring_series도 event_id를
-                    # 받는 삭제 함수라 같은 턴에 조회 없이 지어낸 id로 불릴 위험이 있다.
-                    'delete_recurring_series': ('search_events', 'get_events_by_date', 'get_upcoming_events'),
-                    'local_delete_recurring_series': ('local_search_events', 'local_get_events_by_date', 'local_get_upcoming_events'),
-                    # 2026-09-22 신기능(pc_optimizer 중복 파일 실제 정리) 추가 시 같은
-                    # 원칙 적용: delete_duplicate_files(group_index)는 정수 인자라
-                    # 다른 함수들처럼 "지어낸 문자열"을 넣을 순 없지만, "중복 파일
-                    # 찾아서 다 지워줘"처럼 한 문장 요청이면 find_duplicate_files
-                    # 결과를 보기도 전에 group_index를 정해버릴 수 있다 — 이 함수는
-                    # 실제로는 캐시(_LAST_DUPLICATE_GROUPS)만 신뢰하고 인자 자체는
-                    # 위험하지 않지만, 다른 위험 함수들과 동일한 "먼저 결과 보여주고
-                    # 확인받기" UX 일관성을 위해 같은 방식으로 등록한다.
-                    'delete_duplicate_files': ('find_duplicate_files',),
-                }
+                # _DETECTION_BEFORE_ACTION은 모듈 최상단 상수(파일 앞부분,
+                # _DANGEROUS_FUNCS 바로 아래)로 옮겼다 — 순수 리터럴이라 매 턴
+                # 새로 만들 이유가 없었고, 모듈 밖에서 테스트가 import해서
+                # 검증할 수 있어야 했다.
 
                 for tool in response['message']['tool_calls']:
                     func_name = tool['function']['name']
@@ -4745,7 +4926,7 @@ class AIWorker(QThread):
                             'role': 'user',
                             'content': "JSON이나 코드 형식 말고, 한국어 문장으로만 답변해줘. 함수를 실행한 결과를 자연스럽게 설명해줘."
                         }]
-                        retry_response = ollama.chat(model='llama3.1', messages=retry_messages)
+                        retry_response = ollama.chat(model=OLLAMA_MODEL, messages=retry_messages)
                         clean_reply = retry_response['message']['content'].strip()
 
             clean_reply = clean_reply.strip()

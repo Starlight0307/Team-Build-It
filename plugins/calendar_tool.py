@@ -555,6 +555,38 @@ def get_upcoming_events(days = 7, calendar_id: str = "primary", max_results: int
         return "❌ 일정을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
+def get_upcoming_events_titles(days: int = 7, calendar_id: str = "primary", max_results: int = 3) -> list:
+    """캘린더+파일 검색 연계 워크플로우(core/ai_worker.py)가 쓰는 내부 전용
+    함수 — local_calendar.local_get_upcoming_events_titles와 동일한 역할의
+    구글 캘린더 백엔드 버전. 사람이 읽는 문자열이 아니라
+    [{"title", "start", "id"}, ...] 구조로 돌려준다. TOOL_SCHEMAS에 없으므로
+    AI 도구 호출로는 절대 불릴 수 없다. 인증 안 됐거나 오류가 나면 빈
+    리스트(local_calendar 쪽과 동일하게 "일정 없음"과 구분하지 않고 호출하는
+    쪽이 건너뛰게 함)."""
+    try:
+        service = _get_service()
+        tz  = ZoneInfo(DEFAULT_TIMEZONE)
+        now = datetime.now(tz)
+        end = now + timedelta(days=int(days))
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=now.isoformat(), timeMax=end.isoformat(),
+            maxResults=int(max_results), singleEvents=True, orderBy="startTime"
+        ).execute()
+        events = events_result.get("items", [])
+        return [
+            {
+                "title": e.get("summary", "(제목 없음)"),
+                "start": e["start"].get("dateTime", e["start"].get("date")),
+                "id": e.get("id", ""),
+            }
+            for e in events
+        ]
+    except Exception as e:
+        print(f"[캘린더] 일정 제목 조회 오류(캘린더+파일 검색 연계용): {e}")
+        return []
+
+
 def get_events_by_date(date_str: str, calendar_id: str = "primary") -> str:
     print(f"\n📋 [캘린더] {date_str} 일정 조회 중...")
     try:

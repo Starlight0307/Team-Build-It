@@ -28,3 +28,9 @@ plugins/client_secret_*.json
 # 사람/기기마다 계속 바뀌는 로컬 런타임 데이터 (chat_logs/와 같은 이유)
 core/preference_memory.json
 plugins/app_usage/
+
+# Agent 평가셋 실행 결과 — "소스"가 아니라 실행마다 쌓이는 artifact다(로컬
+# PC 성능/Ollama 모델 버전/설치된 도구 목록 등 환경에 따라 값이 달라져서
+# 그대로 공유하면 의미가 없다는 ChatGPT 검수 의견, 2026-09-23). 팀이 공유할
+# 기준값이 필요하면 이 폴더가 아니라 별도 baseline 파일로 관리한다.
+tests/agent/results/

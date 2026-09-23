@@ -48,6 +48,29 @@ def test_real_net_connections_does_not_crash():
     assert isinstance(conns, list)
 
 
+def test_real_get_current_cpu_percent_is_valid_range():
+    """plugins/reminder.py의 조건부 알림(cpu_limit)이 쓰는
+    system_info.get_current_cpu_percent()를 실제로 호출한다 —
+    interval=None(논블로킹) 사용이 실제 psutil에서도 크래시 없이 숫자를
+    반환하는지 확인. 첫 호출은 psutil 문서상 "의미 없는 값"일 수 있어서
+    타입/범위만 확인하고 정확한 값은 검증하지 않는다."""
+    from plugins.system_info import get_current_cpu_percent
+
+    value = get_current_cpu_percent()
+    assert isinstance(value, (int, float))
+    assert 0.0 <= value <= 100.0
+
+
+def test_real_get_disk_free_percent_is_valid_range():
+    """system_info.get_disk_free_percent()를 실제 시스템 드라이브에 대해
+    호출해 크래시 없이 0~100 사이 값이 나오는지 확인."""
+    from plugins.system_info import get_disk_free_percent
+
+    value = get_disk_free_percent()
+    assert isinstance(value, (int, float))
+    assert 0.0 <= value <= 100.0
+
+
 # ── winreg: 실제 레지스트리 읽기(읽기 전용) ────────────────────────
 
 def test_real_registry_run_key_read_does_not_crash():

@@ -301,6 +301,10 @@ class AssistantApp(QWidget):
                 detail = f"(현재 {int(value)}분 / 기준 {int(threshold)}분)"
             elif ctype == 'spending_limit':
                 detail = f"(현재 {int(value):,}원 / 기준 {int(threshold):,}원)"
+            elif ctype == 'cpu_limit':
+                detail = f"(현재 {value:.0f}% / 기준 {threshold:.0f}%)"
+            elif ctype == 'disk_limit':
+                detail = f"(현재 여유 {value:.0f}% / 기준 {threshold:.0f}%)"
             else:
                 detail = ""
             if label:
