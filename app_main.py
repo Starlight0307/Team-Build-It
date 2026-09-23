@@ -28,7 +28,7 @@ from settings.config import MOCK_USER
 from settings.theme import get_palette
 from calendar_feature import calendar_preference
 from settings import ui_scale
-from core.ai_worker import AIWorker
+from core.ai_worker import AIWorker, _build_condition_recommendation
 from core.plugin_manager import load_existing_plugins, download_and_install_plugin
 from core.plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
 from widget.widgets import (CommandCard, MessageBubble, TypingIndicator, FlowLayout,
@@ -311,6 +311,14 @@ class AssistantApp(QWidget):
                 message = f"🎯🔁 조건부 알림: '{label}' {detail} — 필요하면 채팅으로 요청해주세요."
             else:
                 message = f"🎯🔁 설정하신 조건을 넘었어요! {detail} 필요하면 채팅으로 요청해주세요."
+            # Proactive Agent 2단계(Analysis → Recommendation) — 조건이 왜
+            # 넘었는지 실제 데이터로 한 번 더 확인해서 근거 있는 추천을
+            # 덧붙인다. 근거 데이터를 못 얻으면 빈 문자열이라 조용히
+            # 생략되고 기존 알림만 그대로 나간다(_build_condition_recommendation
+            # 모듈 docstring 참고 — 여기서 실제 조치는 절대 실행 안 함).
+            recommendation = _build_condition_recommendation(cond, func_map)
+            if recommendation:
+                message = f"{message}\n{recommendation}"
             self._show_toast(message)
 
     def _show_toast(self, message: str) -> "NotificationToast":

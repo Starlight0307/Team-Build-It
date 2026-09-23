@@ -556,9 +556,28 @@ _REPORT_DETAIL_TARGETS = {
     "공유 폴더": "scan_shared_folders",
     "로그인 실패 이력": "get_login_failures",
 }
+
+
+def _eul_reul(word: str) -> str:
+    """한국어 목적격 조사 "을/를"을 마지막 글자의 받침 유무로 고른다.
+    ChatGPT 검수(2026-09-23) 지적 반영: _build_score_report_reply가 받침
+    유무와 무관하게 항상 "를"을 써서 "포트 스캔를 자세히 봐드릴까요?"처럼
+    어색한 문장이 나가던 걸 고친다. 한글 완성형 유니코드 범위(가~힣)에서
+    (코드포인트 - 0xAC00) % 28 == 0이면 받침이 없는 글자(값이 있으면
+    "을", 없으면 "를")라는 잘 알려진 계산 방식 — 조사 시스템 전체를 만드는
+    대신 이 한 곳에서만 쓰는 최소한의 헬퍼로 남긴다(과설계 방지)."""
+    if not word:
+        return "를"
+    last = word[-1]
+    if '가' <= last <= '힣':
+        has_batchim = (ord(last) - 0xAC00) % 28 != 0
+        return "을" if has_batchim else "를"
+    return "를"
+
+
 _REPORT_DETAIL_OFFER = re.compile(
     r'(?P<name>' + '|'.join(re.escape(n) for n in _REPORT_DETAIL_TARGETS) + r')'
-    r'를\s*자세히\s*봐드릴까요\?\s*$'
+    r'(?:을|를)\s*자세히\s*봐드릴까요\?\s*$'
 )
 # 부분 문자열로 대충 걸면 "네트워크"의 "네", "있어"의 "어"처럼 전혀 무관한 새
 # 요청까지 오탐(false positive)하는 걸 실측으로 확인해서, 메시지 전체가 "짧은
@@ -736,7 +755,7 @@ def _build_score_report_reply(raw_results: str):
         parts.append(f"{', '.join(risky)} 쪽에 위험 표시가 있어서 확인이 필요해 보여요.")
         if safe:
             parts.append(f"{', '.join(safe)}는 정상이고요.")
-        parts.append(f"{risky[0]}를 자세히 봐드릴까요?")
+        parts.append(f"{risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?")
     else:
         parts.append(f"{', '.join(safe)} 모두 정상이라 지금은 특별히 걱정할 부분이 없어요.")
     return " ".join(parts)
@@ -3063,6 +3082,214 @@ def _build_calendar_file_search(func_map: dict, get_active_calendar) -> str:
     return f"{event_section}\n\n{file_section}"
 
 
+# ─────────────────────────────────────────────
+# 🧹 PC 정리 — "멀티 툴 워크플로우"의 4번째 사례 (2026-09-23)
+# ─────────────────────────────────────────────
+# ChatGPT와 함께 정리한 로드맵의 "Workflow 3 — PC 정리"(disk/system info →
+# pc_optimizer → 정리 후보) 항목. 위 PC 종합 점검(2.6)과 완전히 같은 구조 —
+# 여러 독립적인 조회 도구를 한 턴에 순차로 묶어서 보여주는 workflow다
+# (ChatGPT 1차 검수 지적 반영: 실제로는 4개를 하나씩 순차 실행하므로
+# "병렬"이라고 부르면 안 된다 — 스레드/동시성 구조를 새로 만들지 않고
+# GUI 스레드에서 순서대로 도는 게 맞고, 그저 "서로 독립적인 여러 조회를
+# 한 턴에 조합한다"는 뜻으로만 "병렬"을 썼던 표현을 정정한다).
+# (캘린더+파일 검색처럼 결과-의존형은 아님). 새 Tool은 전혀 만들지 않고
+# 기존 4개(get_system_info/find_large_files/find_duplicate_files/
+# scan_temp_files)만 조합한다 — ChatGPT가 "새 Tool 1개 추가보다 기존 Tool
+# 4개로 새 Agent 행동 1개 구현"이 좋은 개발 단위라고 제안한 것과 정확히
+# 맞는 사례.
+_PC_CLEANUP_KEYWORDS = (
+    '디스크 정리', '저장공간 정리', '저장 공간 정리', '용량 정리',
+    'pc 정리',  # AIWorker.run()이 text_lower = self.user_text.lower()로 비교하므로 소문자로 둔다
+    '컴퓨터 정리', '정리 후보', '정리할 거 있으면',
+    '디스크가 부족한 이유', '용량을 많이 차지', '뭐가 용량을 차지', '무엇이 용량을 차지',
+)
+
+
+def _is_pc_cleanup_request(text_lower: str) -> bool:
+    """"PC 정리" 워크플로우 fast-path를 태울지 판단한다. _is_pc_health_check_request와
+    동일한 설계 원칙: "정리"라는 흔한 단어 하나만으로 걸면 이미 각자 잘
+    동작하는 단일 의도 요청("임시 파일 정리해줘" → clean_temp_files 위험
+    동작 확인 흐름, "중복 파일 찾아줘" → find_duplicate_files)까지 가로챌
+    위험이 있다. 그래서 "여러 종류의 정리 후보를 한번에 보고 싶다"는 명시적
+    표현만 좁게 잡는다 — "디스크/저장공간/용량/PC/컴퓨터 정리"처럼 범위
+    단어와 "정리"가 함께 있는 표현, 또는 "뭐가 용량을 차지해?" 같은 원인
+    진단형 표현만 포함한다. "임시 파일 정리해줘"처럼 이미 구체적인 대상이
+    명시된 단일 의도 요청은 여기 걸리지 않고 기존 경로(개별 위험 동작 확인
+    흐름)를 그대로 탄다."""
+    if not any(kw in text_lower for kw in _PC_CLEANUP_KEYWORDS):
+        return False
+    if any(neg in text_lower for neg in _PC_HEALTH_CHECK_NEGATION_MARKERS):
+        return False
+    return True
+
+
+def _build_pc_cleanup(func_map: dict) -> str:
+    """PC 정리 후보 — 디스크(시스템 정보)/대용량 파일/중복 파일/임시 파일
+    네 가지를 각자 조회 전용 도구로 확인한 뒤, 이미 검증된 개별 결정론적
+    빌더(_build_deterministic_reply, 시스템 정보만 전용 빌더인
+    _build_system_info_reply)로 그대로 이어붙인다. _build_pc_health_check와
+    동일한 설계: func_map만 주입받는 순수 함수라 AIWorker/실제 플러그인
+    실행 없이 유닛 테스트 가능.
+
+    중요 — 이 함수는 "정리 후보를 보여주는" 조회 전용 워크플로우다. 실제
+    삭제(clean_temp_files/delete_duplicate_files)는 여기서 절대 직접
+    실행하지 않는다 — 둘 다 이미 _DANGEROUS_FUNCS에 등록돼 있어서, 사용자가
+    이 결과를 보고 "임시 파일 정리해줘"/"중복 파일 삭제해줘"라고 별도로
+    다시 요청해야만 기존 확인 절차(confirm_required)를 거쳐 실행된다. 이
+    워크플로우 안에서 삭제까지 자동으로 이어붙이면 안전 게이트를 그냥
+    우회하는 셈이라 절대 하지 않는다.
+
+    섹션 하나가 실패해도(예외, 또는 설치 안 된 플러그인이라 func_map에
+    아예 없는 경우) 나머지 섹션은 계속 만든다 — 다른 브리핑류 기능과 동일한
+    설계 원칙. ChatGPT 1차 검수 지적 반영: 조회 함수 호출(raw = func())과
+    그 결과를 빌더에 넘기는 것(built = builder(raw))을 같은 try 블록으로
+    묶는다 — 원래는 조회 호출만 try로 감싸고 builder(raw) 호출은 밖에
+    있어서, 플러그인이 예상 밖 형태(malformed)의 문자열을 반환해 빌더의
+    정규식 매칭 쪽에서 예외가 나면 이 섹션뿐 아니라 함수 전체가 죽어서
+    나머지 섹션까지 전부 사라지는 문제가 있었다(이 함수가 지키려는
+    "섹션 하나 실패해도 나머지는 계속" 원칙 자체가 깨짐)."""
+    sections = []
+
+    def _run_section(func_name: str, label: str, builder=_build_deterministic_reply):
+        if func_name not in func_map:
+            return
+        try:
+            raw = func_map[func_name]()
+            built = builder(raw)
+        except Exception as e:
+            print(f"[AI 워커] PC 정리 - {label} 조회/처리 오류: {e}")
+            return
+        if built:
+            sections.append(built)
+
+    _run_section('get_system_info', '시스템 정보(디스크 포함)', builder=_build_system_info_reply)
+    _run_section('find_large_files', '대용량 파일')
+    _run_section('find_duplicate_files', '중복 파일')
+    _run_section('scan_temp_files', '임시 파일')
+
+    if not sections:
+        return ""
+
+    intro = "네, 정리할 게 있는지 확인해드릴게요."
+    outro = ("\n\n실제로 정리하고 싶은 항목이 있으면 말씀해주세요"
+             "(예: '임시 파일 정리해줘', '중복 파일 삭제해줘') — 확인 후에 진행할게요.")
+    return f"{intro}\n\n" + "\n\n".join(sections) + outro
+
+
+# ─────────────────────────────────────────────
+# 💡 조건부 리마인더 추천 — "Proactive Agent"의 Detection → Analysis →
+# Recommendation 확장 (2026-09-23)
+# ─────────────────────────────────────────────
+# ChatGPT와 정리한 4단계 로드맵(Agent Evaluation → Workflow → Proactive →
+# State)에서 다음 단계. 지금까지 조건부 리마인더(plugins/reminder.py의
+# get_due_conditions)는 "조건 감지 → 알림"까지만 했다 — app_main.py의
+# _poll_due_conditions가 조건이 넘었다는 사실과 현재/기준값만 토스트로
+# 보여줬다. 이 함수는 그 뒤에 Analysis(조건이 왜 넘었는지 실제 데이터로
+# 한 번 더 확인)와 Recommendation(그 데이터에 근거한 제안 한 줄)을
+# 추가한다.
+#
+# 중요 — 이 함수는 추천까지만 한다. 실제 조치(예: 임시 파일 삭제,
+# 프로세스 종료)는 여기서 절대 실행하지 않는다. clean_temp_files/
+# kill_process는 이미 _DANGEROUS_FUNCS에 등록돼 있어서, 사용자가 이
+# 추천을 보고 채팅으로 다시 요청해야만 기존 confirm_required 절차를
+# 거쳐 실행된다.
+#
+# "Recommendation → Confirmation" 로드맵 단계(2026-09-23, ChatGPT와 합의):
+# 토스트를 클릭 가능하게 만들어 confirm_required를 자동으로 띄우는 새 UI
+# 실행 경로는 의도적으로 만들지 않았다 — 그건 LLM의 자연어 tool-selection을
+# 우회하는 새로운 command dispatch 경로가 되고, CPU 쪽은 사용자 판단 없이
+# 특정 프로세스를 종료 후보로 미리 못박는 셈이라 더 위험하다. 대신 disk
+# 추천 문구에 들어간 명령("임시 파일 정리해줘" = CLEAN_TEMP_FILES_COMMAND_PHRASE)
+# 이 기존 Safety Evaluation의 safety_clean_temp_alone 케이스와 똑같은
+# 문자열을 공유하게 만들어서, "추천 → 사용자가 그대로 입력 → clean_temp_files
+# 선택 → confirm_required"라는 안전 경로가 이미 실제 llama3.1로 검증돼
+# 있다는 계약을 유지한다(tests/unit/test_condition_recommendation.py의
+# test_disk_recommendation_command_matches_safety_evaluation_contract 참고).
+# AIWorker 계층은 confirm_required를 emit하는 데까지만 책임진다 — 확인창
+# 승인/거부 이후의 실행 여부는 app_main.py의 메인 스레드 GUI 핸들러
+# 책임이라 이 함수의 검증 범위 밖이다.
+#
+# usage_limit/spending_limit은 일부러 분석을 추가하지 않는다 — 이미
+# label(대상)/value(현재값)/threshold(기준값) 자체가 필요한 맥락을 전부
+# 담고 있고, 이 둘에 대해 "왜 넘었는지" 알려줄 근거 있는 추가 데이터
+# 소스가 지금 프로젝트에 없다. 근거 없는 추천을 지어내느니 안 만드는
+# 쪽이 이 프로젝트의 "결과에 없는 판정 금지" 원칙과 일치한다.
+# ChatGPT 검수(2026-09-23) 지적: "1위 프로세스가 CPU를 많이 사용 중"이라는
+# 원래 문구는 실제로 조회한 적 없는 걸 단정한다 — 전체 CPU 90%가 한
+# 프로세스에 몰려 있을 수도, 여러 프로세스에 분산돼 있을 수도 있는데
+# 1위라는 사실만으로 "많이 사용하고 있다"고 말하면 근거를 넘어선 판단이다
+# (이 프로젝트의 "결과에 없는 판정 금지" 원칙 위반). 그래서 퍼센트도 같이
+# 캡처해서 "1위는 X(Y%)예요"처럼 실제로 조회한 사실만 말하도록 고친다.
+_TOP_CPU_PROCESS_LINE = re.compile(
+    r'^1\.\s*(?P<name>.+?)\s*\(점유율:\s*(?P<percent>[\d.]+)%\)\s*$', re.MULTILINE
+)
+_TEMP_FILES_SIZE_PATTERN = re.compile(
+    r'임시 파일 \d+개, 총 (?P<size>[\d.]+[A-Za-z]+)를 확인했습니다'
+)
+
+# ChatGPT 검수(2026-09-23, "Recommendation → Confirmation" 라운드) 지적:
+# 이 추천 문구가 실제로 사용자를 안전하게 confirm_required까지 데려가는지는
+# 이미 tests/llm_smoke/safety_cases.py의 safety_clean_temp_alone 케이스가
+# 정확히 이 명령 문구로 실제 llama3.1을 통해 검증했다(3차 PASS) — 여기서
+# 새 llm_smoke 테스트를 또 만들면 순수 중복이다. 대신 이 상수를 두 곳
+# (아래 추천 문구, safety_cases.py)이 공유하게 만들어서, 한쪽만 바뀌고
+# 다른 쪽이 안 바뀌는 계약 위반을 tests/unit에서 값싸게 잡는다(이
+# 프로젝트에서 반복된 "같은 값을 여러 곳에서 따로 관리하다 하나 누락"
+# 버그 클래스와 동일한 예방 조치).
+CLEAN_TEMP_FILES_COMMAND_PHRASE = "임시 파일 정리해줘"
+
+
+def _build_condition_recommendation(cond: dict, func_map: dict) -> str:
+    """조건부 리마인더가 발화했을 때 추가로 붙일 추천 문구 — 근거가 되는
+    실제 데이터를 못 얻으면(함수 없음/조회 실패/파싱 실패) 빈 문자열을
+    반환한다(호출부는 빈 문자열이면 추천 없이 기존 알림만 보여준다).
+    func_map만 주입받는 순수 함수라 다른 _build_* 워크플로우와 동일하게
+    AIWorker 없이 유닛 테스트 가능."""
+    ctype = cond.get('type')
+
+    if ctype == 'cpu_limit':
+        getter = func_map.get('get_top_cpu_processes')
+        if not getter:
+            return ""
+        try:
+            raw = getter()
+            # ChatGPT 검수(2026-09-23) 지적(MUST FIX): getter()가 예외 없이
+            # 문자열이 아닌 값(None/dict/int 등)을 반환하면 정규식
+            # .search()가 TypeError를 던진다 — func_map을 통해 호출하는
+            # 모든 tool의 반환값을 신뢰하지 않고 여기서 타입을 직접 검증한다.
+            if not isinstance(raw, str):
+                return ""
+            m = _TOP_CPU_PROCESS_LINE.search(raw)
+        except Exception as e:
+            print(f"[AI 워커] 조건부 추천 - CPU 상위 프로세스 조회 오류: {e}")
+            return ""
+        if not m:
+            return ""
+        top_name = m.group('name').strip()
+        top_percent = m.group('percent')
+        return f"현재 CPU 사용량 1위는 {top_name}({top_percent}%)예요. 사용하지 않는 프로그램이 있다면 종료해보세요."
+
+    if ctype == 'disk_limit':
+        getter = func_map.get('scan_temp_files')
+        if not getter:
+            return ""
+        try:
+            raw = getter()
+            if not isinstance(raw, str):
+                return ""
+            m = _TEMP_FILES_SIZE_PATTERN.search(raw)
+        except Exception as e:
+            print(f"[AI 워커] 조건부 추천 - 임시 파일 조회 오류: {e}")
+            return ""
+        if not m:
+            return ""  # 임시 파일이 없거나(정리할 게 없음) 형식이 안 맞으면 추천 안 함
+        size = m.group('size')
+        return (f"정리 가능한 임시 파일이 {size} 있어요. "
+                f"'{CLEAN_TEMP_FILES_COMMAND_PHRASE}'라고 말씀해주시면 정리해드릴게요.")
+
+    return ""
+
+
 def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
     """자유형 LLM 요약 — _summarize_tool_results가 결정론적 처리로 못 거른
     나머지 결과에 대해서만 이 함수를 호출한다. 원래 이 로직 전체가
@@ -3682,10 +3909,15 @@ class AIWorker(QThread):
     # 노출돼서 같은 검사를 반복하거나 같은 질문을 또 던지는 문제가 실측으로
     # 확인됨 — 사용자가 "아니 괜찮아"라고 했는데 AI가 똑같은 리포트를 또
     # 보여주며 "막아드릴까요?"를 반복한 사례.
+    # ChatGPT 검수(2026-09-23) 지적: "아니야"/"아니에요"/"아뇨"는 있는데 그만큼
+    # 흔히 쓰이는 정중한 "아니요"가 빠져 있어서, "아니요"라고만 답하면 거절로
+    # 인식되지 않는 실제 confirmation 커버리지 공백이었다 — 위험한 동작 확인
+    # 관련 함수라 그냥 넘기지 않고 추가함(tests/unit/test_multiturn_followup.py
+    # 회귀 테스트로 확인).
     _DECLINE_KEYWORDS = (
         "아니괜찮", "괜찮아", "괜찮습니다", "괜찮다고", "괜찮대", "됐어", "됐습니다",
         "됐다고", "안해도", "필요없어", "필요없다고", "하지마", "그만해", "그만하자",
-        "아니야", "아니에요", "아뇨", "노노", "싫어", "아니됐어", "아니됐다고",
+        "아니야", "아니에요", "아뇨", "아니요", "노노", "싫어", "아니됐어", "아니됐다고",
     )
 
     # "괜찮아"는 한국어에서 "괜찮아(그냥 둬)"=거절과 "괜찮아, 진행해줘"=승낙 둘 다로
@@ -3922,7 +4154,7 @@ class AIWorker(QThread):
         return False
 
     def _report_detail_followup_func(self):
-        """직전 AI 메시지가 "{항목명}를 자세히 봐드릴까요?"로 끝났고, 지금 답이 그걸
+        """직전 AI 메시지가 "{항목명}을/를 자세히 봐드릴까요?"로 끝났고, 지금 답이 그걸
         승낙하는 짧은 대답이면 그 항목에 해당하는 함수 이름 하나만 반환한다(버그
         발견 경위는 위 _REPORT_DETAIL_TARGETS 설명 참고). 해당 없으면 None."""
         if self._is_decline_reply():
@@ -4350,6 +4582,33 @@ class AIWorker(QThread):
                     return
 
                 self.response_ready.emit(f"🤖 로컬 비서: {combined}")
+                return
+
+            # ── 빠른 감지 2.8: PC 정리 요청 직접 감지 ──
+            # get_system_info/find_large_files/find_duplicate_files/
+            # scan_temp_files 네 도구를 한 번에 묶어서 조회한다 — PC 종합
+            # 점검(2.6)과 동일하게 여러 독립적인 조회를 한 턴에 순차로
+            # 조합하는 구조(실제로 동시 실행되는 병렬 구조는 아님). 실제
+            # 삭제는 여기서 하지 않는다(_build_pc_cleanup 모듈 docstring 참고).
+            has_pc_cleanup = _is_pc_cleanup_request(text_lower)
+
+            if has_pc_cleanup:
+                sys.stderr.write(f"\n🎯 PC 정리 직접 호출 (정규식 감지)\n")
+                sys.stderr.flush()
+
+                func_map = {f.__name__: f for f in self.installed_tools}
+                self.status_update.emit("🧹  정리할 항목 확인 중")
+
+                cleanup_report = _build_pc_cleanup(func_map)
+                if not cleanup_report:
+                    self.response_ready.emit(
+                        "🤖 로컬 비서: 지금은 정리 후보를 확인하지 못했어요. "
+                        "마켓플레이스에서 PC 최적화 관련 플러그인이 설치되어 있는지 "
+                        "확인하거나, 잠시 후 다시 시도해주세요."
+                    )
+                    return
+
+                self.response_ready.emit(f"🤖 로컬 비서: {cleanup_report}")
                 return
 
             # ── 이하 AI tool calling 방식으로 진행 ──
