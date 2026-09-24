@@ -15,11 +15,24 @@ Ollama 서버가 켜져 있어야 한다.
 
 ── 채점 방식 ──
 tool_selection과 동일: actual가 expected를 부분집합으로 포함하면 정답.
-아직 실측이 0회라 바닥선을 낮게(tool_selection의 최초 실측 0.70보다
-낮은 0.5) 잡는다 — 멀티턴은 단일 턴보다 어렵다고 이미 여러 차례
-문서화됐고(ChatGPT: "Multi-turn이 구현 난이도 제일 높다"), 케이스 수도
-6개뿐이라 하나만 틀려도 16.7%p가 움직인다. 실측이 쌓이면 tool_selection과
-동일한 절차(v1 실측값보다 살짝 낮게 재조정)로 다시 잡는다.
+
+── 실측 기록 (2026-09-24) ──
+v1: 4/6(66.7%) 베이스라인. 실패 2건 진단 후 구조적 버그(어제는? → calendar만
+노출되고 app_usage는 노출 자체가 안 됨) 1건을 core/ai_worker.py의
+_last_turn_tool_funcs()/_FUNC_TO_CATEGORY/"의도 충돌 감지" 억제 로직으로
+수정 — multiturn_cases.py 상단 docstring에 진단·수정 전 과정을 자세히
+기록해뒀다. v2: 5/6(83.3%) — 위 수정 반영 후 재측정, 실제로 개선됨을
+확인. 남은 실패 1건(악성코드 종합 리포트 vs 특정 항목 재질문 혼동)은
+프롬프트 규칙을 추가해도 안 고쳐져서 현재 모델의 tool selection 한계로
+기록하고 더 이상 프롬프트를 쌓지 않기로 함(ChatGPT 검수 지적 — 케이스별
+프롬프트 규칙을 계속 누적하면 서로 경쟁하는 지시문이 되어 다른 케이스에
+부작용을 낼 수 있음).
+
+바닥선은 두 번째 실측(83.3%)보다 충분히 낮게 0.65로 잡는다 — 케이스가
+6개뿐이라 하나만 틀려도 16.7%p가 움직이는 걸 감안해, 자연스러운 실행별
+변동은 허용하면서 진짜 퇴화(예: 방금 고친 억제 로직이 다시 깨지는 것)는
+잡을 수 있게 한다. 측정이 더 쌓이면 tool_selection과 동일한 절차(평균/
+최소값 기반)로 재조정한다.
 """
 import json
 import os
@@ -36,7 +49,7 @@ from tests.llm_smoke.test_tool_selection import _spy, _git_commit, _SCHEMA_VERSI
 
 pytestmark = pytest.mark.llm
 
-_ACCURACY_FLOOR = 0.5
+_ACCURACY_FLOOR = 0.65
 
 _RESULTS_DIR = Path(__file__).resolve().parent.parent / "agent" / "results" / "multiturn"
 
@@ -121,7 +134,16 @@ def test_multiturn_tool_selection_accuracy(spied_installed_tools):
     for r in results:
         mark = "OK" if r["correct"] else "FAIL"
         print(f"{mark} [{r['id']}] {r['text']!r}")
-        print(f"    직전 맥락: {[m['content'][:40] for m in r['chat_history']]}")
+        # 2026-09-24 실측으로 발견한 버그: tool_calls가 있는 assistant 메시지는
+        # content가 None이라(ollama 응답 원형 그대로 픽스처에 넣은 케이스,
+        # multiturn_cases.py 참고) m['content'][:40]에서 TypeError로 리포팅
+        # 자체가 죽었다 — content가 없으면 tool_calls 요약으로 대신 보여준다.
+        def _preview(m):
+            if m.get('content'):
+                return str(m['content'])[:40]
+            names = [tc.get('function', {}).get('name') for tc in (m.get('tool_calls') or [])]
+            return f"[tool_calls: {names}]" if names else "[빈 메시지]"
+        print(f"    직전 맥락: {[_preview(m) for m in r['chat_history']]}")
         print(f"    기대: {sorted(r['expected'])}  실제: {sorted(r['actual'])}")
         if r["error"]:
             print(f"    오류: {r['error']}")

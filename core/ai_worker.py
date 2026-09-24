@@ -528,6 +528,34 @@ _DERIVED_TOOL_KEYWORDS = tuple(sorted(set(
     kw for keywords, _funcs in _TOOL_CATEGORIES.values() for kw in keywords
 ) | set(_EXTRA_NEEDS_TOOLS_KEYWORDS)))
 
+# 함수 이름 → 그 함수가 속한 카테고리(들) 역방향 매핑. Multi-turn
+# 평가셋(2026-09-24)에서 실측으로 발견한 버그를 고치는 데 쓴다: "오늘 화면
+# 얼마나 썼어?" → "오늘 3시간 12분 사용했어요" 다음에 "어제는?"이라고 짧게
+# 되물으면, "어제"가 calendar 카테고리 키워드라 calendar만 노출되고 정작
+# 이어가야 할 app_usage(get_usage_report)는 전혀 노출되지 않아 엉뚱하게
+# 캘린더 함수를 호출하는 걸 실측으로 확인했다 — app_usage 카테고리 자체에는
+# "어제"가 없고, 직전 응답 문장("~사용했어요")도 app_usage 키워드와 안
+# 겹쳐서 _keyword_search_text()가 직전 응답을 덧붙여도 못 잡는 사각지대였다.
+# 값은 set으로 둔다 — block_suspicious_process처럼 같은 함수가 network_
+# security/malware_detection 두 카테고리에 동시 등록된 실제 사례가 있어서,
+# 함수 하나가 카테고리 하나에만 속한다고 가정하면 안 된다.
+_FUNC_TO_CATEGORY: dict = {}
+for _cat_name, (_kws, _funcs) in _TOOL_CATEGORIES.items():
+    for _fn in _funcs:
+        _FUNC_TO_CATEGORY.setdefault(_fn, set()).add(_cat_name)
+
+# calendar 카테고리 키워드 중 "이 표현이 곧 캘린더 의도"라고 보기엔 너무
+# 범용적인 순수 상대 날짜/시점 표현만 따로 뽑아둔다. ChatGPT 2차 검수
+# (2026-09-24, multi-turn 실패 진단)에서 제안된 "의도 충돌 감지" 실험용 —
+# _allowed_category_funcs()가 이 목록에 있는 단어 때문에만 calendar가
+# 매칭되고(일정/약속/캘린더/회의 같은 명시적 신호는 하나도 없이) 직전
+# 턴이 다른 카테고리였다면, calendar를 후보에서 빼고 직전 카테고리를
+# 우선한다 — "일정"/"약속" 같은 명시적 신호가 하나라도 있으면 이 억제는
+# 적용되지 않는다(예: "어제 일정은?"은 여전히 calendar로 감).
+_CALENDAR_WEAK_KEYWORDS = frozenset((
+    "오늘", "내일", "모레", "글피", "어제", "이번주", "다음주", "이번달", "다음달", "언제",
+))
+
 
 # 2026-09-14 system_security 2차 재검증에서 발견한 버그: _build_score_report_reply가
 # 위험 항목 하나를 콕 집어 "Windows 업데이트를 자세히 봐드릴까요?"라고 먼저 물어봤는데,
@@ -607,7 +635,17 @@ def _looks_like_json_leak(text: str) -> bool:
     )
 
 
-_UNRELATED_TOPIC_MARKERS = ("일정", "캘린더", "스케줄", "포트", "방화벽")
+_UNRELATED_TOPIC_MARKERS = ("일정", "캘린더", "스케줄", "포트", "방화벽", "SMB")
+
+# 2026-09-24 "Semantic Fidelity" 과제 진단 중 재현: chat_history가 완전히
+# 빈 상태(직전 맥락 유출 가능성 자체가 없음)에서도, 실시간 감시/업데이트
+# 상태처럼 network_security와 전혀 무관한 raw_results를 요약시켰더니 두
+# 번 독립적으로 "445 SMB"(파일 공유 프로토콜)를 스스로 지어내 끼워넣는
+# 걸 확인했다 — 기존 "포트" 마커는 "SMB"라는 단어 자체는 안 잡아서
+# 통과됐다(문자 그대로 "포트"라고 안 쓰고 "SMB"라고만 썼기 때문). 이전
+# 사례(chat_history 맥락 유출)와 달리 맥락 없이도 자체적으로 지어내는
+# 패턴이라, 원인은 다르지만 증상(원본에 없는 주제 등장)은 동일해서 같은
+# 메커니즘(_contains_topic_marker)으로 잡는다.
 
 # 2026-09-11 system_info 재검증에서 발견한 버그: "CPU 많이 먹는 프로그램
 # 보여줘"라고 요청해서 실제로는 get_top_cpu_processes 결과(프로세스 목록,
@@ -654,7 +692,77 @@ def _looks_like_unrelated_topic_leak(result: str, raw_results: str) -> bool:
     return _contains_topic_marker(result) and not _contains_topic_marker(raw_results)
 
 
+# 2026-09-24 "Semantic Fidelity" 과제 진단 중 재현한 별도 버그: "VPN -
+# 연결 안 됨"을 요약시켰더니 "VPN连接에 문제가 있을 수 있어요"처럼 중국어
+# 한자가 한국어 문장에 그대로 섞여 나오는 걸 확인했다(이 앱은 한국어 전용
+# — 시스템 프롬프트도 "항상 존댓말/한국어"를 요구함). 원본 raw_results는
+# 전부 이 프로젝트 코드가 직접 작성한 한국어/영어 텍스트라 한자가 등장할
+# 이유가 구조적으로 없으므로, 결과에 한자(CJK 통합 한자, U+4E00~U+9FFF)가
+# 있는데 원본에는 전혀 없으면 오탐 걱정 없이 안전하게 잡을 수 있다(값의
+# 존재 유무만 보는 검사라 _looks_like_unrelated_topic_leak과 같은 원리).
+_HAN_CHARACTER_PATTERN = re.compile(r'[一-鿿]')
+
+
+def _looks_like_foreign_script_leak(result: str, raw_results: str) -> bool:
+    """이름과 달리 "외국어 유출" 전체를 잡는 게 아니라, 정확히는 "원본에
+    없던 CJK 한자(중국어/일본어 한자)가 결과에 새로 등장하는가"만 검사한다
+    (영어/러시아어/가나 등은 대상이 아님 — ChatGPT 검수 지적: 함수 이름이
+    실제 판정 범위보다 넓게 들릴 수 있어 여기 명시해둔다). 이 프로젝트는
+    한국어 전용 답변만 하도록 시스템 프롬프트로 이미 지시하고 있어서, 원본에
+    없는 한자가 새로 등장하는 건 거의 항상 모델이 언어를 헷갈린 것이지
+    정상적인 인용이 아니다(원본 자체에 한자가 있으면 그대로 인용한 것일 수
+    있으므로 오탐 방지를 위해 원본에도 없을 때만 잡는다)."""
+    return bool(_HAN_CHARACTER_PATTERN.search(result)) and not _HAN_CHARACTER_PATTERN.search(raw_results)
+
+
+# 2026-09-24 "Semantic Fidelity" 라이브 평가 중 6개 가드 전부를 통과하며
+# 새로 발견한, 전혀 다른 종류의 버그(ChatGPT 검수에서 "출처/근거 날조"로
+# 명명): raw_results가 "현재 활성 네트워크 연결 2개"뿐인데 최종 요약이
+# "네이버 블로그에서는 현재 활성 네트워크 연결 2개를 확인했습니다"로
+# 시작함 — 수치도 맞고 내용도 맞는데, 원본/chat_history 어디에도 없는
+# 외부 출처("네이버 블로그")를 스스로 지어붙였다. 기존 unrelated_topic_leak은
+# "무관한 화제가 섞이는가"를 보는 거라 이 경우엔 적용 안 됨(네트워크 얘기
+# 자체는 원본과 일치) — 별도 가드가 필요한 다른 유형이라고 판단했다.
+#
+# 구현을 보류한 이유: 안전한 설계가 "원본에 없는 출처명 블랙리스트"(네이버
+# 블로그, 유튜브, 위키백과, ...)처럼 보이지만 이건 무한 목록이라 유지보수가
+# 안 된다. 제대로 하려면 "~에 따르면/~에서는/~자료에 따르면" 같은 귀속
+# (attribution) 표현 패턴을 먼저 찾고, 그 표현이 가리키는 주체(entity)가
+# raw_results/chat_history에 실제로 존재하는지 비교하는 2단계 검사가
+# 필요하다(예: "Windows Defender에 따르면"은 원본에 Windows Defender가
+# 있으면 정상, "네이버 블로그에서는"은 원본에 없으면 의심). 그런데 "이
+# 결과에 따르면"/"위 내용에서는" 같은 정당한 자기 지시 표현과, 새로 지어낸
+# 외부 출처를 구분하는 정밀도를 지금 바로 안전하게 설계하지 못해서(state
+# inversion과 같은 이유로 오탐 위험 검증 없이 규칙만 먼저 짜는 건 위험)
+# 이번 라운드에서는 구현하지 않고 다음에 다룰 항목으로 남긴다(가칭
+# _looks_like_source_fabrication).
+
+
+# 2026-09-24 "Semantic Fidelity" 과제 진단 중 재현했지만 가드를 만들지 않기로
+# 한 버그(기록만 남김): 실시간 모니터 결과가 "VPN - 연결 안 됨"인데 요약이
+# "VPN 연결을 확인해보았습니다"처럼 마치 정상 확인/연결된 것처럼 상태를
+# 반전시켜 말하는 경우를 직접 재현했다. 단순한 방법(결과엔 부정 표현
+# "안 됨/못/없/아니/실패/불가"가 있는데 요약엔 없으면 의심)을 설계해봤지만,
+# "VPN 끊겨"처럼 부정 particle 없이도 정상적으로 단절 상태를 표현하는
+# 정당한 패러프레이즈가 흔해서 이 휴리스틱은 정상 답변을 대량으로 오탐할
+# 위험이 컸다 — 그래서 보류했다. 여기 있는 5개(+foreign_script_leak) 가드처럼
+# "원본에 없는 게 결과에 새로 등장하는가"라는 안전한 판정 방식이 아니라
+# "원본의 의미가 반대로 바뀌었는가"를 판정해야 하는 문제라, 규칙 기반보다
+# LLM-judge 같은 접근이 필요해 보이는데 이 프로젝트는 신뢰성 문제로 그런
+# 접근을 다른 곳에서도 피해왔다. 다음에 이 영역을 다시 다룰 때 참고할 것.
 _PERCENT_PATTERN = re.compile(r'\d+(?:\.\d+)?%')
+
+# 2026-09-24 "Semantic Fidelity" 과제(이전 세션 보고서에 "GB를 %로 착각" 같은
+# 단위 혼동 감지로 명시됐던, 별도 과제로 미뤄뒀던 항목) 반영: 원래
+# _PERCENT_PATTERN은 "%"만 봤는데, 이 프로젝트의 플러그인 출력을 실제로
+# 훑어보니 %뿐 아니라 GB/MB/원/개/건/초/시간/분도 반복적으로 등장하는
+# 수치 단위였다. "%로 착각"이라는 지적의 실체는 결국 "숫자는 원본에 있는데
+# 단위가 바뀌어서 붙는다"는 문제라, 같은 검사 방식(값+단위 문자열이 원본에
+# 그대로 있는지)을 % 하나가 아니라 이 단위 집합 전체로 일반화하면 그대로
+# 잡힌다 — 예를 들어 원본에 "17.3GB"만 있는데 요약이 "17.3%"라고 하면,
+# "17.3%"는 %-패턴으로는 원래도 잡혔지만 "31.1GB"를 "31.1MB"라고 잘못
+# 말해도 이전에는 GB/MB를 아예 안 봐서 못 잡았다 — 이제는 잡힌다.
+_VALUE_UNIT_PATTERN = re.compile(r'\d+(?:\.\d+)?\s?(?:%|GB|MB|KB|원|개|건|초|시간|분)')
 
 
 def _looks_like_numeric_distortion(result: str, raw_results: str) -> bool:
@@ -664,11 +772,13 @@ def _looks_like_numeric_distortion(result: str, raw_results: str) -> bool:
     처럼 소수점을 통째로 날리고 10배 부풀린 값으로 다시 말하는 걸 실측으로
     확인했다(1.5%→15%, 0.0%→10%도 같은 패턴으로 동시에 발생). 항목을 인용하는
     첫 줄은 정확한데 그 아래 설명 문장에서만 틀리는 식이라 단순 재인용 검사로는
-    못 잡는다 — 결과에 등장하는 모든 퍼센트 값을 뽑아서 원본 결과에 그 값이
-    문자 그대로 없으면 지어낸 숫자로 간주한다."""
-    raw_percents = set(_PERCENT_PATTERN.findall(raw_results))
-    result_percents = set(_PERCENT_PATTERN.findall(result))
-    return bool(result_percents - raw_percents)
+    못 잡는다 — 결과에 등장하는 값+단위 조합(%/GB/MB/KB/원/개/건/초/시간/분,
+    _VALUE_UNIT_PATTERN 참고 — 처음엔 %만 봤다가 GB↔% 같은 단위 혼동도
+    잡도록 일반화함)을 전부 뽑아서 원본 결과에 그 조합이 문자 그대로 없으면
+    지어낸 값으로 간주한다."""
+    raw_values = set(_VALUE_UNIT_PATTERN.findall(raw_results))
+    result_values = set(_VALUE_UNIT_PATTERN.findall(result))
+    return bool(result_values - raw_values)
 
 
 _RISK_MARKERS = ("🚨", "⚠️")
@@ -3386,14 +3496,16 @@ def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
 
     if (_looks_like_json_leak(result) or _looks_like_unrelated_topic_leak(result, raw_results)
             or _looks_like_numeric_distortion(result, raw_results)
-            or _looks_like_fabricated_risk_marker(result, raw_results)):
+            or _looks_like_fabricated_risk_marker(result, raw_results)
+            or _looks_like_foreign_script_leak(result, raw_results)):
         retry_messages = summary_messages + [{
             'role': 'user',
             'content': (
                 "방금 답변에 문제가 있었어요 — 함수 호출 형식(JSON/코드)으로 나왔거나, "
                 "위 도구 실행 결과에는 전혀 없는 다른 주제(예: 일정/캘린더/포트/방화벽)를 "
-                "언급했거나, 결과에 있는 숫자(%, 개수 등)를 실제와 다르게 바꿔 말했거나, "
-                "결과에 🚨/⚠️ 표시가 전혀 없는데 특정 항목을 위험하다고 지어냈어요. "
+                "언급했거나, 결과에 있는 숫자(%, GB, 개수 등)를 실제와 다르게 바꿔 말했거나, "
+                "결과에 🚨/⚠️ 표시가 전혀 없는데 특정 항목을 위험하다고 지어냈거나, "
+                "한국어가 아닌 다른 언어(한자 등)가 섞여 나왔어요. "
                 "오직 위에 주어진 도구 실행 결과 내용만 바탕으로, 숫자와 위험 표시는 결과에 "
                 "적힌 그대로, 사람에게 말하듯 자연스러운 한국어 문장으로만 다시 답해줘. "
                 "결과에 없는 내용은 무엇이든 절대 추가하지 마."
@@ -3404,7 +3516,8 @@ def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
 
     if (_looks_like_json_leak(result) or _looks_like_unrelated_topic_leak(result, raw_results)
             or _looks_like_repetition_loop(result) or _looks_like_numeric_distortion(result, raw_results)
-            or _looks_like_fabricated_risk_marker(result, raw_results)):
+            or _looks_like_fabricated_risk_marker(result, raw_results)
+            or _looks_like_foreign_script_leak(result, raw_results)):
         # 재시도까지 실패하면, 의미 없는 JSON 조각/무관한 화제/지어낸 숫자나
         # 위험 판정을 사용자에게 보여주는 대신 실제로 확인된 원본 결과라도
         # 그대로 보여준다.
@@ -4172,17 +4285,71 @@ class AIWorker(QThread):
                 return None
         return None
 
+    def _last_turn_tool_funcs(self):
+        """직전 턴에서 모델이 실제로 호출했던 함수 이름 집합을 chat_history에서
+        찾아 반환한다(없으면 빈 집합). AIWorker.run()이 도구를 부른 턴마다
+        response['message'](tool_calls 포함)를 통째로 chat_history에 append하므로
+        (그 아래 'tool' 결과와 최종 자연어 요약 assistant 메시지가 뒤따라 쌓임),
+        가장 최근 tool_calls가 있는 assistant 메시지를 뒤에서부터 찾으면 된다."""
+        for msg in reversed(self.chat_history):
+            tool_calls = msg.get('tool_calls') if hasattr(msg, 'get') else None
+            if tool_calls:
+                names = set()
+                for tc in tool_calls:
+                    fn = tc.get('function', {}) if hasattr(tc, 'get') else {}
+                    name = fn.get('name') if hasattr(fn, 'get') else None
+                    if name:
+                        names.add(name)
+                return names
+            if msg.get('role') == 'user':
+                return set()
+        return set()
+
     def _allowed_category_funcs(self):
         """메시지(+ 필요시 직전 AI 답변)와 관련 있는 카테고리의 함수 이름만 모아서 반환.
-        어느 카테고리에도 안 걸리면 None(=전체 노출, 안전장치)을 반환한다."""
+        어느 카테고리에도 안 걸리면 None(=전체 노출, 안전장치)을 반환한다.
+
+        Multi-turn 평가셋(2026-09-24) 실측으로 발견한 버그 수정: 짧은 후속
+        질문(예: "어제는?")은 _keyword_search_text()가 직전 AI 답변까지
+        같이 훑어서 키워드를 매칭하지만, 직전 답변이 그 카테고리 특유의
+        키워드를 전혀 안 쓰는 문장이면(예: app_usage 결과 문장에 "사용
+        시간"/"목표" 같은 app_usage 키워드가 하나도 없이 "~썼어요"로만
+        끝나는 경우) 여전히 놓칠 수 있다 — 반면 "어제"는 calendar 카테고리
+        키워드라서 엉뚱하게 calendar만 노출되는 걸 실측으로 확인했다.
+        그래서 짧은 후속 질문일 때는 직전 턴에 실제로 호출됐던 함수의
+        카테고리도 함께 노출한다 — 이건 "이 텍스트에 관련 키워드가 있는가"
+        같은 추측이 아니라 "방금 실제로 이 카테고리 도구를 썼다"는 사실
+        기반이라 훨씬 안전하다(추가되는 함수 집합만큼만 노출 범위가
+        넓어질 뿐, 기존 매칭 결과를 대체하지 않고 더할 뿐이라 회귀 위험도
+        낮음)."""
         followup_func = self._report_detail_followup_func()
         if followup_func:
             return {followup_func}
         text = self._keyword_search_text()
+        is_short_followup = len(self.user_text.strip()) <= 20 and not self._is_decline_reply()
+        last_categories = set()
+        if is_short_followup:
+            for fn in self._last_turn_tool_funcs():
+                last_categories.update(_FUNC_TO_CATEGORY.get(fn, ()))
+
         allowed = set()
-        for keywords, funcs in _TOOL_CATEGORIES.values():
-            if any(kw in text for kw in keywords):
-                allowed.update(funcs)
+        for cat_name, (keywords, funcs) in _TOOL_CATEGORIES.items():
+            if not any(kw in text for kw in keywords):
+                continue
+            # ChatGPT 2차 검수 실험(2026-09-24, "의도 충돌 감지"): calendar가
+            # 순수 날짜 표현(_CALENDAR_WEAK_KEYWORDS)만으로 매칭됐고("일정"/
+            # "약속" 같은 명시적 신호는 없음), 직전 턴이 calendar가 아닌 다른
+            # 카테고리였다면, 그 약한 매칭만으로 calendar를 후보에 넣지 않고
+            # 직전 카테고리를 우선한다 — "어제 일정은?"처럼 명시적 신호가
+            # 하나라도 섞여 있으면 정상적으로 calendar도 노출된다.
+            if (cat_name == "calendar" and last_categories and "calendar" not in last_categories
+                    and all(kw in _CALENDAR_WEAK_KEYWORDS for kw in keywords if kw in text)):
+                continue
+            allowed.update(funcs)
+
+        for cat_name in last_categories:
+            allowed.update(_TOOL_CATEGORIES[cat_name][1])
+
         return allowed if allowed else None
 
     # 계정/로그인 상태 확인 의도 — LLM 판단에 맡기지 않고 직접 함수 호출로 처리
@@ -4745,6 +4912,14 @@ class AIWorker(QThread):
                     "방화벽 확인 두 가지), 그중 하나만 호출하고 끝내지 말고 언급된 항목에 "
                     "해당하는 함수를 전부 호출하세요 — 한 번에 하나씩 나눠서 물어본 게 아니라 "
                     "이미 한 문장에서 다 물어봤으니, 이번 턴에 관련 함수를 모두 호출해야 합니다.\n"
+                    "9. '악성코드 검사해줘'/'악성코드 점검해줘'처럼 종합적으로 봐달라는 요청은 "
+                    "get_malware_report(점수 + 항목별 상태를 한번에 보여주는 종합 리포트)를 "
+                    "호출하세요. 반대로 방금 나온 결과에서 '의심 프로세스'처럼 특정 항목 하나를 "
+                    "콕 집어 '그게 정확히 뭔지', '자세히' 다시 물어보면, get_malware_report를 "
+                    "또 부르지 말고 그 항목에 해당하는 개별 함수(의심 프로세스→"
+                    "detect_suspicious_processes, 시작프로그램→scan_startup_items, 자동 시작 "
+                    "서비스→scan_suspicious_services)를 호출하세요 — 이미 종합 리포트는 본 "
+                    "상태이므로 다시 종합 리포트를 보여주면 사용자가 원하는 상세 정보가 아닙니다.\n"
                     "\n"
                     f"날짜 계산 규칙: 오늘={_today}, 내일={_tomorrow}, 모레={_day_after_tomorrow}. "
                     f"사용자가 '내일'이라고 하면 반드시 {_tomorrow}를, '모레'라고 하면 반드시 {_day_after_tomorrow}를 사용하세요. "
@@ -4763,6 +4938,24 @@ class AIWorker(QThread):
                     "- 답변 시작/끝에 따옴표(\") 절대 금지.\n"
                     "- 결과에 없는 내용은 지어내지 마세요."
                 )
+
+                # Multi-turn 평가셋(2026-09-24) 실측: _allowed_category_funcs()가
+                # 직전 턴 함수의 카테고리를 노출 목록에 추가해도(위 참고),
+                # llama3.1은 "어제는?"처럼 날짜 표현만 보면 도구가 둘 다 보여도
+                # 여전히 calendar 쪽을 고르는 걸 확인했다 — 노출만으로는
+                # 부족하고, 직전에 실제로 뭘 썼는지 명시적으로 알려줘야 했다.
+                # 새 화제로의 전환(_allowed_category_funcs와 동일한 조건:
+                # 짧고 거절이 아닌 경우)일 때만 힌트를 주므로, 이미 잘 되는
+                # 화제 전환 케이스(decline_then_pivot 등)에는 영향 없다.
+                last_turn_funcs = self._last_turn_tool_funcs()
+                if last_turn_funcs and len(self.user_text.strip()) <= 20 and not self._is_decline_reply():
+                    system_content += (
+                        f"\n\n힌트: 직전 턴에 {', '.join(sorted(last_turn_funcs))} 함수를 "
+                        "사용했습니다. 지금 사용자의 질문이 '어제는?', '지난주는?'처럼 그 "
+                        "주제를 이어가는 아주 짧은 후속 질문이면(다른 화제로 완전히 바뀐 게 "
+                        "아닌 이상) 같은 함수를 다시 사용하세요 — '어제'/'오늘'/'지난주' 같은 "
+                        "날짜 표현만 보고 무조건 캘린더 함수로 넘어가지 마세요."
+                    )
 
             # 새 세션 첫 메시지면 __init__에서 미리 불러온 직전 세션 맥락을
             # 시스템 프롬프트 끝에 참고용으로 덧붙인다 (있을 때만).

@@ -297,3 +297,159 @@ def test_report_detail_followup_returns_none_without_offer(qapp):
     chat_history = [{"role": "assistant", "content": "확인했습니다."}]
     worker = _worker("응", chat_history, qapp)
     assert worker._report_detail_followup_func() is None
+
+
+# ── _last_turn_tool_funcs / _allowed_category_funcs 카테고리 이어가기 ──
+# (tests/llm_smoke/multiturn_cases.py의 multiturn_usage_yesterday_followup에서
+# 실측으로 재현한 버그의 회귀 테스트 — 2026-09-24)
+#
+# 실제 chat_history는 AIWorker.run()이 response['message'](tool_calls 포함)를
+# 그대로 append하므로 {"role": "assistant", "tool_calls": [...]} 형태로
+# 쌓인다 — 아래 픽스처는 이 실제 모양을 그대로 재현한다.
+
+def _tool_call_msg(func_name: str) -> dict:
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"function": {"name": func_name, "arguments": {}}}],
+    }
+
+
+def test_last_turn_tool_funcs_extracts_from_tool_calls(qapp):
+    chat_history = [
+        {"role": "user", "content": "오늘 화면 얼마나 썼어?"},
+        _tool_call_msg("get_usage_report"),
+        {"role": "tool", "content": "[⏳ 앱 사용 시간] ..."},
+        {"role": "assistant", "content": "오늘 3시간 12분 사용했어요."},
+    ]
+    worker = _worker("어제는?", chat_history, qapp)
+    assert worker._last_turn_tool_funcs() == {"get_usage_report"}
+
+
+def test_last_turn_tool_funcs_empty_when_no_tool_calls(qapp):
+    chat_history = [
+        {"role": "user", "content": "안녕"},
+        {"role": "assistant", "content": "안녕하세요!"},
+    ]
+    worker = _worker("잘지내?", chat_history, qapp)
+    assert worker._last_turn_tool_funcs() == set()
+
+
+def test_last_turn_tool_funcs_stops_at_user_message_boundary(qapp):
+    """직전 assistant 메시지가 tool_calls 없이 순수 텍스트면, 그 이전
+    (한 턴 전) tool_calls까지 거슬러 올라가면 안 된다 — 그건 이미 지나간
+    화제라 지금 턴과 무관하다."""
+    chat_history = [
+        {"role": "user", "content": "오늘 화면 얼마나 썼어?"},
+        _tool_call_msg("get_usage_report"),
+        {"role": "tool", "content": "..."},
+        {"role": "assistant", "content": "오늘 3시간 12분 사용했어요."},
+        {"role": "user", "content": "고마워"},
+        {"role": "assistant", "content": "천만에요!"},
+    ]
+    worker = _worker("음", chat_history, qapp)
+    assert worker._last_turn_tool_funcs() == set()
+
+
+def test_allowed_category_funcs_carries_previous_category_for_short_followup_regression(qapp):
+    """실측 버그 회귀: "오늘 화면 얼마나 썼어?"(get_usage_report 호출) 다음
+    "어제는?"이라고 물으면, "어제"가 calendar 카테고리 키워드라 calendar만
+    노출되고 app_usage는 전혀 안 보여서 엉뚱한 캘린더 함수를 호출하던 버그.
+    이제는 직전 턴에 실제로 불렸던 get_usage_report의 카테고리(app_usage)도
+    같이 노출돼야 한다."""
+    chat_history = [
+        {"role": "user", "content": "오늘 화면 얼마나 썼어?"},
+        _tool_call_msg("get_usage_report"),
+        {"role": "tool", "content": "..."},
+        {"role": "assistant", "content": "오늘 3시간 12분 사용했어요."},
+    ]
+    worker = _worker("어제는?", chat_history, qapp)
+    allowed = worker._allowed_category_funcs()
+    assert allowed is not None
+    assert "get_usage_report" in allowed
+
+
+def test_allowed_category_funcs_ignores_previous_category_for_long_new_topic(qapp):
+    """짧은 후속 질문에만 적용돼야 한다 — 충분히 긴 새 요청(다른 주제로
+    명확히 전환)까지 이전 카테고리를 끌고 오면 안 된다(범위를 넓혀서
+    회귀를 만들지 않도록 하는 경계 테스트)."""
+    chat_history = [
+        {"role": "user", "content": "오늘 화면 얼마나 썼어?"},
+        _tool_call_msg("get_usage_report"),
+        {"role": "tool", "content": "..."},
+        {"role": "assistant", "content": "오늘 3시간 12분 사용했어요."},
+    ]
+    worker = _worker("포트 스캔하고 방화벽 규칙도 같이 보여줘서 확인해줄 수 있어?", chat_history, qapp)
+    allowed = worker._allowed_category_funcs()
+    assert allowed is not None
+    assert "get_usage_report" not in allowed
+
+
+def test_allowed_category_funcs_suppresses_weak_calendar_when_previous_category_differs(qapp):
+    """ChatGPT 2차 검수 실험("의도 충돌 감지") 반영: "어제는?"이 순수 날짜
+    표현만으로 calendar에 걸렸고 직전 턴이 다른 카테고리(app_usage)였다면,
+    이 약한 매칭만으로 calendar까지 후보에 넣지 않는다 — 노출만 늘리는
+    이전 수정으로는 모델이 여전히 캘린더를 고르는 걸 실측으로 확인해서
+    추가한 억제 로직."""
+    chat_history = [
+        {"role": "user", "content": "오늘 화면 얼마나 썼어?"},
+        _tool_call_msg("get_usage_report"),
+        {"role": "tool", "content": "..."},
+        {"role": "assistant", "content": "오늘 3시간 12분 사용했어요."},
+    ]
+    worker = _worker("어제는?", chat_history, qapp)
+    allowed = worker._allowed_category_funcs()
+    assert "get_usage_report" in allowed
+    assert "local_get_events_by_date" not in allowed
+    assert "get_upcoming_events" not in allowed
+
+
+def test_allowed_category_funcs_keeps_calendar_with_explicit_signal(qapp):
+    """"어제 일정은?"처럼 "일정" 같은 명시적 calendar 신호가 섞여 있으면
+    억제하지 않는다 — 날짜 표현 단독일 때만 억제해야 한다."""
+    chat_history = [
+        {"role": "user", "content": "오늘 화면 얼마나 썼어?"},
+        _tool_call_msg("get_usage_report"),
+        {"role": "tool", "content": "..."},
+        {"role": "assistant", "content": "오늘 3시간 12분 사용했어요."},
+    ]
+    worker = _worker("어제 일정은?", chat_history, qapp)
+    allowed = worker._allowed_category_funcs()
+    assert "local_get_events_by_date" in allowed
+
+
+def test_allowed_category_funcs_keeps_calendar_when_previous_turn_was_calendar(qapp):
+    """직전 턴 자체가 calendar였다면(예: "오늘 일정 뭐 있어?" 다음 "어제는?"),
+    당연히 calendar를 유지해야 한다 — 억제 조건은 "직전 카테고리가 calendar가
+    아닐 때"만 적용된다."""
+    chat_history = [
+        {"role": "user", "content": "오늘 일정 뭐 있어?"},
+        _tool_call_msg("local_get_upcoming_events"),
+        {"role": "tool", "content": "..."},
+        {"role": "assistant", "content": "회의가 있어요."},
+    ]
+    worker = _worker("어제는?", chat_history, qapp)
+    allowed = worker._allowed_category_funcs()
+    assert "local_get_events_by_date" in allowed
+
+
+def test_allowed_category_funcs_keeps_calendar_without_prior_context(qapp):
+    """직전 맥락 자체가 없으면(새 대화 첫 메시지) 억제할 근거도 없다 —
+    안전장치로 calendar를 정상적으로 유지해야 한다."""
+    worker = _worker("어제는?", [], qapp)
+    allowed = worker._allowed_category_funcs()
+    assert "local_get_events_by_date" in allowed
+
+
+def test_allowed_category_funcs_ignores_previous_category_on_decline(qapp):
+    """거절 대답이면 직전 카테고리를 끌고 오지 않는다 — 다른 곳
+    (_keyword_search_text/_report_detail_followup_func)과 동일한 원칙."""
+    chat_history = [
+        {"role": "user", "content": "오늘 화면 얼마나 썼어?"},
+        _tool_call_msg("get_usage_report"),
+        {"role": "tool", "content": "..."},
+        {"role": "assistant", "content": "오늘 3시간 12분 사용했어요."},
+    ]
+    worker = _worker("아니 됐어", chat_history, qapp)
+    allowed = worker._allowed_category_funcs()
+    assert allowed is None or "get_usage_report" not in allowed

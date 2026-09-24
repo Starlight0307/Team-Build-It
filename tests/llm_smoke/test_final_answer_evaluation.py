@@ -6,29 +6,44 @@ Evaluation" v1 (ChatGPT 3차 검수 지적으로 이름 정정 — 아래 참고
 케이스 설계와 채점 원리는 final_answer_cases.py 상단 docstring 참고. 실제
 로컬 Ollama 서버에 붙어서 llama3.1을 호출한다(비결정적, 느림).
 
-── 이름에 대해 (과장 방지) ──
+── 이름에 대해 (과장 방지, ChatGPT 검수 지적 반영) ──
 "Final Answer Evaluation"이라고만 부르면 "최종 답변의 모든 사실적 정확성을
 검증한다"처럼 실제보다 넓은 범위로 들린다. 이 평가가 실제로 검증하는 건
-그게 아니라 — core/ai_worker.py의 5개 가드 함수(_looks_like_numeric_distortion
-등)가 막도록 설계된, 과거에 실사용 재검증에서 실제로 재현됐던 5개 구체적인
-회귀 유형(숫자 왜곡/근거 없는 위험 표시/무관한 주제 유출/JSON 노출/반복
-루프)이 실제 llama3.1 앞에서 다시 발생하지 않는가"다. 단위 보존(GB→%
-착각), 상태 반전(pending→"최신"), 근거 없는 안심 판정처럼 이 5개 가드가
-애초에 잡지 못하는 실패 유형은 이 평가의 범위 밖이다(별도의 "Semantic
-Fidelity Evaluation"로 다음에 다룰 계획 — 가드와 케이스를 함께 설계해야
-의미가 있어서, 케이스만 먼저 추가하지 않기로 했다).
+core/ai_worker.py의 6개 가드 함수(_looks_like_json_leak/
+_looks_like_unrelated_topic_leak/_looks_like_numeric_distortion/
+_looks_like_fabricated_risk_marker/_looks_like_repetition_loop/
+_looks_like_foreign_script_leak)가 막도록 설계된, 과거에 실사용
+재검증에서 실제로 재현됐던 구체적인 회귀 유형(숫자·단위 왜곡/근거 없는
+위험 표시/무관한 주제 유출/JSON 노출/반복 루프/원본에 없는 한자 혼입)이
+실제 llama3.1 앞에서 다시 발생하지 않는가"다. 단위 보존(GB→% 착각)은
+2026-09-24에 _looks_like_numeric_distortion 자체를 %뿐 아니라 GB/MB/원/
+개/건/초/시간/분까지 보도록 일반화해서 흡수됐고, 같은 날 재현된 한자
+혼입 버그는 6번째 가드로 추가됐다(둘 다 _summarize_tool_results_llm()에
+실제로 연결되어 있어서 이 평가도 6개 가드 기준으로 채점한다).
+
+이 가드들은 전부 "원본에 없는 게 결과에 새로 등장하는가"라는 표면적
+패턴만 본다 — 상태 반전(pending→"최신"처럼 의미가 반대로 바뀜), 근거
+없는 안심 판정, 그리고 2026-09-24 이 평가 실행 중 직접 발견한 출처/근거
+날조(원본에 없는 "네이버 블로그에서는..." 같은 외부 출처를 지어붙이는
+것 — core/ai_worker.py의 _looks_like_foreign_script_leak 함수 아래 주석
+참고)처럼, "내용은 맞는데 의미·근거가 바뀌는" 유형은 이 가드들의 설계
+범위 밖이고 이 평가도 검증하지 않는다(ChatGPT 검수: 안전한 휴리스틱을
+검증 없이 넣는 게 더 위험하다고 판단해 의도적으로 보류함). 즉 이 평가가
+통과했다는 건 "6개 가드가 다루는 유형의 재발이 없었다"는 뜻이지 "이
+평가가 사실 왜곡 문제를 전부 해결했다"는 뜻이 아니다.
 
 ── 실행 방법 ──
 Ollama 서버가 켜져 있어야 한다.
     pytest tests/llm_smoke/test_final_answer_evaluation.py -m llm -v -s
 
 ── 채점 방식 (Safety Evaluation과 동일한 이유로 하드 assert) ──
-_summarize_tool_results_llm()은 이미 5개 가드 + 재시도 + 폴백으로 "최종
-결과는 항상 사실을 보존한다"를 보장하려고 설계됐다. 이 보장이 실제
-llama3.1 앞에서도 성립하는지가 이 평가의 핵심 질문이므로, tool_selection
-처럼 "이보다 낮아지면 안 된다"는 느슨한 바닥선이 아니라 5개 가드 전부가
-False여야 하는 하드 assert로 검증한다 — 이 보장이 깨지면 이미 만들어둔
-안전망(재시도+폴백)까지 뚫렸다는 뜻이므로 정확도 등락 문제가 아니다.
+_summarize_tool_results_llm()은 이미 6개 가드 + 재시도 + 폴백으로 "위
+6개 가드가 다루는 유형에 한해서는 최종 결과가 항상 사실을 보존한다"를
+보장하려고 설계됐다. 이 보장이 실제 llama3.1 앞에서도 성립하는지가 이
+평가의 핵심 질문이므로, tool_selection처럼 "이보다 낮아지면 안 된다"는
+느슨한 바닥선이 아니라 6개 가드 전부가 False여야 하는 하드 assert로
+검증한다 — 이 보장이 깨지면 이미 만들어둔 안전망(재시도+폴백)까지
+뚫렸다는 뜻이므로 정확도 등락 문제가 아니다.
 """
 import json
 import os
@@ -62,6 +77,7 @@ from core.ai_worker import (
     _looks_like_numeric_distortion,
     _looks_like_fabricated_risk_marker,
     _looks_like_repetition_loop,
+    _looks_like_foreign_script_leak,
 )
 from tests.llm_smoke.final_answer_cases import FINAL_ANSWER_CASES
 from tests.llm_smoke.test_tool_selection import _git_commit, _SCHEMA_VERSION
@@ -156,6 +172,8 @@ def _run_case(case: dict) -> dict:
         violations.append("fabricated_risk_marker")
     if _looks_like_repetition_loop(final):
         violations.append("repetition_loop")
+    if _looks_like_foreign_script_leak(final, raw):
+        violations.append("foreign_script_leak")
 
     return {
         "id": case["id"], "raw_results": raw, "final": final,

@@ -21,6 +21,7 @@ from core.ai_worker import (
     _looks_like_numeric_distortion,
     _looks_like_fabricated_risk_marker,
     _looks_like_repetition_loop,
+    _looks_like_foreign_script_leak,
 )
 
 
@@ -49,6 +50,33 @@ def test_numeric_distortion_does_not_flag_exact_reuse():
 def test_numeric_distortion_does_not_flag_when_no_percent_anywhere():
     raw = "중복 파일 그룹을 2개 찾았어요."
     result = "중복 파일 그룹이 2개 있네요."
+    assert not _looks_like_numeric_distortion(result, raw)
+
+
+# ── "Semantic Fidelity" 과제(GB↔% 단위 혼동) 반영 — 2026-09-24 ──
+# 이전 세션 보고서에 "GB를 %로 착각" 감지가 별도 과제로 남아있었다.
+# _looks_like_numeric_distortion이 원래 %만 보던 걸 GB/MB/원/개/건/초/
+# 시간/분까지 일반화해서 이 클래스도 같은 메커니즘으로 잡히는지 확인한다.
+
+def test_numeric_distortion_detects_gb_reported_as_percent():
+    """원본엔 "17.3GB"만 있는데 요약이 "17.3%"라고 단위를 착각하면 잡아야
+    한다 — 값(17.3)은 같지만 단위가 바뀌어서 원본에 없는 값+단위 조합이 됨."""
+    raw = "메모리(RAM): 총 31.1GB 중 17.3GB 사용 중"
+    result = "메모리 사용률은 17.3%예요."
+    assert _looks_like_numeric_distortion(result, raw)
+
+
+def test_numeric_distortion_detects_percent_reported_as_gb():
+    """반대 방향(%를 GB로 착각)도 잡아야 한다."""
+    raw = "CPU 점유율: 18.0%"
+    result = "CPU가 18.0GB 사용 중이에요."
+    assert _looks_like_numeric_distortion(result, raw)
+
+
+def test_numeric_distortion_does_not_flag_exact_gb_and_won_reuse():
+    """단위를 늘렸다고 기존에 정상이던 GB/원 재인용까지 오탐하면 안 된다."""
+    raw = "중복 파일 그룹을 2개 찾았어요 (총 300개 파일 확인, 절약 가능 용량 약 50.0MB)."
+    result = "중복 파일 그룹이 2개 있고, 정리하면 50.0MB를 절약할 수 있어요."
     assert not _looks_like_numeric_distortion(result, raw)
 
 
@@ -105,6 +133,32 @@ def test_unrelated_topic_leak_does_not_flag_when_neither_mentions_topic():
     raw = "중복 파일 그룹을 2개 찾았어요."
     result = "중복 파일 그룹이 2개 있네요."
     assert not _looks_like_unrelated_topic_leak(result, raw)
+
+
+# ── _looks_like_foreign_script_leak ─────────────────────────────────
+# 실제 재현된 버그(2026-09-24): "VPN - 연결 안 됨"을 요약시켰더니
+# "VPN连接에 문제가 있을 수 있어요"처럼 중국어 한자가 한국어 문장에
+# 섞여 나옴. 이 프로젝트는 한국어 전용이라(시스템 프롬프트가 강제) 원본
+# raw_results에 없는 한자가 등장하면 항상 모델이 지어낸 것으로 본다.
+
+def test_foreign_script_leak_detects_han_characters_not_in_raw():
+    raw = "VPN - 연결 안 됨"
+    result = "VPN连接에 문제가 있을 수 있어요."
+    assert _looks_like_foreign_script_leak(result, raw)
+
+
+def test_foreign_script_leak_does_not_flag_pure_korean_result():
+    raw = "VPN - 연결 안 됨"
+    result = "VPN이 연결되어 있지 않아요."
+    assert not _looks_like_foreign_script_leak(result, raw)
+
+
+def test_foreign_script_leak_does_not_flag_when_raw_already_has_han():
+    """원본 자체(예: 파일 경로, 프로세스명)에 한자가 있었다면 결과에 그대로
+    옮겨 적은 것뿐이므로 오탐하면 안 된다."""
+    raw = "파일명: 報告書.pdf"
+    result = "報告書.pdf 파일이 있어요."
+    assert not _looks_like_foreign_script_leak(result, raw)
 
 
 # ── _looks_like_json_leak ───────────────────────────────────────────

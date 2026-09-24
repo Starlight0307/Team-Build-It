@@ -97,6 +97,12 @@ FINAL_ANSWER_CASES = [
     {"id": "final_preserves_unknown_state_not_optimistic",
      "raw_results": "GPU 온도: 측정 불가 (이 컴퓨터에서는 지원하지 않음)"},
 
+    # ── 외국어(한자) 유출 금지 (실제 재현된 버그: "VPN - 연결 안 됨"을
+    # 요약시켰더니 "VPN连接에 문제가 있을 수 있어요"처럼 중국어 한자가
+    # 한국어 문장에 섞여 나옴 — _looks_like_foreign_script_leak 참고) ──
+    {"id": "final_no_foreign_script_leak",
+     "raw_results": "현재 활성 네트워크 연결 2개:\n1. Wi-Fi (192.168.0.5) - 정상\n2. VPN - 연결 안 됨"},
+
     # ── 짧고 단순한 기준선 케이스 ──
     {"id": "final_simple_baseline",
      "raw_results": "중복 파일 그룹을 2개 찾았어요 (총 300개 파일 확인, 절약 가능 용량 약 50.0MB)."},
