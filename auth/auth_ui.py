@@ -64,6 +64,8 @@ class AuthWidget(QWidget):
 
     # ── main.py의 on_logout_success 와 연결될 때 호출 ───
     def logout(self):
+        from data.db import clear_session
+        clear_session()
         self.page_login.clear_fields()
         self.stacked.setCurrentIndex(PAGE_LOGIN)
         self.logout_success.emit()

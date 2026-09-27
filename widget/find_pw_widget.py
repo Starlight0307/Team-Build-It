@@ -4,13 +4,9 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
 from PyQt6.QtGui import QColor
 
-from data.db import update_password
+from data.db import request_password_reset, verify_reset_code, apply_new_password
 
-try:
-    from auth.email_auth import request_code, confirm_code
-    EMAIL_AUTH_AVAILABLE = True
-except ImportError:
-    EMAIL_AUTH_AVAILABLE = False
+EMAIL_AUTH_AVAILABLE = True  # Supabase가 직접 코드 발송을 처리 (항상 사용 가능)
 
 
 def get_stylesheet(is_dark: bool) -> str:
@@ -84,8 +80,8 @@ class EmailSendThread(QThread):
         self.purpose = purpose
 
     def run(self):
-        ok, msg = request_code(self.email, self.purpose)
-        self.done.emit(ok, msg)
+        ok = request_password_reset(self.email)
+        self.done.emit(ok, "" if ok else "발송에 실패했습니다.")
 
 
 class FindPwWidget(QWidget):
@@ -94,6 +90,7 @@ class FindPwWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._email_verified = False
+        self._reset_token = None
         self._send_thread = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
@@ -167,8 +164,8 @@ class FindPwWidget(QWidget):
         # 인증코드 입력 + 확인
         r_code = QHBoxLayout(); r_code.setSpacing(6)
         self.input_code = QLineEdit()
-        self.input_code.setPlaceholderText("6자리 인증코드 입력")
-        self.input_code.setMaxLength(6)
+        self.input_code.setPlaceholderText("8자리 인증코드 입력")
+        self.input_code.setMaxLength(8)
         r_code.addWidget(self.input_code)
         self.btn_verify = QPushButton("확인")
         self.btn_verify.setObjectName("BtnCheck")
@@ -260,16 +257,18 @@ class FindPwWidget(QWidget):
         if not code:
             self._set_msg(self.msg_code, "인증코드를 입력하세요."); return
 
-        ok, msg = confirm_code(email, code)
-        if ok:
+        token = verify_reset_code(email, code)
+        if token:
             self._email_verified = True
+            self._reset_token = token
             self._set_msg(self.msg_code, "✓ 인증 완료. 새 비밀번호를 입력해주세요.", ok=True)
             self.btn_send_code.setEnabled(False)
             self.btn_verify.setEnabled(False)
             self.input_code.setEnabled(False)
         else:
             self._email_verified = False
-            self._set_msg(self.msg_code, msg)
+            self._reset_token = None
+            self._set_msg(self.msg_code, "인증코드가 올바르지 않거나 만료되었습니다.")
 
     def _handle_reset(self):
         uid = self.input_id.text().strip()
@@ -296,11 +295,11 @@ class FindPwWidget(QWidget):
             self._set_msg(self.msg_pw2, "비밀번호가 일치하지 않습니다."); return
         self.msg_pw2.setText("")
 
-        if update_password(uid, eml, pw):
+        if apply_new_password(self._reset_token, pw):
             QMessageBox.information(self, "완료", "비밀번호가 재설정되었습니다!")
             self._go_back()
         else:
-            QMessageBox.warning(self, "실패", "아이디 또는 이메일이 일치하지 않습니다.")
+            QMessageBox.warning(self, "실패", "비밀번호 변경에 실패했습니다. 인증코드부터 다시 시도해주세요.")
 
     def _val_pw(self, pw):
         if not (8 <= len(pw) <= 20): return False, "8~20자로 입력하세요."
@@ -314,6 +313,7 @@ class FindPwWidget(QWidget):
 
     def clear_fields(self):
         self._email_verified = False
+        self._reset_token = None
         for w in [self.input_id, self.input_email, self.input_code,
                   self.input_pw, self.input_pw2]:
             w.clear()

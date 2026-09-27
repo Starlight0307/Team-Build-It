@@ -59,12 +59,10 @@ class GoogleLoginWorker(QThread):
 
     def run(self):
         try:
-            from auth.google_auth import sign_in_with_google
-            from data.db import find_or_create_google_user
-            profile  = sign_in_with_google()
-            username = find_or_create_google_user(
-                profile["google_id"], profile["email"], profile["name"]
-            )
+            from auth.supabase_google_auth import sign_in_with_google
+            from data.db import complete_google_login
+            access_token, refresh_token = sign_in_with_google()
+            username = complete_google_login(access_token, refresh_token)
             self.result_ready.emit(True, username, "")
         except Exception as e:
             self.result_ready.emit(False, "", str(e))

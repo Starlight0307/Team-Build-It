@@ -1,15 +1,33 @@
 """
-db.py  ─  대화기록 로컬 JSON 저장/조회 + 수파베이스 호환 함수 스텁
-(회원 인증은 기존 각 위젯에서 psycopg2로 수파베이스 직접 연결)
+db.py  ─  대화기록 로컬 JSON 저장/조회 + Supabase Auth 기반 회원 인증
 
-저장 구조:
+[중요] 회원 인증 방식이 바뀌었습니다 (2026-09-27)
+────────────────────────────────────────────────────────
+예전에는 이 앱이 psycopg2로 Postgres DB에 "직접" 접속했습니다 —
+그러려면 DB 마스터 비밀번호(SUPABASE_PASSWORD)가 배포되는 앱 안에
+그대로 들어있어야 했는데, 이건 실제로 배포하면 심각한 보안 문제입니다
+(그 비밀번호만 빼내면 회원 전체 데이터를 다 읽고 쓰고 지울 수 있음).
+
+지금은 Supabase의 공식 인증 시스템(auth.users)을 REST API로 호출하는
+방식으로 바뀌었습니다. 코드에 들어있는 SUPABASE_ANON_KEY는 이름 그대로
+"공개돼도 안전하도록" 설계된 값이고(RLS로 실제 데이터 접근을 제한),
+DB 마스터 비밀번호와는 성격이 다릅니다. .env 설정이 더 이상 필요
+없습니다.
+
+관련 DB 마이그레이션: data/migrations/004_supabase_auth_schema.sql,
+                     005_migrate_existing_users.sql
+
+저장 구조 (대화기록은 여전히 로컬 JSON):
   chat_logs/{user_id}/{session_id}.json
 """
 import os
 import json
 from datetime import datetime
 
-import bcrypt
+import requests
+
+SUPABASE_URL      = "https://ttydhxlswdutdptvzhwp.supabase.co"
+SUPABASE_ANON_KEY = "sb_publishable_16Rn4ZYkiX6FiJBYa2nqMg_DoOFwBOf"
 
 # data/db.py 기준 프로젝트 루트(한 단계 위)의 chat_logs/ — 폴더 정리로 db.py가
 # data/ 밑으로 옮겨졌지만 대화기록 저장 위치는 그대로 유지하기 위함.
@@ -17,24 +35,111 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHAT_LOG_DIR = os.path.join(PROJECT_ROOT, "chat_logs")
 os.makedirs(CHAT_LOG_DIR, exist_ok=True)
 
+# 현재 로그인한 사용자의 Supabase 세션. 이 앱은 한 번에 한 명만 로그인하는
+# 데스크톱 앱이라 프로세스 전역으로 하나만 유지한다. 마이페이지에서
+# "내 정보 조회/수정"을 할 때, DB가 이 토큰의 신원(auth.uid())을 보고
+# 본인 것만 접근하게 걸러준다 (RLS).
+#
+# access_token은 기본 1시간 후 만료된다 — 로그인 상태로 앱을 오래 켜두면
+# (구글 로그인처럼 앱 안에서 재로그인 없이 계속 쓰는 세션) 만료된 토큰으로
+# 요청을 보내게 되므로, refresh_token으로 자동 갱신한다.
+_session = {"access_token": None, "refresh_token": None, "expires_at": 0, "username": None}
 
-def _supabase_connect():
-    """Supabase Postgres 연결 — 접속 정보는 .env(환경변수)에서만 읽는다.
-    예전엔 비밀번호가 코드에 그대로 박혀 있어서 git 저장소에 커밋됐었음 —
-    보안 문제라 .env로 옮기고 코드에서는 절대 하드코딩하지 않는다."""
-    import psycopg2
-    return psycopg2.connect(
-        host=os.environ["SUPABASE_HOST"],
-        database=os.environ.get("SUPABASE_DB", "postgres"),
-        user=os.environ["SUPABASE_USER"],
-        password=os.environ["SUPABASE_PASSWORD"],
-        port=os.environ.get("SUPABASE_PORT", "6543"),
-        sslmode="require"
+
+def _rpc(fn_name: str, payload: dict, timeout: int = 10):
+    resp = requests.post(
+        f"{SUPABASE_URL}/rest/v1/rpc/{fn_name}",
+        headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+        json=payload, timeout=timeout,
     )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _refresh_session_if_needed():
+    """access_token이 곧 만료되거나 이미 만료됐으면 refresh_token으로 갱신한다."""
+    import time
+    if not _session.get("refresh_token"):
+        return
+    if time.time() < _session.get("expires_at", 0) - 30:
+        return  # 아직 30초 이상 여유 있음
+
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/token",
+            params={"grant_type": "refresh_token"},
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"refresh_token": _session["refresh_token"]},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            _store_tokens(data.get("access_token"), data.get("refresh_token"))
+    except Exception as e:
+        print(f"[세션 갱신 오류] {e}")
+
+
+def _session_headers() -> dict:
+    """로그인 세션 토큰이 있으면 그걸로, 없으면 익명 키로 호출한다."""
+    _refresh_session_if_needed()
+    token = _session.get("access_token") or SUPABASE_ANON_KEY
+    return {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+
+def _current_uid():
+    """세션 access_token(JWT)의 sub 클레임(내 uuid)을 꺼낸다.
+    서명 검증은 필요 없음 — 실제 신원 확인은 어차피 이 토큰을 그대로
+    Supabase에 보내서 서버가 검증하고, 여기서는 PostgREST의
+    'UPDATE에 WHERE 필요' 제약을 만족시킬 필터 값으로만 쓴다."""
+    import base64
+    token = _session.get("access_token")
+    if not token:
+        return None
+    try:
+        payload_b64 = token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        return payload.get("sub")
+    except Exception:
+        return None
+
+
+def _store_tokens(access_token: str, refresh_token: str = None):
+    """access_token(+refresh_token)을 저장하고, JWT의 exp 클레임으로
+    만료 시각을 기록해둔다 (자동 갱신 판단용)."""
+    import base64, time
+    _session["access_token"] = access_token
+    if refresh_token:
+        _session["refresh_token"] = refresh_token
+    try:
+        payload_b64 = access_token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        _session["expires_at"] = payload.get("exp", 0)
+    except Exception:
+        _session["expires_at"] = 0
+
+
+def set_session(access_token: str, username: str, refresh_token: str = None):
+    """구글 로그인 등 다른 경로로 이미 세션을 얻은 경우 여기에 등록한다."""
+    _store_tokens(access_token, refresh_token)
+    _session["username"] = username
+
+
+def clear_session():
+    """로그아웃 시 호출."""
+    _session["access_token"] = None
+    _session["refresh_token"] = None
+    _session["expires_at"] = 0
+    _session["username"] = None
 
 
 # ==========================================
-# 💾 대화기록 저장/조회 (로컬 JSON)
+# 💾 대화기록 저장/조회 (로컬 JSON) — 변경 없음
 # ==========================================
 
 def save_chat_to_file(user_id, role, content, session_id=None, session_title=None):
@@ -140,258 +245,235 @@ def count_sessions(user_id: str) -> int:
 
 
 # ==========================================
-# 🔐 비밀번호 해싱 (bcrypt)
-#
-# 예전엔 password 컬럼에 평문을 그대로 저장/비교했음 — DB가 노출되면
-# 전 회원 비밀번호가 그대로 유출되는 구조라 보안 취약점이었음.
-# 지금부터 신규 가입/비밀번호 변경은 전부 bcrypt 해시로 저장하고,
-# 기존에 이미 평문으로 저장돼 있던 계정은 verify_login()에서 로그인에
-# 성공하는 순간 자동으로 해시로 승격(마이그레이션)한다.
+# 🔐 회원 인증 (Supabase Auth)
 # ==========================================
 
-def _hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-
-def _is_bcrypt_hash(value) -> bool:
-    return isinstance(value, str) and value.startswith(("$2a$", "$2b$", "$2y$"))
-
-
 def verify_login(username: str, password: str) -> bool:
-    """로그인 검증.
-    - password 컬럼이 이미 bcrypt 해시면 bcrypt로 비교.
-    - 아직 평문(레거시 계정)이면 그대로 비교하고, 일치하면 이 시점에
-      해시로 갱신해 둔다 (다음부터는 해시로 저장됨).
-    """
+    """로그인 검증. 아이디→이메일 조회(RPC) 후 Supabase에 비밀번호 검증을
+    맡긴다. 성공하면 세션(access_token)을 저장해 마이페이지 등에서 재사용."""
     try:
-        conn = _supabase_connect()
-        cur = conn.cursor()
-        cur.execute("SELECT id, password FROM users WHERE username=%s", (username,))
-        row = cur.fetchone()
-        if not row:
-            cur.close(); conn.close()
+        email = _rpc("rpc_get_email_by_username", {"p_username": username})
+        if not email:
             return False
 
-        user_id, stored = row
-        if _is_bcrypt_hash(stored):
-            ok = bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8"))
-        else:
-            ok = (stored == password)
-            if ok:
-                cur.execute(
-                    "UPDATE users SET password=%s WHERE id=%s",
-                    (_hash_password(password), user_id)
-                )
-                conn.commit()
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/token",
+            params={"grant_type": "password"},
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"email": email, "password": password},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return False
 
-        cur.close(); conn.close()
-        return ok
+        data = resp.json()
+        set_session(data.get("access_token"), username, data.get("refresh_token"))
+        return True
     except Exception as e:
         print(f"[로그인 오류] {e}")
         return False
 
 
-# ==========================================
-# 🔒 이전 버전 호환용 스텁 함수
-# (login_widget, signup_widget 구버전이 import할 경우 오류 방지)
-# 실제 인증은 각 위젯에서 psycopg2로 수파베이스 직접 처리
-# ==========================================
-
 def check_login(username: str, password: str) -> bool:
-    """수파베이스 로그인 확인 - 구버전 호환용"""
+    """로그인 확인 - 구버전 호환용"""
     return verify_login(username, password)
 
 
 def user_exists_by_username(username: str) -> bool:
-    """수파베이스 아이디 중복 확인 - 구버전 호환용"""
+    """아이디 중복 확인"""
     try:
-        conn = _supabase_connect()
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE username=%s", (username,))
-        exists = cur.fetchone()
-        cur.close(); conn.close()
-        return exists is not None
+        return bool(_rpc("rpc_username_exists", {"p_username": username}))
     except Exception as e:
         print(f"[중복확인 오류] {e}")
         return False
 
 
 def user_exists_by_email(email: str) -> bool:
-    """수파베이스 이메일 중복 확인 - 구버전 호환용"""
+    """이메일 중복 확인"""
     try:
-        conn = _supabase_connect()
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE email=%s", (email,))
-        exists = cur.fetchone()
-        cur.close(); conn.close()
-        return exists is not None
+        return bool(_rpc("rpc_email_exists", {"p_email": email}))
     except Exception as e:
         print(f"[이메일 확인 오류] {e}")
         return False
 
 
 def register_user(username, password, email, name, phone, birthday):
-    """수파베이스 회원가입 - 구버전 호환용"""
+    """회원가입. Supabase Auth에 계정을 만들면, DB 트리거가 자동으로
+    username/name/phone/birthday/member_no가 채워진 profiles 행을
+    만들어준다 (data/migrations/004 참고)."""
     try:
-        import random, string
-        conn = _supabase_connect()
-        cur = conn.cursor()
-        hashed_pw = _hash_password(password)
-        # 고유 회원번호 생성
-        while True:
-            suffix = ''.join(random.choices(string.digits, k=6))
-            member_no = f"RUMI-{suffix}"
-            cur.execute("SELECT id FROM users WHERE member_no = %s", (member_no,))
-            if not cur.fetchone():
-                break
-        cur.execute(
-            "INSERT INTO users (username, password, email, name, phone, birthday, member_no) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (username, hashed_pw, email, name, phone, birthday, member_no)
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/signup",
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={
+                "email": email,
+                "password": password,
+                "data": {
+                    "username": username,
+                    "name": name,
+                    "phone": phone,
+                    "birthday": str(birthday) if birthday else None,
+                },
+            },
+            timeout=10,
         )
-        conn.commit(); cur.close(); conn.close()
+        if resp.status_code >= 400:
+            print(f"[회원가입 오류] {resp.status_code} {resp.text[:300]}")
     except Exception as e:
         print(f"[회원가입 오류] {e}")
 
 
-# ==========================================
-# 🔵 구글 로그인 (OAuth)
-#
-# 구글 계정으로 로그인/회원가입 — 비밀번호 없이 google_id로 식별한다.
-# 이미 같은 이메일로 가입된 로컬 계정이 있으면 그 계정에 google_id만
-# 연결(link)하고, 없으면 새 계정을 만든다. 회원번호(member_no)는
-# 로컬 가입(RUMI-######)과 구분되도록 구글 고유 ID(sub) 기반으로
-# 'RUMI-G-########' 형식을 쓴다.
-# ==========================================
-
-def find_or_create_google_user(google_id: str, email: str, name: str) -> str:
-    """구글 계정으로 로그인. 이미 연결된 계정이 있으면 그 아이디를,
-    없으면 새로 만들어서 아이디를 반환한다. 실패하면 예외를 던진다
-    (호출부에서 사용자에게 실패 사유를 보여줘야 하므로 여기서는
-    조용히 삼키지 않는다)."""
-    conn = _supabase_connect()
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT username FROM users WHERE google_id=%s", (google_id,))
-        row = cur.fetchone()
-        if row:
-            return row[0]
-
-        # 같은 이메일로 이미 가입된 로컬 계정이 있으면 구글 계정만 연결
-        if email:
-            cur.execute("SELECT id, username FROM users WHERE email=%s", (email,))
-            row = cur.fetchone()
-            if row:
-                user_id, username = row
-                cur.execute("UPDATE users SET google_id=%s WHERE id=%s", (google_id, user_id))
-                conn.commit()
-                return username
-
-        # 신규 계정 생성 — 아이디는 이메일 앞부분에서 유도, 중복이면 숫자를 붙인다
-        base_username = email.split("@")[0] if email else f"google{google_id[-6:]}"
-        base_username = "".join(c for c in base_username if c.isalnum()) or "google"
-        base_username = base_username[:14]
-        username = base_username
-        n = 1
-        while True:
-            cur.execute("SELECT id FROM users WHERE username=%s", (username,))
-            if not cur.fetchone():
-                break
-            n += 1
-            username = f"{base_username}{n}"
-
-        member_no = f"RUMI-G-{google_id[-8:]}"
-        cur.execute("SELECT id FROM users WHERE member_no=%s", (member_no,))
-        if cur.fetchone():
-            import random, string
-            member_no = f"RUMI-G-{''.join(random.choices(string.digits, k=8))}"
-
-        cur.execute(
-            "INSERT INTO users (username, password, email, name, phone, birthday, member_no, google_id) "
-            "VALUES (%s, NULL, %s, %s, NULL, NULL, %s, %s)",
-            (username, email, name or username, member_no, google_id)
-        )
-        conn.commit()
-        return username
-    finally:
-        cur.close(); conn.close()
-
-
-# ==========================================
-# 👤 프로필 조회/수정
-#
-# 구글 로그인으로 가입한 계정은 휴대폰번호/생년월일을 수집하지 않아
-# NULL로 남아있는데, 마이페이지에서 나중에 채울 수 있게 해준다.
-# ==========================================
-
-def get_user_profile(username: str) -> dict | None:
-    """마이페이지 표시용 프로필 정보 반환."""
-    conn = _supabase_connect()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "SELECT email, phone, birthday, google_id FROM users WHERE username=%s",
-            (username,)
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        email, phone, birthday, google_id = row
-        return {
-            "email": email,
-            "phone": phone or "",
-            "birthday": birthday.isoformat() if birthday else "",
-            "is_google": google_id is not None,
-        }
-    finally:
-        cur.close(); conn.close()
-
-
-def update_profile(username: str, phone: str = None, birthday: str = None) -> bool:
-    """휴대폰번호/생년월일 갱신. phone은 '-' 없는 숫자 11자리,
-    birthday는 'YYYY-MM-DD' 형식이어야 한다 (호출부에서 검증)."""
-    conn = _supabase_connect()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "UPDATE users SET phone=COALESCE(%s, phone), birthday=COALESCE(%s, birthday) "
-            "WHERE username=%s",
-            (phone, birthday, username)
-        )
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        cur.close(); conn.close()
-
-
 def get_username_by_email(email: str):
-    """수파베이스 이메일로 아이디 찾기 - 구버전 호환용"""
+    """이메일로 아이디 찾기"""
     try:
-        conn = _supabase_connect()
-        cur = conn.cursor()
-        cur.execute("SELECT username FROM users WHERE email=%s", (email,))
-        row = cur.fetchone()
-        cur.close(); conn.close()
-        return row[0] if row else None
+        return _rpc("rpc_get_username_by_email", {"p_email": email})
     except Exception as e:
         print(f"[아이디 찾기 오류] {e}")
         return None
 
 
-def update_password(username: str, email: str, new_password: str) -> bool:
-    """수파베이스 비밀번호 변경 - 구버전 호환용"""
+def request_password_reset(email: str) -> bool:
+    """비밀번호 재설정 코드 발송 (Supabase의 'Reset Password' 템플릿으로
+    이메일이 가고, {{ .Token }}로 넣어둔 인증코드가 그 안에 보인다).
+    find_pw_widget에서 '인증코드 발송' 버튼에 연결.
+    (※ /auth/v1/otp는 '매직 링크'용 별개 API라 여기선 쓰면 안 됨 —
+    비밀번호 재설정 전용인 /auth/v1/recover를 써야 함)"""
     try:
-        conn = _supabase_connect()
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE username=%s AND email=%s", (username, email))
-        if not cur.fetchone():
-            cur.close(); conn.close()
-            return False
-        cur.execute(
-            "UPDATE users SET password=%s WHERE username=%s AND email=%s",
-            (_hash_password(new_password), username, email)
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/recover",
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"email": email},
+            timeout=10,
         )
-        conn.commit(); cur.close(); conn.close()
-        return True
+        return resp.status_code < 400
+    except Exception as e:
+        print(f"[비밀번호 재설정 코드 발송 오류] {e}")
+        return False
+
+
+def verify_reset_code(email: str, code: str):
+    """비밀번호 재설정용 인증코드를 검증한다. 성공하면 그 사람 본인의
+    임시 세션 access_token을 반환 (관리자 권한 없이, 본인 세션으로만
+    비밀번호를 바꿀 수 있게 하는 Supabase의 공식 recovery 절차).
+    실패하면 None."""
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/verify",
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"type": "recovery", "email": email, "token": code},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            print(f"[인증코드 검증 오류] {resp.text[:200]}")
+            return None
+        return resp.json().get("access_token")
+    except Exception as e:
+        print(f"[인증코드 검증 오류] {e}")
+        return None
+
+
+def apply_new_password(reset_token: str, new_password: str) -> bool:
+    """verify_reset_code()로 받은 임시 세션으로 비밀번호를 새 값으로 바꾼다."""
+    try:
+        resp = requests.put(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {reset_token}",
+                "Content-Type": "application/json",
+            },
+            json={"password": new_password},
+            timeout=10,
+        )
+        return resp.status_code < 400
     except Exception as e:
         print(f"[비밀번호 변경 오류] {e}")
+        return False
+
+
+# ==========================================
+# 🔵 구글 로그인 (Supabase Auth의 구글 프로바이더)
+#
+# auth/supabase_google_auth.py가 브라우저 OAuth 왕복을 전부 처리하고
+# Supabase 세션(access_token)을 반환한다. 여기서는 그 세션으로 내
+# 아이디(username)만 조회하면 된다 — 계정 생성은 004번 트리거가 이미
+# 처리했음(신규면 auth.users insert 시점에 자동 생성됨).
+# ==========================================
+
+def complete_google_login(access_token: str, refresh_token: str = None) -> str:
+    """구글 로그인 후 세션을 등록하고, 내 아이디(username)를 반환한다."""
+    resp = requests.get(
+        f"{SUPABASE_URL}/rest/v1/profiles",
+        params={"select": "username"},
+        headers={
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {access_token}",
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    rows = resp.json()
+    if not rows:
+        raise RuntimeError("프로필 정보를 찾을 수 없습니다.")
+    username = rows[0]["username"]
+    set_session(access_token, username, refresh_token)
+    return username
+
+
+# ==========================================
+# 👤 프로필 조회/수정 (마이페이지)
+#
+# 로그인 세션의 access_token으로 호출 — RLS가 auth.uid()로 본인 행만
+# 허용하므로 별도 파라미터 없이도 안전하게 "내 정보"만 조회/수정된다.
+# ==========================================
+
+def get_user_profile(username: str) -> dict | None:
+    """마이페이지 표시용 프로필 정보 반환 (현재 로그인 세션 기준)."""
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/profiles",
+            params={"select": "phone,birthday,google_id"},
+            headers=_session_headers(),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "phone": row.get("phone") or "",
+            "birthday": row.get("birthday") or "",
+            "is_google": row.get("google_id") is not None,
+        }
+    except Exception as e:
+        print(f"[프로필 조회 오류] {e}")
+        return None
+
+
+def update_profile(username: str, phone: str = None, birthday: str = None) -> bool:
+    """휴대폰번호/생년월일 갱신 (현재 로그인 세션 기준, 본인 행만 수정됨)."""
+    try:
+        body = {}
+        if phone is not None:
+            body["phone"] = phone
+        if birthday is not None:
+            body["birthday"] = birthday
+        if not body:
+            return True
+
+        uid = _current_uid()
+        if not uid:
+            return False
+
+        resp = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/profiles",
+            params={"id": f"eq.{uid}"},
+            headers=_session_headers(),
+            json=body,
+            timeout=10,
+        )
+        return resp.status_code < 400
+    except Exception as e:
+        print(f"[프로필 저장 오류] {e}")
         return False

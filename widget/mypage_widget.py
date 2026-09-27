@@ -183,15 +183,24 @@ class MyPageWidget(QWidget):
             return
 
         try:
-            update_profile(
+            ok = update_profile(
                 self._username,
                 phone=phone or None,
                 birthday=birthday or None,
             )
-            QMessageBox.information(self, "완료", "정보가 저장되었습니다.")
-            self.go_home.emit()
         except Exception as e:
             QMessageBox.warning(self, "오류", f"저장에 실패했습니다.\n{e}")
+            return
+
+        if ok:
+            QMessageBox.information(self, "완료", "정보가 저장되었습니다.")
+            self.go_home.emit()
+        else:
+            QMessageBox.warning(
+                self, "오류",
+                "저장에 실패했습니다. 로그인 세션이 만료되었을 수 있으니\n"
+                "로그아웃 후 다시 로그인해서 시도해주세요."
+            )
 
     def update_theme(self, is_dark: bool):
         if is_dark:
