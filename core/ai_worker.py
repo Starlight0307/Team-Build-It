@@ -325,6 +325,53 @@ _DANGEROUS_FUNCS = {
     # 나머지와 같은 급으로 취급하는 건 과했다 — 실사용자(팀원) 피드백으로 수정.
 }
 
+# 2026-09-28 "Reminder → Action(IoT)" 자동화 확장: 위 control_iot_device
+# 제외 사유("직접 지시 → 즉시 실행이라 확인 불필요")와 겉보기엔 모순돼
+# 보이지만 실제로는 다른 문제다. reminder.py의 set_daily_reminder/set_*_
+# condition에 iot_device_name을 채우면, "지금 사용자가 지시한 걸 지금
+# 실행"하는 게 아니라 "나중에(시간이 되거나 조건이 맞으면) 사용자가 없는
+# 상태에서 무인으로 실행"하는 규칙을 등록하는 것이다 — 확인이 필요없다고
+# 판단했던 근거(애매함 없음, 사용자가 그 순간 보고 있음)가 여기선 성립하지
+# 않는다. 그래서 _DANGEROUS_FUNCS에 이 5개 함수를 통째로 넣는 대신(그러면
+# 알림만 등록하는 기존 흐름까지 전부 확인창을 띄우게 돼 하위 호환이 깨짐),
+# 실제로 iot_device_name이 채워진 호출만 동적으로 위험하다고 판단한다 —
+# _DANGEROUS_FUNCS는 "함수 이름만 보고 항상 위험"인 정적 목록이라 이 조건부
+# 판단에는 안 맞아서 별도로 둔다(아래 dispatch 지점에서 두 목록을 함께 확인).
+_ACTION_BEARING_REMINDER_FUNCS = {
+    "set_daily_reminder", "set_usage_condition", "set_spending_condition",
+    "set_cpu_condition", "set_disk_condition",
+}
+
+
+def _has_automation_action(args: dict) -> bool:
+    """reminder.py의 set_*_condition/set_daily_reminder 호출 인자에 실제
+    기기 자동 제어(iot_device_name)가 채워져 있는지만 본다 — 값 자체가
+    유효한지(iot_state가 on/off인지)는 실제 함수(plugins/reminder.py의
+    _validate_action)가 실행 시점에 검사하므로 여기서는 "시도했는지"만
+    판단해도 충분하다(확인창 문구가 약간 어색해질 수는 있어도, 실행
+    자체는 항상 안전하게 검증된다)."""
+    return bool(str(args.get('iot_device_name', '') or '').strip())
+
+
+def _describe_reminder_action_registration(func_name: str, args: dict) -> str:
+    """등록 확인창에 보여줄 설명 — _DANGEROUS_FUNCS의 다른 항목들과 같은
+    "(a, fm) -> str" 모양을 맞추지 않고 func_name까지 받는 이유는, 같은
+    iot 액션이라도 트리거 종류(시각/사용량/지출/CPU/디스크)마다 설명
+    문구가 달라서다."""
+    device = str(args.get('iot_device_name', '') or '').strip()
+    state = str(args.get('iot_state', '') or '').strip().lower()
+    state_kr = {"on": "켜기", "off": "끄기"}.get(state, f"'{state}'(알 수 없는 상태)")
+    trigger_desc = {
+        'set_daily_reminder': f"매일 {int(args.get('hour', 0) or 0):02d}:{int(args.get('minute', 0) or 0):02d}",
+        'set_usage_condition': f"'{args.get('target', '')}' 사용 시간이 {args.get('threshold_minutes', '?')}분 초과",
+        'set_spending_condition': f"이번달 지출이 {args.get('threshold_amount', '?')}원 초과",
+        'set_cpu_condition': f"CPU 사용률이 {args.get('threshold_percent', '?')}% 초과",
+        'set_disk_condition': f"디스크 여유공간이 {args.get('threshold_percent', '?')}% 미만",
+    }.get(func_name, "조건 충족")
+    return (f"자동 실행 등록: {trigger_desc}일 때 '{device}' 기기 자동 {state_kr} "
+            f"(등록 후에는 사용자 확인 없이 무인으로 실행됩니다)")
+
+
 # 위험한 동작 전에 반드시 먼저 봐야 하는 조회/탐지 함수들 — "같은 턴에
 # 조회 없이 위험한 동작이 요청되면 실행 대신 확인 요청 메시지로 대체"하는
 # 게이트가 이 표를 읽는다. 원래는 AIWorker.run() 메서드 안의 지역 변수로
@@ -471,11 +518,15 @@ _TOOL_CATEGORIES = {
          # ⑥ cpu_limit/disk_limit 추가 — disk_limit는 "많아지면"이 아니라
          # "적어지면"(여유공간이 떨어지면) 알림이라 기존 "넘으면" 계열과 반대
          # 방향의 표현이 필요하다. 이것도 다른 카테고리와 안 겹치는 좁은 표현.
-         "떨어지면", "아래로 떨어지면", "밑으로 떨어지면", "부족해지면"),
+         "떨어지면", "아래로 떨어지면", "밑으로 떨어지면", "부족해지면",
+         # 2026-09-28 IoT 자동 실행 이력 조회 — 다른 카테고리와 안 겹치는
+         # 좁은 표현("실행"만 단독으로 넣으면 앱 실행 등과 충돌할 수 있어
+         # "자동 실행"/"실행 이력"처럼 붙여서만 매치).
+         "자동 실행 기록", "자동실행 기록", "실행 이력", "자동실행 이력"),
         ("set_timer", "list_timers", "cancel_timer",
          "set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder",
          "set_usage_condition", "set_spending_condition", "set_cpu_condition", "set_disk_condition",
-         "list_conditions", "cancel_condition"),
+         "list_conditions", "cancel_condition", "list_action_log"),
     ),
     "expense_tracker": (
         ("구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼", "얼마 썼", "구매내역", "구매 내역",
@@ -485,7 +536,11 @@ _TOOL_CATEGORIES = {
     ),
     "file_search": (
         ("받은", "다운로드", "다운받", "pdf", "파일 찾", "파일찾", "문서 찾", "사진 찾", "이미지 찾",
-         "동영상 찾", "엑셀", "한글파일", "워드", "만든 파일", "수정한 파일"),
+         "동영상 찾", "엑셀", "한글파일", "워드", "만든 파일", "수정한 파일",
+         # 2026-09-28 메타데이터 필터 확장 — "최근 수정된 발표 자료 찾아줘"가 아무 카테고리에도
+         # 안 걸려 도구 호출 자체가 안 되던 공백. "수정"만 단독으로 넣으면 일정 수정과
+         # 충돌하므로 "수정된 파일/문서"처럼 붙여서만 매치.
+         "수정된 파일", "수정된 문서", "만든 문서", "받은 문서", "발표 자료", "발표자료", "ppt", "파워포인트"),
         ("search_files",),
     ),
     "app_usage": (
@@ -3901,6 +3956,31 @@ class AIWorker(QThread):
         ("yesterday", ("어제",)), ("today", ("오늘",)),
         ("last_7_days", ("일주일", "최근7일", "7일")), ("last_30_days", ("한달", "최근30일", "30일")),
     )
+    # 최근 N일/주/개월/년 — compact(공백 제거) 텍스트 기준. 롤링 정책: 1주=7일, 1개월=30일, 1년=365일
+    # (달력 기준 "지난달"과 달리 "최근 N…"은 오늘로부터 거꾸로 센 N일이다).
+    _FILE_RECENT_DAYS = re.compile(r"(?:최근|지난)(\d{1,3})(일|주|개월|달|년)")
+    _FILE_RECENT_UNIT_DAYS = {"일": 1, "주": 7, "개월": 30, "달": 30, "년": 365}
+    # 크기 표현: 숫자(소수·천단위 쉼표 허용) + 단위. 긴 단위를 먼저 둬야 "킬로바이트"가 "킬로"에 먹히지 않는다.
+    _FILE_SIZE_EXPR = re.compile(
+        r"(?<![\d.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
+        r"(킬로바이트|메가바이트|기가바이트|kb|mb|gb|킬로|메가|기가)"
+    )
+    _FILE_SIZE_UNIT_MB = {
+        "kb": 1 / 1024, "킬로": 1 / 1024, "킬로바이트": 1 / 1024,
+        "mb": 1, "메가": 1, "메가바이트": 1,
+        "gb": 1024, "기가": 1024, "기가바이트": 1024,
+    }
+    # 방향 판정: 단위 바로 뒤(조사·"정도"·"보다" 같은 연결어를 건너뛴 위치)에서 시작하는 표현만 인정한다.
+    # 부정형이 긍정형의 부분 문자열이라("넘지 않는" ⊃ "넘") 부정형을 먼저 검사해야 한다.
+    _FILE_SIZE_BRIDGE = re.compile(r"^(?:정도|보다|가|이|는|은|도|를|을|만)+")
+    _FILE_SIZE_MAX_FIRST = re.compile(
+        r"^(?:넘지않|넘지못|안넘|초과하지않|초과안|크지않|안큰|안커|안되는|안돼|못미치|이하|미만|이내|작은|작게|작아|적은)")
+    _FILE_SIZE_MIN_FIRST_NEG = re.compile(r"^(?:작지않|안작|적지않|안적)")
+    _FILE_SIZE_MIN = re.compile(r"^(?:이상|넘는|넘어|넘은|넘게|넘|초과|큰|커|많은|높은)")
+    # "넘으면 안 되는"/"이상이면 안 되는"처럼 하한 표현 + 금지("안 되는") = 상한 의미
+    _FILE_SIZE_MIN_THEN_PROHIBIT = re.compile(r"^(?:이면|으면|면|을때|는경우)?(?:안되|안돼|안됨|안된|못)")
+    # 방향 표현 뒤에 다시 부정이 붙으면("이상은 아닌", "이하 말고") 의미를 알 수 없으므로 조건을 만들지 않는다.
+    _FILE_SIZE_TRAILING_NEG = re.compile(r"^(?:은|는|이|가|도|만)?(?:아닌|아니|아님|말고|제외|빼고)")
     _FILE_CREATED_WORDS = ("받은", "다운", "만든", "저장한", "생성")
     _FILE_MODIFIED_WORDS = ("수정", "편집", "고친", "작업한", "바꾼")
     # 파일 이름 키워드에 섞여 들어오면 안 되는 말(종류/기간/동작 표현)
@@ -3929,7 +4009,45 @@ class AIWorker(QThread):
             out["time_basis"] = "modified"
         elif any(w in compact for w in self._FILE_CREATED_WORDS):
             out["time_basis"] = "created"
+
+        # 2026-09-28 메타데이터 필터 확장 — 크기/최근 N일도 LLM이 아니라 정규식이 고른다
+        # (LLM이 지어낸 숫자 조건이 결과를 조용히 0건으로 만드는 걸 막기 위해, 이 값들은
+        # 사용자 문장에서 실제로 뽑힌 경우에만 인정한다 — 호출부가 LLM 값은 먼저 버림).
+        recent = self._FILE_RECENT_DAYS.search(compact)
+        if recent:
+            n, unit = int(recent.group(1)), recent.group(2)
+            days = n * self._FILE_RECENT_UNIT_DAYS[unit]
+            if 1 <= days <= 365:
+                out["recent_days"] = days
+                out.pop("period", None)  # "최근 17일"의 "7일" 같은 부분 매칭이 period로 새는 것 방지
+        for m in self._FILE_SIZE_EXPR.finditer(compact):
+            mb = float(m.group(1).replace(",", "")) * self._FILE_SIZE_UNIT_MB[m.group(2)]
+            direction, tail = self._file_size_direction(compact[m.end():m.end() + 14])
+            if direction == "min":
+                out["min_size_mb"] = mb
+            elif direction == "max":
+                out["max_size_mb"] = mb
+            # 방향을 확정할 수 없으면(없음/모호/부정) 어느 쪽인지 모르므로 조건으로 만들지 않는다.
         return out
+
+    def _file_size_direction(self, tail: str):
+        """크기 표현 바로 뒤 문자열에서 방향을 판정한다 → ("min"|"max"|None, 남은 문자열)."""
+        # 연결어("가/이/는…")가 방향어("이상/이하")의 첫 글자와 겹치므로("이"), 연결어를 건너뛰기 전
+        # 원문과 건너뛴 문자열을 둘 다 시도한다.
+        for cand in (tail, self._FILE_SIZE_BRIDGE.sub("", tail, count=1)):
+            if m := self._FILE_SIZE_MAX_FIRST.match(cand):
+                direction = "max"
+            elif m := self._FILE_SIZE_MIN_FIRST_NEG.match(cand):
+                direction = "min"
+            elif m := self._FILE_SIZE_MIN.match(cand):
+                direction = "max" if self._FILE_SIZE_MIN_THEN_PROHIBIT.match(cand[m.end():]) else "min"
+            else:
+                continue
+            rest = cand[m.end():]
+            if self._FILE_SIZE_TRAILING_NEG.match(rest):
+                return None, rest
+            return direction, rest
+        return None, tail
 
     def _sanitize_file_keyword(self, keyword: str) -> str:
         """LLM이 "PDF"/"지난주"/"받은" 같은 종류·기간 단어를 파일 이름 키워드로 넣으면 그 단어가
@@ -4071,8 +4189,29 @@ class AIWorker(QThread):
 
     def _needs_tools(self) -> bool:
         """사용자 입력(+ 필요시 직전 AI 답변)에 도구 관련 키워드가 있는지 빠르게 판단."""
+        if self._file_filter_route() is not None:
+            return True
         text = self._keyword_search_text()
         return any(kw in text for kw in self._TOOL_KEYWORDS)
+
+    def _file_filter_route(self):
+        """파일 크기/최근 N일 조건 문장의 도구 라우팅(키워드 게이트가 못 잡는 문장용).
+        - 크기 하한만 있고 이름/종류/기간 단서가 전혀 없음("100MB 넘는 파일") → find_large_files:
+          이건 파일 이름 검색이 아니라 용량 탐색 영역이고, search_files는 크기만으로는 검색하지 않는다.
+        - 그 밖에 크기 또는 최근 N일 조건이 있음("최근 7일 100MB 이상 파일") → search_files.
+        해당 없으면 None(기존 키워드 라우팅에 맡김)."""
+        text = self.user_text
+        cond = self._resolve_file_search_conditions(text)
+        if "파일" not in text and "file_type" not in cond:
+            return None  # 파일 얘기인지 알 수 없는 문장("100MB 넘는 게 뭐야")은 건드리지 않음
+        has_size = "min_size_mb" in cond or "max_size_mb" in cond
+        if not has_size and "recent_days" not in cond:
+            return None
+        size_only = (
+            "min_size_mb" in cond and "max_size_mb" not in cond
+            and not any(k in cond for k in ("file_type", "period", "recent_days", "time_basis"))
+        )
+        return "find_large_files" if size_only else "search_files"
 
     # 2026-09-11 실사용 재검증에서 발견한 버그: "포트 445가 열려 있어서
     # 위험할 수 있어요. 지금 방화벽에서 막아드릴까요?"라는 제안에 "응, 막아줘"
@@ -4325,6 +4464,9 @@ class AIWorker(QThread):
         followup_func = self._report_detail_followup_func()
         if followup_func:
             return {followup_func}
+        route = self._file_filter_route()
+        if route is not None:
+            return {route}
         text = self._keyword_search_text()
         is_short_followup = len(self.user_text.strip()) <= 20 and not self._is_decline_reply()
         last_categories = set()
@@ -5062,6 +5204,17 @@ class AIWorker(QThread):
                     func_name = tool['function']['name']
                     args      = tool['function']['arguments']
 
+                    # ── 파일 조건 라우팅 계약을 실행 단계에서도 강제 (2026-09-28 ChatGPT 2라운드) ──
+                    # 노출 함수 제한(_allowed_category_funcs)만으로는 LLM이 노출 안 된 함수를 지어내
+                    # 호출하는 걸 막지 못한다(func_map은 설치된 전체 함수). 크기만 있는 문장은
+                    # find_large_files, 크기/최근 N일이 다른 조건과 결합된 문장은 search_files라는
+                    # 결정론적 계약과 다른 쪽을 골랐으면 계약 쪽으로 바꾸고 인자는 버린다
+                    # (조건은 아래에서 사용자 문장으로 다시 채움).
+                    _file_route = self._file_filter_route()
+                    if (_file_route and func_name in ('search_files', 'find_large_files')
+                            and func_name != _file_route and _file_route in func_map):
+                        func_name, args = _file_route, {}
+
                     _required_detect = _DETECTION_BEFORE_ACTION.get(func_name)
                     if _required_detect and any(d in _tool_call_names_this_turn for d in _required_detect):
                         # func_name별로 "무엇을 어떻게 다시 말해달라고 안내할지"가 다
@@ -5187,11 +5340,23 @@ class AIWorker(QThread):
 
                     # ── 파일 검색: 조건은 LLM 대신 사용자 문장에서 결정론적으로 추출 ──
                     if func_name == 'search_files':
+                        for _k in ('min_size_mb', 'max_size_mb', 'recent_days'):
+                            args.pop(_k, None)  # 숫자 조건은 사용자 문장에서 뽑힌 값만 인정
                         args.update(self._resolve_file_search_conditions(self.user_text))
                         args['keyword'] = self._sanitize_file_keyword(args.get('keyword', ''))
                         # 폴더는 사용자가 문장에 직접 적은 경로일 때만 인정(LLM이 지어낸 경로 차단)
                         if args.get('folder') and args['folder'] not in self.user_text:
                             args.pop('folder', None)
+
+                    # ── 대용량 파일 탐색: 크기 기준도 사용자 문장에서 뽑힌 값만 인정 ──
+                    if func_name == 'find_large_files':
+                        _cond = self._resolve_file_search_conditions(self.user_text)
+                        args.pop('min_size_mb', None)
+                        if 'min_size_mb' in _cond:
+                            args['min_size_mb'] = _cond['min_size_mb']
+                        # 폴더는 사용자가 문장에 직접 적은 경로일 때만 인정(LLM이 지어낸 경로 차단)
+                        if args.get('directory') and args['directory'] not in self.user_text:
+                            args.pop('directory', None)
 
                     # ── 앱 사용 통계: 기간은 LLM 대신 키워드로 결정론적 선택 ──
                     if func_name == 'get_usage_report':
@@ -5217,7 +5382,16 @@ class AIWorker(QThread):
 
                         # ── 위험한 동작은 즉시 실행하지 않고 모아둔다 (루프가
                         # 끝난 뒤 한꺼번에 확인 요청) ──
-                        if func_name in _DANGEROUS_FUNCS:
+                        # 2026-09-28: 정적으로 항상 위험한 _DANGEROUS_FUNCS 외에,
+                        # reminder 함수인데 실제로 iot_device_name이 채워진
+                        # "동적으로 위험한" 호출도 같은 확인 경로를 탄다(위
+                        # _ACTION_BEARING_REMINDER_FUNCS 주석 참고) — 알림만
+                        # 등록하는 나머지 경우는 그대로 즉시 저장된다.
+                        is_action_registration = (
+                            func_name in _ACTION_BEARING_REMINDER_FUNCS
+                            and _has_automation_action(args)
+                        )
+                        if func_name in _DANGEROUS_FUNCS or is_action_registration:
                             # 인자가 지어낸 값(포트 None, 사용자 답변 텍스트를
                             # 그대로 프로세스 이름으로 사용 등)이면 확인창 자체를
                             # 띄우지 않고 다시 물어본다 (위 _looks_like_bogus_
@@ -5228,10 +5402,14 @@ class AIWorker(QThread):
                                     "어떤 프로세스/포트인지 구체적으로 다시 말씀해주시겠어요?"
                                 )
                                 continue
+                            description = (
+                                _DANGEROUS_FUNCS[func_name](args, func_map) if func_name in _DANGEROUS_FUNCS
+                                else _describe_reminder_action_registration(func_name, args)
+                            )
                             pending_dangerous.append({
                                 'func_name': func_name,
                                 'args': args,
-                                'description': _DANGEROUS_FUNCS[func_name](args, func_map),
+                                'description': description,
                             })
                             continue
 

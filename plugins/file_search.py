@@ -8,6 +8,11 @@
 ● 기본 검색 범위는 다운로드/문서/바탕화면/사진/동영상/음악 폴더(시스템 폴더 전체를
   훑지 않음). 폴더를 직접 지정하면 그 폴더만 본다.
 ● 파일이 많아도 응답이 오래 걸리지 않도록 확인 파일 수와 시간에 상한을 둔다.
+● 2026-09-28 메타데이터 필터 확장: 파일 크기(min_size_mb/max_size_mb)와 "최근 N일"
+  (recent_days)을 추가했다. 크기 조건은 이름/종류/기간 조건을 "좁히는" 보조 조건으로만
+  쓸 수 있고 단독으로는 검색하지 않는다 — "용량 큰 파일 찾기"는 pc_optimizer의
+  find_large_files 영역이라, 크기만으로 이 함수가 그 역할을 가로채지 않게 하기 위함이다.
+  recent_days와 period가 함께 오면 recent_days가 우선한다(더 구체적인 표현).
 """
 
 import os
@@ -68,7 +73,10 @@ TOOL_SCHEMAS = {
                                    "description": "today/yesterday/this_week/last_week/this_month/last_month/last_7_days/last_30_days. 없으면 생략"},
                     "time_basis": {"type": "string", "enum": ["created", "modified"],
                                    "description": "created=받은/만든 시각, modified=수정한 시각. 기본 modified"},
-                    "folder":     {"type": "string", "description": "특정 폴더 경로. 사용자가 폴더를 말하지 않았으면 생략"}
+                    "folder":     {"type": "string", "description": "특정 폴더 경로. 사용자가 폴더를 말하지 않았으면 생략"},
+                    "min_size_mb": {"type": "number", "description": "이 크기(MB) 이상인 파일만. 사용자가 '10MB 이상/넘는'처럼 말했을 때만, 없으면 생략"},
+                    "max_size_mb": {"type": "number", "description": "이 크기(MB) 이하인 파일만. 사용자가 '5MB 이하/작은'처럼 말했을 때만, 없으면 생략"},
+                    "recent_days": {"type": "integer", "description": "최근 N일 이내(오늘 포함). 사용자가 '최근 3일'처럼 말했을 때만, 없으면 생략"}
                 },
                 "required": []
             }
@@ -180,7 +188,8 @@ def _walk_files(roots: list, deadline: float, skipped_dirs: list = None):
 
 
 def search_files(keyword: str = "", file_type: str = "", period: str = "",
-                 time_basis: str = "modified", folder: str = "") -> str:
+                 time_basis: str = "modified", folder: str = "",
+                 min_size_mb: float = 0, max_size_mb: float = 0, recent_days: int = 0) -> str:
     keyword = (keyword or "").strip()
     file_type = (file_type or "").strip()
     period = (period or "").strip()
@@ -191,9 +200,27 @@ def search_files(keyword: str = "", file_type: str = "", period: str = "",
     exts = _resolve_extensions(file_type) if file_type else None
     if file_type and exts is None:
         return f"⚠️ '{file_type}' 종류를 이해하지 못했어요. PDF, 문서, 엑셀, 이미지, 동영상처럼 말씀해주세요."
-    rng = _period_range(period) if period else None
-    if period and rng is None:
-        return "⚠️ 기간을 이해하지 못했어요. 오늘/어제/이번주/지난주/이번달/지난달 중에서 말씀해주세요."
+    try:
+        min_mb = float(min_size_mb or 0)
+        max_mb = float(max_size_mb or 0)
+        days = int(recent_days or 0)
+    except (TypeError, ValueError):
+        return "⚠️ 크기나 기간(최근 N일) 조건을 이해하지 못했어요. 숫자로 다시 말씀해주세요."
+    if min_mb < 0 or max_mb < 0 or days < 0 or days > 365:
+        return "⚠️ 크기는 0 이상, 최근 N일은 1~365 사이로 말씀해주세요."
+    if min_mb and max_mb and min_mb > max_mb:
+        return "⚠️ 최소 크기가 최대 크기보다 클 수 없어요."
+
+    if days:
+        # 오늘 포함 N일 — last_7_days와 같은 규칙(오늘 0시 - (N-1)일 이상, 내일 0시 미만)
+        today0 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        rng = (today0 - timedelta(days=days - 1), today0 + timedelta(days=1))
+        period_text = f"최근 {days}일"
+    else:
+        rng = _period_range(period) if period else None
+        if period and rng is None:
+            return "⚠️ 기간을 이해하지 못했어요. 오늘/어제/이번주/지난주/이번달/지난달 중에서 말씀해주세요."
+        period_text = _PERIOD_LABELS.get(period, "")
 
     if folder:
         if not os.path.isdir(folder):
@@ -228,12 +255,18 @@ def search_files(keyword: str = "", file_type: str = "", period: str = "",
             ts = datetime.fromtimestamp(_birth_time(st) if time_basis == "created" else st.st_mtime)
             if rng and not (rng[0] <= ts < rng[1]):
                 continue
+            if min_mb and st.st_size < min_mb * 1024 * 1024:
+                continue
+            if max_mb and st.st_size > max_mb * 1024 * 1024:
+                continue
             matches.append((ts, st.st_size, path))
 
         cond = []
         if keyword: cond.append(f"이름에 '{keyword}'")
         if exts:    cond.append(f"종류 {file_type}")
-        if rng:     cond.append(f"{_PERIOD_LABELS[period]}({'이 컴퓨터에 만들어진 시각' if time_basis == 'created' else '수정한 시각'} 기준)")
+        if rng:     cond.append(f"{period_text}({'이 컴퓨터에 만들어진 시각' if time_basis == 'created' else '수정한 시각'} 기준)")
+        if min_mb:  cond.append(f"{_format_size(min_mb * 1024 * 1024)} 이상")
+        if max_mb:  cond.append(f"{_format_size(max_mb * 1024 * 1024)} 이하")
         cond_text = " · ".join(cond)
 
         skip_note = f" (접근할 수 없는 폴더 {len(skipped_dirs)}개는 건너뛰었어요)" if skipped_dirs else ""

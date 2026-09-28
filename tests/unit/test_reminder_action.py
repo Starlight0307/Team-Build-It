@@ -1,0 +1,280 @@
+# -*- coding: utf-8 -*-
+"""
+plugins/reminder.py의 "Trigger → Action(IoT 자동 실행)" 확장 — 순수 함수
+회귀 테스트: _build_action_from_iot_args/_validate_action/_describe_action/
+_execute_action.
+
+이 4개는 파일 I/O나 전역 상태 없이 입력→출력만으로 검증 가능한 순수 함수라
+(실제 등록/폴링은 tests/integration/test_reminder_action_integration.py가
+다룬다), 여기서는 오프라인으로 빠르게 경계값을 확인한다.
+"""
+import threading
+
+from plugins.reminder import (
+    _build_action_from_iot_args,
+    _validate_action,
+    _describe_action,
+    _execute_action,
+    _execute_action_with_retry,
+    _record_action_status,
+    ALLOWED_ACTIONS,
+)
+
+
+# ── _build_action_from_iot_args ─────────────────────────────────────
+
+def test_build_action_returns_none_when_both_empty():
+    assert _build_action_from_iot_args("", "") is None
+    assert _build_action_from_iot_args(None, None) is None
+
+
+def test_build_action_builds_iot_control_dict():
+    action = _build_action_from_iot_args("거실 전등", "off")
+    assert action == {"type": "iot_control", "device_name": "거실 전등", "state": "off"}
+
+
+def test_build_action_normalizes_state_case_and_whitespace():
+    action = _build_action_from_iot_args("  거실 전등  ", "  OFF  ")
+    assert action == {"type": "iot_control", "device_name": "거실 전등", "state": "off"}
+
+
+def test_build_action_returns_dict_when_only_device_name_given():
+    """디바이스 이름만 있고 state가 없는 "절반만 채워진" 경우도 None으로
+    조용히 되돌리면 안 된다 — 사용자가 자동 제어를 원했는데 정보가
+    빠진 거라, _validate_action이 명시적으로 에러를 내야 한다."""
+    action = _build_action_from_iot_args("거실 전등", "")
+    assert action is not None
+    assert action["device_name"] == "거실 전등"
+    assert action["state"] == ""
+
+
+# ── _validate_action ─────────────────────────────────────────────────
+
+def test_validate_action_none_is_valid():
+    assert _validate_action(None) is None
+
+
+def test_validate_action_rejects_missing_device_name():
+    err = _validate_action({"type": "iot_control", "device_name": "", "state": "on"})
+    assert err is not None
+    assert "기기 이름" in err
+
+
+def test_validate_action_rejects_invalid_state():
+    err = _validate_action({"type": "iot_control", "device_name": "거실 전등", "state": "maybe"})
+    assert err is not None
+    assert "켤지" in err or "끌지" in err
+
+
+def test_validate_action_accepts_valid_iot_control():
+    err = _validate_action({"type": "iot_control", "device_name": "거실 전등", "state": "on"})
+    assert err is None
+
+
+def test_validate_action_rejects_unknown_type():
+    err = _validate_action({"type": "delete_everything", "device_name": "x", "state": "on"})
+    assert err is not None
+
+
+def test_allowed_actions_only_has_notify_and_iot_control():
+    """이번 1차 구현 범위 — 파일 삭제/프로세스 종료 같은 위험한 액션이
+    실수로 섞여 들어오면 이 테스트가 바로 잡는다."""
+    assert ALLOWED_ACTIONS == {"notify", "iot_control"}
+
+
+# ── _describe_action ─────────────────────────────────────────────────
+
+def test_describe_action_empty_when_no_action():
+    assert _describe_action(None) == ""
+
+
+def test_describe_action_mentions_device_and_on():
+    desc = _describe_action({"type": "iot_control", "device_name": "거실 전등", "state": "on"})
+    assert "거실 전등" in desc
+    assert "켭니다" in desc
+
+
+def test_describe_action_mentions_device_and_off():
+    desc = _describe_action({"type": "iot_control", "device_name": "거실 전등", "state": "off"})
+    assert "거실 전등" in desc
+    assert "끕니다" in desc
+
+
+# ── _execute_action ──────────────────────────────────────────────────
+
+def test_execute_action_none_does_not_execute():
+    result = _execute_action(None, {})
+    assert result == {"executed": False, "success": True, "detail": ""}
+
+
+def test_execute_action_notify_type_does_not_execute():
+    result = _execute_action({"type": "notify"}, {"control_iot_device": lambda **kw: "무시돼야 함"})
+    assert result["executed"] is False
+
+
+def test_execute_action_iot_control_calls_func_map_with_correct_args():
+    calls = []
+
+    def fake_control(device_name, action):
+        calls.append((device_name, action))
+        return f"✅ '{device_name}' 기기를 {'켬' if action == 'on' else '끔'} 처리했습니다."
+
+    action = {"type": "iot_control", "device_name": "거실 전등", "state": "off"}
+    result = _execute_action(action, {"control_iot_device": fake_control})
+
+    assert calls == [("거실 전등", "off")]
+    assert result["executed"] is True
+    assert result["success"] is True
+    assert "거실 전등" in result["detail"]
+
+
+def test_execute_action_iot_control_reports_failure_when_plugin_not_installed():
+    action = {"type": "iot_control", "device_name": "거실 전등", "state": "off"}
+    result = _execute_action(action, {})  # control_iot_device 없음
+    assert result["executed"] is True
+    assert result["success"] is False
+    assert "설치" in result["detail"]
+
+
+def test_execute_action_iot_control_reports_failure_when_underlying_call_fails():
+    action = {"type": "iot_control", "device_name": "존재안함", "state": "off"}
+    fake_control = lambda device_name, action: "⚠️ '존재안함'이라는 이름의 기기를 찾지 못했습니다."
+    result = _execute_action(action, {"control_iot_device": fake_control})
+    assert result["executed"] is True
+    assert result["success"] is False
+
+
+def test_execute_action_iot_control_reports_failure_for_marker_less_not_found_message():
+    """실제 plugins/iot_control.py의 "기기를 찾지 못했습니다" 실패 메시지는
+    ⚠️/❌ 없이 그냥 "'기기이름'이라는..."로 시작한다 — 자체 재검토로 발견한
+    버그의 회귀 테스트: "⚠️/❌로 시작 안 하면 성공"이라는 블랙리스트 판정을
+    썼다면 이 실패를 성공으로 잘못 분류했을 것이다."""
+    action = {"type": "iot_control", "device_name": "존재안함", "state": "off"}
+    fake_control = lambda device_name, action: (
+        f"'{device_name}'이라는 이름의 기기를 찾지 못했습니다. "
+        "discover_iot_devices로 정확한 기기 이름을 먼저 확인해주세요."
+    )
+    result = _execute_action(action, {"control_iot_device": fake_control})
+    assert result["executed"] is True
+    assert result["success"] is False
+
+
+def test_execute_action_iot_control_reports_failure_for_ambiguous_match_message():
+    """마찬가지로 마커 없이 시작하는 "여러 개 발견" 실패 메시지도 실패로
+    잡아야 한다."""
+    action = {"type": "iot_control", "device_name": "전등", "state": "off"}
+    fake_control = lambda device_name, action: (
+        f"'{device_name}'이라는 이름의 기기가 2개 발견되어 어느 것을 제어할지 "
+        "알 수 없습니다 (192.168.0.10, 192.168.0.11). 기기 이름을 다르게 설정한 뒤 다시 시도해주세요."
+    )
+    result = _execute_action(action, {"control_iot_device": fake_control})
+    assert result["executed"] is True
+    assert result["success"] is False
+
+
+def test_execute_action_iot_control_reports_success_only_with_check_mark_prefix():
+    action = {"type": "iot_control", "device_name": "거실 전등", "state": "on"}
+    fake_control = lambda device_name, action: f"✅ '{device_name}' 기기를 켬 처리했습니다."
+    result = _execute_action(action, {"control_iot_device": fake_control})
+    assert result["success"] is True
+
+
+def test_execute_action_iot_control_reports_failure_on_exception():
+    def raising_control(device_name, action):
+        raise RuntimeError("네트워크 오류")
+
+    action = {"type": "iot_control", "device_name": "거실 전등", "state": "off"}
+    result = _execute_action(action, {"control_iot_device": raising_control})
+    assert result["executed"] is True
+    assert result["success"] is False
+    assert "오류" in result["detail"]
+
+
+# ── _execute_action_with_retry ──────────────────────────────────────
+# ChatGPT 검수 지적(2026-09-28): "트리거는 처리됐는데 액션만 실패"한 경우를
+# 영구 실패로 확정하지 않고 1회만 즉시 재시도해야 한다. 무제한 재시도는
+# 안 되므로 정확히 1번만 더 시도하는지가 핵심 불변식이다.
+
+def test_retry_does_not_retry_on_first_success():
+    calls = []
+    control = lambda device_name, action: (calls.append(1), "✅ 처리")[1]
+    action = {"type": "iot_control", "device_name": "거실 전등", "state": "on"}
+    result = _execute_action_with_retry(action, {"control_iot_device": control})
+    assert result["success"] is True
+    assert len(calls) == 1
+
+
+def test_retry_retries_exactly_once_after_failure_then_succeeds():
+    calls = []
+
+    def control(device_name, action):
+        calls.append(1)
+        if len(calls) == 1:
+            return "⚠️ 일시적 오류"
+        return "✅ 처리"
+
+    action = {"type": "iot_control", "device_name": "거실 전등", "state": "on"}
+    result = _execute_action_with_retry(action, {"control_iot_device": control})
+    assert result["success"] is True
+    assert len(calls) == 2
+
+
+def test_retry_gives_up_after_second_failure_without_a_third_attempt():
+    calls = []
+    control = lambda device_name, action: (calls.append(1), "⚠️ 계속 실패")[1]
+    action = {"type": "iot_control", "device_name": "거실 전등", "state": "on"}
+    result = _execute_action_with_retry(action, {"control_iot_device": control})
+    assert result["success"] is False
+    assert len(calls) == 2  # 정확히 2번(최초+재시도 1회)만, 3번째는 없음
+
+
+def test_retry_does_not_retry_when_action_is_none():
+    """action이 아예 없는(notify-only) 경우엔 재시도 래퍼도 아무것도
+    호출하면 안 된다 — executed=False 자체가 재시도 대상이 아님."""
+    result = _execute_action_with_retry(None, {})
+    assert result == {"executed": False, "success": True, "detail": ""}
+
+
+# ── _record_action_status ───────────────────────────────────────────
+
+def test_record_action_status_skips_when_not_executed():
+    entries = {"id1": {}}
+    lock = threading.Lock()
+    saved = []
+    _record_action_status(entries, lock, lambda: saved.append(1), "id1",
+                           {"executed": False, "success": True, "detail": ""})
+    assert "last_action_success" not in entries["id1"]
+    assert saved == []  # 저장 함수도 호출 안 됨
+
+
+def test_record_action_status_records_success_and_calls_save():
+    entries = {"id1": {}}
+    lock = threading.Lock()
+    saved = []
+    _record_action_status(entries, lock, lambda: saved.append(1), "id1",
+                           {"executed": True, "success": True, "detail": "✅ 처리"})
+    assert entries["id1"]["last_action_success"] is True
+    assert entries["id1"]["last_action_detail"] == "✅ 처리"
+    assert "last_action_at" in entries["id1"]
+    assert saved == [1]
+
+
+def test_record_action_status_records_failure():
+    entries = {"id1": {}}
+    lock = threading.Lock()
+    _record_action_status(entries, lock, lambda: None, "id1",
+                           {"executed": True, "success": False, "detail": "⚠️ 실패"})
+    assert entries["id1"]["last_action_success"] is False
+    assert entries["id1"]["last_action_detail"] == "⚠️ 실패"
+
+
+def test_record_action_status_ignores_missing_entry_gracefully():
+    """기록하려는 사이 취소된 항목(딕셔너리에 이미 없음)이면 조용히
+    무시해야 한다 — KeyError로 폴링 자체가 죽으면 안 됨."""
+    entries = {}
+    lock = threading.Lock()
+    saved = []
+    _record_action_status(entries, lock, lambda: saved.append(1), "gone_id",
+                           {"executed": True, "success": True, "detail": "✅"})
+    assert entries == {}
+    assert saved == []

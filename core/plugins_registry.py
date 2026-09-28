@@ -219,6 +219,7 @@ AVAILABLE_PLUGINS = [
             "get_due_daily_reminders",
             "set_usage_condition", "set_spending_condition", "set_cpu_condition",
             "set_disk_condition", "list_conditions", "cancel_condition", "get_due_conditions",
+            "list_action_log",
         ],
         "module_name": "reminder",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/reminder.py",

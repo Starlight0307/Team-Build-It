@@ -20,9 +20,10 @@ load_dotenv()
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QLabel,
                              QScrollArea, QFrame,
-                             QSplitter, QSizePolicy)
+                             QSplitter, QSizePolicy,
+                             QSystemTrayIcon, QMenu, QStyle)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt6.QtGui import QShortcut, QKeySequence
+from PyQt6.QtGui import QShortcut, QKeySequence, QIcon
 
 from settings.config import MOCK_USER
 from settings.theme import get_palette
@@ -62,6 +63,17 @@ def _sync_calendar_user(user_id: str):
         # 로그인한 사용자만 쓸 수 있으므로, 로그인/로그아웃 시 같이 동기화한다.
         from plugins.expense_tracker import set_current_user as set_expense_user
         set_expense_user(user_id)
+    except ImportError:
+        pass
+    try:
+        # 2026-09-28 ChatGPT 검수 지적: reminder/condition에 IoT 자동 실행
+        # (action)이 붙으면서, 기존엔 "전역 알림 팝업"이라 문제없던 구조가
+        # "사용자 A가 등록한 자동화가 B 세션에서도 실행될 수 있다"는 실제
+        # 위험으로 바뀌었다 — action이 있는 항목만 등록 시점의 사용자에게
+        # 귀속시켜서(owner), 다른 사용자로 로그인한 세션의 폴링에서는
+        # 실행하지 않게 한다(plugins/reminder.py의 set_current_user 참고).
+        from plugins.reminder import set_current_user as set_reminder_user
+        set_reminder_user(user_id)
     except ImportError:
         pass
 
@@ -155,10 +167,13 @@ class AssistantApp(QWidget):
         self._last_seen_alert_count  = 0      # 마지막으로 확인한 실시간 감시 알림 개수 (신규분만 팝업)
         self._active_toasts          = []     # 현재 떠있는 알림 토스트들 (겹침 방지용)
         self._unread_alert_count     = 0      # 대화창 아이콘에 표시할 미확인 알림 개수
+        self._force_quit             = False  # 트레이 "종료"로 나갈 때만 True — X 버튼은 창을 숨기기만 함
+        self._tray_close_notice_shown = False  # "트레이로 숨겨졌다" 안내를 최초 1회만 보여주기 위함
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         load_existing_plugins(self.installed_tools, self.installed_module_names)
         self.initUI()
+        self._setup_system_tray()
         QTimer.singleShot(50, self.apply_theme)
         QTimer.singleShot(800, self._run_startup_update_check)
         # 신규 기능 6(앱 사용 통계) — 사용자가 이전에 기록을 켜둔 경우에만 이어서 기록한다.
@@ -189,6 +204,75 @@ class AssistantApp(QWidget):
         self._condition_poll_timer = QTimer(self)
         self._condition_poll_timer.timeout.connect(self._poll_due_conditions)
         self._condition_poll_timer.start(30000)
+
+    # ─────────────────────────────────────────────
+    # 🖥️ 시스템 트레이 — 창을 닫아도 백그라운드에서 계속 실행
+    # ─────────────────────────────────────────────
+    # 2026-09-28: 조건부 알림/실시간 감시가 전부 QTimer 폴링인데, 지금까지는
+    # 창을 닫으면(X 버튼) Qt 기본 동작(setQuitOnLastWindowClosed 기본값 True)
+    # 때문에 프로세스 자체가 종료돼서 이 폴링들도 같이 멈췄다 — "비서"라는
+    # 컨셉상 창을 닫으면 알림/자동 실행이 전부 죽는 건 실제 제품 공백이었다.
+    # 여기서는 X 버튼을 "종료"가 아니라 "트레이로 숨기기"로 바꾸고, 실제
+    # 종료는 트레이 메뉴에서만 가능하게 한다 — QTimer들은 self(QWidget)의
+    # 자식이라 숨기기만 해도(destroy 안 됨) 계속 정상 작동한다.
+    def _setup_system_tray(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon = None  # 트레이가 없는 환경(일부 리눅스 등)에서는 조용히 건너뜀
+            return
+
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        self.setWindowIcon(icon)
+
+        self.tray_icon = QSystemTrayIcon(icon, self)
+        self.tray_icon.setToolTip("LUMI 로컬 비서")
+
+        menu = QMenu()
+        show_action = menu.addAction("열기")
+        show_action.triggered.connect(self._show_from_tray)
+        menu.addSeparator()
+        quit_action = menu.addAction("종료")
+        quit_action.triggered.connect(self._quit_app)
+        self.tray_icon.setContextMenu(menu)
+
+        self.tray_icon.activated.connect(self._on_tray_icon_activated)
+        self.tray_icon.show()
+
+    def _on_tray_icon_activated(self, reason):
+        # Windows/대부분의 플랫폼에서 트레이 아이콘 좌클릭은 Trigger로 온다
+        # (우클릭은 setContextMenu가 이미 처리하므로 여기 안 옴).
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                      QSystemTrayIcon.ActivationReason.DoubleClick):
+            self._show_from_tray()
+
+    def _show_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_app(self):
+        """트레이 메뉴의 "종료"에서만 호출 — closeEvent가 이 플래그를 보고
+        진짜로 앱을 끝낸다(X 버튼과 구분하는 핵심)."""
+        self._force_quit = True
+        if self.tray_icon:
+            self.tray_icon.hide()
+        QApplication.instance().quit()
+
+    def closeEvent(self, event):
+        if self._force_quit or not self.tray_icon:
+            event.accept()
+            return
+        # X 버튼 — 종료하지 않고 트레이로 숨긴다.
+        event.ignore()
+        self.hide()
+        if not self._tray_close_notice_shown:
+            self._tray_close_notice_shown = True
+            self.tray_icon.showMessage(
+                "LUMI가 계속 실행 중이에요",
+                "창을 닫아도 알림/자동 실행은 백그라운드에서 계속 동작합니다. "
+                "완전히 끄려면 트레이 아이콘에서 '종료'를 선택하세요.",
+                QSystemTrayIcon.MessageIcon.Information,
+                4000,
+            )
 
     # ─────────────────────────────────────────────
     # 🔄 앱 실행 시 1회 자동 업데이트 상태 체크
@@ -228,7 +312,8 @@ class AssistantApp(QWidget):
 
     def _show_realtime_alert_toast(self, delta: int):
         toast = self._show_toast(f"🛰️ 실시간 감시: 새 알림 {delta}건 발생\n클릭하면 상세 내용을 확인합니다")
-        toast.clicked.connect(lambda t=toast: self._on_toast_clicked(t))
+        if toast:  # 창이 숨겨져 트레이 풍선 알림으로 대체된 경우 None
+            toast.clicked.connect(lambda t=toast: self._on_toast_clicked(t))
 
     def _resume_usage_tracking(self):
         func = next((f for f in self.installed_tools if f.__name__ == 'resume_usage_tracking_if_enabled'), None)
@@ -259,15 +344,29 @@ class AssistantApp(QWidget):
 
     def _poll_due_daily_reminders(self):
         """get_due_daily_reminders()도 get_due_timers()와 같은 패턴의 내부
-        전용 함수 — 실제 점검을 자동 실행하지 않고 토스트로만 알린다(사용자가
-        보고 직접 다시 요청해야 실제 실행됨 — plugins/reminder.py 설계 원칙 참고)."""
+        전용 함수 — 원래는 실제 점검을 자동 실행하지 않고 토스트로만
+        알렸는데(사용자가 보고 직접 다시 요청해야 실제 실행됨 —
+        plugins/reminder.py 설계 원칙 참고), 2026-09-28부터 등록 시
+        iot_device_name을 채운 규칙만 예외로 자동 실행된다. func_map을
+        넘겨야 그 자동 실행(control_iot_device)이 가능하다(get_due_conditions와
+        동일한 패턴) — IoT 기기 검색이 최대 수 초 걸릴 수 있어 이 순간
+        GUI가 잠깐 멈출 수 있다(알려진 한계, plugins/reminder.py 모듈
+        docstring 참고)."""
         func = next((f for f in self.installed_tools if f.__name__ == 'get_due_daily_reminders'), None)
         if not func:
             return
+        func_map = {f.__name__: f for f in self.installed_tools}
         try:
-            due = func()
+            due = func(func_map)
         except Exception:
             return
+        # 알려진 한계(ChatGPT 트레이 기능 검수 지적, 2026-09-28): 이 아래 루프
+        # 자체는 try/except로 안 감싸여 있다 — 같은 폴링 주기에 여러 항목이
+        # due로 왔을 때 그중 하나에서 예상 못 한 예외가 나면 그 뒤 항목들은
+        # 이번 호출에서 처리 안 되고 건너뛰어진다(QTimer 자체는 안 죽고 다음
+        # 주기에 정상 재개 — PyQt는 슬롯 예외로 타이머를 멈추지 않음). 트레이
+        # 기능과 무관하게 원래 있던 구조라 이번 라운드에서 범위를 넓혀 고치진
+        # 않지만, 항목 단위로 예외를 격리하는 게 다음에 손볼 후보다.
         for routine in due:
             label = routine.get('label')
             # ChatGPT 검수 반영: 토스트만 띄우고 끝나면 사용자가 다음에 뭘 해야
@@ -277,6 +376,10 @@ class AssistantApp(QWidget):
                 message = f"🔁 정기 알림: '{label}' — 필요하면 채팅으로 요청해주세요."
             else:
                 message = "🔁 정기 알림 시간이에요! 필요하면 채팅으로 요청해주세요."
+            action_result = routine.get('action_result') or {}
+            if action_result.get('executed'):
+                mark = "✅" if action_result.get('success') else "⚠️"
+                message = f"{message}\n{mark} 자동 실행 결과: {action_result.get('detail', '')}"
             self._show_toast(message)
 
     def _poll_due_conditions(self):
@@ -319,10 +422,29 @@ class AssistantApp(QWidget):
             recommendation = _build_condition_recommendation(cond, func_map)
             if recommendation:
                 message = f"{message}\n{recommendation}"
+            action_result = cond.get('action_result') or {}
+            if action_result.get('executed'):
+                mark = "✅" if action_result.get('success') else "⚠️"
+                message = f"{message}\n{mark} 자동 실행 결과: {action_result.get('detail', '')}"
             self._show_toast(message)
 
-    def _show_toast(self, message: str) -> "NotificationToast":
-        """화면 오른쪽 위에 잠깐 떴다 사라지는 알림(토스트)을 띄운다."""
+    def _show_toast(self, message: str):
+        """화면 오른쪽 위에 잠깐 떴다 사라지는 알림(토스트)을 띄운다.
+
+        2026-09-28 트레이 기능 검수 중 발견: 이 토스트는 self(AssistantApp)의
+        자식 위젯인데, Qt에서는 부모 위젯이 숨겨져 있으면 자식 위젯의 show()를
+        불러도 화면에 실제로 나타나지 않는다 — 창이 트레이로 숨겨진 상태에서
+        조건부 알림/IoT 자동 실행이 발생하면, 코드는 정상 실행되는데 토스트만
+        아무도 못 보고 조용히 사라지는 "보이지 않는 백그라운드 알림" 버그가
+        된다(폴링 자체는 죽지 않지만 사용자에게 전혀 전달이 안 됨). 창이
+        숨겨진 동안은 대신 트레이 풍선 알림(OS 레벨이라 부모-자식 가시성과
+        무관하게 항상 보임)으로 대체한다 — 반환값을 쓰는 유일한 호출부
+        (_show_realtime_alert_toast)는 None을 받을 수 있으므로 방어 처리돼 있다."""
+        if not self.isVisible():
+            if self.tray_icon:
+                self.tray_icon.showMessage("LUMI", message, QSystemTrayIcon.MessageIcon.Information, 5000)
+            return None
+
         toast = NotificationToast(message)
         toast.setParent(self)
 
@@ -1865,6 +1987,10 @@ class AssistantApp(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    # 창을 닫아도(트레이로 숨김) 프로세스가 종료되지 않게 한다 — Qt 기본값은
+    # True라서 이걸 안 끄면 closeEvent에서 event.ignore()를 해도 소용없이
+    # "보이는 최상위 창이 하나도 없다"는 이유로 앱이 그냥 종료돼버린다.
+    app.setQuitOnLastWindowClosed(False)
     ex  = AssistantApp()
     ex.show()
     sys.exit(app.exec())

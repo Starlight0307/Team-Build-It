@@ -1,0 +1,91 @@
+# -*- coding: utf-8 -*-
+"""
+core/ai_worker.py의 "Reminder → Action(IoT)" 등록 확인(confirm_required)
+게이팅 로직 — _has_automation_action/_describe_reminder_action_registration/
+_ACTION_BEARING_REMINDER_FUNCS.
+
+이 게이팅이 하는 일: reminder.py의 5개 set_* 함수 호출에 iot_device_name이
+채워져 있으면(=나중에 무인으로 기기를 실제 제어하는 규칙 등록) 기존
+_DANGEROUS_FUNCS와 동일한 confirm_required 경로를 타야 하고, 채워져 있지
+않으면(=단순 알림 등록) 기존처럼 즉시 실행돼야 한다. 실제 dispatch 루프
+전체(AIWorker.run())는 실제 Ollama 호출이 필요해 무겁기 때문에, 여기서는
+그 판단을 담당하는 순수 함수만 오프라인으로 검증한다 — 실제 end-to-end
+동작은 tests/llm_smoke/에서 다룰 수 있다.
+"""
+from core.ai_worker import (
+    _has_automation_action,
+    _describe_reminder_action_registration,
+    _ACTION_BEARING_REMINDER_FUNCS,
+    _DANGEROUS_FUNCS,
+)
+
+
+# ── _has_automation_action ──────────────────────────────────────────
+
+def test_has_automation_action_false_when_device_name_missing():
+    assert _has_automation_action({"hour": 23, "minute": 0}) is False
+
+
+def test_has_automation_action_false_when_device_name_blank():
+    assert _has_automation_action({"iot_device_name": "   "}) is False
+
+
+def test_has_automation_action_true_when_device_name_present():
+    assert _has_automation_action({"iot_device_name": "거실 전등", "iot_state": "off"}) is True
+
+
+def test_has_automation_action_true_even_if_state_missing():
+    """state가 없어도(불완전한 시도) 일단 "위험 경로"로 보내야 한다 — 실제
+    검증(reminder.py의 _validate_action)은 확인 후 실제 함수 실행 시점에
+    한 번 더 일어나므로, 여기서 놓쳐도 안전망이 있다."""
+    assert _has_automation_action({"iot_device_name": "거실 전등"}) is True
+
+
+# ── _ACTION_BEARING_REMINDER_FUNCS ──────────────────────────────────
+
+def test_action_bearing_funcs_matches_expected_set():
+    assert _ACTION_BEARING_REMINDER_FUNCS == {
+        "set_daily_reminder", "set_usage_condition", "set_spending_condition",
+        "set_cpu_condition", "set_disk_condition",
+    }
+
+
+def test_action_bearing_funcs_disjoint_from_dangerous_funcs():
+    """두 목록은 성격이 달라서(정적 항상-위험 vs 동적 조건부-위험) 분리해
+    뒀다 — 겹치면 dispatch 로직의 설명 분기(_DANGEROUS_FUNCS[func_name] vs
+    _describe_reminder_action_registration)가 꼬인다."""
+    assert _ACTION_BEARING_REMINDER_FUNCS.isdisjoint(set(_DANGEROUS_FUNCS.keys()))
+
+
+# ── _describe_reminder_action_registration ──────────────────────────
+
+def test_describe_registration_daily_reminder_mentions_time_and_device():
+    desc = _describe_reminder_action_registration(
+        "set_daily_reminder",
+        {"hour": 23, "minute": 0, "iot_device_name": "거실 전등", "iot_state": "off"},
+    )
+    assert "23:00" in desc
+    assert "거실 전등" in desc
+    assert "끄기" in desc
+    assert "무인" in desc
+
+
+def test_describe_registration_cpu_condition_mentions_threshold():
+    desc = _describe_reminder_action_registration(
+        "set_cpu_condition",
+        {"threshold_percent": 90, "iot_device_name": "선풍기", "iot_state": "on"},
+    )
+    assert "90" in desc
+    assert "선풍기" in desc
+    assert "켜기" in desc
+
+
+def test_describe_registration_handles_unknown_state_gracefully():
+    """iot_state가 on/off가 아닌 값이어도(등록 단계 검증 전) 설명 문구
+    생성 자체는 죽지 않아야 한다 — 실제 저장 거부는 함수 실행 시점에
+    reminder.py._validate_action이 담당."""
+    desc = _describe_reminder_action_registration(
+        "set_daily_reminder",
+        {"hour": 9, "minute": 0, "iot_device_name": "거실 전등", "iot_state": "weird"},
+    )
+    assert "거실 전등" in desc

@@ -65,6 +65,73 @@
        판단 — set_cpu_condition/set_disk_condition의 사용자 안내 문구 참고).
   daily reminder와 동일한 안전 원칙 — 조건이 충족돼도 실제 점검/조치를 자동
   실행하지 않고 알림만 준다.
+
+● 2026-09-28 "Trigger → Action" 확장(IoT 자동 실행): 위 원칙("알림만 주고
+  실제 실행은 안 함")에 처음으로 예외를 둔다 — daily reminder/조건부 알림
+  둘 다 이제 선택적으로 iot_control 액션을 붙일 수 있다("밤 11시에 거실
+  불 꺼줘"). 액션이 없으면(기존 데이터 전부 포함) 기존과 100% 동일하게
+  알림만 준다. 이 예외를 안전하게 두는 이유:
+    1. 실행 가능한 액션을 iot_control 하나로만 제한한다(ALLOWED_ACTIONS) —
+       파일 삭제/프로세스 종료처럼 되돌리기 어려운 위험한 함수는 애초에
+       대상이 아니다. core/ai_worker.py의 _DANGEROUS_FUNCS 주석에 이미
+       "직접 지시한 IoT 제어는 확인 불필요"라고 기록돼 있지만, 그건 "지금
+       이 턴에 사용자가 명시적으로 요청 → 즉시 실행"에 대한 판단이고,
+       여기서 새로 추가하는 건 "나중에 사용자가 없는 상태에서 무인으로
+       실행"이라 완전히 다른 문제다 — 그래서 확인 시점을 "실행 직전"이
+       아니라 "규칙을 등록하는 순간"으로 옮긴다(등록 시 confirm_required를
+       거쳐야 저장됨 — core/ai_worker.py의 _ACTION_BEARING_REMINDER_FUNCS
+       참고). 알림만 등록하는 기존 경로는 이 확인을 거치지 않고 그대로
+       즉시 저장된다(위험이 없으므로).
+    2. 액션 실행 결과(성공/실패)를 action_log.jsonl에 남겨서, 나중에
+       "왜 불이 꺼져있지?" 같은 질문에 추적 가능하게 한다(list_action_log).
+    3. LLM에게 중첩 JSON 인자(예: action={"type":...})를 넘기게 하지
+       않는다 — 이 프로젝트의 다른 모든 도구 인자가 평평한 스칼라 값이고,
+       llama3.1의 인자 추출 신뢰도를 고려하면 중첩 객체는 새로운 실패
+       유형을 만들 위험이 크다. 대신 set_daily_reminder 등에 iot_device_name/
+       iot_state 평평한 인자 2개를 추가하고, 내부에서만 구조화된 action
+       dict로 변환한다.
+    4. 알려진 한계(고치지 않고 명시만 함): control_iot_device는 내부적으로
+       로컬 네트워크 UDP 검색(최대 5초 블로킹)을 거치는데, 이 폴링은
+       app_main.py의 QTimer(메인 스레드)에서 호출되므로 액션이 실행되는
+       순간 GUI가 몇 초간 멈출 수 있다. 백그라운드 스레드로 옮기는 건
+       범위 밖으로 남겨둔다.
+    5. 승인 대상의 동일성(ChatGPT 검수 지적, 2026-09-28): "등록 시점에
+       승인받은 action"과 "실제 실행되는 action"이 항상 같은 데이터인지가
+       중요하다 — 이 프로젝트엔 기존 규칙을 그 자리에서 고치는 "수정" 함수가
+       아예 없고(cancel_*로 지우고 set_*로 다시 만드는 것만 가능), action
+       필드에 쓰기가 일어나는 곳도 set_daily_reminder/_register_condition의
+       최초 생성 시점 딱 한 곳뿐이다(_record_action_status는 last_action_*
+       필드만 갱신하고 action 자체는 절대 건드리지 않음). 그래서 "승인 이후
+       action이 몰래 바뀌는" 경로가 구조적으로 없다 — 규칙을 바꾸려면 항상
+       새로 만들어야 하고, 그러면 iot_device_name이 채워진 이상 매번
+       confirm_required를 다시 거친다.
+    6. Trigger 완료 ≠ Action 성공(ChatGPT 검수 지적, 2026-09-28): daily의
+       last_fired_date/condition의 last_state는 "트리거가 오늘/방금
+       발동했다"는 사실만 기록하고, action이 실제로 성공했는지는 별도로
+       entry의 last_action_success/last_action_detail/last_action_at에
+       기록한다(list_daily_reminders/list_conditions에도 실패 시 표시).
+       action 실패는 1회만 즉시 재시도하고(_execute_action_with_retry),
+       그래도 실패하면 확정한다 — 무제한 재시도는 하지 않는다. daily는
+       다음 날 트리거가 다시 도니 재시도 기회가 자연스럽게 생기지만,
+       condition은 엣지 트리거라 조건이 계속 참인 동안은 다음 거짓→참
+       전환 전까지 재시도되지 않는다 — 이건 "CPU/디스크는 폴링 사이의
+       변화를 놓칠 수 있다"는 기존에 받아들인 한계와 같은 종류로 남겨둔다.
+    7. Owner 격리(ChatGPT 검수 지적, 2026-09-28): ROUTINES_FILE/CONDITIONS_
+       FILE은 원래부터(이번 기능 이전부터) 사용자별로 분리되지 않은 전역
+       파일이다 — 지금까지는 결과가 알림 팝업 하나뿐이라 문제없었지만,
+       IoT 실제 제어가 가능해지면서 "사용자 A가 등록한 자동 실행을 사용자
+       B 세션이 대신 실행"할 수 있는 위험으로 파급력이 커졌다. 그래서
+       action이 있는 항목에만(알림만 있는 기존 항목은 그대로 전역) 등록
+       시점의 사용자를 owner로 저장하고(set_current_user, local_calendar.py/
+       expense_tracker.py와 동일한 관례), 로그인하지 않은 사용자는 애초에
+       IoT action을 등록할 수 없게 막았다(_require_login_for_action).
+       get_due_*/list_*/cancel_* 전부 owner가 다르면(또는 owner 필드 자체가
+       없는 방어적 케이스도) 실행/조회/취소하지 못하게 한다 — 전체 저장
+       구조를 사용자별 파일로 리팩터링하는 건 범위 밖으로 남기고, 이번에
+       실제로 위험해진 IoT action에만 최소한으로 적용한다. condition의
+       last_state는(daily의 last_fired_date와 달리) owner와 무관하게 계속
+       정확히 갱신한다 — 그렇지 않으면 owner가 나중에 로그인했을 때 낡은
+       상태 때문에 거짓→참 전환을 잘못 판정하게 된다.
 """
 
 import os
@@ -72,6 +139,22 @@ import json
 import uuid
 import threading
 from datetime import datetime, timedelta
+
+# 2026-09-28 ChatGPT 검수 지적: IoT 자동 실행(action)이 붙은 daily reminder/
+# condition은 반드시 등록한 사용자에게 귀속돼야 한다 — 이 필드가 없으면
+# 로그인 여부와 무관한 기존 전역 저장 구조 때문에 "사용자 A가 등록한 자동
+# 실행이 사용자 B 세션의 폴링에서도 실행되는" 위험이 생긴다(기존엔 결과가
+# 알림 팝업 하나뿐이라 문제없었지만, 실제로 IoT 기기를 켜고 끄는 지금은
+# 다르다). local_calendar.py/expense_tracker.py와 동일한 관례를 따른다 —
+# app_main.py의 _sync_calendar_user()가 로그인/로그아웃마다 여기도 같이
+# 동기화한다.
+_current_user_id: str = "guest"
+
+
+def set_current_user(user_id: str):
+    global _current_user_id
+    _current_user_id = user_id if user_id else "guest"
+
 
 _lock = threading.Lock()
 _active_timers: dict = {}  # id -> {"label": str, "expires_at": datetime, "notified": bool}
@@ -157,6 +240,203 @@ assert all(spec["comparison"] in _COMPARATORS for spec in _CONDITION_TYPES.value
 )
 
 
+# ── Trigger → Action (IoT 자동 실행) ──
+# 모듈 docstring 2026-09-28 항목 참고. 실행 가능한 action 타입을 여기 하나로
+# 고정한다 — 나중에 다른 action을 추가하고 싶어도 여기부터 늘려야 하고,
+# 절대 kill_process/delete_* 같은 되돌리기 어려운 함수를 넣지 않는다.
+ALLOWED_ACTIONS = {"notify", "iot_control"}
+
+ACTION_LOG_FILE      = os.path.join(ROUTINES_DIR, "action_log.jsonl")
+_action_log_lock     = threading.Lock()
+_ACTION_LOG_MAX_LINES = 200  # 무한정 커지지 않도록 최근 N건만 유지
+
+
+def _build_action_from_iot_args(iot_device_name: str = "", iot_state: str = ""):
+    """LLM tool-calling에서 넘어오는 평평한 iot_device_name/iot_state 두
+    인자를 내부 action dict로 변환한다. 둘 다 비어있으면 자동 실행 없음
+    (None, 기존 notify-only와 100% 동일) — 하나라도 채워졌으면 자동 제어를
+    시도한 것으로 보고 dict를 만든다(값 자체가 유효한지는 _validate_action이
+    따로 검사 — 여기서는 "시도했는지"만 판단해서, "이름만 쓰고 on/off를
+    빠뜨린" 경우를 조용히 notify로 되돌리지 않고 명시적으로 에러를 내게
+    한다)."""
+    iot_device_name = (iot_device_name or "").strip()
+    iot_state = (iot_state or "").strip().lower()
+    if not iot_device_name and not iot_state:
+        return None
+    return {"type": "iot_control", "device_name": iot_device_name, "state": iot_state}
+
+
+def _validate_action(action) -> str:
+    """action이 None이면 통과(None 반환). 문제가 있으면 사용자에게 그대로
+    보여줄 에러 메시지를 반환한다."""
+    if action is None:
+        return None
+    if not isinstance(action, dict) or action.get("type") not in ALLOWED_ACTIONS:
+        return "⚠️ 지원하지 않는 자동 실행 방식이에요."
+    if action["type"] == "iot_control":
+        if not action.get("device_name"):
+            return "⚠️ 자동으로 제어할 기기 이름을 함께 알려주세요."
+        if action.get("state") not in ("on", "off"):
+            return "⚠️ 기기를 켤지(on) 끌지(off) 함께 알려주세요."
+    return None
+
+
+def _require_login_for_action(action) -> str:
+    """action이 실제 자동 실행(iot_control)이면 로그인한 사용자만 등록할 수
+    있게 한다 — 로그인 없이(게스트) 등록하면 owner를 특정할 수 없어서,
+    다른 게스트 세션에서도 이 자동 실행을 볼 여지가 생긴다. 알림만 등록하는
+    경우(action=None)는 기존처럼 게스트도 그대로 쓸 수 있다(변경 없음)."""
+    if action and _current_user_id == "guest":
+        return "⚠️ 기기를 자동으로 제어하는 알림은 로그인 후에 등록할 수 있어요."
+    return None
+
+
+def _describe_action(action) -> str:
+    """등록 완료 메시지에 덧붙일 한 줄 — action이 없으면 빈 문자열."""
+    if not action or action.get("type") != "iot_control":
+        return ""
+    state_kr = "켭니다" if action.get("state") == "on" else "끕니다"
+    return f"'{action.get('device_name')}' 기기를 자동으로 {state_kr}."
+
+
+def _execute_action(action, func_map: dict) -> dict:
+    """트리거가 발동했을 때 action을 실제로 실행한다. action이 없거나
+    notify면 알림 외에 실행할 게 없다는 뜻이라 아무것도 하지 않는다(기존
+    notify-only 동작과 100% 동일) — 반환 dict의 "executed"가 False면 로그도
+    안 남긴다(호출부 참고). func_map은 이 플러그인이 다른 플러그인을 직접
+    import하지 않는 기존 관례를 그대로 따른 의존성 주입(모듈 docstring의
+    조건부 알림 설명 참고)."""
+    if not action or action.get("type") in (None, "notify"):
+        return {"executed": False, "success": True, "detail": ""}
+
+    if action.get("type") == "iot_control":
+        control = (func_map or {}).get("control_iot_device")
+        if not control:
+            return {"executed": True, "success": False,
+                    "detail": "⚠️ IoT 제어 플러그인이 설치되어 있지 않습니다."}
+        try:
+            result = control(device_name=action.get("device_name", ""), action=action.get("state", ""))
+        except Exception as e:
+            return {"executed": True, "success": False, "detail": f"⚠️ 실행 중 오류가 발생했습니다: {e}"}
+        # plugins/iot_control.py의 control_iot_device 실제 구현을 확인해보면
+        # 성공 시에만 "✅"로 시작하고, 실패(⚠️로 시작하는 경우도 있지만
+        # "'기기이름'이라는 이름의 기기를 찾지 못했습니다"처럼 아무 표시 없이
+        # 시작하는 실패 메시지도 있다 — 처음엔 "⚠️/❌로 시작하지 않으면
+        # 성공"이라는 블랙리스트 판정을 썼는데, 이 마커 없는 실패 메시지를
+        # 성공으로 잘못 분류하는 버그가 있어서(자체 재검토로 발견) "✅로
+        # 시작해야만 성공"이라는 화이트리스트 판정으로 바꿨다.
+        success = isinstance(result, str) and result.startswith("✅")
+        return {"executed": True, "success": success, "detail": str(result)}
+
+    return {"executed": True, "success": False,
+            "detail": f"⚠️ 알 수 없는 자동 실행 타입입니다: {action.get('type')}"}
+
+
+def _execute_action_with_retry(action, func_map: dict) -> dict:
+    """ChatGPT 검수 반영(2026-09-28): "트리거는 처리됐는데 액션만 실패"한
+    경우를 그대로 영구 실패로 확정하지 않고 1회만 즉시 재시도한다 — 일시적인
+    네트워크 hiccup 정도는 구제하되, 무제한 재시도는 하지 않는다(IoT 기기
+    자체가 응답 안 하는 상황에서 폴링마다 계속 재시도하면 장애 상황에서
+    오히려 블로킹/부하만 커짐). 재시도도 실패하면 그대로 확정하고, 그다음
+    재시도 기회는 다음 트리거 발동(daily reminder는 다음 날, condition은
+    다음 거짓→참 전환)까지 기다린다 — 이 대기가 너무 길다고 느껴질 수
+    있지만, 이건 이미 이 프로젝트가 CPU/디스크 조건에서 받아들인 "폴링
+    방식은 두 확인 시점 사이의 변화를 놓칠 수 있다"는 것과 같은 종류의
+    한계로 남겨둔다.
+
+    주의: control_iot_device는 최대 수 초 블로킹일 수 있는데, 재시도가
+    실제로 일어나면 이 호출의 블로킹 시간이 최대 2배까지 늘어난다 — 실패
+    경로에서만 발생하므로 정상 동작에는 영향 없지만, 알려진 트레이드오프로
+    남겨둔다(GUI 스레드에서 호출되는 문제와 마찬가지로 QThread 분리를
+    다음 단계로 미룸)."""
+    result = _execute_action(action, func_map)
+    if result["executed"] and not result["success"]:
+        result = _execute_action(action, func_map)
+    return result
+
+
+def _record_action_status(entries: dict, lock: threading.Lock, save_func, entry_id: str, action_result: dict):
+    """ChatGPT 검수 지적(2026-09-28) 반영: "트리거가 오늘 발동했다"(daily의
+    last_fired_date, condition의 last_state)와 "action이 성공했다"는 서로
+    다른 사실인데 지금까지는 action_log.jsonl에만 남고 트리거 항목 자체에는
+    안 남아서, list_daily_reminders/list_conditions만 봐서는 자동 실행이
+    실패했는지 알 수 없었다. 실행 시도가 있었던 경우(executed=True)만 이
+    항목 자체에 마지막 결과를 별도로 기록해서 목록에서 바로 보이게 한다."""
+    if not action_result.get("executed"):
+        return
+    with lock:
+        entry = entries.get(entry_id)
+        if entry is None:
+            return  # 기록하려는 사이 취소됐을 수 있음 — 조용히 무시
+        entry["last_action_success"] = action_result.get("success")
+        entry["last_action_detail"] = action_result.get("detail")
+        entry["last_action_at"] = datetime.now().isoformat(timespec="seconds")
+        save_func()
+
+
+def _log_action_execution(trigger_kind: str, trigger_id: str, label: str, action: dict, result: dict):
+    """실제로 실행이 시도된(executed=True) 경우만 호출된다 — 알림만 준
+    경우는 로그할 실행 자체가 없으므로 호출부에서 걸러진다."""
+    entry = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "trigger_kind": trigger_kind,
+        "trigger_id": trigger_id,
+        "label": label or "",
+        "action": action,
+        "success": result.get("success"),
+        "detail": result.get("detail"),
+    }
+    with _action_log_lock:
+        try:
+            with open(ACTION_LOG_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            lines = []
+        lines.append(json.dumps(entry, ensure_ascii=False) + "\n")
+        lines = lines[-_ACTION_LOG_MAX_LINES:]
+        try:
+            with open(ACTION_LOG_FILE, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+        except Exception as e:
+            print(f"[자동 실행 이력] 저장 오류: {e}")
+
+
+def list_action_log(limit: int = 10) -> str:
+    """최근 자동 실행(알림이 아니라 실제로 기기를 제어하려 시도한) 이력을
+    보여준다. 사용자가 '자동 실행 기록 보여줘', '아까 왜 불 꺼졌지' 등을
+    물을 때 호출하세요."""
+    print(f"\n🧾 [자동 실행 이력] 조회 중 (최근 {limit}건)...")
+    try:
+        limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        limit = 10
+
+    with _action_log_lock:
+        try:
+            with open(ACTION_LOG_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            lines = []
+
+    if not lines:
+        return "[🧾 자동 실행 이력]\n기록된 자동 실행 이력이 없습니다."
+
+    entries = []
+    for line in lines[-limit:]:
+        try:
+            entries.append(json.loads(line))
+        except Exception:
+            continue
+    entries.reverse()  # 최신 먼저
+
+    out = [f"[🧾 자동 실행 이력] (최근 {len(entries)}건)"]
+    for e in entries:
+        mark = "✅" if e.get("success") else "❌"
+        label_part = f" ('{e.get('label')}')" if e.get("label") else ""
+        out.append(f"  - {e.get('timestamp', '?')} {mark}{label_part} {e.get('detail', '')}")
+    return "\n".join(out)
+
+
 # ==========================================
 # 🛠️ Tool Schemas (ollama tool calling용)
 # ==========================================
@@ -224,7 +504,21 @@ TOOL_SCHEMAS = {
                 "properties": {
                     "hour":   {"type": "integer", "description": "알림 시각(시), 0~23"},
                     "minute": {"type": "integer", "description": "알림 시각(분), 0~59. 생략하면 0"},
-                    "label":  {"type": "string", "description": "무엇에 대한 알림인지(예: '보안 점검', '일정 확인'). 없으면 생략 가능"}
+                    "label":  {"type": "string", "description": "무엇에 대한 알림인지(예: '보안 점검', '일정 확인'). 없으면 생략 가능"},
+                    "iot_device_name": {
+                        "type": "string",
+                        "description": (
+                            "이 시각이 되면 자동으로 켜거나 끌 IoT 기기 이름(선택, 예: '거실 전등'). "
+                            "사용자가 '밤 11시에 거실 불 꺼줘'처럼 기기 자동 제어까지 명시적으로 "
+                            "요청한 경우에만 채우세요. 단순히 시간만 알려달라는 요청이면 반드시 "
+                            "비워두세요(빈 채로 두면 기존처럼 알림만 갑니다)."
+                        )
+                    },
+                    "iot_state": {
+                        "type": "string",
+                        "enum": ["on", "off"],
+                        "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    }
                 },
                 "required": ["hour"]
             }
@@ -272,7 +566,19 @@ TOOL_SCHEMAS = {
                 "properties": {
                     "target": {"type": "string", "description": "프로그램 이름이나 분류(게임/브라우저 등)"},
                     "threshold_minutes": {"type": "number", "description": "이 분(分)을 넘으면 알림(예: 4시간=240)"},
-                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"}
+                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"},
+                    "iot_device_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 켜거나 끌 IoT 기기 이름(선택). 사용자가 기기 "
+                            "자동 제어까지 명시적으로 요청한 경우에만 채우고, 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "iot_state": {
+                        "type": "string",
+                        "enum": ["on", "off"],
+                        "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    }
                 },
                 "required": ["target", "threshold_minutes"]
             }
@@ -291,7 +597,19 @@ TOOL_SCHEMAS = {
                 "type": "object",
                 "properties": {
                     "threshold_amount": {"type": "number", "description": "이 금액(원)을 넘으면 알림"},
-                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"}
+                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"},
+                    "iot_device_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 켜거나 끌 IoT 기기 이름(선택). 사용자가 기기 "
+                            "자동 제어까지 명시적으로 요청한 경우에만 채우고, 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "iot_state": {
+                        "type": "string",
+                        "enum": ["on", "off"],
+                        "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    }
                 },
                 "required": ["threshold_amount"]
             }
@@ -311,7 +629,19 @@ TOOL_SCHEMAS = {
                 "type": "object",
                 "properties": {
                     "threshold_percent": {"type": "number", "description": "이 퍼센트(%)를 넘으면 알림(예: 90)"},
-                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"}
+                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"},
+                    "iot_device_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 켜거나 끌 IoT 기기 이름(선택). 사용자가 기기 "
+                            "자동 제어까지 명시적으로 요청한 경우에만 채우고, 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "iot_state": {
+                        "type": "string",
+                        "enum": ["on", "off"],
+                        "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    }
                 },
                 "required": ["threshold_percent"]
             }
@@ -333,7 +663,19 @@ TOOL_SCHEMAS = {
                 "type": "object",
                 "properties": {
                     "threshold_percent": {"type": "number", "description": "여유 공간이 이 퍼센트(%) 밑으로 떨어지면 알림(예: 10)"},
-                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"}
+                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"},
+                    "iot_device_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 켜거나 끌 IoT 기기 이름(선택). 사용자가 기기 "
+                            "자동 제어까지 명시적으로 요청한 경우에만 채우고, 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "iot_state": {
+                        "type": "string",
+                        "enum": ["on", "off"],
+                        "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    }
                 },
                 "required": ["threshold_percent"]
             }
@@ -363,6 +705,25 @@ TOOL_SCHEMAS = {
                 "type": "object",
                 "properties": {"condition_id": {"type": "string"}},
                 "required": ["condition_id"]
+            }
+        }
+    },
+    "list_action_log": {
+        "type": "function",
+        "function": {
+            "name": "list_action_log",
+            "description": (
+                "정기 알림/조건부 알림에 등록된 IoT 자동 실행이 실제로 언제, "
+                "성공/실패했는지 최근 기록을 보여줍니다. 사용자가 '자동 실행 기록 "
+                "보여줘', '아까 왜 불 꺼졌지', '자동으로 실행된 거 있어?' 등을 "
+                "물을 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "몇 건까지 보여줄지(기본 10, 최대 50)"}
+                },
+                "required": []
             }
         }
     },
@@ -472,7 +833,8 @@ def _save_routines():
         print(f"[정기 알림] 저장 오류: {e}")
 
 
-def set_daily_reminder(hour: int, minute: int = 0, label: str = "") -> str:
+def set_daily_reminder(hour: int, minute: int = 0, label: str = "",
+                        iot_device_name: str = "", iot_state: str = "") -> str:
     print(f"\n🔁 [정기 알림] 설정 중: 매일 {hour}시 {minute}분" + (f" ('{label}')" if label else ""))
     try:
         hour = int(hour)
@@ -482,6 +844,11 @@ def set_daily_reminder(hour: int, minute: int = 0, label: str = "") -> str:
     if not (0 <= hour <= 23) or not (0 <= minute <= 59):
         return "⚠️ 시각은 0~23시, 0~59분 사이로 말씀해주세요."
 
+    action = _build_action_from_iot_args(iot_device_name, iot_state)
+    action_error = _validate_action(action) or _require_login_for_action(action)
+    if action_error:
+        return action_error
+
     _ensure_routines_loaded()
     routine_id = uuid.uuid4().hex[:8]
     with _routines_lock:
@@ -490,10 +857,15 @@ def set_daily_reminder(hour: int, minute: int = 0, label: str = "") -> str:
             "hour": hour,
             "minute": minute,
             "last_fired_date": None,
+            "action": action,
+            "owner": _current_user_id if action else None,
         }
         _save_routines()
 
     label_str = f" ('{label}')" if label else ""
+    action_desc = _describe_action(action)
+    if action_desc:
+        return f"[✅ 정기 알림 + 자동 실행 등록 완료]\n매일 {hour:02d}:{minute:02d}에{label_str} {action_desc}"
     return (f"[✅ 정기 알림 설정 완료]\n매일 {hour:02d}:{minute:02d}에{label_str} 알려드릴게요. "
             f"실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요.")
 
@@ -503,6 +875,12 @@ def list_daily_reminders() -> str:
     _ensure_routines_loaded()
     with _routines_lock:
         items = list(_routines.items())
+    # 2026-09-28 ChatGPT 검수 지적: 실행뿐 아니라 "보여주는 것"도 owner
+    # 격리가 필요하다 — 안 그러면 실행은 안 되더라도 다른 사용자가 등록한
+    # IoT 자동 실행의 존재/내용(라벨, 시각, 기기 상태)이 노출된다. action이
+    # 없는(알림만) 기존 항목은 owner가 None이라 이 필터에 안 걸리고 계속
+    # 전역으로 보인다(기존 동작 그대로).
+    items = [(rid, r) for rid, r in items if not r.get("action") or r.get("owner") == _current_user_id]
     if not items:
         return "[🔁 정기 알림 목록]\n등록된 정기 알림이 없습니다."
 
@@ -510,7 +888,13 @@ def list_daily_reminders() -> str:
     lines = [f"[🔁 정기 알림 목록] (총 {len(items)}개)"]
     for rid, r in items:
         label_part = f" ('{r['label']}')" if r["label"] else ""
-        lines.append(f"  - 매일 {r['hour']:02d}:{r['minute']:02d}{label_part} (id: {rid})")
+        line = f"  - 매일 {r['hour']:02d}:{r['minute']:02d}{label_part} (id: {rid})"
+        # 2026-09-28: "트리거가 발동했다"와 "action이 성공했다"는 다른 사실이라
+        # (모듈 docstring/_record_action_status 참고) action_log.jsonl을 따로
+        # 찾아보지 않아도 목록에서 바로 마지막 자동 실행 실패를 알 수 있게 한다.
+        if r.get("last_action_success") is False:
+            line += f"\n    ⚠️ 마지막 자동 실행 실패({r.get('last_action_at', '')}): {r.get('last_action_detail', '')}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -520,7 +904,10 @@ def cancel_daily_reminder(routine_id: str) -> str:
     routine_id = (routine_id or "").strip()
     with _routines_lock:
         r = _routines.get(routine_id)
-        if not r:
+        # action이 있는 항목은 owner만 취소할 수 있다(list에서도 안 보이므로
+        # 정상 대화 흐름으로는 다른 사용자의 id를 알 수도 없지만, 방어적으로
+        # 한 번 더 막는다) — 존재를 알려주지 않도록 not-found와 같은 메시지.
+        if not r or (r.get("action") and r.get("owner") != _current_user_id):
             return "❌ 취소할 정기 알림을 찾을 수 없습니다. list_daily_reminders로 먼저 확인해주세요."
         label = r["label"]
         del _routines[routine_id]
@@ -529,7 +916,7 @@ def cancel_daily_reminder(routine_id: str) -> str:
     return f"[✅ 정기 알림 취소 완료]\n정기 알림{label_str}을 취소했습니다."
 
 
-def get_due_daily_reminders() -> list:
+def get_due_daily_reminders(func_map: dict = None) -> list:
     """오늘 아직 안 울린 정기 알림 중, 지금 시각이 설정된 시각을 지난 것을
     찾아 "오늘 울림"으로 표시(디스크에 저장)하고 반환한다. get_due_timers()와
     같은 패턴으로 앱이 주기적으로 폴링해서 토스트를 띄우기 위한 내부용 —
@@ -538,23 +925,49 @@ def get_due_daily_reminders() -> list:
     "오늘 울림" 여부를 매번 디스크에 저장해두는 이유: 앱을 재시작해도 같은
     날 두 번 울리면 안 되기 때문 — 메모리에만 있는 notified 플래그(위
     get_due_timers 방식)로는 재시작하면 초기화돼서 재시작 직후 이미 지난
-    시각의 알림이 다시 울려버린다."""
+    시각의 알림이 다시 울려버린다.
+
+    2026-09-28: func_map을 새로 받는다(기본값 None이라 기존 0-인자 호출도
+    그대로 동작 — 하위 호환) — 등록된 action(iot_control)을 실제로
+    실행하려면 다른 플러그인의 함수(control_iot_device)가 필요하기 때문
+    (get_due_conditions와 동일한 의존성 주입 패턴). action 실행은 반드시
+    _routines_lock을 놓은 뒤에 한다 — control_iot_device는 로컬 네트워크
+    검색 때문에 최대 수 초가 걸릴 수 있는데, 그동안 락을 잡고 있으면 다른
+    스레드(채팅에서 새 알림을 등록하려는 요청 등)가 그만큼 블로킹된다."""
     now = datetime.now()
     today_str = now.date().isoformat()
     _ensure_routines_loaded()
-    due = []
+    fired = []
     with _routines_lock:
         changed = False
         for rid, r in _routines.items():
+            # 2026-09-28 ChatGPT 검수 지적: action이 있는 항목은 등록한
+            # 사용자(owner)의 세션에서만 폴링 대상으로 본다 — 다른 사용자로
+            # 로그인한 세션이 우연히 이 항목을 대신 발동시켜 last_fired_date를
+            # 건드리면, 정작 owner가 나중에 로그인해도 "오늘 이미 처리됨"으로
+            # 보여서 자기 자동화가 조용히 실행 안 된 것처럼 되어버린다 — 그래서
+            # owner가 다르면(또는 owner 없이 저장된 이전 데이터면) 아예
+            # 건드리지 않고 넘어간다(알림만 있는 기존 항목은 owner가 None이라
+            # 이 조건에 안 걸림 — 기존 전역 동작 그대로 유지).
+            if r.get("action") and r.get("owner") != _current_user_id:
+                continue
             if r.get("last_fired_date") == today_str:
                 continue  # 오늘 이미 울림
             target_today = now.replace(hour=r["hour"], minute=r["minute"], second=0, microsecond=0)
             if now >= target_today:
-                due.append({"id": rid, "label": r["label"]})
+                fired.append((rid, r["label"], r.get("action")))
                 r["last_fired_date"] = today_str
                 changed = True
         if changed:
             _save_routines()
+
+    due = []
+    for rid, label, action in fired:
+        action_result = _execute_action_with_retry(action, func_map or {})
+        if action_result["executed"]:
+            _log_action_execution("daily_reminder", rid, label, action, action_result)
+            _record_action_status(_routines, _routines_lock, _save_routines, rid, action_result)
+        due.append({"id": rid, "label": label, "action_result": action_result})
     return due
 
 
@@ -583,7 +996,7 @@ def _save_conditions():
         print(f"[조건부 알림] 저장 오류: {e}")
 
 
-def _register_condition(ctype: str, threshold: float, target: str = "", label: str = "") -> str:
+def _register_condition(ctype: str, threshold: float, target: str = "", label: str = "", action=None) -> str:
     """4개 set_*_condition이 공유하는 저장 로직 — 검증/친절한 확인 문구는
     조건 타입마다 단위가 달라서(분/원/%) 각 공개 함수에 남겨두고, "조건을
     딕셔너리로 만들어 저장한다"는 반복되는 부분만 여기로 뺐다."""
@@ -597,12 +1010,15 @@ def _register_condition(ctype: str, threshold: float, target: str = "", label: s
             "label": (label or "").strip(),
             "last_state": False,
             "period_key": None,
+            "action": action,
+            "owner": _current_user_id if action else None,
         }
         _save_conditions()
     return condition_id
 
 
-def set_usage_condition(target: str, threshold_minutes: float, label: str = "") -> str:
+def set_usage_condition(target: str, threshold_minutes: float, label: str = "",
+                         iot_device_name: str = "", iot_state: str = "") -> str:
     print(f"\n🎯🔁 [조건부 알림] 설정 중: '{target}' {threshold_minutes}분 넘으면" + (f" ('{label}')" if label else ""))
     target = (target or "").strip()
     if not target:
@@ -614,21 +1030,31 @@ def set_usage_condition(target: str, threshold_minutes: float, label: str = "") 
     if threshold_minutes <= 0:
         return "⚠️ 기준 시간은 0분보다 커야 해요."
 
-    _register_condition("usage_limit", threshold_minutes, target=target, label=label)
+    action = _build_action_from_iot_args(iot_device_name, iot_state)
+    action_error = _validate_action(action) or _require_login_for_action(action)
+    if action_error:
+        return action_error
+
+    _register_condition("usage_limit", threshold_minutes, target=target, label=label, action=action)
 
     label_str = f" ('{label}')" if label else ""
     friendly = f"{int(threshold_minutes // 60)}시간" if threshold_minutes % 60 == 0 else f"{threshold_minutes:.0f}분"
+    action_desc = _describe_action(action)
     # ChatGPT 검수 반영(2026-09-22): "게임 4시간 넘으면 알려줘"라고만 들으면
     # 사용자는 백그라운드 상시 감시를 기대하기 쉽지만, 실제로는 이 앱이 켜져
     # 있는 동안만(app_usage 자체가 이 앱의 스레드로만 사용 시간을 기록하므로
     # 앱이 꺼져 있으면 사용 시간도 안 늘어남) 30초 주기로 감시한다는 점을
     # 설정 시점에 명시한다.
+    if action_desc:
+        return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\n'{target}' 오늘 사용 시간이 {friendly}을 넘으면{label_str} "
+                f"{action_desc} (Team-Build-It이 켜져 있는 동안만 감시돼요)")
     return (f"[✅ 조건부 알림 설정 완료]\n'{target}' 오늘 사용 시간이 {friendly}을 넘으면{label_str} "
             f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. "
             f"(Team-Build-It이 켜져 있는 동안만 감시돼요)")
 
 
-def set_spending_condition(threshold_amount: float, label: str = "") -> str:
+def set_spending_condition(threshold_amount: float, label: str = "",
+                            iot_device_name: str = "", iot_state: str = "") -> str:
     print(f"\n💰🔁 [조건부 알림] 설정 중: 이번달 지출 {threshold_amount}원 넘으면" + (f" ('{label}')" if label else ""))
     try:
         threshold_amount = float(threshold_amount)
@@ -637,15 +1063,26 @@ def set_spending_condition(threshold_amount: float, label: str = "") -> str:
     if threshold_amount <= 0:
         return "⚠️ 기준 금액은 0원보다 커야 해요."
 
-    _register_condition("spending_limit", threshold_amount, label=label)
+    action = _build_action_from_iot_args(iot_device_name, iot_state)
+    action_error = _validate_action(action) or _require_login_for_action(action)
+    if action_error:
+        return action_error
+
+    _register_condition("spending_limit", threshold_amount, label=label, action=action)
 
     label_str = f" ('{label}')" if label else ""
+    action_desc = _describe_action(action)
+    if action_desc:
+        return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\n이번 달 지출이 {int(threshold_amount):,}원을 넘으면{label_str} "
+                f"{action_desc} 로그인 상태여야 지출 데이터를 확인할 수 있어요. "
+                f"(Team-Build-It이 켜져 있는 동안만 감시돼요)")
     return (f"[✅ 조건부 알림 설정 완료]\n이번 달 지출이 {int(threshold_amount):,}원을 넘으면{label_str} "
             f"알려드릴게요. 로그인 상태여야 지출 데이터를 확인할 수 있어요. "
             f"(Team-Build-It이 켜져 있는 동안만 감시돼요)")
 
 
-def set_cpu_condition(threshold_percent: float, label: str = "") -> str:
+def set_cpu_condition(threshold_percent: float, label: str = "",
+                       iot_device_name: str = "", iot_state: str = "") -> str:
     print(f"\n🖥️🔁 [조건부 알림] 설정 중: CPU {threshold_percent}% 넘으면" + (f" ('{label}')" if label else ""))
     try:
         threshold_percent = float(threshold_percent)
@@ -654,22 +1091,33 @@ def set_cpu_condition(threshold_percent: float, label: str = "") -> str:
     if not (0 < threshold_percent <= 100):
         return "⚠️ 기준 퍼센트는 0보다 크고 100 이하여야 해요."
 
-    _register_condition("cpu_limit", threshold_percent, label=label)
+    action = _build_action_from_iot_args(iot_device_name, iot_state)
+    action_error = _validate_action(action) or _require_login_for_action(action)
+    if action_error:
+        return action_error
+
+    _register_condition("cpu_limit", threshold_percent, label=label, action=action)
 
     label_str = f" ('{label}')" if label else ""
+    action_desc = _describe_action(action)
     # ChatGPT 2차 검수 지적(2026-09-23): 처음엔 "앱이 꺼져 있던 동안 놓칠 수
     # 있다"고만 썼는데, 실제로는 앱이 켜져 있어도 두 폴링(30초 간격) 사이에
     # 짧게 넘었다가 내려간 경우도 똑같이 놓친다 — "앱 꺼짐"에 한정된 문제가
     # 아니라 "폴링 방식 자체의 일반적 한계"다. 이 프로젝트가 CPU/디스크를
     # 실시간 감시가 아니라 주기적 확인으로 구현했다는 사실 자체를 고지 문구에
     # 명시한다.
+    if action_desc:
+        return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\nCPU 사용률이 {threshold_percent:.0f}%를 넘으면{label_str} "
+                f"{action_desc} (이 조건은 Team-Build-It이 실행 중일 때 약 30초마다 확인해요 — 앱이 꺼져 있거나 "
+                f"확인 사이에 잠깐 조건을 넘었다가 돌아온 경우에는 놓칠 수 있어요)")
     return (f"[✅ 조건부 알림 설정 완료]\nCPU 사용률이 {threshold_percent:.0f}%를 넘으면{label_str} "
             f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. "
             f"(이 조건은 Team-Build-It이 실행 중일 때 약 30초마다 확인해요 — 앱이 꺼져 있거나 "
             f"확인 사이에 잠깐 조건을 넘었다가 돌아온 경우에는 알림을 놓칠 수 있어요)")
 
 
-def set_disk_condition(threshold_percent: float, label: str = "") -> str:
+def set_disk_condition(threshold_percent: float, label: str = "",
+                        iot_device_name: str = "", iot_state: str = "") -> str:
     print(f"\n💾🔁 [조건부 알림] 설정 중: 디스크 여유공간 {threshold_percent}% 미만" + (f" ('{label}')" if label else ""))
     try:
         threshold_percent = float(threshold_percent)
@@ -678,9 +1126,19 @@ def set_disk_condition(threshold_percent: float, label: str = "") -> str:
     if not (0 < threshold_percent <= 100):
         return "⚠️ 기준 퍼센트는 0보다 크고 100 이하여야 해요."
 
-    _register_condition("disk_limit", threshold_percent, label=label)
+    action = _build_action_from_iot_args(iot_device_name, iot_state)
+    action_error = _validate_action(action) or _require_login_for_action(action)
+    if action_error:
+        return action_error
+
+    _register_condition("disk_limit", threshold_percent, label=label, action=action)
 
     label_str = f" ('{label}')" if label else ""
+    action_desc = _describe_action(action)
+    if action_desc:
+        return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\n디스크 여유 공간이 {threshold_percent:.0f}% 밑으로 떨어지면{label_str} "
+                f"{action_desc} (이 조건은 Team-Build-It이 실행 중일 때 약 30초마다 확인해요 — 앱이 꺼져 있거나 "
+                f"확인 사이에 잠깐 조건을 넘었다가 돌아온 경우에는 놓칠 수 있어요)")
     return (f"[✅ 조건부 알림 설정 완료]\n디스크 여유 공간이 {threshold_percent:.0f}% 밑으로 떨어지면{label_str} "
             f"알려드릴게요. 실제 정리는 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. "
             f"(이 조건은 Team-Build-It이 실행 중일 때 약 30초마다 확인해요 — 앱이 꺼져 있거나 "
@@ -692,6 +1150,9 @@ def list_conditions() -> str:
     _ensure_conditions_loaded()
     with _conditions_lock:
         items = list(_conditions.items())
+    # list_daily_reminders와 동일한 이유(모듈 docstring 참고) — action이 있는
+    # 항목은 owner만 볼 수 있게 한다.
+    items = [(cid, c) for cid, c in items if not c.get("action") or c.get("owner") == _current_user_id]
     if not items:
         return "[🎯🔁 조건부 알림 목록]\n등록된 조건부 알림이 없습니다."
 
@@ -703,7 +1164,10 @@ def list_conditions() -> str:
         # 전체가 깨지지 않도록 안전하게 처리 — get_due_conditions도 같은
         # 방어를 한다.
         desc = spec["label"](c) if spec else f"(알 수 없는 조건 타입: {c['type']})"
-        lines.append(f"  - {desc}{label_part} (id: {cid})")
+        line = f"  - {desc}{label_part} (id: {cid})"
+        if c.get("last_action_success") is False:
+            line += f"\n    ⚠️ 마지막 자동 실행 실패({c.get('last_action_at', '')}): {c.get('last_action_detail', '')}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -713,7 +1177,7 @@ def cancel_condition(condition_id: str) -> str:
     condition_id = (condition_id or "").strip()
     with _conditions_lock:
         c = _conditions.get(condition_id)
-        if not c:
+        if not c or (c.get("action") and c.get("owner") != _current_user_id):
             return "❌ 취소할 조건부 알림을 찾을 수 없습니다. list_conditions로 먼저 확인해주세요."
         label = c["label"]
         del _conditions[condition_id]
@@ -754,7 +1218,7 @@ def get_due_conditions(func_map: dict) -> list:
     _ensure_conditions_loaded()
     now = datetime.now()
     period_keys = {"day": now.date().isoformat(), "month": now.strftime("%Y-%m"), None: None}
-    due = []
+    fired = []
     with _conditions_lock:
         changed = False
         for cid, c in _conditions.items():
@@ -785,14 +1249,40 @@ def get_due_conditions(func_map: dict) -> list:
 
             was_over = c.get("last_state", False)
             now_over = comparator(current, c["threshold"])
-            if now_over and not was_over:
-                due.append({
+            # 2026-09-28 ChatGPT 검수 지적: last_state는 daily reminder의
+            # last_fired_date와 달리 "지금 조건이 참인가"라는, 로그인 사용자와
+            # 무관한 사실이라 계속 정확히 갱신해야 한다(안 그러면 owner가
+            # 나중에 로그인했을 때 last_state가 낡아서 거짓→참 전환을
+            # 잘못 판정한다). 대신 실제 action 실행 자격만 owner로 제한한다 —
+            # action이 있는데 owner가 다른(또는 없는) 세션이면 이 전환은
+            # "소비"만 되고(last_state는 갱신) 실행은 하지 않는다. 그 세션
+            # 동안 조건이 다시 거짓→참으로 안 바뀌면 owner는 이 전환을 놓칠
+            # 수 있는데, 이건 이미 이 프로젝트가 받아들인 "폴링 사이의 변화는
+            # 놓칠 수 있다"는 한계와 같은 종류로 남겨둔다.
+            action = c.get("action")
+            owned_by_this_session = not action or c.get("owner") == _current_user_id
+            if now_over and not was_over and owned_by_this_session:
+                fired.append({
                     "id": cid, "label": c.get("label", ""), "type": c["type"],
-                    "value": current, "threshold": c["threshold"],
+                    "value": current, "threshold": c["threshold"], "action": action,
                 })
             if now_over != was_over:
                 c["last_state"] = now_over
                 changed = True
         if changed:
             _save_conditions()
+
+    # 2026-09-28: action 실행은 _conditions_lock을 놓은 뒤에 한다(get_due_
+    # daily_reminders와 동일한 이유 — control_iot_device가 네트워크 검색으로
+    # 최대 수 초 걸릴 수 있는데, 그동안 락을 잡고 있으면 다른 스레드의 조건
+    # 등록/취소가 그만큼 블로킹된다).
+    due = []
+    for item in fired:
+        action = item.pop("action")
+        action_result = _execute_action_with_retry(action, func_map)
+        if action_result["executed"]:
+            _log_action_execution("condition", item["id"], item["label"], action, action_result)
+            _record_action_status(_conditions, _conditions_lock, _save_conditions, item["id"], action_result)
+        item["action_result"] = action_result
+        due.append(item)
     return due

@@ -279,6 +279,10 @@ TOOL_METADATA: dict = {
         name="get_disk_free_percent", module="system_info", category="reminder",
         risk_level="safe", read_only=True, llm_exposed=False,
     ),
+    "list_action_log": ToolMetadata(
+        name="list_action_log", module="reminder", category="reminder",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
     "list_conditions": ToolMetadata(
         name="list_conditions", module="reminder", category="reminder",
         risk_level="safe", read_only=True, llm_exposed=True,
