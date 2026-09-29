@@ -8,7 +8,7 @@ import ollama
 import httpx  # ollama 패키지가 이미 의존하는 라이브러리 — 오류 종류 구분에만 사용
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from settings.config import TOOL_SCHEMAS, MOCK_USER
+from settings.config import TOOL_SCHEMAS, MOCK_USER, OLLAMA_MODEL
 from calendar_feature import calendar_preference
 from core.preference_memory import get_pref, save_pref
 
@@ -20,8 +20,10 @@ from core.preference_memory import get_pref, save_pref
 # 쪽은 안 바뀌는 채로 방치될 수 있다 — 이 프로젝트에서 이미 여러 번 반복된
 # "같은 값을 손으로 여러 곳에 따로 관리하다 하나가 누락되는" 버그 클래스와
 # 동일하다(_TOOL_KEYWORDS/_TOOL_CATEGORIES 이원화 버그 참고). 평가 스크립트는
-# 이 상수를 직접 import해서 쓴다.
-OLLAMA_MODEL = "llama3.1"
+# 이 상수를 직접 import해서 쓴다. 2026-09-29: settings/config.py로 실제
+# 정의를 옮기고(플러그인도 같은 상수를 써야 해서 — plugins/text_tools.py
+# 모듈 docstring 참고) 여기서는 재수출만 한다 — `from core.ai_worker import
+# OLLAMA_MODEL`로 쓰던 기존 코드(tests/llm_smoke/ 등)는 그대로 동작한다.
 
 
 def _diagnose_error(e: Exception) -> str:
@@ -428,8 +430,15 @@ _TOOL_CATEGORIES = {
         # 걸리므로 "상태"를 빼도 놓치지 않는다.
         ("cpu", "메모리", "ram", "디스크", "프로세스", "느려", "무거", "종료",
          "컴퓨터", "pc", "사양", "온도", "코어", "속도",
-         "버벅", "렉", "끊겨", "끊김", "꺼줘", "용량", "저장공간"),
-        ("get_system_info", "get_top_cpu_processes", "kill_process"),
+         "버벅", "렉", "끊겨", "끊김", "꺼줘", "용량", "저장공간",
+         # 2026-09-29 PC 상태 이력/변화 감지(get_system_trend) 추가. 새
+         # 키워드는 넣지 않았다 — "어제보다 느려졌어?"/"이번주 컴퓨터 상태
+         # 어때" 같은 자연스러운 표현은 이미 위 "느려"/"컴퓨터"/"pc"로
+         # 걸린다(app_usage 카테고리가 이미 "추이"/"늘었"/"줄었"/
+         # "지난주보다"/"지난달보다"를 선점하고 있어 겹치지 않게 피함 —
+         # 겹치면 그 카테고리의 "다른 카테고리와 안 겹친다"는 전제가 깨짐).
+         "느려졌", "빨라졌"),
+        ("get_system_info", "get_top_cpu_processes", "kill_process", "get_system_trend"),
     ),
     "price": (
         ("검색", "최저가", "가격", "다나와", "얼마", "싸게", "저렴"),
@@ -542,6 +551,37 @@ _TOOL_CATEGORIES = {
          # 충돌하므로 "수정된 파일/문서"처럼 붙여서만 매치.
          "수정된 파일", "수정된 문서", "만든 문서", "받은 문서", "발표 자료", "발표자료", "ppt", "파워포인트"),
         ("search_files",),
+    ),
+    "todo": (
+        # 2026-09-29 할 일 목록(체크리스트) — ChatGPT 1라운드 검수 지적: "할일"
+        # 같은 명시적 단어 없이도 "우유 사기 적어줘"/"청소할 것 목록에 넣어줘"처럼
+        # 자연스럽게 말하는 일반인이 많다. 이 표현들에 "할일" 계열 키워드가 하나도
+        # 안 걸리면 카테고리 라우팅 자체가 통째로 빠져서(_TOOL_CATEGORIES 설명
+        # 참고) 전체 105개 도구가 노출돼 응답이 크게 느려진다(주석 상단 실측:
+        # 도구 36개일 때 182초) — 정확도 문제가 아니라 체감 속도 문제라 실사용에
+        # 중요하다. "적어줘"/"목록에 넣어" 계열을 추가했다 — calendar의 "추가/
+        # 등록"만큼 범용적이지 않고("일정 적어줘"보다 "일정 추가해줘"가 훨씬
+        # 자연스러움) 체크리스트 맥락에서만 자연스러운 표현이라 좁게 잡아도 안전.
+        # "우유 사야 해"처럼 동사·목적어만 있고 아무 신호도 없는 문장까지는 키워드
+        # 매칭으로 해결할 수 없는 영역이라 의도적으로 포기하고 안전장치(전체 노출)
+        # 에 맡긴다.
+        ("할일", "할 일", "todo", "투두", "체크리스트", "적어줘", "적어놔", "목록에 넣어", "목록에 추가"),
+        ("add_todo", "list_todos", "complete_todo", "delete_todo"),
+    ),
+    "notes": (
+        # 2026-09-29 메모장 — todo와 겹치지 않는 고유 신호("메모"/"노트")만
+        # 쓴다. "기억해둬"/"기록해둬"는 todo의 "적어줘"/"적어놔"와 뜻은
+        # 비슷하지만 겹치는 단어가 아니라서 안전하게 메모장 전용으로 둘 수
+        # 있다(todo 카테고리에는 이 단어들을 넣지 않았음 — 겹치면 "메모해줘"
+        # 요청에 todo 함수까지 섞여 노출된다).
+        ("메모", "메모장", "노트", "기억해둬", "기록해둬"),
+        ("add_note", "list_notes", "search_note", "delete_note"),
+    ),
+    "text_tools": (
+        # 2026-09-29 문서/텍스트 요약·번역 — 다른 카테고리 키워드와 안 겹치는
+        # 고유 신호("요약"/"번역")만 쓴다.
+        ("요약", "요약해줘", "번역", "번역해줘"),
+        ("summarize_text", "translate_text"),
     ),
     "app_usage": (
         ("사용 시간", "사용시간", "화면 시간", "화면시간", "앱 사용", "앱사용", "몇 시간", "몇시간",
@@ -1944,6 +1984,69 @@ def _build_system_info_reply(raw_results: str):
     return " ".join(lines)
 
 
+_SYSTEM_TREND_HEADER = re.compile(
+    r'^\[📊 PC 상태 추이\] \((?P<label>[^)]+?) vs 그 이전(?:, 표본 (?P<cur_n>\d+)개 vs (?P<prev_n>\d+)개)?\)$'
+)
+_SYSTEM_TREND_LINE = re.compile(
+    r'^- (?P<metric>CPU 평균|메모리 평균|디스크 여유공간): '
+    r'(?:(?P<arrow>📈|📉) (?P<sign>[+-])(?P<diff>\d+(?:\.\d+)?)%p \((?P<prev>\d+(?:\.\d+)?)%p → (?P<cur>\d+(?:\.\d+)?)%p\)'
+    r'|➡️ 변화 없음 \((?P<flat>\d+(?:\.\d+)?)%p\))'
+    r'(?P<disk_note> \(늘어날수록 여유 있음\))?$'
+)
+_SYSTEM_TREND_TODAY_NOTE = "※ '오늘'은 아직 끝나지 않은 하루라 어제 하루 전체보다 표본이 적을 수 있어요 — 표본 수가 적으면 참고용으로만 봐주세요."
+_SYSTEM_TREND_METRIC_LABEL = {"CPU 평균": "CPU", "메모리 평균": "메모리", "디스크 여유공간": "디스크 여유공간"}
+
+
+def _build_system_trend_reply(raw_results: str):
+    """2026-09-29 ChatGPT 검수 지적: get_system_trend()의 결과는 사실상 숫자
+    3쌍(현재 평균/이전 평균/증감)뿐이라 LLM이 개입할 이유가 거의 없는데,
+    _build_system_info_reply(바로 위)가 실제로 재현한 것과 같은 종류의 왜곡
+    (숫자 바꿔치기, 지표 혼동, 없는 판정 지어내기)이 구조적으로 똑같이
+    가능하다 — 특히 "증가"를 "감소"로 뒤집거나 CPU 이야기를 메모리 이야기로
+    바꾸는 식의 반전은 이 프로젝트에서 실제로 여러 번 재현된 실패 패턴이다.
+    재현 사례가 아직 없다고 자유형 요약에 맡기지 않고, 처음부터 결정론적으로
+    문장을 만든다(Deterministic-first summary rule).
+
+    "비교할 기록이 없어요"/"비교 불가" 같은 단일 문장 결과는 이미 body가 한
+    줄뿐이라 _build_single_verdict_reply가 먼저 처리하므로, 여기서는 헤더 +
+    CPU/메모리/디스크 3줄(+ period="today"일 때만 붙는 안내 1줄)이 모두 있는
+    "성공" 케이스만 다룬다 — 한 줄이라도 예상한 형식과 다르면 None을 반환해
+    자유형 요약으로 안전하게 폴백한다(단정적으로 잘못 파싱해 틀린 문장을
+    만드느니, 아예 못 알아본 걸로 처리하는 게 안전하다는 이 프로젝트의 기존
+    원칙 — 다른 빌더들과 동일)."""
+    lines = raw_results.strip().split('\n')
+    if len(lines) not in (4, 5):
+        return None
+    today_note = False
+    if len(lines) == 5:
+        if lines[4] != _SYSTEM_TREND_TODAY_NOTE:
+            return None
+        today_note = True
+        lines = lines[:4]
+
+    header = _SYSTEM_TREND_HEADER.match(lines[0])
+    if not header or not header.group('cur_n'):
+        return None
+
+    clauses = []
+    for line in lines[1:]:
+        m = _SYSTEM_TREND_LINE.match(line)
+        if not m:
+            return None
+        metric = _SYSTEM_TREND_METRIC_LABEL[m.group('metric')]
+        if m.group('flat') is not None:
+            clauses.append(f"{metric} {m.group('flat')}%(변화 없음)")
+        else:
+            verb = "증가" if m.group('sign') == '+' else "감소"
+            note = ", 여유 있는 방향" if m.group('disk_note') else ""
+            clauses.append(f"{metric} {m.group('prev')}%→{m.group('cur')}%({verb}{note})")
+
+    reply = f"{header.group('label')} PC 상태를 비교해봤어요 — " + ", ".join(clauses) + "."
+    if today_note:
+        reply += " 다만 오늘은 아직 하루가 다 지나지 않아서 표본이 적을 수 있으니 참고만 해주세요."
+    return reply
+
+
 _STARTUP_HEADER = re.compile(r'^\[🔁 자동 실행 프로그램 점검 결과\] \(총 (?P<total>\d+)개\)\n\n(?P<body>.+)$', re.DOTALL)
 _STARTUP_EMPTY = "[🔁 자동 실행 프로그램 점검 결과]\n컴퓨터를 켤 때 자동으로 실행되도록 등록된 프로그램이 없습니다."
 _STARTUP_SUS_HEADER = re.compile(r'^🚨 의심 항목 (?P<count>\d+)개:$')
@@ -2437,6 +2540,173 @@ def _build_timer_list_reply(raw_results: str):
     return "\n".join(lines)
 
 
+_TODO_LIST_EMPTY_PENDING = "[✅ 할 일 목록]\n등록된 할 일이 없습니다."
+_TODO_LIST_EMPTY_DONE = "[✅ 할 일 목록]\n완료한 할 일이 없습니다."
+_TODO_PENDING_HEADER = re.compile(r"^\[✅ 할 일 목록\] \(미완료 (?P<count>\d+)개\)\n(?P<body>.+)$", re.DOTALL)
+_TODO_DONE_HEADER = re.compile(r"^\[✅ 할 일 목록\] \(완료 (?P<count>\d+)개\)\n(?P<body>.+)$", re.DOTALL)
+_TODO_ALL_HEADER = re.compile(
+    r"^\[✅ 할 일 목록\] \(전체 (?P<total>\d+)개, 미완료 (?P<pending>\d+)개 완료 (?P<done>\d+)개\)\n(?P<body>.+)$",
+    re.DOTALL,
+)
+_TODO_PLAIN_ITEM = re.compile(r"^  (?P<seq>\d+)\. (?P<text>.+)$")
+_TODO_CHECKBOX_ITEM = re.compile(r"^  \[(?P<mark>x| )\] (?P<seq>\d+)\. (?P<text>.+)$")
+# 2026-09-29 ChatGPT 검수 지적("완료 항목이 계속 쌓이면 출력이 무한정 길어짐")
+# 반영 — list_todos/list_notes/search_note가 표시 개수를 _MAX_DISPLAYED_ITEMS로
+# 제한하면서 넘는 만큼은 app_usage.get_usage_report와 동일한 "... 외 N개" 줄을
+# 붙인다. 여러 목록형 함수가 같은 trailer 문법을 쓰므로 파싱 헬퍼를 공유한다.
+_CAPPED_LIST_MORE_LINE = re.compile(r"^  \.\.\. 외 (?P<more>\d+)개$")
+
+
+def _parse_capped_list_body(body: str, item_pattern):
+    """(todo_list.py/notes.py 공용) 본문 줄들을 item_pattern으로 하나씩 파싱하고,
+    마지막 줄이 "... 외 N개"면 떼어내 남은 개수로 인정한다. 예상 밖 줄이 있으면
+    None(안전하게 LLM 폴백)."""
+    lines = body.split('\n')
+    trailing_more = 0
+    if lines and _CAPPED_LIST_MORE_LINE.match(lines[-1]):
+        trailing_more = int(_CAPPED_LIST_MORE_LINE.match(lines[-1]).group('more'))
+        lines = lines[:-1]
+    parsed = []
+    for ln in lines:
+        m = item_pattern.match(ln)
+        if not m:
+            return None
+        parsed.append(m)
+    return parsed, trailing_more
+
+
+def _build_todo_list_reply(raw_results: str):
+    """list_todos()의 "개수 + 목록" 구조도 다른 목록형 함수(_build_timer_list_reply
+    등)와 같은 위험(개수 오산/항목 누락/순서 뒤섞임)이 있어 선언된 개수와 실제
+    파싱된 항목 수(+"...외 N개" 표시분)가 일치할 때만 문장을 만든다. 할 일
+    텍스트는 사용자가 자유롭게 적은 문자열이라(다른 목록들과 달리 고정 어휘가
+    아님) 내용 자체를 바꾸지 않고 그대로 옮기기만 한다."""
+    stripped = raw_results.strip()
+    if stripped == _TODO_LIST_EMPTY_PENDING or stripped == _TODO_LIST_EMPTY_DONE:
+        return f"확인해봤는데, {stripped.split(chr(10), 1)[1]}"
+
+    m = _TODO_PENDING_HEADER.match(stripped)
+    if m:
+        parsed = _parse_capped_list_body(m.group('body'), _TODO_PLAIN_ITEM)
+        if parsed is None:
+            return None
+        rows, more = parsed
+        if len(rows) + more != int(m.group('count')):
+            return None
+        lines = [f"할 일이 {m.group('count')}개 있어요."] + [f"- {r.group('text')}" for r in rows]
+        if more:
+            lines.append(f"(그 외 {more}개 더 있어요)")
+        return "\n".join(lines)
+
+    m = _TODO_DONE_HEADER.match(stripped)
+    if m:
+        parsed = _parse_capped_list_body(m.group('body'), _TODO_PLAIN_ITEM)
+        if parsed is None:
+            return None
+        rows, more = parsed
+        if len(rows) + more != int(m.group('count')):
+            return None
+        lines = [f"완료한 할 일이 {m.group('count')}개 있어요."] + [f"- {r.group('text')}" for r in rows]
+        if more:
+            lines.append(f"(그 외 {more}개 더 있어요)")
+        return "\n".join(lines)
+
+    m = _TODO_ALL_HEADER.match(stripped)
+    if m:
+        parsed = _parse_capped_list_body(m.group('body'), _TODO_CHECKBOX_ITEM)
+        if parsed is None:
+            return None
+        rows, more = parsed
+        if len(rows) + more != int(m.group('total')):
+            return None
+        lines = [f"전체 할 일 {m.group('total')}개 중 완료 {int(m.group('done'))}개, "
+                 f"미완료 {int(m.group('pending'))}개예요."]
+        for r in rows:
+            lines.append(f"- [{'완료' if r.group('mark') == 'x' else '미완료'}] {r.group('text')}")
+        if more:
+            lines.append(f"(그 외 {more}개 더 있어요)")
+        return "\n".join(lines)
+
+    return None
+
+
+_NOTE_LIST_EMPTY = "[📝 메모 목록]\n저장된 메모가 없습니다."
+_NOTE_LIST_HEADER = re.compile(r"^\[📝 메모 목록\] \(총 (?P<count>\d+)개, 최신순\)\n(?P<body>.+)$", re.DOTALL)
+_NOTE_SEARCH_NO_MATCH = re.compile(r"^\[📝 메모 검색\] \(검색어: '(?P<keyword>.+?)'\)\n일치하는 메모를 찾지 못했어요\.$")
+_NOTE_SEARCH_HEADER = re.compile(
+    r"^\[📝 메모 검색\] \(검색어: '(?P<keyword>.+?)', 일치 (?P<count>\d+)개\)\n(?P<body>.+)$", re.DOTALL
+)
+_NOTE_ITEM = re.compile(r"^  (?P<seq>\d+)\. (?P<text>.+) \((?P<date>\d{4}-\d{2}-\d{2})\)$")
+
+
+def _build_note_list_reply(raw_results: str):
+    """list_notes()/search_note()의 "개수 + 목록" 구조도 다른 목록형 함수와
+    같은 위험(개수 오산/항목 누락)이 있어 선언된 개수와 실제 파싱된 항목 수
+    (+"...외 N개")가 일치할 때만 문장을 만든다. 메모 텍스트는 사용자가 자유롭게
+    적은 내용이라(비밀번호, 주소 등 정확해야 하는 정보가 섞일 수 있음) 내용
+    자체를 절대 바꾸지 않고 그대로 옮긴다."""
+    stripped = raw_results.strip()
+    if stripped == _NOTE_LIST_EMPTY:
+        return "확인해봤는데, 저장된 메모가 없어요."
+
+    m = _NOTE_SEARCH_NO_MATCH.match(stripped)
+    if m:
+        return f"'{m.group('keyword')}'로 찾아봤는데, 일치하는 메모가 없었어요."
+
+    m = _NOTE_LIST_HEADER.match(stripped)
+    if m:
+        parsed = _parse_capped_list_body(m.group('body'), _NOTE_ITEM)
+        if parsed is None:
+            return None
+        rows, more = parsed
+        if len(rows) + more != int(m.group('count')):
+            return None
+        lines = [f"메모가 {m.group('count')}개 있어요(최신순)."]
+        lines += [f"- {r.group('text')} ({r.group('date')})" for r in rows]
+        if more:
+            lines.append(f"(그 외 {more}개 더 있어요)")
+        return "\n".join(lines)
+
+    m = _NOTE_SEARCH_HEADER.match(stripped)
+    if m:
+        parsed = _parse_capped_list_body(m.group('body'), _NOTE_ITEM)
+        if parsed is None:
+            return None
+        rows, more = parsed
+        if len(rows) + more != int(m.group('count')):
+            return None
+        lines = [f"'{m.group('keyword')}'로 찾아봤는데, {m.group('count')}개 나왔어요."]
+        lines += [f"- {r.group('text')} ({r.group('date')})" for r in rows]
+        if more:
+            lines.append(f"(그 외 {more}개 더 있어요)")
+        return "\n".join(lines)
+
+    return None
+
+
+_SUMMARY_RESULT_HEADER = "[📄 요약 결과]\n"
+_TRANSLATE_RESULT_HEADER = re.compile(r"^\[📄 번역 결과 \((?P<lang>.+?)\)\]\n(?P<body>.+)$", re.DOTALL)
+
+
+def _build_text_tool_reply(raw_results: str):
+    """2026-09-29 문서/텍스트 요약·번역 — summarize_text()/translate_text()의
+    결과는 이미 그 자체로 LLM이 만든 최종 산출물이다(요약문/번역문). 이걸
+    다시 자유형 LLM 요약(_summarize_tool_results_llm)에 넘기면 "번역 결과를
+    또 한 번 재작성"하는 이중 LLM 패스가 되어 버려서, 기껏 번역/요약한 내용이
+    한 번 더 왜곡될 위험이 생긴다 — 다른 결정론적 빌더들이 원본 숫자를 안
+    바꾸려는 것과 동일한 이유로, 여기서는 원문(=1차 LLM 산출물)을 그대로
+    통과시키고 절대 다시 요약/재구성하지 않는다. 실패 메시지(⚠️로 시작하는
+    한 줄짜리 안내)는 헤더가 없어 이 빌더에 안 걸리고 기존 catch-all
+    (_build_single_verdict_reply)로 자연스럽게 넘어간다."""
+    stripped = raw_results.strip()
+    if stripped.startswith(_SUMMARY_RESULT_HEADER):
+        return stripped[len(_SUMMARY_RESULT_HEADER):]
+    m = _TRANSLATE_RESULT_HEADER.match(stripped)
+    if m:
+        return m.group('body')
+    return None
+
+
 _DAILY_REMINDER_LIST_EMPTY = "[🔁 정기 알림 목록]\n등록된 정기 알림이 없습니다."
 _DAILY_REMINDER_LIST_HEADER = re.compile(
     r"^\[🔁 정기 알림 목록\] \(총 (?P<count>\d+)개\)\n(?P<body>.+)$", re.DOTALL
@@ -2798,6 +3068,9 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_app_usage_reply,
     _build_goal_status_reply,
     _build_file_search_reply,
+    _build_todo_list_reply,
+    _build_note_list_reply,
+    _build_text_tool_reply,
     _build_iot_no_devices_reply,
     _build_iot_control_reply,
     _build_port_scan_reply,
@@ -2808,6 +3081,7 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_suspicious_process_reply,
     _build_startup_items_reply,
     _build_system_info_reply,
+    _build_system_trend_reply,
     _build_price_search_reply,
     # _build_single_verdict_reply는 맨 마지막에 둔다 — "헤더 한 줄 + 본문 한 줄"이면
     # 무조건 걸리는 범용 catch-all이라, 더 앞에 있으면 다른 도구의 결과가 우연히
@@ -3678,6 +3952,17 @@ os.environ.setdefault("TZ", "Asia/Seoul")
 # 도구 이름 → 사람이 읽기 좋은 한국어 상태 메시지
 TOOL_STATUS_NAMES = {
     "get_system_info":           "🖥️  시스템 정보 수집 중",
+    "get_system_trend":          "📊  PC 상태 추이 조회 중",
+    "add_todo":                  "✅  할 일 추가 중",
+    "list_todos":                "✅  할 일 목록 조회 중",
+    "complete_todo":              "✅  할 일 완료 처리 중",
+    "delete_todo":                "✅  할 일 삭제 중",
+    "add_note":                  "📝  메모 저장 중",
+    "list_notes":                "📝  메모 목록 조회 중",
+    "search_note":                "📝  메모 검색 중",
+    "delete_note":                "📝  메모 삭제 중",
+    "summarize_text":            "📄  텍스트 요약 중",
+    "translate_text":            "📄  텍스트 번역 중",
     "get_top_cpu_processes":     "📊  CPU 프로세스 조회 중",
     "kill_process":              "⚡  프로세스 종료 중",
     "search_product_price":      "🛒  최저가 검색 중",

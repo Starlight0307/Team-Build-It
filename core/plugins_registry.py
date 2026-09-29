@@ -46,6 +46,18 @@ PLUGIN_PILLS = {
     ],    "file_search": [
         ("🔎 최근 받은 파일", "이번주에 받은 파일 찾아줘"),
     ],
+    "system_history": [
+        ("📊 이번주 PC 상태 추이", "이번주 컴퓨터 상태 어때?"),
+    ],
+    "todo_list": [
+        ("✅ 할 일 목록", "할일 목록 보여줘"),
+    ],
+    "notes": [
+        ("📝 메모장", "메모 목록 보여줘"),
+    ],
+    "text_tools": [
+        ("📄 텍스트 요약/번역", "[요약해줘: ]"),
+    ],
 }
 
 # 대화창 중앙에 뜨는 커맨드 카드 후보 (아이콘, 제목, 설명, 전송할 명령어)
@@ -92,6 +104,18 @@ PLUGIN_CARDS = {
     ],    "file_search": [
         ("🔎", "파일 찾기", "'지난주에 받은 PDF'처럼 이름·종류·기간으로 파일을 찾습니다.", "지난주에 받은 PDF 찾아줘"),
     ],
+    "system_history": [
+        ("📊", "PC 상태 추이", "CPU/메모리/디스크 여유공간이 시간에 따라 어떻게 바뀌었는지 비교합니다.", "이번주 컴퓨터 상태 어때?"),
+    ],
+    "todo_list": [
+        ("✅", "할 일 목록", "날짜/시간 없이 그냥 체크하는 단순 할 일 목록(로그인 필요).", "할일 목록 보여줘"),
+    ],
+    "notes": [
+        ("📝", "메모장", "짧은 메모를 저장하고 나중에 검색해서 찾습니다(로그인 필요).", "메모 목록 보여줘"),
+    ],
+    "text_tools": [
+        ("📄", "텍스트 요약/번역", "붙여넣은 글을 요약하거나 다른 언어로 번역합니다.", "[요약해줘: ]"),
+    ],
 }
 
 AVAILABLE_PLUGINS = [
@@ -99,7 +123,7 @@ AVAILABLE_PLUGINS = [
         "name": "시스템 진단 및 제어",
         "desc": "PC 상태 확인 및 과부하 프로그램 종료 기능",
         "func_names": ["get_system_info", "get_top_cpu_processes", "kill_process",
-                       "get_current_cpu_percent", "get_disk_free_percent"],
+                       "get_current_cpu_percent", "get_disk_free_percent", "get_ram_percent"],
         "module_name": "system_info",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_info.py",
         "sha256": "320f081326e56ba731a437aaf4606c7cff189872a7791181623df2e39c3a4bd0",
@@ -268,5 +292,51 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/iot_control.py",
         "sha256": "8251762e8fb18d839203628ea492675e731171c6f20766793b1eca9ffde46307",
         "dependencies": ["python-kasa"]
+    },
+    {
+        "name": "PC 상태 이력/변화 감지",
+        "desc": "CPU/메모리/디스크 여유공간을 1분마다 자동 기록하고, '어제보다 느려졌어?' 같은 "
+                "변화를 비교(시스템 진단 플러그인이 설치돼 있어야 기록이 쌓임)",
+        "func_names": ["get_system_trend", "record_system_snapshot"],
+        "module_name": "system_history",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_history.py",
+        # 2026-09-29 로컬 신규 추가 — 아직 GitHub에 push되지 않아 이 해시는
+        # 로컬 파일 기준으로만 정확하다(원격 설치 다운로드 검증에 쓰이는 값이라,
+        # push 후 원본과 달라지면 무결성 검사가 거부한다 — push 시 재계산 필요).
+        "sha256": "e97e9058d4bb3640820ac5b183913ae0c1f77f1523af10b5fb0aeb0db286d67a",
+        "dependencies": []
+    },
+    {
+        "name": "할 일 목록",
+        "desc": "날짜/시간 없이 그냥 체크만 하는 단순 할 일 목록 — 추가/조회/완료/삭제(로그인 필요)",
+        "func_names": ["add_todo", "list_todos", "complete_todo", "delete_todo"],
+        "module_name": "todo_list",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/todo_list.py",
+        # 2026-09-29 로컬 신규 추가 — system_history와 동일하게 아직 GitHub에
+        # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
+        "sha256": "a76c3d7321e4b29a56bd5bd04e882c7dd5d8d3e693b491aa4979256b51cffde6",
+        "dependencies": []
+    },
+    {
+        "name": "메모장",
+        "desc": "짧은 메모를 저장/검색/삭제 — 나중에 '그때 메모한 거 뭐였지'로 찾아봄(로그인 필요)",
+        "func_names": ["add_note", "list_notes", "search_note", "delete_note"],
+        "module_name": "notes",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/notes.py",
+        # 2026-09-29 로컬 신규 추가 — 아직 GitHub에 push 전이라 로컬 파일
+        # 기준으로만 정확한 값(push 시 재계산 필요, 다른 신규 항목과 동일).
+        "sha256": "f6a6d079a95f1a416f278346743293dd88b2cad5a27a798ec9de83b77b15e04e",
+        "dependencies": []
+    },
+    {
+        "name": "텍스트 요약/번역",
+        "desc": "붙여넣은 글을 짧게 요약하거나 다른 언어로 번역(로그인 불필요, 최대 4,000자)",
+        "func_names": ["summarize_text", "translate_text"],
+        "module_name": "text_tools",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/text_tools.py",
+        # 2026-09-29 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
+        # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
+        "sha256": "ad8005c2bb237c773bbec79da3982114bb7be22963b945f4269e1480b62d711b",
+        "dependencies": []
     },
 ]

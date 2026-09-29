@@ -74,6 +74,34 @@ def isolated_expense_tracker(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def isolated_todo_list(tmp_path, monkeypatch):
+    """plugins/todo_list.py의 저장 폴더(TODO_DIR)를 테스트용 임시 폴더로
+    바꿔치기하고 로그인 사용자를 테스트 계정으로 설정한다 — expense_tracker와
+    동일한 이유(로그인 필요, 사용자별 파일)."""
+    import plugins.todo_list as todo_list
+    fake_dir = tmp_path / "todo_list"
+    fake_dir.mkdir()
+    monkeypatch.setattr(todo_list, "TODO_DIR", str(fake_dir))
+    todo_list.set_current_user("testuser")
+    yield fake_dir
+    todo_list.set_current_user(None)
+
+
+@pytest.fixture
+def isolated_notes(tmp_path, monkeypatch):
+    """plugins/notes.py의 저장 폴더(NOTES_DIR)를 테스트용 임시 폴더로
+    바꿔치기하고 로그인 사용자를 테스트 계정으로 설정한다 — todo_list.py/
+    expense_tracker.py와 동일한 이유(로그인 필요, 사용자별 파일)."""
+    import plugins.notes as notes
+    fake_dir = tmp_path / "notes"
+    fake_dir.mkdir()
+    monkeypatch.setattr(notes, "NOTES_DIR", str(fake_dir))
+    notes.set_current_user("testuser")
+    yield fake_dir
+    notes.set_current_user(None)
+
+
+@pytest.fixture
 def isolated_calendar_preference(tmp_path, monkeypatch):
     """calendar_feature/calendar_preference.py의 저장 파일을 테스트용 임시
     파일로 바꿔치기 (실제 사용자의 캘린더 백엔드 설정을 건드리지 않도록)."""

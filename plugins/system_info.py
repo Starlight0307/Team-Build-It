@@ -163,6 +163,21 @@ def get_current_cpu_percent() -> float:
     return psutil.cpu_percent(interval=None)
 
 
+def get_ram_percent() -> float:
+    """plugins/system_history.py(PC 상태 이력 기록)가 쓰는 내부 전용 함수 —
+    TOOL_SCHEMAS에 없으므로 AI 도구 호출로는 절대 불릴 수 없다.
+    get_current_cpu_percent/get_disk_free_percent와 같은 이유로 존재한다:
+    get_system_info()는 전체 요약 문자열을 만드는 함수라 그대로 재사용하면
+    매번 문자열을 파싱해야 하고(느리고 깨지기 쉬움), psutil.virtual_memory()
+    자체는 블로킹도 없고 다른 호출과 공유하는 기준점도 없어서(cpu_percent와
+    달리) get_current_cpu_percent 같은 "직전 호출 간섭" 문제도 없다."""
+    try:
+        return psutil.virtual_memory().percent
+    except Exception as e:
+        print(f"[시스템 정보] RAM 사용률 조회 오류(PC 상태 이력용): {e}")
+        return None
+
+
 def get_disk_free_percent(path: str = None) -> float:
     """plugins/reminder.py의 조건부 알림(disk_limit)이 쓰는 내부 전용 함수 —
     TOOL_SCHEMAS에 없으므로 AI 도구 호출로는 절대 불릴 수 없다. 여유 공간을

@@ -279,6 +279,58 @@ TOOL_METADATA: dict = {
         name="get_disk_free_percent", module="system_info", category="reminder",
         risk_level="safe", read_only=True, llm_exposed=False,
     ),
+    "get_ram_percent": ToolMetadata(
+        name="get_ram_percent", module="system_info", category="system_history",
+        risk_level="safe", read_only=True, llm_exposed=False,
+    ),
+    "get_system_trend": ToolMetadata(
+        name="get_system_trend", module="system_history", category="system",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "record_system_snapshot": ToolMetadata(
+        name="record_system_snapshot", module="system_history", category="system_history",
+        risk_level="safe", read_only=False, llm_exposed=False,
+    ),
+    "add_todo": ToolMetadata(
+        name="add_todo", module="todo_list", category="todo",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "list_todos": ToolMetadata(
+        name="list_todos", module="todo_list", category="todo",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "complete_todo": ToolMetadata(
+        name="complete_todo", module="todo_list", category="todo",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "delete_todo": ToolMetadata(
+        name="delete_todo", module="todo_list", category="todo",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "add_note": ToolMetadata(
+        name="add_note", module="notes", category="notes",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "list_notes": ToolMetadata(
+        name="list_notes", module="notes", category="notes",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "search_note": ToolMetadata(
+        name="search_note", module="notes", category="notes",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "delete_note": ToolMetadata(
+        name="delete_note", module="notes", category="notes",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "summarize_text": ToolMetadata(
+        name="summarize_text", module="text_tools", category="text_tools",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "translate_text": ToolMetadata(
+        name="translate_text", module="text_tools", category="text_tools",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
     "list_action_log": ToolMetadata(
         name="list_action_log", module="reminder", category="reminder",
         risk_level="safe", read_only=True, llm_exposed=True,

@@ -76,6 +76,19 @@ def _sync_calendar_user(user_id: str):
         set_reminder_user(user_id)
     except ImportError:
         pass
+    try:
+        # 2026-09-29 할 일 목록 — expense_tracker와 같은 이유로 로그인한
+        # 사용자만 쓸 수 있게 한다(개인 할 일이 다른 비로그인 사용자와 섞이면 안 됨).
+        from plugins.todo_list import set_current_user as set_todo_user
+        set_todo_user(user_id)
+    except ImportError:
+        pass
+    try:
+        # 2026-09-29 메모장 — todo_list와 같은 이유로 로그인한 사용자만.
+        from plugins.notes import set_current_user as set_notes_user
+        set_notes_user(user_id)
+    except ImportError:
+        pass
 
 
 # ==========================================
@@ -204,6 +217,17 @@ class AssistantApp(QWidget):
         self._condition_poll_timer = QTimer(self)
         self._condition_poll_timer.timeout.connect(self._poll_due_conditions)
         self._condition_poll_timer.start(30000)
+
+        # 2026-09-29 PC 상태 이력(system_history) — CPU/RAM/디스크 여유율을
+        # 1분마다 조용히 기록만 한다(알림 없음, get_system_trend를 물어봤을
+        # 때만 보여줌). 다른 폴링과 독립된 전용 주기를 쓰는 이유는 이
+        # 프로젝트의 기존 원칙(_timer_poll_timer/_routine_poll_timer 주석
+        # 참고) — "정확도가 얼마나 중요한가"에 맞춰 각자 다른 주기를 쓴다.
+        # 조건부 알림(30초)만큼 자주 잴 필요는 없지만(하루 집계라 평균에
+        # 거의 영향 없음), 너무 뜸하면 짧은 세션에서는 표본이 거의 안 쌓인다.
+        self._history_poll_timer = QTimer(self)
+        self._history_poll_timer.timeout.connect(self._poll_system_history)
+        self._history_poll_timer.start(60000)
 
     # ─────────────────────────────────────────────
     # 🖥️ 시스템 트레이 — 창을 닫아도 백그라운드에서 계속 실행
@@ -427,6 +451,22 @@ class AssistantApp(QWidget):
                 mark = "✅" if action_result.get('success') else "⚠️"
                 message = f"{message}\n{mark} 자동 실행 결과: {action_result.get('detail', '')}"
             self._show_toast(message)
+
+    def _poll_system_history(self):
+        """PC 상태(CPU/RAM/디스크 여유율)를 1분마다 조용히 기록한다 —
+        record_system_snapshot도 get_due_conditions와 같은 내부 전용 폴링
+        패턴(다른 플러그인의 값을 봐야 해서 func_map 필요). system_history
+        플러그인이 설치 안 됐으면(installed_tools에 이 함수가 없으면) 그냥
+        아무것도 안 하고 조용히 돌아간다 — 사용자에게 알림을 띄우지 않는다
+        (기록 자체가 목적이라 조건부 알림과 달리 보여줄 "사건"이 없음)."""
+        func = next((f for f in self.installed_tools if f.__name__ == 'record_system_snapshot'), None)
+        if not func:
+            return
+        func_map = {f.__name__: f for f in self.installed_tools}
+        try:
+            func(func_map)
+        except Exception:
+            pass
 
     def _show_toast(self, message: str):
         """화면 오른쪽 위에 잠깐 떴다 사라지는 알림(토스트)을 띄운다.
