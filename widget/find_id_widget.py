@@ -83,7 +83,11 @@ class EmailSendThread(QThread):
         self.purpose = purpose
 
     def run(self):
-        ok, msg = request_code(self.email, self.purpose)
+        # 스레드 안에서 예외가 새어 나가면 PyQt가 앱 전체를 강제 종료하므로 여기서 잡는다
+        try:
+            ok, msg = request_code(self.email, self.purpose)
+        except Exception as e:
+            ok, msg = False, str(e)
         self.done.emit(ok, msg)
 
 
@@ -240,6 +244,9 @@ class FindIdWidget(QWidget):
         if not code:
             self._set_msg(self.msg_code, "인증코드를 입력하세요."); return
 
+        if not EMAIL_AUTH_AVAILABLE:
+            self._set_msg(self.msg_code, "이메일 인증을 사용할 수 없습니다. (auth/email_config.py 없음)"); return
+
         ok, msg = confirm_code(email, code)
         if ok:
             self._email_verified = True
@@ -281,7 +288,7 @@ class FindIdWidget(QWidget):
         self.lbl_result.setText(""); self.lbl_err.setText("")
         self.msg_email.setText(""); self.msg_code.setText("")
         self.result_box.hide()
-        self.btn_send_code.setEnabled(True)
+        self.btn_send_code.setEnabled(EMAIL_AUTH_AVAILABLE)
         self.btn_send_code.setText("인증코드 발송")
         self.btn_verify.setEnabled(True)
         self.input_code.setEnabled(True)
