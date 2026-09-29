@@ -18,7 +18,11 @@ if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
 # import보다 반드시 먼저 돌아야 한다. 테스트에서 app_main을 import할 때는
 # 건너뛴다(직접 실행할 때만).
 if __name__ == "__main__":
-    from core.bootstrap import ensure_requirements
+    from core.bootstrap import ensure_requirements, relaunch_without_console
+    # 더블클릭 실행 시 뜨는 검은 콘솔 창 없애기 — 창 없이 다시 띄우고 이 프로세스는
+    # 종료(그러면 콘솔 창도 닫힘). 터미널에서 실행했으면 그대로 진행.
+    if relaunch_without_console():
+        sys.exit(0)
     if not ensure_requirements():
         sys.exit(1)
 

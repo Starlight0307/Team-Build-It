@@ -182,3 +182,58 @@ def test_old_tk_on_mac_is_not_used(monkeypatch):
     assert bootstrap._can_use_tk() is False
     monkeypatch.setattr(tkinter, "TkVersion", 8.6)
     assert bootstrap._can_use_tk() is True
+
+
+# ── 더블클릭 실행 시 콘솔 창 없애기 (Windows) ──────────────────────────────
+
+def _fake_popen(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bootstrap.subprocess, "Popen", lambda *a, **kw: calls.append((a, kw)))
+    return calls
+
+
+def test_no_console_relaunch_skipped_on_mac(monkeypatch):
+    monkeypatch.setattr(bootstrap.sys, "platform", "darwin")
+    calls = _fake_popen(monkeypatch)
+    assert bootstrap.relaunch_without_console() is False and calls == []
+
+
+def test_no_console_relaunch_skipped_when_started_from_terminal(monkeypatch):
+    """터미널에서 실행했으면 로그가 보여야 하므로 그대로 둔다."""
+    monkeypatch.setattr(bootstrap.sys, "platform", "win32")
+    monkeypatch.delenv(bootstrap._NO_CONSOLE_ENV, raising=False)
+    monkeypatch.setattr(bootstrap, "_owns_console_alone", lambda: False)
+    calls = _fake_popen(monkeypatch)
+    assert bootstrap.relaunch_without_console() is False and calls == []
+
+
+def test_no_console_relaunch_when_double_clicked(monkeypatch):
+    monkeypatch.setattr(bootstrap.sys, "platform", "win32")
+    monkeypatch.delenv(bootstrap._NO_CONSOLE_ENV, raising=False)
+    monkeypatch.setattr(bootstrap, "_owns_console_alone", lambda: True)
+    monkeypatch.setattr(bootstrap.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    calls = _fake_popen(monkeypatch)
+    assert bootstrap.relaunch_without_console() is True
+    (cmd,), kw = calls[0]
+    assert cmd[0] == sys.executable
+    assert kw["creationflags"] == 0x08000000
+    assert kw["env"][bootstrap._NO_CONSOLE_ENV] == "1"
+
+
+def test_no_console_relaunch_not_repeated_in_child(monkeypatch):
+    monkeypatch.setattr(bootstrap.sys, "platform", "win32")
+    monkeypatch.setenv(bootstrap._NO_CONSOLE_ENV, "1")
+    monkeypatch.setattr(bootstrap, "_owns_console_alone", lambda: pytest.fail("확인할 필요 없음"))
+    assert bootstrap.relaunch_without_console() is False
+
+
+def test_no_console_relaunch_failure_falls_back(monkeypatch):
+    monkeypatch.setattr(bootstrap.sys, "platform", "win32")
+    monkeypatch.delenv(bootstrap._NO_CONSOLE_ENV, raising=False)
+    monkeypatch.setattr(bootstrap, "_owns_console_alone", lambda: True)
+    monkeypatch.setattr(bootstrap.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+
+    def boom(*a, **kw):
+        raise OSError("x")
+    monkeypatch.setattr(bootstrap.subprocess, "Popen", boom)
+    assert bootstrap.relaunch_without_console() is False   # 실패해도 앱은 그냥 실행

@@ -42,6 +42,8 @@ MIN_PYTHON        = (3, 11)   # python-kasa 0.10.x가 3.11 이상 필요
 
 # 다시 실행된 자식 프로세스인지 표시 — .venv로 재실행이 무한 반복되지 않게
 _RELAUNCH_ENV = "LUMI_BOOTSTRAP_RELAUNCHED"
+# 콘솔 창 없이 다시 실행된 자식 프로세스 표시 (Windows)
+_NO_CONSOLE_ENV = "LUMI_NO_CONSOLE"
 
 # 이름[extras] (비교연산자 버전)(, 비교연산자 버전)* — URL/옵션/마커는 불허
 _VERSION_SPEC = r"(==|!=|<=|>=|~=|<|>)\s*[A-Za-z0-9.*+!]+"
@@ -215,6 +217,44 @@ def _relaunch_in_project_venv() -> int:
     env = dict(os.environ, **{_RELAUNCH_ENV: "1"})
     script = os.path.abspath(sys.argv[0])
     return subprocess.call([venv_py, script, *sys.argv[1:]], env=env)
+
+
+def _owns_console_alone() -> bool:
+    """이 프로세스만을 위해 새로 열린 콘솔인지 (Windows 전용).
+    더블클릭/바로가기 실행이면 콘솔에 붙은 프로세스가 나 하나뿐이고,
+    터미널(cmd, PowerShell, VS Code, Anaconda Prompt)에서 실행했으면 그
+    셸도 같이 붙어 있어서 2개 이상이다."""
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    if not kernel32.GetConsoleWindow():
+        return False  # pythonw 등 콘솔 자체가 없음
+    pids = (ctypes.c_uint32 * 4)()
+    return kernel32.GetConsoleProcessList(pids, 4) == 1
+
+
+def relaunch_without_console() -> bool:
+    """Windows에서 더블클릭으로 실행하면 python.exe가 검은 콘솔 창을 같이
+    띄운다. 그 경우 같은 앱을 "창 없는 콘솔"(CREATE_NO_WINDOW)로 다시 띄우고
+    True를 반환한다 — 호출한 쪽이 바로 종료하면 원래 콘솔 창도 닫힌다.
+
+    - ShowWindow(SW_HIDE)로 숨기는 방식은 Windows 11 기본 콘솔인 Windows
+      Terminal에서는 창이 안 숨겨져서(실측) 쓰지 않는다.
+    - pythonw.exe로 띄우지 않는 이유: 콘솔이 아예 없으면 앱이 실행하는
+      powershell 등 콘솔 프로그램마다 새 검은 창이 번쩍 뜬다. 창 없는 콘솔을
+      물려받으면 그런 일이 없다.
+    - 터미널에서 실행한 경우엔 그 터미널에 로그가 보여야 하므로 그대로 둔다."""
+    if sys.platform != "win32" or os.environ.get(_NO_CONSOLE_ENV):
+        return False
+    try:
+        if not _owns_console_alone():
+            return False
+        env = dict(os.environ, **{_NO_CONSOLE_ENV: "1"})
+        script = os.path.abspath(sys.argv[0])
+        subprocess.Popen([sys.executable, script, *sys.argv[1:]], env=env,
+                         creationflags=subprocess.CREATE_NO_WINDOW, close_fds=True)
+        return True
+    except Exception:
+        return False  # 실패하면 콘솔 창이 보이는 채로 그냥 실행
 
 
 def ensure_requirements() -> bool:
