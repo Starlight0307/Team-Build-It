@@ -1,11 +1,17 @@
-PyQt6
-requests
-ollama
-psycopg2-binary
-python-dotenv
-bcrypt
-google-auth
-google-auth-oauthlib
-google-api-python-client
-python-kasa
-Send2Trash
+# 앱 실행 시 core/bootstrap.py가 빠진 패키지를 자동 설치한다.
+# - 보안: 버전을 == 로 고정한다. 새로 올라온(혹시 악성일 수 있는) 버전이
+#   사용자 몰래 자동 설치되지 않게 하기 위함. 버전을 올릴 때는 직접 확인 후 수정.
+# - 자동 설치는 "이름==버전" 같은 단순한 줄만 허용한다 (URL, -r/--index-url 같은
+#   옵션 줄은 거부). 전부 Windows/macOS(Intel·Apple Silicon), Python 3.11~3.14용
+#   wheel이 있는 버전이다 (설치 시 소스 빌드 코드를 실행하지 않도록 wheel만 받음).
+PyQt6==6.11.0
+requests==2.34.2
+ollama==0.6.2
+python-dotenv==1.2.3
+google-auth==2.58.0
+google-auth-oauthlib==1.4.1
+google-api-python-client==2.200.0
+python-kasa==0.10.2
+Send2Trash==2.1.0
+psutil==7.2.2
+beautifulsoup4==4.15.0

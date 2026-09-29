@@ -14,6 +14,14 @@ if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
 if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+# 실행 시 requirements.txt에서 빠진 패키지를 자동 설치 — 아래 PyQt6/dotenv
+# import보다 반드시 먼저 돌아야 한다. 테스트에서 app_main을 import할 때는
+# 건너뛴다(직접 실행할 때만).
+if __name__ == "__main__":
+    from core.bootstrap import ensure_requirements
+    if not ensure_requirements():
+        sys.exit(1)
+
 from dotenv import load_dotenv
 load_dotenv()
 

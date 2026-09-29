@@ -20,17 +20,22 @@ cd Team-Build-It
 
 <터미널 명령어>
 
-conda create -n ai_agent python=3.10 -y
+conda create -n ai_agent python=3.11 -y
+
+(💡 Python 3.11 이상이 필요합니다. 더 낮은 버전이면 실행 시 안내 창이 뜹니다.)
 
 conda activate ai_agent
 
 
 (💡 정상적으로 완료되면 터미널 맨 앞부분의 글자가 (base)에서 (ai_agent)로 바뀝니다!)
 
-3. 필수 패키지 한 번에 설치
-미리 세팅된 requirements.txt를 이용해 UI와 크롤링 등에 필요한 도구들을 설치합니다.
+3. 필수 패키지 설치 — 자동 (직접 할 필요 없음)
+앱을 실행하면(5번) requirements.txt에서 빠진 패키지를 찾아 자동으로 설치합니다.
+처음 실행할 때 "루미 준비 중" 창이 뜨고 몇 분 걸릴 수 있으며, 이후 실행부터는
+바로 켜집니다. 팀원이 requirements.txt에 패키지를 추가해도 다음 실행 때 그것만
+알아서 설치됩니다.
 
-<터미널 명령어>
+(자동 설치가 실패하면 인터넷 연결을 확인하거나, 아래 명령어로 직접 설치하세요.)
 
 pip install -r requirements.txt
 
@@ -67,3 +72,8 @@ ollama run llama3.1
 python app_main.py
 
 (💡 주의: 윈도우에서는 python3 대신 꼭 python 이라고 쳐야 합니다!)
+
+🍎 맥(macOS)에서는 터미널에서 python3 app_main.py 로 실행합니다.
+Homebrew로 설치한 파이썬은 시스템 보호 때문에 패키지를 직접 설치할 수 없어서,
+루미가 프로젝트 폴더 안에 전용 환경(.venv)을 자동으로 만들고 그 안에 설치합니다.
+(맥 기본 내장 파이썬 3.9는 버전이 낮아 쓸 수 없으니 python.org 또는 Homebrew로 3.11 이상을 설치하세요.)

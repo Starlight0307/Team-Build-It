@@ -34,3 +34,6 @@ plugins/app_usage/
 # 그대로 공유하면 의미가 없다는 ChatGPT 검수 의견, 2026-09-23). 팀이 공유할
 # 기준값이 필요하면 이 폴더가 아니라 별도 baseline 파일로 관리한다.
 tests/agent/results/
+
+# PC 상태 이력(plugins/system_history.py)이 1분마다 쌓는 이 PC 전용 CPU/RAM/디스크 기록
+plugins/system_history/

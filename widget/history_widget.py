@@ -1,11 +1,13 @@
+import html
+import re
 from datetime import datetime
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QScrollArea, QFrame, QPushButton, QSizePolicy,
-                             QGraphicsOpacityEffect, QSplitter)
-from PyQt6.QtCore import Qt, QPropertyAnimation, QThread, pyqtSignal
+                             QGraphicsOpacityEffect, QSplitter, QLineEdit)
+from PyQt6.QtCore import Qt, QPropertyAnimation, QThread, QTimer, pyqtSignal
 
-from data.db import load_sessions, load_messages
+from data.db import load_sessions, load_messages, search_sessions
 from widget.widgets import bubble_max_width, ideal_bubble_width
 
 
@@ -21,6 +23,34 @@ class SessionListLoader(QThread):
             self.loaded.emit(load_sessions(self.user_id))
         except Exception as e:
             self.error.emit(str(e))
+
+
+class SessionSearchLoader(QThread):
+    loaded = pyqtSignal(list)
+    error  = pyqtSignal(str)
+
+    def __init__(self, user_id, query):
+        super().__init__()
+        self.user_id = user_id; self.query = query
+
+    def run(self):
+        try:
+            self.loaded.emit(search_sessions(self.user_id, self.query))
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+def highlight_html(text, query):
+    """text 안의 query(대소문자 무시)를 노란 배경으로 강조한 HTML을 만든다.
+    줄바꿈/연속 공백은 pre-wrap으로 원문 그대로 유지한다."""
+    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    parts = []; last = 0
+    for m in pattern.finditer(text):
+        parts.append(html.escape(text[last:m.start()]))
+        parts.append(f'<span style="background-color:#FFD54F; color:#000000;">{html.escape(m.group())}</span>')
+        last = m.end()
+    parts.append(html.escape(text[last:]))
+    return f'<div style="white-space: pre-wrap;">{"".join(parts)}</div>'
 
 
 class SessionMessageLoader(QThread):
@@ -39,10 +69,11 @@ class SessionMessageLoader(QThread):
 
 
 class HistoryBubble(QFrame):
-    def __init__(self, role, content, timestamp, max_width=None):
+    def __init__(self, role, content, timestamp, max_width=None, highlight=None):
         super().__init__()
         is_user = (role == "user")
         self._raw_text = content
+        self.is_match = bool(highlight) and highlight.casefold() in content.casefold()
         # VBoxLayout 안에서 가로로 꽉 채워야 resizeEvent가 올바른 width를 받음
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
@@ -56,6 +87,11 @@ class HistoryBubble(QFrame):
         # Expanding 수직 정책이 스크롤 시 높이 재계산을 틀어뜨리므로 Preferred 사용
         self.msg_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         self.msg_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        if self.is_match:
+            self.msg_lbl.setTextFormat(Qt.TextFormat.RichText)
+            self.msg_lbl.setText(highlight_html(content, highlight))
+        else:
+            self.msg_lbl.setTextFormat(Qt.TextFormat.PlainText)
 
         if isinstance(timestamp, datetime):
             ts_str = timestamp.strftime("%Y-%m-%d %H:%M")
@@ -107,7 +143,7 @@ class HistoryBubble(QFrame):
 
 
 class SessionItem(QPushButton):
-    def __init__(self, session_id, title, date_str, msg_count, is_dark):
+    def __init__(self, session_id, title, date_str, msg_count, is_dark, match_count=None):
         super().__init__()
         self.session_id = session_id
         self.setCursor(Qt.CursorShape.PointingHandCursor); self.setCheckable(True)
@@ -116,7 +152,9 @@ class SessionItem(QPushButton):
         self.title_lbl = QLabel(title or "대화"); self.title_lbl.setWordWrap(False)
         font = self.title_lbl.font(); font.setBold(True); font.setPointSize(11)
         self.title_lbl.setFont(font)
-        self.meta_lbl = QLabel(f"{date_str}  ·  {msg_count}개")
+        meta = f"{date_str}  ·  {msg_count}개"
+        if match_count: meta += f"  ·  🔍 {match_count}건"
+        self.meta_lbl = QLabel(meta)
         font2 = self.meta_lbl.font(); font2.setPointSize(9); self.meta_lbl.setFont(font2)
         layout.addWidget(self.title_lbl); layout.addWidget(self.meta_lbl)
         self.setFixedHeight(58); self.update_theme(is_dark, False)
@@ -148,6 +186,9 @@ class HistoryWidget(QWidget):
         self.get_mock_user = get_mock_user_fn
         self.is_dark_mode = True
         self.bubbles = []; self.session_items = []; self.current_session = None
+        self._active_query = ""        # 현재 목록을 만든 검색어 (없으면 전체 목록)
+        self._list_seq = 0             # 늦게 도착한 이전 검색 결과를 버리기 위한 번호
+        self._running_loaders = set()  # 실행 중인 QThread가 GC로 파괴되지 않도록 보관
         self._build_ui()
 
     def _build_ui(self):
@@ -174,6 +215,17 @@ class HistoryWidget(QWidget):
         f = lh.font(); f.setBold(True); f.setPointSize(10); lh.setFont(f)
         ll.addWidget(lh); self.left_header_lbl = lh
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setFixedHeight(1); ll.addWidget(sep); self.left_sep = sep
+
+        # 검색창 — 입력이 멈추고 300ms 뒤에 검색 (타이핑마다 파일을 다 읽지 않도록)
+        sw = QWidget(); sw.setStyleSheet("background: transparent;")
+        sl = QHBoxLayout(sw); sl.setContentsMargins(8, 8, 8, 8)
+        self.search_input = QLineEdit(); self.search_input.setPlaceholderText("🔍 대화 내용 검색")
+        self.search_input.setClearButtonEnabled(True); self.search_input.setFixedHeight(32)
+        sl.addWidget(self.search_input); ll.addWidget(sw)
+        self._search_timer = QTimer(self); self._search_timer.setSingleShot(True); self._search_timer.setInterval(300)
+        self._search_timer.timeout.connect(self.load_sessions)
+        self.search_input.textChanged.connect(lambda _: self._search_timer.start())
+        self.search_input.returnPressed.connect(self._search_now)
 
         self.session_scroll = QScrollArea(); self.session_scroll.setWidgetResizable(True)
         self.session_scroll.setStyleSheet("background: transparent; border: none;")
@@ -207,20 +259,35 @@ class HistoryWidget(QWidget):
         self.msg_scroll.setWidget(self.msg_content); rl.addWidget(self.msg_scroll)
         self.splitter.addWidget(self.right_panel); self.splitter.setSizes([220, 580])
 
-    def load_sessions(self):
-        user = self.get_mock_user(); user_id = user.get("name") or "guest"
-        self.refresh_btn.setEnabled(False); self._clear_sessions()
-        self.sess_loader = SessionListLoader(user_id)
-        self.sess_loader.loaded.connect(self._on_sessions_loaded)
-        self.sess_loader.error.connect(self._on_error); self.sess_loader.start()
+    def _search_now(self):
+        self._search_timer.stop(); self.load_sessions()
 
-    def _on_sessions_loaded(self, rows):
+    def load_sessions(self):
+        """세션 목록을 다시 불러온다. 검색창에 글자가 있으면 검색 결과만 보여준다."""
+        user = self.get_mock_user(); user_id = user.get("name") or "guest"
+        query = self.search_input.text().strip()
+        self.refresh_btn.setEnabled(False); self._clear_sessions()
+        self._list_seq += 1; seq = self._list_seq
+        loader = SessionSearchLoader(user_id, query) if query else SessionListLoader(user_id)
+        loader.loaded.connect(lambda rows, s=seq, q=query: self._on_sessions_loaded(rows, s, q))
+        loader.error.connect(self._on_error)
+        self._running_loaders.add(loader)
+        loader.finished.connect(lambda l=loader: self._running_loaders.discard(l))
+        self.sess_loader = loader; loader.start()
+
+    def _on_sessions_loaded(self, rows, seq=None, query=""):
+        if seq is not None and seq != self._list_seq: return  # 더 최신 검색이 있음
         self.refresh_btn.setEnabled(True)
-        if not rows: self.empty_lbl.show(); return
+        self._active_query = query
+        if not rows:
+            self.empty_lbl.setText(f"'{query}' 검색 결과가 없습니다." if query else "대화 기록이 없습니다.")
+            self.empty_lbl.show(); return
         self.empty_lbl.hide()
-        for session_id, title, started_at, msg_count in rows:
+        for row in rows:
+            session_id, title, started_at, msg_count = row[:4]
+            match_count = row[4] if len(row) > 4 else None
             date_str = started_at.strftime("%m/%d %H:%M") if isinstance(started_at, datetime) else ""
-            item = SessionItem(session_id, title or "대화", date_str, msg_count, self.is_dark_mode)
+            item = SessionItem(session_id, title or "대화", date_str, msg_count, self.is_dark_mode, match_count)
             item.clicked.connect(lambda checked, s=item: self._on_session_clicked(s))
             self.session_items.append(item)
             self.session_layout.insertWidget(self.session_layout.count() - 1, item)
@@ -244,11 +311,20 @@ class HistoryWidget(QWidget):
         self.status_lbl.hide(); self.msg_scroll.show()
         vw = self.msg_scroll.viewport().width()
         for role, content, created_at in rows:
-            bubble = HistoryBubble(role, content, created_at, max_width=vw)
+            bubble = HistoryBubble(role, content, created_at, max_width=vw, highlight=self._active_query)
             bubble.update_theme(self.is_dark_mode)
             self.bubbles.append(bubble)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
-        self.msg_scroll.verticalScrollBar().setValue(self.msg_scroll.verticalScrollBar().maximum())
+        first_match = next((b for b in self.bubbles if b.is_match), None)
+        if first_match:
+            # 레이아웃이 버블 높이를 확정한 뒤에 스크롤해야 위치가 맞는다
+            QTimer.singleShot(50, lambda b=first_match: self._scroll_to_bubble(b))
+        else:
+            self.msg_scroll.verticalScrollBar().setValue(self.msg_scroll.verticalScrollBar().maximum())
+
+    def _scroll_to_bubble(self, bubble):
+        if bubble in self.bubbles:
+            self.msg_scroll.ensureWidgetVisible(bubble, 0, 60)
 
     def _on_error(self, msg):
         self.refresh_btn.setEnabled(True); self.status_lbl.setText(f"❌ 오류: {msg}"); self.status_lbl.show()
@@ -280,5 +356,10 @@ class HistoryWidget(QWidget):
         self.splitter.setStyleSheet(f"QSplitter::handle {{ background-color: {sc}; }}")
         self.status_lbl.setStyleSheet(f"color: {lc}; background: transparent; border: none; font-size: 13px; padding: 40px;")
         self.empty_lbl.setStyleSheet(f"color: {lc}; background: transparent; border: none; font-size: 12px; padding: 20px;")
+        ib = "#1E1E1E" if is_dark_mode else "#FFFFFF"
+        self.search_input.setStyleSheet(
+            f"QLineEdit {{ background-color: {ib}; color: {tc}; border: 1px solid {sc};"
+            f" border-radius: 6px; padding: 0 8px; font-size: 13px; }}"
+            f"QLineEdit:focus {{ border: 1px solid #2EA043; }}")
         for item in self.session_items: item.update_theme(is_dark_mode, item.isChecked())
         for b in self.bubbles: b.update_theme(is_dark_mode)

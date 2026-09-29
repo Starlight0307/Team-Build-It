@@ -235,6 +235,33 @@ def load_messages(user_id: str, session_id: str) -> list:
     return results
 
 
+def search_sessions(user_id: str, query: str) -> list:
+    """제목이나 메시지 내용에 query가 들어있는 세션만 반환 (대소문자 무시).
+    반환 형식은 load_sessions와 같고 끝에 일치한 메시지 수가 붙는다:
+    [(session_id, title, started_at, msg_count, match_count)]
+    제목만 일치하는 세션은 match_count가 0이다."""
+    q = (query or "").strip().casefold()
+    if not q:
+        return []
+
+    uid      = user_id if user_id else "guest"
+    user_dir = os.path.join(CHAT_LOG_DIR, uid)
+    results  = []
+
+    for session_id, title, started_at, msg_count in load_sessions(uid):
+        fpath = os.path.join(user_dir, f"{session_id}.json")
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                messages = json.load(f).get("messages", [])
+        except Exception:
+            messages = []
+        match_count = sum(1 for m in messages if q in str(m.get("content", "")).casefold())
+        if match_count or q in str(title).casefold():
+            results.append((session_id, title, started_at, msg_count, match_count))
+
+    return results
+
+
 def count_sessions(user_id: str) -> int:
     """유저의 총 세션 수 반환"""
     uid      = user_id if user_id else "guest"
