@@ -123,11 +123,15 @@ def _english_city(name: str) -> str:
 
 def _windows_location():
     """Windows 위치 서비스 → (위도, 경도). 꺼져 있거나 권한이 없으면 None."""
+    # 위치 서비스가 꺼져 있거나 권한이 없으면 곧바로 포기한다 — 끝까지 기다리면
+    # IP 방식으로 넘어가기까지 17초가 걸렸다 (2026-09-30 GitHub Actions Windows 실측)
     script = (
         "Add-Type -AssemblyName System.Device;"
         "$w=New-Object System.Device.Location.GeoCoordinateWatcher;"
-        "[void]$w.TryStart($false,[TimeSpan]::FromSeconds(8));"
-        "for($i=0;$i -lt 40 -and $w.Position.Location.IsUnknown;$i++){Start-Sleep -Milliseconds 200};"
+        "if($w.Permission -eq 'Denied'){exit 2};"
+        "[void]$w.TryStart($false,[TimeSpan]::FromSeconds(4));"
+        "if($w.Permission -eq 'Denied' -or $w.Status -eq 'Disabled' -or $w.Status -eq 'NoData'){exit 2};"
+        "for($i=0;$i -lt 20 -and $w.Position.Location.IsUnknown;$i++){Start-Sleep -Milliseconds 200};"
         "$c=$w.Position.Location;"
         "if($c.IsUnknown){exit 2};"
         "[Console]::Out.Write(\"$($c.Latitude),$($c.Longitude)\")"

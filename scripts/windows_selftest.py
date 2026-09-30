@@ -124,7 +124,7 @@ def _tts():
 @check("음성 출력 (Speaker 준비)")
 def _speaker():
     from PyQt6.QtWidgets import QApplication
-    QApplication.instance() or QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)   # 변수에 담아야 바로 사라지지 않는다
     from core.voice import Speaker
     sp = Speaker()
     return ("PASS" if sp.available else "FAIL"), f"명령: {sp._command[0] if sp._command else None}"
@@ -148,7 +148,7 @@ def _weather():
 @check("화면 캡처 (mss)")
 def _capture():
     from PyQt6.QtWidgets import QApplication
-    QApplication.instance() or QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)   # 변수에 담아야 바로 사라지지 않는다
     from core import screen_agent
     b64, mon = screen_agent.capture_screen()
     return "PASS", f"모니터 {mon['width']}x{mon['height']} · 이미지 {len(b64) // 1024}KB"
@@ -168,7 +168,7 @@ def _affinity():
     import ctypes
     from PyQt6.QtWidgets import QApplication
     from widget.widgets import AgentOverlay
-    QApplication.instance() or QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)   # 변수에 담아야 바로 사라지지 않는다
     o = AgentOverlay()
     o.show()
     QApplication.processEvents()
