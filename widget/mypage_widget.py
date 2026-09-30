@@ -2,11 +2,117 @@ import re
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLabel, QPushButton, QLineEdit, QMessageBox,
-                             QSizePolicy, QGraphicsDropShadowEffect)
+                             QInputDialog, QScrollArea, QSizePolicy, QDialog,
+                             QGraphicsDropShadowEffect)
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
-from data.db import count_sessions, get_user_profile, update_profile
+from data.db import (count_sessions, get_user_profile, update_profile,
+                     change_password, delete_account)
+
+_NAMESPACE_LABELS = {
+    "kill_confirm": "🛑 프로세스 종료 확인 이력",
+    "price_search_history": "🔍 가격 검색 이력",
+}
+
+
+class MemoryDialog(QDialog):
+    """"루미가 기억하는 것" — core/preference_memory.py에 저장된 항목을
+    보여주고 지울 수 있는 팝업. 지금은 이 PC의 모든 계정이 함께 보는
+    기억이라(계정별 분리는 별도 작업 필요), 그 사실을 화면에 안내한다."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("루미가 기억하는 것")
+        self.resize(420, 480)
+        self._build_ui()
+        self._reload()
+
+    def _build_ui(self):
+        L = QVBoxLayout(self)
+
+        notice = QLabel(
+            "⚠️ 지금은 이 컴퓨터를 쓰는 모든 계정이 함께 보는 기억이에요\n"
+            "(계정별로 나누는 작업은 진행 중입니다)."
+        )
+        notice.setWordWrap(True)
+        notice.setStyleSheet("color: #888; font-size: 11px;")
+        L.addWidget(notice)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.list_inner = QWidget()
+        self.list_layout = QVBoxLayout(self.list_inner)
+        self.list_layout.setSpacing(6)
+        self.list_layout.addStretch()
+        self.scroll.setWidget(self.list_inner)
+        L.addWidget(self.scroll, 1)
+
+        self.empty_lbl = QLabel("저장된 기억이 없어요.")
+        self.empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_lbl.hide()
+        L.addWidget(self.empty_lbl)
+
+        btn_row = QHBoxLayout()
+        self.btn_clear_all = QPushButton("전체 삭제")
+        self.btn_clear_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_all.clicked.connect(self._clear_all)
+        btn_row.addWidget(self.btn_clear_all)
+        btn_row.addStretch()
+        btn_close = QPushButton("닫기")
+        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_close)
+        L.addLayout(btn_row)
+
+    def _reload(self):
+        while self.list_layout.count() > 1:
+            item = self.list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        from core.preference_memory import list_all
+        data = list_all()
+        self.empty_lbl.setVisible(not data)
+
+        for namespace, entries in data.items():
+            header = QLabel(_NAMESPACE_LABELS.get(namespace, namespace))
+            header.setStyleSheet("font-weight: 700; font-size: 12px; margin-top: 6px;")
+            self.list_layout.insertWidget(self.list_layout.count() - 1, header)
+
+            for key, entry in entries.items():
+                row = QFrame()
+                row_lay = QHBoxLayout(row)
+                row_lay.setContentsMargins(8, 6, 8, 6)
+                value = entry.get("value")
+                text = f"{key}" + (f" — {value}" if not isinstance(value, (dict, list)) else "")
+                lbl = QLabel(text[:60])
+                lbl.setStyleSheet("font-size: 11px;")
+                row_lay.addWidget(lbl, 1)
+                btn_del = QPushButton("✕")
+                btn_del.setFixedSize(22, 22)
+                btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_del.clicked.connect(lambda _, n=namespace, k=key: self._delete_one(n, k))
+                row_lay.addWidget(btn_del)
+                self.list_layout.insertWidget(self.list_layout.count() - 1, row)
+
+    def _delete_one(self, namespace: str, key: str):
+        from core.preference_memory import delete_pref
+        delete_pref(namespace, key)
+        self._reload()
+
+    def _clear_all(self):
+        confirm = QMessageBox.warning(
+            self, "전체 삭제", "저장된 기억을 전부 지울까요?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        from core.preference_memory import clear_preferences
+        clear_preferences()
+        self._reload()
 
 
 def _format_phone(digits: str) -> str:
@@ -29,6 +135,19 @@ def _format_birthday(digits: str) -> str:
     return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
 
 
+def _validate_password(pw: str):
+    """signup_widget과 동일한 규칙: 영문·숫자·특수문자 포함 8~20자."""
+    if not (8 <= len(pw) <= 20):
+        return False, "8~20자로 입력하세요."
+    if not any(c.isalpha() for c in pw):
+        return False, "영문·숫자·특수문자를 모두 포함해야 합니다."
+    if not any(c.isdigit() for c in pw):
+        return False, "영문·숫자·특수문자를 모두 포함해야 합니다."
+    if not any(not c.isalnum() for c in pw):
+        return False, "영문·숫자·특수문자를 모두 포함해야 합니다."
+    return True, ""
+
+
 class MyPageWidget(QWidget):
     logout_requested = pyqtSignal()
     go_home           = pyqtSignal()
@@ -36,6 +155,7 @@ class MyPageWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._username = None
+        self._is_google = False
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
 
@@ -60,7 +180,21 @@ class MyPageWidget(QWidget):
         sh.setBlurRadius(28); sh.setOffset(0, 6); sh.setColor(QColor(0, 0, 0, 50))
         self.card.setGraphicsEffect(sh)
 
-        L = QVBoxLayout(self.card)
+        card_outer = QVBoxLayout(self.card)
+        card_outer.setContentsMargins(0, 0, 0, 0)
+        card_outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setMaximumHeight(720)
+        card_outer.addWidget(scroll)
+
+        inner = QFrame()
+        inner.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        L = QVBoxLayout(inner)
         L.setContentsMargins(30, 30, 30, 30); L.setSpacing(0)
 
         # 아바타 아이콘
@@ -130,7 +264,53 @@ class MyPageWidget(QWidget):
         self.btn_save_profile.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_save_profile.clicked.connect(self._save_profile)
         L.addWidget(self.btn_save_profile)
+        L.addSpacing(14)
+
+        self.btn_memory = QPushButton("🧠 루미가 기억하는 것")
+        self.btn_memory.setObjectName("MPSave")
+        self.btn_memory.setMinimumHeight(36)
+        self.btn_memory.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_memory.clicked.connect(self._open_memory_dialog)
+        L.addWidget(self.btn_memory)
         L.addSpacing(20)
+
+        # 비밀번호 변경 (구글 전용 계정은 비밀번호가 없어서 이 섹션 자체를 숨김)
+        self.pw_section = QFrame()
+        pw_lay = QVBoxLayout(self.pw_section)
+        pw_lay.setContentsMargins(0, 0, 0, 0); pw_lay.setSpacing(0)
+
+        self.lbl_pw_hdr = QLabel("비밀번호 변경")
+        self.lbl_pw_hdr.setObjectName("MPCountSub")
+        pw_lay.addWidget(self.lbl_pw_hdr)
+        pw_lay.addSpacing(6)
+
+        self.input_current_pw = QLineEdit()
+        self.input_current_pw.setPlaceholderText("현재 비밀번호")
+        self.input_current_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        pw_lay.addWidget(self.input_current_pw)
+        pw_lay.addSpacing(8)
+
+        self.input_new_pw = QLineEdit()
+        self.input_new_pw.setPlaceholderText("새 비밀번호 (영문·숫자·특수문자 포함 8~20자)")
+        self.input_new_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        pw_lay.addWidget(self.input_new_pw)
+        pw_lay.addSpacing(8)
+
+        self.input_new_pw2 = QLineEdit()
+        self.input_new_pw2.setPlaceholderText("새 비밀번호 확인")
+        self.input_new_pw2.setEchoMode(QLineEdit.EchoMode.Password)
+        pw_lay.addWidget(self.input_new_pw2)
+        pw_lay.addSpacing(8)
+
+        self.btn_change_pw = QPushButton("비밀번호 변경")
+        self.btn_change_pw.setObjectName("MPSave")
+        self.btn_change_pw.setMinimumHeight(36)
+        self.btn_change_pw.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_change_pw.clicked.connect(self._change_password)
+        pw_lay.addWidget(self.btn_change_pw)
+        pw_lay.addSpacing(20)
+
+        L.addWidget(self.pw_section)
 
         # 로그아웃 버튼
         self.btn_logout = QPushButton("🚪  로그아웃")
@@ -139,7 +319,15 @@ class MyPageWidget(QWidget):
         self.btn_logout.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_logout.clicked.connect(self.logout_requested)
         L.addWidget(self.btn_logout)
+        L.addSpacing(10)
 
+        self.btn_withdraw = QPushButton("회원 탈퇴")
+        self.btn_withdraw.setObjectName("MPWithdraw")
+        self.btn_withdraw.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_withdraw.clicked.connect(self._withdraw)
+        L.addWidget(self.btn_withdraw)
+
+        scroll.setWidget(inner)
         cl.addWidget(self.card)
 
     def refresh(self, username: str):
@@ -157,6 +345,11 @@ class MyPageWidget(QWidget):
         self.input_phone.setText(_format_phone(profile["phone"]) if profile and profile["phone"] else "")
         self.input_birthday.setText(profile["birthday"] if profile else "")
 
+        self._is_google = bool(profile and profile.get("is_google"))
+        self.pw_section.setVisible(not self._is_google)
+        for w in (self.input_current_pw, self.input_new_pw, self.input_new_pw2):
+            w.clear()
+
     def _on_phone_edited(self, text: str):
         digits = re.sub(r"\D", "", text)[:11]
         formatted = _format_phone(digits)
@@ -168,6 +361,9 @@ class MyPageWidget(QWidget):
         formatted = _format_birthday(digits)
         self.input_birthday.setText(formatted)
         self.input_birthday.setCursorPosition(len(formatted))
+
+    def _open_memory_dialog(self):
+        MemoryDialog(self).exec()
 
     def _save_profile(self):
         if not self._username:
@@ -201,6 +397,76 @@ class MyPageWidget(QWidget):
                 "저장에 실패했습니다. 로그인 세션이 만료되었을 수 있으니\n"
                 "로그아웃 후 다시 로그인해서 시도해주세요."
             )
+
+    def _change_password(self):
+        if not self._username:
+            return
+        current = self.input_current_pw.text()
+        new = self.input_new_pw.text()
+        new2 = self.input_new_pw2.text()
+
+        if not current or not new:
+            QMessageBox.warning(self, "오류", "현재 비밀번호와 새 비밀번호를 모두 입력하세요.")
+            return
+        ok, err = _validate_password(new)
+        if not ok:
+            QMessageBox.warning(self, "오류", err)
+            return
+        if new != new2:
+            QMessageBox.warning(self, "오류", "새 비밀번호가 일치하지 않습니다.")
+            return
+
+        try:
+            success = change_password(self._username, current, new)
+        except Exception as e:
+            QMessageBox.warning(self, "오류", f"비밀번호 변경에 실패했습니다.\n{e}")
+            return
+
+        if success:
+            QMessageBox.information(self, "완료", "비밀번호가 변경되었습니다.")
+            for w in (self.input_current_pw, self.input_new_pw, self.input_new_pw2):
+                w.clear()
+        else:
+            QMessageBox.warning(self, "오류", "현재 비밀번호가 올바르지 않습니다.")
+
+    def _withdraw(self):
+        if not self._username:
+            return
+        if self._is_google:
+            QMessageBox.information(
+                self, "안내",
+                "구글 계정으로 가입하셔서 이 화면에서는 탈퇴할 수 없어요.\n"
+                "팀 관리자에게 문의해주세요."
+            )
+            return
+
+        confirm = QMessageBox.warning(
+            self, "회원 탈퇴",
+            "정말 탈퇴하시겠어요? 이 계정으로는 다시 로그인할 수 없게 됩니다.\n"
+            "계속하려면 비밀번호를 입력해주세요.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        password, ok = QInputDialog.getText(
+            self, "본인 확인", "현재 비밀번호를 입력하세요:", QLineEdit.EchoMode.Password
+        )
+        if not ok or not password:
+            return
+
+        try:
+            success = delete_account(self._username, password)
+        except Exception as e:
+            QMessageBox.warning(self, "오류", f"탈퇴 처리에 실패했습니다.\n{e}")
+            return
+
+        if success:
+            QMessageBox.information(self, "완료", "탈퇴가 완료되었습니다. 이용해주셔서 감사했습니다.")
+            self.logout_requested.emit()
+        else:
+            QMessageBox.warning(self, "오류", "비밀번호가 올바르지 않습니다.")
 
     def update_theme(self, is_dark: bool):
         if is_dark:
@@ -300,5 +566,16 @@ class MyPageWidget(QWidget):
             }}
             QPushButton#MPLogout:hover {{
                 background-color: {logout_hover};
+            }}
+            QPushButton#MPWithdraw {{
+                background: transparent;
+                color: {sub_color};
+                border: none;
+                font-size: 11px;
+                text-decoration: underline;
+                min-height: 24px;
+            }}
+            QPushButton#MPWithdraw:hover {{
+                color: {logout_bg};
             }}
         """)

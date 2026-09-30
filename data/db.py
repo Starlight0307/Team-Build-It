@@ -124,10 +124,14 @@ def _store_tokens(access_token: str, refresh_token: str = None):
         _session["expires_at"] = 0
 
 
-def set_session(access_token: str, username: str, refresh_token: str = None):
-    """구글 로그인 등 다른 경로로 이미 세션을 얻은 경우 여기에 등록한다."""
+def set_session(access_token: str, username: str, refresh_token: str = None, remember: bool = True):
+    """구글 로그인 등 다른 경로로 이미 세션을 얻은 경우 여기에 등록한다.
+    remember=True(기본)면 refresh_token을 로컬에 저장해 다음 실행 때
+    자동 로그인에 쓴다 — "로그인 유지 안 함"을 선택했을 때만 False로 부른다."""
     _store_tokens(access_token, refresh_token)
     _session["username"] = username
+    if remember and _session.get("refresh_token"):
+        _persist_session()
 
 
 def clear_session():
@@ -136,6 +140,75 @@ def clear_session():
     _session["refresh_token"] = None
     _session["expires_at"] = 0
     _session["username"] = None
+    clear_persistent_session()
+
+
+# ==========================================
+# 🔁 자동 로그인 (앱을 다시 켜도 로그인 유지)
+#
+# refresh_token을 로컬 파일에 저장해뒀다가, 앱 시작할 때 그걸로 새
+# access_token을 받아온다. Supabase는 refresh_token을 쓸 때마다 새
+# 값으로 교체(rotate)하므로, 매번 최신 값을 다시 저장해야 한다
+# (_persist_session이 _store_tokens 성공 시마다 불려서 이미 그렇게 됨).
+#
+# 대화기록(chat_logs/)처럼 이 파일도 로컬에만 있고 git에는 안 올라간다
+# (.gitignore 등록). 같은 컴퓨터를 쓰는 다른 사람이 이 파일에 접근하면
+# 로그인을 대신할 수 있다는 점은 대화기록 평문 저장과 같은 수준의
+# "로컬 신뢰" 전제이다.
+# ==========================================
+SESSION_FILE = os.path.join(PROJECT_ROOT, "data", ".session.json")
+
+
+def _persist_session():
+    try:
+        with open(SESSION_FILE, "w", encoding="utf-8") as f:
+            json.dump({
+                "username": _session.get("username"),
+                "refresh_token": _session.get("refresh_token"),
+            }, f)
+    except OSError as e:
+        print(f"[자동 로그인 저장 오류] {e}")
+
+
+def clear_persistent_session():
+    try:
+        if os.path.exists(SESSION_FILE):
+            os.remove(SESSION_FILE)
+    except OSError as e:
+        print(f"[자동 로그인 삭제 오류] {e}")
+
+
+def try_auto_login():
+    """저장된 refresh_token으로 자동 로그인을 시도한다.
+    성공하면 username을 반환하고 세션도 등록해둔다. 실패(만료/없음)하면
+    None을 반환하고 저장 파일을 지운다."""
+    if not os.path.exists(SESSION_FILE):
+        return None
+    try:
+        with open(SESSION_FILE, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        refresh_token = saved.get("refresh_token")
+        username = saved.get("username")
+        if not refresh_token or not username:
+            raise ValueError("저장된 세션이 불완전합니다.")
+
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/token",
+            params={"grant_type": "refresh_token"},
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"refresh_token": refresh_token},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            raise ValueError(f"세션 만료 ({resp.status_code})")
+
+        data = resp.json()
+        set_session(data.get("access_token"), username, data.get("refresh_token"))
+        return username
+    except Exception as e:
+        print(f"[자동 로그인 실패] {e}")
+        clear_persistent_session()
+        return None
 
 
 # ==========================================
@@ -415,6 +488,82 @@ def apply_new_password(reset_token: str, new_password: str) -> bool:
         return resp.status_code < 400
     except Exception as e:
         print(f"[비밀번호 변경 오류] {e}")
+        return False
+
+
+def change_password(username: str, current_password: str, new_password: str) -> bool:
+    """로그인된 상태에서 비밀번호 변경. 세션이 있어도 먼저 현재 비밀번호로
+    한 번 더 확인한다 (자리 비운 사이 남이 바꾸는 것 방지)."""
+    try:
+        email = _rpc("rpc_get_email_by_username", {"p_username": username})
+        if not email:
+            return False
+
+        check = requests.post(
+            f"{SUPABASE_URL}/auth/v1/token",
+            params={"grant_type": "password"},
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"email": email, "password": current_password},
+            timeout=10,
+        )
+        if check.status_code != 200:
+            return False
+
+        resp = requests.put(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers=_session_headers(),
+            json={"password": new_password},
+            timeout=10,
+        )
+        return resp.status_code < 400
+    except Exception as e:
+        print(f"[비밀번호 변경 오류] {e}")
+        return False
+
+
+def delete_account(username: str, password: str) -> bool:
+    """회원 탈퇴 — 비밀번호로 본인 확인 후 이 계정으로 다시는 로그인할 수
+    없게 만든다 (비밀번호를 아무도 모르는 무작위 값으로 바꿈).
+
+    [참고] Supabase의 공개 API(anon key)로는 계정을 완전히 지울 수 없다 —
+    계정 삭제는 관리자 권한(service_role) API가 필요한데, 그 키는 배포되는
+    앱에 절대 넣으면 안 되는 값이라 클라이언트에서 직접 지울 수 없다.
+    그래서 "이 계정으로는 다시 로그인 못 하게" 만드는 방식으로 탈퇴를
+    구현했다 — 데이터까지 완전히 지워야 하면 팀 관리자가 Supabase
+    대시보드(Authentication → Users)에서 직접 삭제해야 한다."""
+    try:
+        email = _rpc("rpc_get_email_by_username", {"p_username": username})
+        if not email:
+            return False
+
+        check = requests.post(
+            f"{SUPABASE_URL}/auth/v1/token",
+            params={"grant_type": "password"},
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"email": email, "password": password},
+            timeout=10,
+        )
+        if check.status_code != 200:
+            return False
+        session_token = check.json().get("access_token")
+
+        import secrets
+        resp = requests.put(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {session_token}",
+                "Content-Type": "application/json",
+            },
+            json={"password": secrets.token_urlsafe(32), "data": {"withdrawn": True}},
+            timeout=10,
+        )
+        ok = resp.status_code < 400
+        if ok:
+            clear_session()
+        return ok
+    except Exception as e:
+        print(f"[회원 탈퇴 오류] {e}")
         return False
 
 

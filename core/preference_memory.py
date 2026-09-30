@@ -55,6 +55,35 @@ def save_pref(namespace: str, key: str, value) -> None:
         pass
 
 
+def list_all() -> dict:
+    """저장된 전체 기억을 {namespace: {key: {"value":..., "saved_at":...}}} 그대로
+    반환한다 (마이페이지의 "루미가 기억하는 것" 화면 등 조회 전용 용도).
+    기존 함수는 하나도 안 건드리고 추가만 했다 — 기존 테스트에 영향 없음."""
+    try:
+        with open(_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def delete_pref(namespace: str, key: str) -> None:
+    """저장된 기억 중 항목 하나만 지운다 (namespace 전체가 아니라 key 하나)."""
+    try:
+        with open(_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return
+    if namespace in data and key in data[namespace]:
+        del data[namespace][key]
+        if not data[namespace]:
+            del data[namespace]
+        try:
+            with open(_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
 def clear_preferences(namespace: str = None) -> None:
     """저장된 개인화 기억을 삭제한다. namespace를 지정하면 그 영역만, 생략하면
     전체를 삭제한다. 로컬 우선 프라이버시를 내세우는 프로젝트라면 사용자가

@@ -25,6 +25,9 @@ plugins/client_secret_*.json
 .env
 **/email_config.py
 
+# 자동 로그인용 세션(refresh_token) — 이 컴퓨터/이 사람 전용 (data/db.py)
+data/.session.json
+
 # 사람/기기마다 계속 바뀌는 로컬 런타임 데이터 (chat_logs/와 같은 이유)
 core/preference_memory.json
 plugins/app_usage/

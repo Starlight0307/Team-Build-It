@@ -56,6 +56,15 @@ from widget.dashboard import (Panel, SystemStatsPanel, WeatherPanel, TodayPanel,
 from auth.auth_ui import AuthWidget
 from widget.history_widget import HistoryWidget
 from widget.mypage_widget import MyPageWidget
+
+
+class AutoLoginWorker(QThread):
+    """저장된 세션으로 자동 로그인 시도 (네트워크 호출이라 백그라운드에서)."""
+    done = pyqtSignal(str)   # 성공한 아이디, 실패하면 빈 문자열
+
+    def run(self):
+        from data.db import try_auto_login
+        self.done.emit(try_auto_login() or "")
 from widget.calendar_widget import CalendarWidget
 from data.db import save_chat_to_file
 from core.voice import (VoiceListener, Speaker, VoiceInstallWorker,
@@ -1072,6 +1081,10 @@ class AssistantApp(QWidget):
         self._ollama_timer.start(30000)
         QTimer.singleShot(300, self._check_ollama)
 
+        self._auto_login_worker = AutoLoginWorker()
+        self._auto_login_worker.done.connect(self._on_auto_login_done)
+        self._auto_login_worker.start()
+
     def init_chat_page(self):
         """홈(대화) 화면 — 왼쪽 정보 패널 | 가운데 오브 | 오른쪽 대화 패널."""
         page = QFrame()
@@ -1807,6 +1820,11 @@ class AssistantApp(QWidget):
     # ─────────────────────────────────────────────
     # 🔐 로그인 / 로그아웃
     # ─────────────────────────────────────────────
+    def _on_auto_login_done(self, uid: str):
+        """앱 시작 시 저장된 세션으로 자동 로그인이 됐으면 로그인 처리를 마무리한다."""
+        if uid:
+            self.on_login_success(uid)
+
     def on_login_success(self, uid):
         MOCK_USER["logged_in"] = True
         MOCK_USER["name"]      = uid
