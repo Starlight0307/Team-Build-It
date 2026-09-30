@@ -242,12 +242,49 @@ def _voice_checks():
         return "PASS", f"마이크: {dev}"
 
 
+def _run_one(index: int):
+    """자식 프로세스: 점검 하나만 돌리고 결과를 JSON 한 줄로 출력."""
+    import json
+    CHECKS[index]()
+    name, status, detail = RESULTS[-1]
+    print("RESULT " + json.dumps({"name": name, "status": status, "detail": detail}, ensure_ascii=False),
+          flush=True)
+    sys.stdout.flush()
+    os._exit(0)
+
+
 def main():
-    if "--voice" in sys.argv:
+    """점검마다 따로 프로세스를 띄운다 — 하나가 네이티브 오류로 프로세스째 죽어도(Qt/pynput 등)
+    나머지 점검은 계속하고, 죽은 점검은 오류 출력 끝부분을 결과에 담는다.
+    (GitHub Actions 첫 실행에서 결과를 남기기도 전에 프로세스가 죽어 원인을 볼 수 없었다)"""
+    import json
+    voice = "--voice" in sys.argv
+    if voice:
         _voice_checks()
+    if "--only" in sys.argv:
+        return _run_one(int(sys.argv[sys.argv.index("--only") + 1]))
+
     print(f"루미 Windows 자가 점검 — {sys.platform}, Python {sys.version.split()[0]}\n", flush=True)
-    for run in CHECKS:
-        run()
+    for i in range(len(CHECKS)):
+        cmd = [sys.executable, os.path.abspath(__file__), "--only", str(i)] + (["--voice"] if voice else [])
+        env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONFAULTHANDLER="1")
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=900, env=env)
+            out, err, code = p.stdout, p.stderr, p.returncode
+        except subprocess.TimeoutExpired as e:
+            out, err, code = (e.stdout or ""), (e.stderr or ""), "시간 초과"
+            out = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
+            err = err.decode("utf-8", "replace") if isinstance(err, bytes) else err
+        line = next((l for l in out.splitlines() if l.startswith("RESULT ")), None)
+        if line:
+            r = json.loads(line[7:])
+            RESULTS.append((r["name"], r["status"], r["detail"]))
+        else:
+            tail = " ⏎ ".join((err or out).strip().splitlines()[-12:])
+            RESULTS.append((f"점검 #{i + 1}", "FAIL", f"프로세스가 결과 없이 끝남 (종료 코드 {code}): {tail}"))
+        name, status, detail = RESULTS[-1]
+        print(f"[{status}] {name} — {detail.splitlines()[0]}", flush=True)
 
     fails = [r for r in RESULTS if r[1] == "FAIL"]
     manual = [
@@ -270,11 +307,11 @@ def main():
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
                 f.write(f"## 루미 Windows 자가 점검 (Python {sys.version.split()[0]})\n\n{summary}\n")
-        # 알림(annotation)은 로그인 없이도 API로 읽을 수 있다 (공개 저장소)
-        for name, status, detail in RESULTS:
-            kind = "error" if status == "FAIL" else "notice"
-            msg = f"[{status}] {name}: {detail.splitlines()[0]}".replace("\n", " ")
-            print(f"::{kind} title=selftest py{sys.version_info.major}.{sys.version_info.minor}::{msg}", flush=True)
+        # 알림(annotation)은 로그인 없이도 API로 읽을 수 있다 (공개 저장소). 종류별 10개 제한이
+        # 있어서 결과 전체를 알림 하나에 담는다 (줄바꿈은 %0A).
+        body = "%0A".join(f"[{st}] {n}: {d.splitlines()[0][:600]}" for n, st, d in RESULTS)
+        kind = "error" if fails else "notice"
+        print(f"::{kind} title=selftest py{sys.version_info.major}.{sys.version_info.minor}::{body}", flush=True)
 
     print(f"\n결과: 통과 {sum(r[1] == 'PASS' for r in RESULTS)} · 실패 {len(fails)} · "
           f"건너뜀 {sum(r[1] in ('SKIP', 'INFO') for r in RESULTS)}", flush=True)
