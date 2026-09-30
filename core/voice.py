@@ -41,6 +41,15 @@ VOICE_REQUIREMENTS = os.path.join(bootstrap.PROJECT_ROOT, "requirements-voice.tx
 # huggingface_hub가 경고를 띄운다 (복사로 대신 저장하므로 동작엔 문제없음).
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
+# faster-whisper(ctranslate2)가 쓰는 Intel OpenMP 런타임(libiomp5md.dll)이,
+# 같은 파이썬 환경에 이미 깔려있는 다른 패키지(numpy/MKL 계열 등)의 OpenMP
+# 런타임과 겹쳐 "OMP: Error #15" 로 앱이 죽는 경우가 있다 — conda 기본(base)
+# 환경처럼 MKL 연동 패키지가 이미 있는 환경에서 특히 잘 남. 두 런타임이
+# 실제로는 호환되는 게 대부분이라, 에러 메시지가 안내하는 공식 우회
+# 변수를 앱이 스스로 미리 켜둔다 (voice.py를 import하는 순간, 즉
+# faster_whisper를 실제로 쓰기 전에 걸리도록 이 파일 맨 위에 둠).
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 # 받아쓰기 모델 — 환경설정에서 고른다. 합성 음성 24문장 측정(2026-09-30, M1 Pro,
 # 아래 예시 문장 힌트 적용 기준 글자 오류율):
 #   small           19% · 문장당 약 1.5초
