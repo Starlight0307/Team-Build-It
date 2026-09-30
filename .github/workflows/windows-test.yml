@@ -1,0 +1,43 @@
+# Windows 자동 테스트 — 맥에서 개발하면서 흉내로만 확인한 Windows 전용 코드를 진짜 Windows에서 돌린다.
+# windows-test 브랜치에 푸시하거나, GitHub의 Actions 탭에서 직접 실행(workflow_dispatch)할 수 있다.
+# 결과는 각 작업의 요약(Summary) 탭에 표로 나온다.
+name: Windows test
+
+on:
+  push:
+    branches: [windows-test]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]   # 3.11 = 최소 지원 버전, 3.14 = 팀원이 실제로 쓰는 버전
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      # 앱 자동 설치(core/bootstrap.py)와 같은 규칙: 설치 파일(wheel)만, 소스 빌드 금지
+      - name: 패키지 설치 (설치 파일만)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: -r requirements.txt pytest
+
+      - name: 단위/기본 테스트
+        run: python -m pytest tests/unit tests/smoke -q
+
+      - name: 실제 OS 테스트 (slow 표시된 것)
+        continue-on-error: true
+        run: python -m pytest -m slow -q
+
+      - name: Windows 자가 점검 (음성 구성요소 포함)
+        run: python scripts/windows_selftest.py --voice

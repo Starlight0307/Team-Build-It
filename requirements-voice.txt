@@ -1,0 +1,6 @@
+# 음성 대화 기능 전용 (core/voice.py) — 기본 requirements.txt와 분리한 이유:
+# 용량이 크고(수백 MB) Intel Mac처럼 wheel이 없는 환경도 있어서, 기본에 넣으면
+# 음성을 안 쓰는 사람까지 앱 실행이 막힐 수 있다. 🎤 버튼을 처음 누를 때
+# 사용자 동의 후 core/bootstrap.py와 같은 규칙(== 고정, wheel만)으로 설치된다.
+faster-whisper==1.2.1
+sounddevice==0.5.6

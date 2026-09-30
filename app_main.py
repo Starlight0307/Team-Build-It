@@ -2,6 +2,7 @@ import random
 import re
 import sys
 import uuid
+from datetime import datetime
 
 # 콘솔 코드페이지가 cp949(한국어 Windows 기본값)인 환경에서 플러그인들이
 # 디버그 로그로 찍는 이모지(🔥🗑️ 등)가 print()에서 UnicodeEncodeError로
@@ -38,6 +39,7 @@ from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QShortcut, QKeySequence, QIcon
 
 from settings.config import MOCK_USER
+from settings import app_settings
 from settings.theme import get_palette
 from calendar_feature import calendar_preference
 from settings import ui_scale
@@ -46,14 +48,21 @@ from core.plugin_manager import load_existing_plugins, download_and_install_plug
 from core.plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
 from widget.widgets import (CommandCard, MessageBubble, TypingIndicator, FlowLayout,
                             ResponsiveCardRow, NotificationToast, RealtimeAlertsDialog,
-                            AutoSizeStackedWidget)
+                            AutoSizeStackedWidget, ToggleSwitch, AgentOverlay)
 from widget.marketplace import PluginMarketplaceWidget
+from widget.dashboard import (Panel, SystemStatsPanel, WeatherPanel, TodayPanel, TodoPanel,
+                              SessionPanel, LumiOrb, NUM_FONT)
 
 from auth.auth_ui import AuthWidget
 from widget.history_widget import HistoryWidget
 from widget.mypage_widget import MyPageWidget
 from widget.calendar_widget import CalendarWidget
 from data.db import save_chat_to_file
+from core.voice import (VoiceListener, Speaker, VoiceInstallWorker,
+                        missing_voice_packages, is_stop_phrase, VOICE_MODELS, current_voice_model)
+from core import screen_agent, web_launcher, skills
+from core.skill_agent import SkillAgentWorker
+from widget.skills_widget import SkillsPage
 
 
 # ==========================================
@@ -168,10 +177,21 @@ class OverallSecurityCheckWorker(QThread):
 # ==========================================
 # 🖥️ 메인 앱
 # ==========================================
+# 홈 화면 왼쪽 위젯 — 환경설정 > 홈 화면 위젯에서 보이기/순서를 바꾼다 (app_settings에 저장)
+DASHBOARD_WIDGETS = {
+    "stats":   ("🖥️", "시스템 상태", "CPU·RAM·디스크 사용량을 실시간으로 보여줘요."),
+    "weather": ("🌤️", "날씨", "현재 위치(또는 지정한 지역)의 날씨를 보여줘요."),
+    "today":   ("📅", "오늘 일정", "오늘 등록된 일정을 보여줘요. (로그인 필요)"),
+    "todo":    ("✅", "할 일", "아직 끝내지 않은 할 일을 보여줘요. (로그인 필요)"),
+    "session": ("⏱️", "세션", "루미 가동 시간, 명령 수, 시스템 부하를 보여줘요."),
+}
+DEFAULT_WIDGET_ORDER = list(DASHBOARD_WIDGETS)
+
+
 class AssistantApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.is_dark_mode           = True
+        self.is_dark_mode           = bool(app_settings.get("dark_mode"))
         self.chat_history           = []
         self.chat_bubbles           = []
         self.command_cards          = []
@@ -194,6 +214,22 @@ class AssistantApp(QWidget):
         self._unread_alert_count     = 0      # 대화창 아이콘에 표시할 미확인 알림 개수
         self._force_quit             = False  # 트레이 "종료"로 나갈 때만 True — X 버튼은 창을 숨기기만 함
         self._tray_close_notice_shown = False  # "트레이로 숨겨졌다" 안내를 최초 1회만 보여주기 위함
+        # 음성 대화 (core/voice.py) — 자비스처럼 말로 묻고 말로 답한다
+        self._voice_listener         = None   # 마이크 듣기 스레드 (필요할 때만 켜짐)
+        self._speaker                = None   # OS 음성으로 읽어주기 (처음 쓸 때 생성)
+        self._voice_install_worker   = None
+        self._voice_turn             = False  # 이번 요청이 음성으로 들어왔는지 → 답변을 소리로 읽음
+        self._voice_conversation     = False  # 🎤 대화 중 — 답변을 읽은 뒤 자동으로 다시 듣기
+        self._wake_mode              = False  # 👂 호출어("루미야"/"자비스") 상시 대기
+        self._voice_after_install    = None   # 설치 끝나면 이어서 할 동작
+        # 화면 보고 스스로 작업하기 (core/screen_agent.py)
+        self._screen_worker          = None   # 실행 중인 ScreenAgentWorker
+        self._screen_overlay         = None   # 작업 중 안내 창
+        self._screen_mode            = False  # 🖥️ 켜면 모든 메시지를 화면 작업으로 처리
+        self._screen_pull_worker     = None   # 화면 인식 모델 다운로드
+        self._screen_pending         = None   # 모델 다운로드 끝나면 이어서 할 (요청, 모드)
+        self._web_worker             = None   # 목록에 없는 사이트의 홈페이지 주소 찾기
+        self._skill_worker           = None   # OpenClaw 스킬 고르기/실행 (core/skill_agent.py)
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         load_existing_plugins(self.installed_tools, self.installed_module_names)
@@ -265,6 +301,8 @@ class AssistantApp(QWidget):
         menu = QMenu()
         show_action = menu.addAction("열기")
         show_action.triggered.connect(self._show_from_tray)
+        stop_screen_action = menu.addAction("화면 작업 중지")
+        stop_screen_action.triggered.connect(self._stop_screen_task)
         menu.addSeparator()
         quit_action = menu.addAction("종료")
         quit_action.triggered.connect(self._quit_app)
@@ -286,12 +324,31 @@ class AssistantApp(QWidget):
         self.activateWindow()
 
     def _quit_app(self):
-        """트레이 메뉴의 "종료"에서만 호출 — closeEvent가 이 플래그를 보고
+        """트레이 메뉴의 "종료"(또는 Ctrl+C)에서 호출 — closeEvent가 이 플래그를 보고
         진짜로 앱을 끝낸다(X 버튼과 구분하는 핵심)."""
         self._force_quit = True
+        self.shutdown_background_work()
         if self.tray_icon:
             self.tray_icon.hide()
         QApplication.instance().quit()
+
+    def shutdown_background_work(self):
+        """백그라운드 작업(마이크/화면 작업/음성 출력)을 멈추고 끝날 때까지 기다린다.
+        어떤 경로로 종료하든(트레이 종료, Cmd+Q, Ctrl+C) 여러 번 불려도 안전하다.
+        2026-09-30 사용자 PC에서 마이크(VoiceListener)가 켜진 채 Ctrl+C 등으로
+        종료하자 "QThread: Destroyed while thread is still running"으로 앱이 강제
+        종료된 충돌 보고서가 두 건 있었다."""
+        if self._screen_worker is not None and self._screen_worker.isRunning():
+            self._screen_worker.stop()
+            self._screen_worker.wait(3000)
+        if self._skill_worker is not None and self._skill_worker.isRunning():
+            self._skill_worker.stop()
+            self._skill_worker.wait(2000)
+        if self._speaker is not None:
+            self._speaker.stop()
+        if self._voice_listener is not None:
+            self._voice_listener.stop()
+            self._voice_listener.wait(2000)
 
     def closeEvent(self, event):
         if self._force_quit or not self.tray_icon:
@@ -759,63 +816,88 @@ class AssistantApp(QWidget):
             QMessageBox QLabel {{ color: #000000; background: transparent; border: none; }}
             QScrollArea {{ background-color: transparent; border: none; }}
             QScrollBar:vertical {{ border: none; background: transparent; width: 8px; border-radius: 4px; }}
-            QScrollBar::handle:vertical {{ background: #AAAAAA; border-radius: 4px; }}
-            QScrollBar::handle:vertical:hover {{ background: #888888; }}
+            QScrollBar::handle:vertical {{ background: {p['gc']}; border-radius: 4px; }}
+            QScrollBar::handle:vertical:hover {{ background: {p['accent']}; }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
         """)
-        self.main_frame.setStyleSheet(f"QFrame {{ background-color: {p['main_bg']}; border: none; }}")
-        self.sidebar_frame.setStyleSheet(f"QFrame {{ background-color: {p['sb']}; border-right: 1px solid {p['sbrd']}; }}")
-        self.welcome_title.setStyleSheet(f"font-size: {round(32*s)}px; font-weight: bold; color: {p['tc']}; background: transparent;")
-        self.input_container.setStyleSheet(f"QFrame {{ background-color: {p['ib']}; border: 1px solid {p['ibrd']}; border-radius: 24px; }}")
-        self.input_field.setStyleSheet(f"color: {p['tc']}; background: transparent; border: none; font-size: {round(15*s)}px; padding: {round(5*s)}px;")
-        self.input_container.layout().setContentsMargins(round(15*s), round(15*s), round(15*s), round(15*s))
-        self.input_container.layout().setSpacing(round(15*s))
-        self.bottom_input_wrapper.layout().setContentsMargins(round(40*s), round(10*s), round(40*s), round(30*s))
-        self.send_button.setFixedSize(round(36*s), round(36*s))
-        self.send_button.setStyleSheet(
-            f"background-color: #2EA043; color: #FFFFFF; border-radius: {round(18*s)}px; border: none; font-size: {round(18*s)}px;"
+        # 앱 전체 파스텔 그라데이션 — objectName으로 이 위젯 하나에만 칠한다
+        # (그냥 "QWidget {..}"로 주면 안쪽 모든 위젯이 제각각 그라데이션을 다시 칠한다)
+        self.setStyleSheet(self.styleSheet() + f"QWidget#appRoot {{ background-color: {p['bg_grad']}; }}")
+        self.main_frame.setStyleSheet("QFrame#mainFrame { background: transparent; border: none; }")
+        self.top_bar.setStyleSheet(
+            f"QFrame#topBar {{ background-color: {p['sb']}; border: none; border-bottom: 1px solid {p['sbrd']}; }}")
+        self.brand_title.setStyleSheet(
+            f"color: {p['grad']}; font-size: 24px; font-weight: 900; background: transparent;")
+        pill = (f"color: {p['tc']}; background-color: {p['card']}; border: 1px solid {p['card_brd']}; "
+                f"border-radius: 18px; padding: 8px 18px; font-size: 13px; font-weight: bold;")
+        self.clock_pill.setStyleSheet(pill)
+        self.weather_pill.setStyleSheet(pill)
+        self._update_status_pill()
+        # 둥근 알약 버튼 — 선택된 메뉴는 그라데이션 + 이름이 펼쳐진다 (update_sidebar_ui)
+        nav_style = (
+            f"QPushButton {{ background-color: {p['card']}; border: 1px solid {p['card_brd']}; border-radius: 19px; "
+            f"font-size: 15px; min-width: 40px; min-height: 38px; padding: 0 10px; color: {p['tc']}; "
+            f"font-weight: bold; }}"
+            f"QPushButton:hover {{ border-color: {p['accent']}; }}"
+            f"QPushButton:checked {{ background-color: {p['grad']}; border: none; color: #2E2A4F; padding: 0 16px; }}"
         )
-        self.btn_profile.setFixedHeight(round(46*s))
+        for btn in self.nav_info:
+            btn.setStyleSheet(nav_style)
+
+        for panel in self.info_panels:
+            panel.apply_theme(p)
+        self.chat_panel.apply_theme(p)
+        self.orb.set_colors(p['accent'], p['accent2'], d)
+        self.orb_name.setStyleSheet(
+            f"color: {p['grad']}; font-size: 30px; font-weight: 900; background: transparent; letter-spacing: 2px;")
+
+        self.welcome_title.setStyleSheet(
+            f"font-size: {round(18*s)}px; font-weight: bold; color: {p['tc']}; background: transparent;")
+        self.welcome_title.setText(
+            f'안녕하세요, <span style="color:{p["accent"]};">루미</span>예요.<br>무엇을 도와드릴까요?')
+        self.input_container.setStyleSheet(
+            f"QFrame {{ background-color: {p['ib']}; border: 1px solid {p['ibrd']}; border-radius: 22px; }}")
+        self.input_field.setStyleSheet(
+            f"color: {p['tc']}; background: transparent; border: none; font-size: {round(14*s)}px; padding: {round(6*s)}px 0;")
+        send_size = round(38*s)
+        self.send_button.setFixedSize(send_size, send_size)
+        # 둥글기가 높이의 절반을 넘으면 Qt가 모서리를 각지게 그린다 → 절반보다 1px 작게
+        self.send_button.setStyleSheet(
+            f"QPushButton {{ background-color: {p['grad']}; color: #FFFFFF; border-radius: {send_size // 2 - 1}px; "
+            f"border: none; font-size: {round(15*s)}px; }} QPushButton:hover {{ background-color: {p['grad_hover']}; }}")
+        self._update_voice_buttons()
+        self.btn_profile.setFixedHeight(38)
         if hasattr(self, 'card_row'):
             self.card_row.rescale(s)
         if hasattr(self, 'zoom_label'):
             self.zoom_label.setText(ui_scale.percent_label())
             self.zoom_label.setStyleSheet(
-                f"color: {p['tc']}; font-size: 15px; font-weight: bold; background: transparent; border: none;"
+                f"color: {p['tc2']}; font-size: 12px; font-family: {NUM_FONT}; background: transparent; border: none; "
+                f"min-width: 38px;"
             )
             zoom_btn_style = (
                 f"QPushButton {{ background-color: {p['pb']}; border: 1px solid {p['pbrd']}; "
-                f"color: {p['tc']}; border-radius: 10px; font-size: 18px; font-weight: bold; }} "
-                f"QPushButton:hover {{ background-color: {'#444444' if d else '#E1E5EA'}; }}"
+                f"color: {p['tc']}; border-radius: 12px; font-size: 13px; font-weight: bold; min-width: 24px; min-height: 24px; }} "
+                f"QPushButton:hover {{ border-color: {p['accent']}; }}"
             )
             self.zoom_out_btn.setStyleSheet(zoom_btn_style)
             self.zoom_in_btn.setStyleSheet(zoom_btn_style)
         # pill 스타일은 update_pills()에서 일괄 적용
         if hasattr(self, 'pill_row'):
             self.update_pills()
-        self.splitter.setStyleSheet(f"QSplitter::handle {{ background-color: {p['main_bg']}; }}")
-        self.splitter_grip.setStyleSheet(f"background-color: {p['gc']}; border-radius: 2px; border: none;")
-
-        self.sidebar_btn_style = f"""
-            QPushButton {{ background-color: transparent; border: none; color: {p['sbt']}; font-size: {round(15*s)}px;
-                font-weight: bold; padding: {round(12*s)}px {round(10*s)}px; border-radius: 6px; text-align: left; }}
-            QPushButton:hover {{ background-color: {p['sbhb']}; color: {p['sbht']}; }}
-            QPushButton:checked {{ background-color: #2EA043; color: #FFFFFF; }}
-        """
-        for btn in self.nav_info:
-            btn.setStyleSheet(self.sidebar_btn_style)
+        if getattr(self, '_typing', None):
+            self._typing.update_theme(d)
 
         if hasattr(self, 'auth_page'):     self.auth_page.update_theme(d)
         if hasattr(self, 'history_page'):  self.history_page.update_theme(d)
         if hasattr(self, 'mypage'):        self.mypage.update_theme(d)
         if hasattr(self, 'calendar_page'): self.calendar_page.update_theme(d)
+        if hasattr(self, 'skills_page'):   self.skills_page.update_theme(d)
         for card in self.command_cards:   card.update_theme(d)
         for bubble in self.chat_bubbles:  bubble.update_theme(d)
         self._refresh_result_cards()
         self.plugin_page.update_theme(d)
-        self.settings_title.setStyleSheet(
-            f"font-size: 24px; font-weight: bold; color: {p['tc']}; background: transparent; border: none;"
-        )
+        self._apply_settings_theme(p)
         self.update_sidebar_ui()
 
     def _refresh_result_cards(self):
@@ -839,7 +921,9 @@ class AssistantApp(QWidget):
 
     def toggle_theme(self):
         self.is_dark_mode = not self.is_dark_mode
-        self.btn_theme.setText("☀️ 라이트 모드로 변경" if self.is_dark_mode else "🌙 다크 모드로 변경")
+        app_settings.set("dark_mode", self.is_dark_mode)
+        if self.switch_dark.isChecked() != self.is_dark_mode:
+            self.switch_dark.setChecked(self.is_dark_mode)
         self.apply_theme()
 
     # ─────────────────────────────────────────────
@@ -861,76 +945,85 @@ class AssistantApp(QWidget):
     # 🖥️ UI 초기화
     # ─────────────────────────────────────────────
     def initUI(self):
-        self.resize(1100, 750)
+        self.resize(1320, 820)
 
         # 🔍 브라우저와 동일한 화면 확대/축소 단축키
         QShortcut(QKeySequence("Ctrl+="), self).activated.connect(self.zoom_in)
         QShortcut(QKeySequence("Ctrl++"), self).activated.connect(self.zoom_in)
         QShortcut(QKeySequence("Ctrl+-"), self).activated.connect(self.zoom_out)
         QShortcut(QKeySequence("Ctrl+0"), self).activated.connect(self.zoom_reset)
+        QShortcut(QKeySequence("Ctrl+Shift+Space"), self).activated.connect(self.toggle_voice_conversation)
 
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        self.setObjectName("appRoot")   # 앱 전체 배경(그라데이션)을 이 위젯에만 칠한다
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.setHandleWidth(12)
-        self.splitter.splitterMoved.connect(self.update_sidebar_ui)
-        main_layout.addWidget(self.splitter)
-
-        # 사이드바
-        self.sidebar_frame = QFrame()
-        self.sidebar_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        sl = QVBoxLayout(self.sidebar_frame)
-        sl.setContentsMargins(10, 20, 10, 20)
+        # ── 상단 바: 로고 · 연결 상태 | 시계 | 메뉴 아이콘 · 프로필 ──
+        # 2026-09-30 자비스 스타일로 바꾸면서 왼쪽 사이드바를 없애고 메뉴를 여기로 옮겼다.
+        # 버튼 객체(btn_chat 등)와 navigate_pages 흐름은 그대로다.
+        self.top_bar = QFrame()
+        self.top_bar.setObjectName("topBar")   # 스타일이 안쪽 QLabel(QFrame 자식 클래스)에 번지지 않게
+        self.top_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        tb = QHBoxLayout(self.top_bar)
+        tb.setContentsMargins(20, 10, 16, 10)
+        tb.setSpacing(8)
+        self.brand_title = QLabel("✨ LUMI")
+        tb.addWidget(self.brand_title)
+        tb.addSpacing(6)
+        self.status_pill = QLabel("● 연결 확인 중")
+        tb.addWidget(self.status_pill)
+        tb.addStretch(1)
+        self.clock_pill = QLabel()
+        tb.addWidget(self.clock_pill)
+        tb.addStretch(1)
+        self.weather_pill = QLabel("🌤️  --°C")
+        self.weather_pill.setToolTip("환경설정 > 날씨에서 지역을 바꿀 수 있어요")
+        tb.addWidget(self.weather_pill)
+        tb.addSpacing(4)
 
         self.btn_chat     = QPushButton()
         self.btn_plugin   = QPushButton()
         self.btn_history  = QPushButton()
         self.btn_settings = QPushButton()
         self.btn_calendar = QPushButton()
+        self.btn_skills   = QPushButton()
 
+        # (아이콘, 툴팁) — 상단 바에는 아이콘만 보인다
         self.nav_info = {
-            self.btn_chat:     ("💬", "💬   대화창"),
-            self.btn_plugin:   ("🧩", "🧩   마켓플레이스"),
-            self.btn_history:  ("🕒", "🕒   대화 기록"),
-            self.btn_settings: ("⚙️", "⚙️   환경설정"),
-            self.btn_calendar: ("📅", "📅   캘린더"),
+            self.btn_chat:     ("💬", "대화"),
+            self.btn_plugin:   ("🧩", "마켓플레이스"),
+            self.btn_history:  ("🕒", "대화 기록"),
+            self.btn_calendar: ("📅", "캘린더"),
+            self.btn_skills:   ("🪄", "스킬"),
+            self.btn_settings: ("⚙️", "환경설정"),
         }
-        # nav_info의 등장 순서(0~4)와 stacked_widget의 실제 페이지 인덱스가
-        # 항상 같지는 않다 — auth_page(4)/mypage(5)는 nav_info에 없는 별도
-        # 경로(go_to_profile_page)로만 열리는 "숨은" 페이지라, 캘린더처럼
-        # nav_info에 새로 추가하는 페이지는 그 뒤(6번)에 등록되므로 명시적으로
-        # 매핑해준다 (navigate_pages에서 사용).
+        # nav_info의 순서와 stacked_widget의 실제 페이지 인덱스가 항상 같지는
+        # 않다 — auth_page(4)/mypage(5)는 프로필 버튼으로만 열리는 "숨은" 페이지라
+        # 명시적으로 매핑해준다 (navigate_pages에서 사용).
         self._nav_stack_index = {
             self.btn_chat: 0, self.btn_plugin: 1, self.btn_history: 2,
-            self.btn_settings: 3, self.btn_calendar: 6,
+            self.btn_settings: 3, self.btn_calendar: 6, self.btn_skills: 7,
         }
-        for btn in self.nav_info:
+        for btn, (icon, tip) in self.nav_info.items():
             btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(tip)
             btn.clicked.connect(self.navigate_pages)
-            sl.addWidget(btn)
+            tb.addWidget(btn)
         self.btn_chat.setChecked(True)
-        sl.addStretch()
+        tb.addSpacing(6)
 
         self.btn_profile = QPushButton()
-        self.btn_profile.setFixedHeight(46)
         self.btn_profile.setCheckable(True)
+        self.btn_profile.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_profile.clicked.connect(self.go_to_profile_page)
-        sl.addWidget(self.btn_profile)
-        self.splitter.addWidget(self.sidebar_frame)
-
-        handle = self.splitter.handle(1)
-        hl = QVBoxLayout(handle)
-        hl.setContentsMargins(4, 0, 4, 0)
-        self.splitter_grip = QFrame()
-        self.splitter_grip.setFixedSize(4, 40)
-        self.splitter_grip.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        hl.addWidget(self.splitter_grip, 0, Qt.AlignmentFlag.AlignCenter)
+        tb.addWidget(self.btn_profile)
+        root.addWidget(self.top_bar)
 
         # 메인 영역
         self.main_frame = QFrame()
-        self.main_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.main_frame.setObjectName("mainFrame")
         mal = QVBoxLayout(self.main_frame)
         mal.setContentsMargins(0, 0, 0, 0)
         mal.setSpacing(0)
@@ -963,141 +1056,661 @@ class AssistantApp(QWidget):
         self.calendar_page = CalendarWidget(lambda: MOCK_USER, self)            # index 6
         self.stacked_widget.addWidget(self.calendar_page)
 
-        # 하단 입력창
-        self.bottom_input_wrapper = QWidget()
-        self.bottom_input_wrapper.setStyleSheet("background: transparent; border: none;")
-        bwl = QVBoxLayout(self.bottom_input_wrapper)
-        bwl.setContentsMargins(40, 10, 40, 30)
-        bwl.setSpacing(0)
+        self.skills_page = SkillsPage(self)                                     # index 7
+        self.stacked_widget.addWidget(self.skills_page)
 
-        self.input_container = QFrame()
-        self.input_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        icl = QVBoxLayout(self.input_container)
-        icl.setContentsMargins(15, 15, 15, 15)
-        icl.setSpacing(15)
+        root.addWidget(self.main_frame, 1)
 
-        ir = QHBoxLayout()
-        self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText("명령을 입력하세요...")
-        self.input_field.returnPressed.connect(self.send_message)
-        ir.addWidget(self.input_field)
-
-        self.send_button = QPushButton("➤")
-        self.send_button.setFixedSize(36, 36)
-        self.send_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.send_button.clicked.connect(self.send_message)
-        self.send_button.setStyleSheet(
-            "background-color: #2EA043; color: #FFFFFF; border-radius: 18px; border: none; font-size: 18px;"
-        )
-        ir.addWidget(self.send_button)
-        icl.addLayout(ir)
-
-        # pill(빠른 실행 버튼) 행 — FlowLayout으로 반응형 줄바꿈 처리.
-        # 창이 좁아지면 버튼이 잘리거나 스크롤되지 않고 자동으로 다음 줄로 내려간다.
-        pill_widget = QWidget()
-        pill_widget.setStyleSheet("background: transparent;")
-        self.pill_row = FlowLayout(pill_widget, margin=0, h_spacing=10, v_spacing=10)
-        self.pill_container = icl   # 나중에 pill_row를 접근하기 위해 저장
-
-        icl.addWidget(pill_widget)
-        self.update_pills()         # 설치된 플러그인 기반으로 pill 생성
-        bwl.addWidget(self.input_container)
-        mal.addWidget(self.bottom_input_wrapper)
-
-        self.splitter.addWidget(self.main_frame)
-        self.splitter.setSizes([220, 880])
+        # 시계(1초) · Ollama 연결 상태(30초)
+        self._clock_timer = QTimer(self)
+        self._clock_timer.timeout.connect(self._tick_clock)
+        self._clock_timer.start(1000)
+        self._tick_clock()
+        self._ollama_online = None
+        self._ollama_timer = QTimer(self)
+        self._ollama_timer.timeout.connect(self._check_ollama)
+        self._ollama_timer.start(30000)
+        QTimer.singleShot(300, self._check_ollama)
 
     def init_chat_page(self):
+        """홈(대화) 화면 — 왼쪽 정보 패널 | 가운데 오브 | 오른쪽 대화 패널."""
         page = QFrame()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
+        hl = QHBoxLayout(page)
+        hl.setContentsMargins(18, 16, 18, 16)
+        hl.setSpacing(18)
 
-        # 🔍 대화창 확대/축소 — 오른쪽 상단에 항상 노출 (스크롤해도 안 사라짐)
-        chat_header = QHBoxLayout()
-        chat_header.setContentsMargins(0, 10, 16, 0)
-        chat_header.addStretch()
+        # ── 왼쪽: 정보 패널 (창이 좁으면 resizeEvent에서 숨김) ──
+        self.left_column = QScrollArea()
+        self.left_column.setWidgetResizable(True)
+        self.left_column.setFixedWidth(300)
+        self.left_column.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.left_column.setFrameShape(QFrame.Shape.NoFrame)
+        left_inner = QWidget()
+        left_inner.setStyleSheet("background: transparent;")
+        ll = QVBoxLayout(left_inner)
+        ll.setContentsMargins(0, 0, 4, 0)
+        ll.setSpacing(14)
+        self.stats_panel   = SystemStatsPanel()
+        self.weather_panel = WeatherPanel(self._weather_location)
+        self.weather_panel.weather_ready.connect(self._on_weather)
+        self.weather_panel.location_detected.connect(self._on_location_detected)
+        self.today_panel   = TodayPanel(lambda: MOCK_USER)
+        self.todo_panel    = TodoPanel(lambda: MOCK_USER)
+        self.session_panel = SessionPanel(self.stats_panel)
+        self.info_panels = [self.stats_panel, self.weather_panel, self.today_panel,
+                            self.todo_panel, self.session_panel]
+        self.panel_by_id = {"stats": self.stats_panel, "weather": self.weather_panel,
+                            "today": self.today_panel, "todo": self.todo_panel,
+                            "session": self.session_panel}
+        for panel in self.info_panels:
+            ll.addWidget(panel)
+        ll.addStretch()
+        self._left_layout = ll
+        self._apply_widget_layout()
+        self.left_column.setWidget(left_inner)
+        hl.addWidget(self.left_column)
 
+        # ── 가운데: 오브 · 이름 · 상태 · 빠른 실행 · 조작 버튼 ──
+        self.center_column = QWidget()
+        cl = QVBoxLayout(self.center_column)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(12)
+        cl.addStretch(1)
+        self.orb = LumiOrb()
+        self.orb.setMaximumSize(340, 340)
+        self.orb.setToolTip("눌러서 음성으로 대화하기")
+        self.orb.clicked.connect(self.toggle_voice_conversation)
+        cl.addWidget(self.orb, 3, Qt.AlignmentFlag.AlignHCenter)
+        self.orb_name = QLabel("LUMI")
+        self.orb_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(self.orb_name)
+        self.orb_status = QLabel()
+        self.orb_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(self.orb_status, 0, Qt.AlignmentFlag.AlignHCenter)
+        cl.addSpacing(6)
+
+        # pill(빠른 실행 버튼) — FlowLayout으로 창 폭에 맞춰 줄바꿈
+        pill_widget = QWidget()
+        pill_widget.setStyleSheet("background: transparent;")
+        self.pill_row = FlowLayout(pill_widget, margin=0, h_spacing=8, v_spacing=8, center_rows=True)
+        cl.addWidget(pill_widget)
+        cl.addStretch(1)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(18)
+        controls.addStretch()
+        # 🖥️ 화면 조작 모드 — 켜두면 보내는 요청마다 루미가 화면을 보고 직접 작업한다
+        self.screen_button = QPushButton("🖥️")
+        self.screen_button.setCheckable(True)
+        self.screen_button.setToolTip("화면 조작 모드: 루미가 화면을 보고 마우스/키보드로 직접 작업합니다\n"
+                                      "(꺼져 있어도 '직접 ~해줘', '화면에서 ~해줘'라고 하면 동작)")
+        self.screen_button.toggled.connect(self._set_screen_mode)
+        # 🎤 누르면 한 마디 듣고 → 답변을 읽어준 뒤 → 다시 듣는 대화 모드
+        self.mic_button = QPushButton("🎤")
+        self.mic_button.setToolTip("음성으로 대화하기 (Ctrl+Shift+Space)\n'그만'이라고 말하면 대화를 끝냅니다")
+        self.mic_button.clicked.connect(self.toggle_voice_conversation)
+        # 👂 호출어 상시 대기 — 창을 트레이로 숨겨도 "루미야, ..."로 부를 수 있다
+        self.wake_button = QPushButton("👂")
+        self.wake_button.setCheckable(True)
+        self.wake_button.setToolTip("호출어 대기 모드: '루미야' 또는 '자비스'로 부르면 대답합니다")
+        self.wake_button.toggled.connect(self.set_wake_mode)
+        for btn in (self.screen_button, self.mic_button, self.wake_button):
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            controls.addWidget(btn)
+        controls.addStretch()
+        cl.addLayout(controls)
+        cl.addSpacing(4)
+        hl.addWidget(self.center_column, 3)
+
+        # ── 오른쪽: 대화 패널 ──
+        self.chat_panel = Panel("💬", "대화")
+        self.chat_panel.setMinimumWidth(400)
+        self.chat_panel.setMaximumWidth(560)
+        header = self.chat_panel._header_layout
+        # 🔍 대화 글자 확대/축소
         self.zoom_out_btn = QPushButton("－")
-        self.zoom_out_btn.setFixedSize(30, 30)
-        self.zoom_out_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.zoom_out_btn.setToolTip("화면 축소 (Ctrl+-)")
+        self.zoom_out_btn.setToolTip("글자 축소 (Ctrl+-)")
         self.zoom_out_btn.clicked.connect(self.zoom_out)
-        chat_header.addWidget(self.zoom_out_btn)
-
         self.zoom_label = QLabel(ui_scale.percent_label())
-        self.zoom_label.setFixedWidth(44)
         self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.zoom_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.zoom_label.setToolTip("100%로 초기화 (Ctrl+0)")
         self.zoom_label.mousePressEvent = lambda event: self.zoom_reset()
-        chat_header.addWidget(self.zoom_label)
-
         self.zoom_in_btn = QPushButton("＋")
-        self.zoom_in_btn.setFixedSize(30, 30)
-        self.zoom_in_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.zoom_in_btn.setToolTip("화면 확대 (Ctrl++)")
+        self.zoom_in_btn.setToolTip("글자 확대 (Ctrl++)")
         self.zoom_in_btn.clicked.connect(self.zoom_in)
-        chat_header.addWidget(self.zoom_in_btn)
+        for w in (self.zoom_out_btn, self.zoom_label, self.zoom_in_btn):
+            w.setCursor(Qt.CursorShape.PointingHandCursor)
+            header.addWidget(w)
+        header.addSpacing(6)
+        self.chat_panel.add_header_button("🗑 지우기", "대화 내용을 지우고 새로 시작", self._clear_conversation)
+        self.chat_panel.add_header_button("⬇ 내보내기", "대화 내용을 텍스트 파일로 저장", self._export_conversation)
 
-        layout.addLayout(chat_header)
-
+        body = self.chat_panel.body
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll_content = QWidget()
         self.scroll_content.setStyleSheet("background: transparent;")
         self.chat_main_layout = QVBoxLayout(self.scroll_content)
         self.chat_main_layout.addStretch()
         self.scroll_area.setWidget(self.scroll_content)
-        layout.addWidget(self.scroll_area)
+        body.addWidget(self.scroll_area, 1)
 
         self.welcome_widget = QWidget()
         wl = QVBoxLayout(self.welcome_widget)
-        wl.setContentsMargins(40, 60, 40, 60)
+        wl.setContentsMargins(12, 16, 12, 16)
         # AlignHCenter를 주면 자식 위젯이 전체 너비 대신 sizeHint 크기만 받아서
-        # FlowLayout이 실제 사용 가능한 너비를 알 수 없게 됨(줄바꿈 계산 불가) —
-        # 그래서 전체 폭을 그대로 내려주고, 정렬은 각 위젯 자체(텍스트 중앙정렬,
-        # FlowLayout의 center_rows)로 처리한다.
+        # 카드 줄바꿈 계산이 안 되므로 전체 폭을 그대로 내려준다.
         wl.setAlignment(Qt.AlignmentFlag.AlignTop)
-
         self.welcome_title = QLabel(
-            '안녕하세요 <span style="color:#2EA043;">User</span>님,<br>오늘 어떤 멋진 작업을 함께할까요?'
+            '안녕하세요, <span style="color:#8B78EE;">루미</span>예요.<br>무엇을 도와드릴까요?'
         )
         self.welcome_title.setWordWrap(True)
         self.welcome_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         wl.addWidget(self.welcome_title)
-        wl.addSpacing(40)
-
-        # 커맨드 카드 — 창이 좁아지면 잘리거나 바로 줄바꿈되는 대신, 카드 너비를
-        # 160px까지 줄여서 최대한 한 줄을 유지하고 그래도 안 되면 줄바꿈됨
-        self.card_row = ResponsiveCardRow(min_card_w=160, max_card_w=220, card_h=190,
-                                           h_spacing=15, v_spacing=15)
+        wl.addSpacing(18)
+        # 커맨드 카드 — 대화 패널 폭에 맞춰 2장씩 줄바꿈된다
+        self.card_row = ResponsiveCardRow(min_card_w=150, max_card_w=200, card_h=130,
+                                           h_spacing=10, v_spacing=10)
         wl.addWidget(self.card_row)
         self._build_welcome_cards()   # 랜덤 선택된 카드로 채움 (pill과 중복 없음)
-
         self.chat_main_layout.insertWidget(0, self.welcome_widget)
+
+        # 입력창 — 대화 패널 맨 아래
+        self.bottom_input_wrapper = QWidget()
+        self.bottom_input_wrapper.setStyleSheet("background: transparent; border: none;")
+        bwl = QVBoxLayout(self.bottom_input_wrapper)
+        bwl.setContentsMargins(12, 10, 12, 12)
+        self.input_container = QFrame()
+        self.input_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        ir = QHBoxLayout(self.input_container)
+        ir.setContentsMargins(12, 4, 4, 4)
+        ir.setSpacing(6)
+        self.input_field = QLineEdit()
+        self.input_field.setPlaceholderText("명령을 입력하세요...")
+        self.input_field.returnPressed.connect(self._send_typed)
+        ir.addWidget(self.input_field)
+        self.send_button = QPushButton("➤")
+        self.send_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.send_button.clicked.connect(self._send_typed)
+        ir.addWidget(self.send_button)
+        bwl.addWidget(self.input_container)
+        body.addWidget(self.bottom_input_wrapper)
+        hl.addWidget(self.chat_panel, 2)
+
+        self.update_pills()           # 설치된 플러그인 기반으로 pill 생성
+        self._update_voice_buttons()
         self.stacked_widget.addWidget(page)
+
+    def resizeEvent(self, event):
+        """창이 좁아지면 왼쪽 정보 패널 → 가운데 오브 순서로 숨겨서 대화 패널 공간을 지킨다."""
+        super().resizeEvent(event)
+        if hasattr(self, 'left_column'):
+            w = self.width()
+            self.left_column.setVisible(w >= 1180)
+            self.center_column.setVisible(w >= 860)
+
+    def _tick_clock(self):
+        now = datetime.now()
+        ampm = "오전" if now.hour < 12 else "오후"
+        hour = now.hour % 12 or 12
+        weekday = "월화수목금토일"[now.weekday()]
+        self.clock_pill.setText(f"🕒  {ampm} {hour}:{now:%M:%S}   |   {now.year}년 {now.month}월 {now.day}일 ({weekday})")
+
+    def _check_ollama(self):
+        """Ollama가 켜져 있는지 백그라운드에서 확인 (화면 멈춤 없게 스레드로)."""
+        import threading
+
+        def probe():
+            try:
+                import requests
+                requests.get("http://127.0.0.1:11434/api/version", timeout=1.5)
+                self._ollama_online = True
+            except Exception:
+                self._ollama_online = False
+            QTimer.singleShot(0, self._update_status_pill)
+
+        threading.Thread(target=probe, daemon=True).start()
+
+    def _update_status_pill(self):
+        p = get_palette(self.is_dark_mode)
+        online = self._ollama_online
+        color = p['tc2'] if online is None else (p['ok'] if online else p['danger'])
+        text = "● 연결 확인 중" if online is None else ("● 온라인" if online else "● 오프라인")
+        self.status_pill.setText(text)
+        self.status_pill.setToolTip("" if online else "Ollama가 꺼져 있어요. Ollama를 실행하면 루미가 대답할 수 있어요.")
+        self.status_pill.setStyleSheet(
+            f"color: {color}; background-color: {p['card']}; border: 1px solid {p['card_brd']}; "
+            f"border-radius: 13px; padding: 4px 12px; font-size: 12px; font-weight: bold;")
+
+    def _refresh_info_panels(self):
+        """대화로 일정/할 일이 바뀌었을 수 있으니 다시 읽는다 (로컬 파일이라 빠름)."""
+        if hasattr(self, 'today_panel'):
+            self.today_panel.refresh()
+            self.todo_panel.refresh()
+
+    def _clear_conversation(self):
+        """대화 패널을 비우고 새 대화로 시작 (저장된 대화 기록은 그대로)."""
+        for bubble in self.chat_bubbles:
+            self.chat_main_layout.removeWidget(bubble)
+            bubble.deleteLater()
+        self.chat_bubbles.clear()
+        for entry in self.result_cards:
+            self.chat_main_layout.removeWidget(entry['widget'])
+            entry['widget'].deleteLater()
+        self.result_cards.clear()
+        self.chat_history.clear()
+        self._pending_steps = []
+        self.current_session_id = None
+        self.current_session_title = None
+        self.welcome_widget.show()
+
+    def _export_conversation(self):
+        from PyQt6.QtWidgets import QFileDialog
+        if not self.chat_bubbles:
+            self._show_toast("내보낼 대화가 아직 없어요.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "대화 내보내기", f"루미_대화_{datetime.now():%Y%m%d_%H%M}.txt", "텍스트 파일 (*.txt)")
+        if not path:
+            return
+        lines = [f"{'나' if b.is_user else '루미'}: {b._raw_text}" for b in self.chat_bubbles]
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n\n".join(lines) + "\n")
+            self._show_toast("💾 대화를 저장했어요.")
+        except OSError as e:
+            self._show_toast(f"⚠️ 저장하지 못했어요: {e}")
 
     def init_settings_page(self):
         page = QFrame()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(50, 50, 50, 50)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        page.setStyleSheet("QFrame#settingsPage { background: transparent; }")
+        page.setObjectName("settingsPage")
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(48, 32, 48, 32)
+        outer.setSpacing(0)
+        outer.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        self.settings_title = QLabel("⚙️ 환경설정")
-        layout.addWidget(self.settings_title)
-        layout.addSpacing(20)
+        self.settings_title    = QLabel("환경설정")
+        self.settings_subtitle = QLabel("루미의 화면과 음성 동작을 원하는 대로 바꿀 수 있어요.")
+        outer.addWidget(self.settings_title)
+        outer.addSpacing(6)
+        outer.addWidget(self.settings_subtitle)
+        outer.addSpacing(28)
 
-        self.btn_theme = QPushButton("☀️ 라이트 모드로 변경")
-        self.btn_theme.setMinimumSize(250, 45)
-        self.btn_theme.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_theme.setStyleSheet(
-            "background-color: #2EA043; color: white; font-size: 16px; "
-            "font-weight: bold; border-radius: 8px; border: none;"
+        # 테마 요소 모음 — _apply_settings_theme()에서 한꺼번에 색을 입힌다
+        self._settings_cards, self._settings_sections = [], []
+        self._settings_titles, self._settings_descs, self._settings_dividers = [], [], []
+
+        self.switch_dark = ToggleSwitch()
+        self.switch_dark.setChecked(self.is_dark_mode)
+        self.switch_dark.toggled.connect(lambda on: self.toggle_theme() if on != self.is_dark_mode else None)
+
+        self.switch_voice_reply = ToggleSwitch()
+        self.switch_voice_reply.setChecked(bool(app_settings.get("voice_reply")))
+        self.switch_voice_reply.toggled.connect(self._on_voice_reply_toggled)
+
+        outer.addWidget(self._make_settings_card("🎨   화면", [
+            ("다크 모드", "어두운 배경으로 눈의 피로를 줄여요.", self.switch_dark),
+        ]))
+        outer.addSpacing(18)
+        # 음성 인식 정확도 — 빠름/정확 둘 중 하나 (세그먼트 버튼)
+        self.voice_model_selector = QWidget()
+        vl = QHBoxLayout(self.voice_model_selector)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.setSpacing(0)
+        self._voice_model_buttons = {}
+        for i, (name, (label, _size)) in enumerate(VOICE_MODELS.items()):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(30)
+            btn.setMinimumWidth(64)
+            btn.setProperty("segment", "left" if i == 0 else "right")
+            btn.clicked.connect(lambda _c, n=name: self._on_voice_model_chosen(n))
+            vl.addWidget(btn)
+            self._voice_model_buttons[name] = btn
+        self._sync_voice_model_buttons()
+
+        outer.addWidget(self._make_settings_card("🎙️   음성", [
+            ("음성 인식 정확도",
+             "'정확'은 고유명사와 빠른 말도 잘 알아듣지만 한 문장에 몇 초 더 걸려요 (처음 한 번 약 1.6GB 내려받음). "
+             "'빠름'은 반응이 빠른 대신 가끔 잘못 알아들어요.",
+             self.voice_model_selector),
+            ("답변 읽어주기",
+             "음성으로 물어보면 루미가 답변을 소리로 읽어줘요. 끄면 음성 대화 중에도 글로만 답해요.",
+             self.switch_voice_reply),
+            ("음성 대화 사용법",
+             "🎤 버튼 또는 Ctrl+Shift+Space로 대화를 시작하고, '그만'이라고 말하면 끝나요.\n"
+             "👂 버튼을 켜두면 '루미야' / '자비스'라고 부를 때마다 대답해요.",
+             None),
+        ]))
+        outer.addSpacing(18)
+
+        # 날씨 지역 — 입력칸 + 내 위치 찾기 + 저장
+        self.weather_city_selector = QWidget()
+        wcl = QHBoxLayout(self.weather_city_selector)
+        wcl.setContentsMargins(0, 0, 0, 0)
+        wcl.setSpacing(8)
+        self.weather_city_input = QLineEdit(app_settings.get("weather_city") or "")
+        self.weather_city_input.setFixedWidth(150)
+        self.weather_city_input.setPlaceholderText("예: 서울, 수원")
+        self.weather_city_input.returnPressed.connect(self._save_weather_city)
+        self.weather_locate_btn = QPushButton("📍 내 위치 찾기")
+        self.weather_locate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.weather_locate_btn.clicked.connect(self._detect_weather_location)
+        self.weather_save_btn = QPushButton("저장")
+        self.weather_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.weather_save_btn.clicked.connect(self._save_weather_city)
+        wcl.addWidget(self.weather_city_input)
+        wcl.addWidget(self.weather_locate_btn)
+        wcl.addWidget(self.weather_save_btn)
+        outer.addWidget(self._make_settings_card("🌤️   날씨", [
+            ("지역", self._weather_location_text(), self.weather_city_selector),
+        ]))
+        self.weather_location_desc = self._settings_descs[-1]
+        outer.addSpacing(18)
+
+        # 홈 화면 위젯 편집 — 보이기/숨기기 + 순서
+        self.widget_editor_card = QFrame()
+        self.widget_editor_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.widget_editor_card.setMaximumWidth(760)
+        wel = QVBoxLayout(self.widget_editor_card)
+        wel.setContentsMargins(24, 20, 24, 16)
+        wel.setSpacing(0)
+        head = QHBoxLayout()
+        editor_title = QLabel("🧩   홈 화면 위젯")
+        head.addWidget(editor_title)
+        head.addStretch()
+        self.widget_reset_btn = QPushButton("기본값으로 되돌리기")
+        self.widget_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.widget_reset_btn.clicked.connect(self._reset_widget_layout)
+        head.addWidget(self.widget_reset_btn)
+        wel.addLayout(head)
+        self._settings_sections.append(editor_title)
+        editor_hint = QLabel("홈 화면 왼쪽에 보일 위젯을 고르고, ▲▼로 순서를 바꿀 수 있어요. 바로 적용돼요.")
+        editor_hint.setWordWrap(True)
+        self._settings_descs.append(editor_hint)
+        wel.addSpacing(6)
+        wel.addWidget(editor_hint)
+        wel.addSpacing(6)
+        self._widget_rows_box = QVBoxLayout()
+        self._widget_rows_box.setSpacing(0)
+        wel.addLayout(self._widget_rows_box)
+        self._settings_cards.append(self.widget_editor_card)
+        outer.addWidget(self.widget_editor_card)
+        self._rebuild_widget_editor()
+
+        outer.addStretch()
+        # 항목이 늘어나 창이 작으면 넘칠 수 있어 스크롤되게 한다
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        settings_scroll.viewport().setAutoFillBackground(False)
+        settings_scroll.setWidget(page)
+        self.stacked_widget.addWidget(settings_scroll)
+
+    # ── 홈 화면 위젯 편집 ──
+    def _widget_order(self) -> list:
+        """저장된 순서 (모르는 id는 버리고, 새로 생긴 위젯은 뒤에 붙인다)."""
+        saved = [w for w in (app_settings.get("dashboard_widgets") or []) if w in DASHBOARD_WIDGETS]
+        return saved + [w for w in DEFAULT_WIDGET_ORDER if w not in saved]
+
+    def _hidden_widgets(self) -> set:
+        return set(app_settings.get("hidden_widgets") or [])
+
+    def _apply_widget_layout(self):
+        """저장된 순서/보이기를 홈 화면 왼쪽 패널에 적용."""
+        if not hasattr(self, '_left_layout'):
+            return
+        hidden = self._hidden_widgets()
+        for i, wid in enumerate(self._widget_order()):
+            panel = self.panel_by_id[wid]
+            self._left_layout.removeWidget(panel)
+            self._left_layout.insertWidget(i, panel)
+            panel.setVisible(wid not in hidden)
+
+    def _move_widget(self, wid: str, delta: int):
+        order = self._widget_order()
+        i = order.index(wid)
+        j = i + delta
+        if 0 <= j < len(order):
+            order[i], order[j] = order[j], order[i]
+            app_settings.set("dashboard_widgets", order)
+            self._apply_widget_layout()
+            self._rebuild_widget_editor()
+
+    def _toggle_widget(self, wid: str, visible: bool):
+        hidden = self._hidden_widgets()
+        (hidden.discard if visible else hidden.add)(wid)
+        app_settings.set("hidden_widgets", sorted(hidden))
+        self._apply_widget_layout()
+
+    def _reset_widget_layout(self):
+        app_settings.set("dashboard_widgets", DEFAULT_WIDGET_ORDER)
+        app_settings.set("hidden_widgets", [])
+        self._apply_widget_layout()
+        self._rebuild_widget_editor()
+        self._show_toast("🧩 홈 화면 위젯을 기본값으로 되돌렸어요.")
+
+    def _rebuild_widget_editor(self):
+        """위젯 편집 목록을 현재 순서대로 다시 그린다 (순서를 바꿀 때마다)."""
+        box = self._widget_rows_box
+        while box.count():
+            item = box.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        p = get_palette(self.is_dark_mode)
+        order, hidden = self._widget_order(), self._hidden_widgets()
+        small_btn = (
+            f"QPushButton {{ background-color: {p['pb']}; color: {p['tc']}; border: 1px solid {p['pbrd']}; "
+            f"border-radius: 13px; font-size: 11px; min-width: 26px; min-height: 26px; }}"
+            f"QPushButton:hover {{ border-color: {p['accent']}; }}"
+            f"QPushButton:disabled {{ color: {p['gc']}; }}"
         )
-        self.btn_theme.clicked.connect(self.toggle_theme)
-        layout.addWidget(self.btn_theme)
-        self.stacked_widget.addWidget(page)
+        for i, wid in enumerate(order):
+            icon, name, desc = DASHBOARD_WIDGETS[wid]
+            row = QWidget()
+            row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            if i > 0:
+                row.setStyleSheet(f"QWidget#widgetRow {{ border-top: 1px solid {p['card_brd']}; }}")
+            row.setObjectName("widgetRow")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 12, 0, 12)
+            rl.setSpacing(10)
+            texts = QVBoxLayout()
+            texts.setSpacing(3)
+            t, d = QLabel(f"{icon}  {name}"), QLabel(desc)
+            d.setWordWrap(True)
+            # border: none — 카드(QFrame) 테두리 스타일이 QLabel(QFrame의 자식 클래스)에 번지지 않게
+            t.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {p['tc']}; background: transparent; border: none;")
+            d.setStyleSheet(f"font-size: 13px; color: {p['tc2']}; background: transparent; border: none;")
+            texts.addWidget(t)
+            texts.addWidget(d)
+            rl.addLayout(texts, 1)
+            up, down = QPushButton("▲"), QPushButton("▼")
+            for btn, delta, enabled in ((up, -1, i > 0), (down, 1, i < len(order) - 1)):
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setToolTip("위로" if delta < 0 else "아래로")
+                btn.setEnabled(enabled)
+                btn.setStyleSheet(small_btn)
+                btn.clicked.connect(lambda _c, w=wid, dl=delta: self._move_widget(w, dl))
+                rl.addWidget(btn)
+            sw = ToggleSwitch()
+            sw.setChecked(wid not in hidden)
+            sw.set_colors(p['accent'], p['switch_off'], p['accent2'])
+            sw.toggled.connect(lambda on, w=wid: self._toggle_widget(w, on))
+            rl.addSpacing(6)
+            rl.addWidget(sw)
+            box.addWidget(row)
+
+    # ── 날씨 위치 ──
+    def _weather_location(self):
+        """WeatherPanel이 부르는 함수: (지역 이름 또는 None, (위도, 경도) 또는 None)."""
+        coords = app_settings.get("weather_coords")
+        return app_settings.get("weather_city"), (tuple(coords) if coords else None)
+
+    def _weather_location_text(self) -> str:
+        city, source = app_settings.get("weather_city"), app_settings.get("weather_source")
+        if not city:
+            return "처음 실행하면 현재 위치를 자동으로 찾아요. 시·군 이름이나 해외 도시를 직접 입력해도 돼요."
+        how = {"os": "Windows 위치 서비스로 찾은 위치",
+               "ip": "인터넷 주소로 찾은 대략적인 위치 — 실제와 다르면 직접 고쳐주세요",
+               }.get(source, "직접 입력한 지역")
+        return f"현재: {city} ({how})"
+
+    def _detect_weather_location(self):
+        self.weather_locate_btn.setEnabled(False)
+        self.weather_locate_btn.setText("📍 찾는 중...")
+        self.weather_panel.detect_and_refresh()
+
+    def _on_location_detected(self, loc: dict):
+        app_settings.set("weather_city", loc["name"])
+        app_settings.set("weather_coords", [loc["lat"], loc["lon"]])
+        app_settings.set("weather_source", loc["source"])
+        self.weather_city_input.setText(loc["name"])
+        self.weather_location_desc.setText(self._weather_location_text())
+        self.weather_locate_btn.setEnabled(True)
+        self.weather_locate_btn.setText("📍 내 위치 찾기")
+        rough = " (대략적인 위치라 다르면 환경설정 > 날씨에서 고쳐주세요)" if loc["source"] == "ip" else ""
+        self._show_toast(f"📍 현재 위치를 '{loc['name']}'(으)로 찾았어요.{rough}")
+
+    def _save_weather_city(self):
+        city = self.weather_city_input.text().strip()
+        if not city:
+            return
+        app_settings.set("weather_city", city)
+        app_settings.set("weather_coords", None)     # 직접 입력 → 이름으로 좌표를 다시 찾는다
+        app_settings.set("weather_source", "manual")
+        self.weather_location_desc.setText(self._weather_location_text())
+        self.weather_panel.refresh()
+        self._show_toast(f"🌤️ 날씨 지역을 '{city}'(으)로 바꿨어요.")
+
+    def _on_weather(self, data: dict):
+        self.weather_pill.setText(f"{data['icon']}  {data['temp']:.1f}°C  {data['city']}")
+        if hasattr(self, 'weather_locate_btn') and not self.weather_locate_btn.isEnabled():
+            # 위치 찾기가 실패해도 버튼은 되살린다
+            self.weather_locate_btn.setEnabled(True)
+            self.weather_locate_btn.setText("📍 내 위치 찾기")
+
+    def _make_settings_card(self, section: str, rows: list) -> QFrame:
+        """제목 + (설명, 스위치) 줄들로 이루어진 설정 카드."""
+        card = QFrame()
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        card.setMaximumWidth(760)
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(24, 20, 24, 12)
+        cl.setSpacing(0)
+
+        header = QLabel(section)
+        cl.addWidget(header)
+        cl.addSpacing(8)
+        self._settings_sections.append(header)
+
+        for i, (title, desc, control) in enumerate(rows):
+            if i > 0:
+                line = QFrame()
+                line.setFixedHeight(1)
+                cl.addWidget(line)
+                self._settings_dividers.append(line)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 14, 0, 14)
+            row.setSpacing(24)
+            texts = QVBoxLayout()
+            texts.setSpacing(4)
+            t, d = QLabel(title), QLabel(desc)
+            d.setWordWrap(True)
+            texts.addWidget(t)
+            texts.addWidget(d)
+            self._settings_titles.append(t)
+            self._settings_descs.append(d)
+            row.addLayout(texts, 1)
+            if control is not None:
+                row.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+            cl.addLayout(row)
+
+        self._settings_cards.append(card)
+        return card
+
+    def _apply_settings_theme(self, p: dict):
+        self.settings_title.setStyleSheet(
+            f"font-size: 26px; font-weight: 800; color: {p['tc']}; background: transparent; border: none;")
+        self.settings_subtitle.setStyleSheet(
+            f"font-size: 14px; color: {p['tc2']}; background: transparent; border: none;")
+        for card in self._settings_cards:
+            card.setStyleSheet(
+                f"QFrame {{ background-color: {p['card']}; border: 1px solid {p['card_brd']}; border-radius: 22px; }}")
+        for lbl in self._settings_sections:
+            lbl.setStyleSheet(
+                f"font-size: 13px; font-weight: bold; color: {p['tc2']}; background: transparent; border: none;")
+        for lbl in self._settings_titles:
+            lbl.setStyleSheet(
+                f"font-size: 15px; font-weight: bold; color: {p['tc']}; background: transparent; border: none;")
+        for lbl in self._settings_descs:
+            lbl.setStyleSheet(f"font-size: 13px; color: {p['tc2']}; background: transparent; border: none;")
+        for line in self._settings_dividers:
+            line.setStyleSheet(f"background-color: {p['card_brd']}; border: none;")
+        for sw in (self.switch_dark, self.switch_voice_reply):
+            sw.set_colors(p['accent'], p['switch_off'], p['accent2'])
+        self.weather_city_input.setStyleSheet(
+            f"QLineEdit {{ background-color: {p['ib']}; color: {p['tc']}; border: 1px solid {p['ibrd']}; "
+            f"border-radius: 15px; padding: 5px 14px; font-size: 13px; }}"
+            f"QLineEdit:focus {{ border-color: {p['accent']}; }}")
+        self.weather_locate_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {p['pb']}; color: {p['tc']}; border: 1px solid {p['pbrd']}; "
+            f"border-radius: 13px; padding: 6px 14px; font-size: 13px; font-weight: bold; }}"
+            f"QPushButton:hover {{ border-color: {p['accent']}; }}")
+        self.widget_reset_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {p['pb']}; color: {p['tc2']}; border: 1px solid {p['pbrd']}; "
+            f"border-radius: 12px; padding: 5px 12px; font-size: 12px; }}"
+            f"QPushButton:hover {{ color: {p['tc']}; border-color: {p['accent']}; }}")
+        self._rebuild_widget_editor()
+        self.weather_save_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {p['grad']}; color: #2E2A4F; border: none; border-radius: 12px; "
+            f"padding: 6px 16px; font-size: 13px; font-weight: bold; }}"
+            f"QPushButton:hover {{ background-color: {p['grad_hover']}; }}")
+        for btn in self._voice_model_buttons.values():
+            left = btn.property("segment") == "left"
+            radius = ("border-top-left-radius: 15px; border-bottom-left-radius: 15px;" if left
+                      else "border-top-right-radius: 15px; border-bottom-right-radius: 15px;")
+            btn.setStyleSheet(
+                f"QPushButton {{ background-color: {p['pb']}; color: {p['tc2']}; border: 1px solid {p['card_brd']}; "
+                f"{radius} font-size: 13px; font-weight: bold; padding: 0 14px; }}"
+                f"QPushButton:checked {{ background-color: {p['grad']}; color: #2E2A4F; border: none; }}"
+            )
+
+    def _sync_voice_model_buttons(self):
+        current = current_voice_model()
+        for name, btn in self._voice_model_buttons.items():
+            btn.setChecked(name == current)
+
+    def _on_voice_model_chosen(self, name: str):
+        app_settings.set("voice_model", name)
+        self._sync_voice_model_buttons()
+        label, size = VOICE_MODELS[name]
+        if self._voice_listener is not None:
+            # 이미 켜진 마이크는 이전 모델을 쓰고 있으니, 다음 음성 대화부터 새 모델로
+            self._show_toast(f"🎙️ 음성 인식을 '{label}'으로 바꿨어요. 다음 음성 대화부터 적용돼요.")
+            self._stop_voice_conversation()
+            if self._wake_mode and self._voice_listener is not None:
+                # 호출어 대기 중이면 마이크를 새 모델로 다시 시작
+                self._voice_listener.stop()
+                self._voice_listener = None
+                self._ensure_listener()
+        else:
+            self._show_toast(f"🎙️ 음성 인식을 '{label}'으로 바꿨어요. (처음 쓸 때 {size} 내려받음)")
+
+    def _on_voice_reply_toggled(self, on: bool):
+        app_settings.set("voice_reply", on)
+        if not on and self._speaker is not None and self._speaker.is_speaking():
+            self._speaker.stop()
+            self._on_speech_finished()   # 읽던 중이었으면 대화 흐름은 이어간다
+        self._show_toast("🔊 이제 음성으로 물어보면 답변을 읽어드릴게요." if on
+                         else "🔇 답변 읽어주기를 껐어요. 음성으로 물어봐도 글로만 답해요.")
 
     # ─────────────────────────────────────────────
     # 🔌 플러그인 설치 콜백
@@ -1182,10 +1795,10 @@ class AssistantApp(QWidget):
             btn = QPushButton(label)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(
-                f"QPushButton {{ background-color: {p['pb']}; border: 1px solid {p['pbrd']}; "
-                f"color: {p['tc']}; border-radius: {round(15*s)}px; padding: {round(6*s)}px {round(14*s)}px; "
+                f"QPushButton {{ background-color: {p['card']}; border: 1px solid {p['card_brd']}; "
+                f"color: {p['tc']}; border-radius: {round(16*s)}px; padding: {round(7*s)}px {round(15*s)}px; "
                 f"font-size: {round(13*s)}px; }} "
-                f"QPushButton:hover {{ background-color: {'#444444' if self.is_dark_mode else '#E1E5EA'}; }}"
+                f"QPushButton:hover {{ background-color: {p['sbhb']}; border: 1px solid {p['accent']}; }}"
             )
             btn.clicked.connect(lambda checked, c=cmd: self.on_card_clicked(c))
             self.pills.append(btn)
@@ -1250,6 +1863,7 @@ class AssistantApp(QWidget):
         btn.setChecked(True)
         idx = self._nav_stack_index[btn]
         self.stacked_widget.setCurrentIndex(idx)
+        self.update_sidebar_ui()   # 선택된 메뉴 이름 펼치기
         if idx == 0:
             self.bottom_input_wrapper.show()
             if self.chat_main_layout.count() <= 2:
@@ -1262,6 +1876,8 @@ class AssistantApp(QWidget):
             self.history_page.load_sessions()
         if idx == 6:
             self.calendar_page.load_events()
+        if idx == 7:
+            self.skills_page.refresh()
 
     def go_to_profile_page(self):
         for b in self.nav_info: b.setChecked(False)
@@ -1276,47 +1892,37 @@ class AssistantApp(QWidget):
         self.update_sidebar_ui()
 
     def update_sidebar_ui(self):
-        w            = self.sidebar_frame.width()
-        is_collapsed = w < 130
-        for btn, (icon, full) in self.nav_info.items():
-            btn.setText(icon if is_collapsed else full)
-
-        # 대화창 아이콘에 실시간 감시 미확인 알림 뱃지 표시
+        """상단 바 메뉴 아이콘/프로필 버튼 표시 갱신 (이름은 예전 사이드바 시절 그대로)."""
+        for btn, (icon, tip) in self.nav_info.items():
+            # 선택된 메뉴는 이름이 펼쳐지고, 나머지는 아이콘만 (이름은 마우스를 올리면 툴팁으로)
+            btn.setText(f"{icon}  {tip}" if btn.isChecked() else icon)
+        # 대화 아이콘에 실시간 감시 미확인 알림 뱃지 표시
         if self._unread_alert_count > 0:
-            badge = f" 🔴{self._unread_alert_count}"
-            self.btn_chat.setText(
-                (self.nav_info[self.btn_chat][0] if is_collapsed else self.nav_info[self.btn_chat][1]) + badge
-            )
+            self.btn_chat.setText(self.btn_chat.text() + f"  🔴{self._unread_alert_count}")
 
         logged_in = MOCK_USER["logged_in"]
-        if self.is_dark_mode:
-            color = "#2EA043" if logged_in else "#555555"
-            tc    = "#FFFFFF" if logged_in else "#AAAAAA"
-            bg    = "#2D2D2D" if self.btn_profile.isChecked() else "transparent"
-            hv    = "#2D2D2D"
-        else:
-            color = "#2EA043" if logged_in else "#AAAAAA"
-            tc    = "#1A1A1A" if logged_in else "#666666"
-            bg    = "#E1E5EA" if self.btn_profile.isChecked() else "transparent"
-            hv    = "#E1E5EA"
-
-        s = ui_scale.get_scale()
+        p = get_palette(self.is_dark_mode)
+        color = p['accent'] if logged_in else p['pbrd']
+        tc    = p['tc'] if logged_in else p['tc2']
+        bg    = p['accent_soft'] if self.btn_profile.isChecked() else p['card']
         self.btn_profile.setStyleSheet(f"""
-            QPushButton {{ background-color: {bg}; border: 2px solid {color}; border-radius: {round(23*s)}px;
-                color: {tc}; font-size: {round(14*s)}px; font-weight: bold; text-align: left; padding-left: {round(14*s)}px; }}
-            QPushButton:hover {{ background-color: {hv}; }}
+            QPushButton {{ background-color: {bg}; border: 1px solid {color}; border-radius: 19px;
+                color: {tc}; font-size: 13px; font-weight: bold; padding: 0 16px; }}
+            QPushButton:hover {{ background-color: {p['sbhb']}; }}
         """)
-        if is_collapsed:
-            self.btn_profile.setText("👤")
-        elif logged_in:
-            self.btn_profile.setText(f"👤   {MOCK_USER['name']}")
-        else:
-            self.btn_profile.setText("👤   로그인")
+        self.btn_profile.setText(f"👤  {MOCK_USER['name']}" if logged_in else "👤  로그인")
+        self._refresh_info_panels()
 
     # ─────────────────────────────────────────────
     # 💬 채팅
     # ─────────────────────────────────────────────
+    def _send_typed(self, *_):
+        """키보드/버튼으로 보낸 메시지 — 음성 대화 중이었다면 끝내고 글로 답한다."""
+        self._end_voice_turn()
+        self.send_message()
+
     def on_card_clicked(self, cmd):
+        self._end_voice_turn()
         # "[텍스트]" 형식이면 입력창에 preset 텍스트를 넣고 포커스
         if cmd.startswith("[") and cmd.endswith("]"):
             preset = cmd[1:-1]   # 대괄호 제거
@@ -1338,11 +1944,14 @@ class AssistantApp(QWidget):
         # 워커로 덮어써지고, 두 스레드가 같은 chat_history를 동시에 건드려서
         # 채팅창이 꼬이거나(응답이 엉뚱한 순서로 나옴) "생각 중..." 표시가
         # 안 지워지고 남는 등 이상 동작의 원인이 됐다.
-        if self.worker is not None and self.worker.isRunning():
+        if ((self.worker is not None and self.worker.isRunning()) or self._screen_task_running()
+                or (self._web_worker is not None and self._web_worker.isRunning())
+                or (self._skill_worker is not None and self._skill_worker.isRunning())):
             self._show_toast("⏳ 아직 이전 요청을 처리하고 있어요. 잠시만 기다려주세요.")
             return
 
         self.welcome_widget.hide()
+        self.session_panel.count_command()
 
         if self.current_session_id is None:
             self.current_session_id    = str(uuid.uuid4())
@@ -1358,6 +1967,21 @@ class AssistantApp(QWidget):
                               self.current_session_id, self.current_session_title)
 
         self.input_field.clear()
+
+        # ── "크롬 열고 네이버 접속해줘" → LLM/화면 인식을 거치지 않고 바로 연다 ──
+        # 화면 조작 모드여도 먼저 확인한다: 화면을 보고 주소창을 찾아 클릭하는 것보다
+        # 바로 여는 게 빠르고 틀리지 않는다. 연 뒤 클릭/입력이 더 필요하면
+        # _maybe_handle_web_open이 화면 조작 에이전트에 넘긴다.
+        if self._maybe_handle_web_open(txt):
+            QTimer.singleShot(50, self.auto_scroll_to_bottom)
+            return
+
+        # ── "직접 ~해줘" / "지금 화면에 뭐 있어?" → 화면을 보고 작업/답변 ──
+        screen_mode = screen_agent.classify_screen_request(txt, self._screen_mode)
+        if screen_mode:
+            self._start_screen_task(txt, screen_mode)
+            QTimer.singleShot(50, self.auto_scroll_to_bottom)
+            return
 
         # ── 실시간 감시 주기 프리셋 선택 대기 중 → 이번 메시지를 번호로 해석 ──
         # (다른 어떤 라우팅보다 먼저 확인 — 사용자가 방금 받은 질문에 답하는 중이므로)
@@ -1422,6 +2046,19 @@ class AssistantApp(QWidget):
         self._show_typing_indicator()
 
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
+
+        # ── 설치된 OpenClaw 스킬이 있으면 맞는 스킬부터 찾는다 (없으면 _start_ai_worker) ──
+        try:
+            usable = skills.usable_skills()
+        except Exception as e:
+            print(f"[스킬] 불러오기 실패: {e}")
+            usable = []
+        if usable:
+            self._start_skill_worker(txt, usable)
+            return
+        self._start_ai_worker(txt)
+
+    def _start_ai_worker(self, txt: str):
         self.worker = AIWorker(txt, self.chat_history, self.installed_tools, self.current_session_id)
         self.worker.response_ready.connect(self.display_ai_response)
         self.worker.status_update.connect(self._on_status_update)
@@ -1430,6 +2067,47 @@ class AssistantApp(QWidget):
         self.worker.cpu_result.connect(self._on_cpu_result)  # CPU 프로세스 결과 연결
         self.worker.confirm_required.connect(self._on_confirm_required)  # 위험한 동작 확인 연결
         self.worker.start()
+
+    # ─────────────────────────────────────────────
+    # 🪄 OpenClaw 스킬 (core/skills.py, core/skill_agent.py)
+    # ─────────────────────────────────────────────
+    def _start_skill_worker(self, txt: str, usable: list):
+        self._skill_request = txt
+        worker = SkillAgentWorker(txt, usable, auto_pick=bool(app_settings.get("skill_auto_pick")),
+                                  history=self.chat_history, parent=self)
+        worker.status.connect(self._on_status_update)
+        worker.no_skill.connect(self._start_ai_worker)          # 맞는 스킬 없음 → 평소처럼
+        worker.confirm_required.connect(self._on_skill_confirm)
+        worker.finished_skill.connect(self._on_skill_finished)
+        self._skill_worker = worker
+        worker.start()
+
+    def _on_skill_confirm(self, payload: dict):
+        from PyQt6.QtWidgets import QMessageBox
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("스킬이 명령을 실행하려고 해요")
+        reason = f"\n이유: {payload['reason']}" if payload.get("reason") else ""
+        box.setText(f"'{payload['skill']}' 스킬이 이 컴퓨터에서 명령을 실행하려고 해요.{reason}\n\n"
+                    f"{payload['command']}\n\n실행할까요?")
+        once = box.addButton("실행", QMessageBox.ButtonRole.AcceptRole)
+        always = box.addButton("이 스킬은 계속 허용", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        answer = "once" if box.clickedButton() is once else ("always" if box.clickedButton() is always else "no")
+        if self._skill_worker is not None:
+            self._skill_worker.answer_confirm(answer)
+
+    def _on_skill_finished(self, ok: bool, name: str, answer: str, log: list):
+        self._skill_worker = None
+        self.chat_history.append({'role': 'user', 'content': getattr(self, '_skill_request', '')})
+        self.chat_history.append({'role': 'assistant', 'content': answer})
+        text = f"🤖 로컬 비서: {'' if ok else '⚠️ '}{answer}"
+        if name:
+            text += f"\n\n🪄 '{name}' 스킬 사용"
+            if log:
+                text += "\n" + "\n".join(f"· {line}" for line in log)
+        self.display_ai_response(text, speak_text=answer)
 
     def _on_confirm_required(self, payload: dict):
         """AIWorker가 위험한 동작(프로세스 종료/방화벽 변경/일정 삭제 등) 실행 전
@@ -1709,6 +2387,498 @@ class AssistantApp(QWidget):
 
         self.display_ai_response("🤖 로컬 비서: ❌ 캘린더 플러그인을 찾을 수 없습니다.")
 
+    # ─────────────────────────────────────────────
+    # 🎙️ 음성 대화 — 자비스처럼 말로 묻고 말로 답하기 (core/voice.py)
+    # ─────────────────────────────────────────────
+    # 흐름: 🎤(또는 호출어) → 한 마디 받아쓰기 → 평소처럼 send_message() →
+    # display_ai_response()에서 답변을 소리로 읽음 → 다 읽으면 다시 듣기.
+    # 답변을 처리/읽는 동안엔 마이크를 멈춰서(VoiceListener가 명령을 넘기는
+    # 순간 스스로 pause) 스피커 소리를 자기 명령으로 알아듣는 일이 없게 한다.
+    # 8초간 말이 없거나 "그만"이라고 하면 대화를 끝낸다.
+    def _get_speaker(self):
+        if self._speaker is None:
+            self._speaker = Speaker(self)
+            self._speaker.finished_all.connect(self._on_speech_finished)
+            self._speaker.notice.connect(self._show_toast)
+        return self._speaker
+
+    def _voice_say(self, text: str):
+        """환경설정의 '답변 읽어주기'가 꺼져 있으면 읽지 않고 바로 다음 단계
+        (다시 듣기 등)로 넘어간다 — 대화 흐름은 소리 유무와 상관없이 같다."""
+        if app_settings.get("voice_reply"):
+            self._get_speaker().say(text)
+            self._refresh_orb()
+        else:
+            QTimer.singleShot(0, self._on_speech_finished)
+
+    def _update_voice_buttons(self):
+        if not hasattr(self, 'wake_button'):
+            return
+        p = get_palette(self.is_dark_mode)
+        s = ui_scale.get_scale()
+        buttons = [(self.mic_button, self._voice_conversation, "#F5A3B8"),   # 파스텔 핑크
+                   (self.wake_button, self._wake_mode, "#8EC5FC")]           # 파스텔 블루
+        if hasattr(self, 'screen_button'):
+            buttons.append((self.screen_button, self._screen_mode, "#C3AEFA"))  # 파스텔 보라
+        for btn, on, on_color in buttons:
+            btn.setFixedSize(60, 60)
+            btn.setStyleSheet(
+                f"QPushButton {{ background-color: {on_color if on else p['card']}; color: {p['tc']}; "
+                f"border-radius: 30px; border: 2px solid {on_color if on else p['card_brd']}; font-size: 22px; }}"
+                f"QPushButton:hover {{ border-color: {p['accent']}; }}"
+            )
+
+        state = getattr(self, '_voice_state', 'idle')
+        awaiting = self._voice_listener is not None and self._voice_listener._awaiting_command
+        if self._voice_install_worker is not None:
+            text = "⏬ 음성 구성요소 설치 중... (몇 분 걸릴 수 있어요)"
+        elif state == "loading":
+            text = "🎙️ 음성 인식 모델 준비 중... (처음 한 번은 내려받느라 몇 분 걸려요)"
+        elif state == "hearing":
+            text = "🎙️ 듣는 중..."
+        elif state == "transcribing":
+            text = "✍️ 받아적는 중..."
+        elif state == "listening" and awaiting:
+            text = "🎙️ 말씀하세요... ('그만'이라고 하면 대화 종료)"
+        elif state == "listening" and self._wake_mode:
+            text = "👂 '루미야' 또는 '자비스'라고 불러주세요"
+        elif self._screen_pull_worker is not None:
+            text = "⏬ 화면 인식 모델 내려받는 중..."
+        elif self._screen_mode:
+            text = "🖥️ 루미가 화면에서 직접 할 일을 말해주세요 (예: 메모장 열고 '안녕' 입력해줘)"
+        else:
+            text = "명령을 입력하세요..."
+        self.input_field.setPlaceholderText(text)
+        self._refresh_orb()
+
+    def _refresh_orb(self):
+        """가운데 오브의 움직임과 상태 문구를 루미의 현재 상태에 맞춘다."""
+        if not hasattr(self, 'orb'):
+            return
+        state = getattr(self, '_voice_state', 'idle')
+        awaiting = self._voice_listener is not None and self._voice_listener._awaiting_command
+        speaking = self._speaker is not None and self._speaker.is_speaking()
+        thinking = bool(getattr(self, '_typing', None))
+        if self._voice_install_worker is not None:
+            mode, text = "think", "음성 구성요소 설치 중..."
+        elif state == "loading":
+            mode, text = "think", "음성 인식 준비 중..."
+        elif state == "hearing":
+            mode, text = "active", "듣는 중..."
+        elif state == "transcribing":
+            mode, text = "think", "받아적는 중..."
+        elif speaking:
+            mode, text = "active", "말하는 중..."
+        elif self._screen_task_running():
+            mode, text = "think", "화면 작업 중..."
+        elif thinking:
+            mode, text = "think", "생각 중..."
+        elif state == "listening" and awaiting:
+            mode, text = "listen", "말씀하세요..."
+        elif state == "listening" and self._wake_mode:
+            mode, text = "listen", "'루미야'라고 불러주세요"
+        elif self._screen_mode:
+            mode, text = "idle", "화면 조작 모드 · 할 일을 말하거나 입력하세요"
+        else:
+            mode, text = "idle", "대기 중 · 오브를 누르거나 입력하세요"
+        self.orb.set_mode(mode)
+        self.orb_status.setText(f"●  {text}")
+        p = get_palette(self.is_dark_mode)
+        dot = p['ok'] if mode in ("idle", "listen") else p['accent']
+        self.orb_status.setStyleSheet(
+            f"color: {dot}; background-color: {p['card']}; border: 1px solid {p['card_brd']}; "
+            f"border-radius: 15px; padding: 8px 18px; font-size: 13px; font-weight: bold;")
+
+    def toggle_voice_conversation(self):
+        if self._voice_conversation:
+            self._stop_voice_conversation()
+            return
+        if not self._ensure_voice_ready(self.toggle_voice_conversation):
+            return
+        if self._speaker is not None:
+            self._speaker.stop()
+        self._voice_conversation = True
+        self._ensure_listener().listen_for_command()
+        self._update_voice_buttons()
+
+    def set_wake_mode(self, enabled: bool):
+        if enabled and not self._ensure_voice_ready(lambda: self.wake_button.setChecked(True)):
+            self.wake_button.blockSignals(True)
+            self.wake_button.setChecked(False)
+            self.wake_button.blockSignals(False)
+            return
+        self._wake_mode = enabled
+        if enabled:
+            self._ensure_listener().set_wake_enabled(True)
+            self._show_toast("👂 이제 '루미야' 또는 '자비스'라고 부르면 대답할게요. 창을 닫아도 계속 들어요.")
+        elif self._voice_listener is not None:
+            self._voice_listener.set_wake_enabled(False)
+            self._maybe_stop_listener()
+        self._update_voice_buttons()
+
+    def _ensure_voice_ready(self, then) -> bool:
+        """음성 패키지가 있으면 True. 없으면 설치 여부를 묻고(설치 후 then 실행) False."""
+        from PyQt6.QtWidgets import QMessageBox
+        if self._voice_install_worker is not None:
+            self._show_toast("⏬ 음성 구성요소를 설치하고 있어요. 잠시만 기다려주세요.")
+            return False
+        missing = missing_voice_packages()
+        if not missing:
+            return True
+        reply = QMessageBox.question(
+            self, "음성 대화 기능 설치",
+            "음성 대화에 필요한 구성요소를 설치할까요? (처음 한 번만)\n\n"
+            f"설치 항목: {', '.join(missing)}\n"
+            "· 구성요소 약 200MB + 첫 사용 시 음성 인식 모델 약 480MB를 내려받습니다.\n"
+            "· 음성 인식은 인터넷 서버가 아니라 이 컴퓨터 안에서 처리됩니다.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return False
+        self._voice_after_install = then
+        self._voice_install_worker = VoiceInstallWorker(self)
+        self._voice_install_worker.finished_install.connect(self._on_voice_installed)
+        self._voice_install_worker.start()
+        self._update_voice_buttons()
+        return False
+
+    def _on_voice_installed(self, ok: bool, output: str):
+        from PyQt6.QtWidgets import QMessageBox
+        self._voice_install_worker = None
+        self._update_voice_buttons()
+        if not ok:
+            QMessageBox.warning(self, "음성 기능 설치 실패",
+                                "음성 구성요소를 설치하지 못했어요. 인터넷 연결을 확인해 주세요.\n"
+                                "(Intel Mac 등 일부 환경은 지원되지 않을 수 있어요)\n\n"
+                                f"--- 상세 내용 ---\n{output[-800:]}")
+            return
+        then, self._voice_after_install = self._voice_after_install, None
+        if then:
+            then()
+
+    def _ensure_listener(self) -> VoiceListener:
+        if self._voice_listener is None or not self._voice_listener.isRunning():
+            listener = VoiceListener(self)
+            listener.state_changed.connect(self._on_voice_state)
+            listener.command_heard.connect(self._handle_voice_text)
+            listener.wake_heard.connect(self._on_wake_heard)
+            listener.timed_out.connect(self._on_voice_timeout)
+            listener.failed.connect(self._on_voice_failed)
+            listener.finished.connect(listener.deleteLater)
+            listener.set_wake_enabled(self._wake_mode)
+            self._voice_listener = listener
+            listener.start()
+        return self._voice_listener
+
+    def _maybe_stop_listener(self):
+        """대화도 호출어 대기도 아니면 마이크를 완전히 끈다."""
+        if self._voice_listener is not None and not self._wake_mode and not self._voice_conversation:
+            self._voice_listener.stop()
+            self._voice_listener = None
+            self._voice_state = "idle"
+
+    def _on_voice_state(self, state: str):
+        if self.sender() is not self._voice_listener:
+            return   # 이미 끈 이전 리스너의 늦은 신호
+        self._voice_state = state
+        self._update_voice_buttons()
+
+    def _on_wake_heard(self, command: str):
+        self._voice_conversation = True     # 부른 뒤로는 대화처럼 이어서 듣는다
+        self._update_voice_buttons()
+        if command:
+            self._handle_voice_text(command)
+        else:
+            self._voice_turn = True
+            self._voice_say("네, 말씀하세요.")
+
+    def _handle_voice_text(self, text: str):
+        text = text.strip()
+        if is_stop_phrase(text):
+            self._voice_turn = True
+            self._voice_conversation = False
+            self._update_voice_buttons()
+            self._voice_say("알겠습니다. 필요하시면 언제든 불러주세요.")
+            return
+        if self.worker is not None and self.worker.isRunning():
+            self._voice_turn = True
+            self._voice_say("아직 이전 요청을 처리하고 있어요. 잠시만 기다려주세요.")
+            return
+        self._voice_turn = True
+        self.send_message(text)
+
+    def _on_speech_finished(self):
+        self._refresh_orb()
+        # 복합 요청처럼 답변이 더 올 예정이면 다 읽을 때까지 기다린다
+        if (self.worker is not None and self.worker.isRunning()) or self._pending_steps:
+            return
+        if self._voice_conversation:
+            self._ensure_listener().listen_for_command()
+        else:
+            self._voice_turn = False
+            if self._voice_listener is not None and self._wake_mode:
+                self._voice_listener.resume()
+            self._maybe_stop_listener()
+        self._update_voice_buttons()
+
+    def _on_voice_timeout(self):
+        if self._voice_conversation:
+            self._voice_conversation = False
+            self._voice_turn = False
+            if not self._wake_mode:
+                self._show_toast("🎤 말씀이 없어서 음성 대화를 마쳤어요.")
+        self._maybe_stop_listener()
+        self._update_voice_buttons()
+
+    def _on_voice_failed(self, message: str):
+        self._voice_listener = None
+        self._voice_state = "idle"
+        self._voice_conversation = False
+        self._voice_turn = False
+        if self._wake_mode:
+            self.wake_button.setChecked(False)   # → set_wake_mode(False)
+        self._update_voice_buttons()
+        self._show_toast(f"⚠️ {message}")
+
+    def _stop_voice_conversation(self):
+        self._voice_conversation = False
+        self._voice_turn = False
+        if self._speaker is not None:
+            self._speaker.stop()
+        if self._voice_listener is not None:
+            self._voice_listener.cancel_command()
+            if self._wake_mode:
+                self._voice_listener.resume()
+        self._maybe_stop_listener()
+        self._update_voice_buttons()
+
+    def _end_voice_turn(self):
+        """키보드로 입력하면 음성 대화는 끝내고 글로 답한다."""
+        if self._voice_conversation or self._voice_turn:
+            self._stop_voice_conversation()
+
+    # ─────────────────────────────────────────────
+    # 🖥️ 화면 보고 스스로 작업하기 (core/screen_agent.py)
+    # ─────────────────────────────────────────────
+    # act: 루미 창을 숨기고 안내 창만 띄운 채 마우스/키보드로 작업 → 끝나면 창을
+    #      다시 띄우고 결과를 대화창에 보고. describe: 루미 창을 잠깐 숨기고 화면을
+    #      찍어서 질문에 답만 한다 (조작 없음).
+    def _maybe_handle_web_open(self, txt: str) -> bool:
+        """브라우저/웹사이트 열기 요청이면 처리하고 True (core/web_launcher.py 참고).
+        사이트를 연 뒤 클릭/입력 등이 더 필요하면 화면 조작 에이전트가 이어받는다."""
+        req = web_launcher.parse_open_request(txt)
+        if req is None:
+            return False
+        if req["needs_agent"]:
+            self._start_screen_task(txt, "act")
+            return True
+        self.chat_history.append({'role': 'user', 'content': txt})
+        if req.get("target"):
+            # 목록에 없는 사이트 — 이름으로 홈페이지 주소를 찾는 동안(네트워크) 화면이 멈추지 않게
+            self._set_input_enabled(False)
+            self._show_typing_indicator()
+            self._on_status_update(f"🔎 {req['target']} 홈페이지 찾는 중")
+            self._web_worker = web_launcher.WebOpenWorker(req, self)
+            self._web_worker.finished_open.connect(self._on_web_opened)
+            self._web_worker.start()
+            return True
+        try:
+            message = web_launcher.open_request(req)
+        except Exception as e:
+            print(f"[웹 열기] 오류: {e}")
+            message = "❌ 브라우저를 열지 못했어요. 잠시 후 다시 시도해주세요."
+        self._on_web_opened(message)
+        return True
+
+    def _on_web_opened(self, message: str):
+        self._web_worker = None
+        self.chat_history.append({'role': 'assistant', 'content': message})
+        self.display_ai_response(f"🤖 로컬 비서: 🌐 {message}")
+
+    def _screen_task_running(self) -> bool:
+        return self._screen_worker is not None and self._screen_worker.isRunning()
+
+    def _set_screen_mode(self, on: bool):
+        self._screen_mode = on
+        self._update_voice_buttons()
+        if on:
+            self._show_toast("🖥️ 화면 조작 모드를 켰어요. 이제 요청하시면 루미가 화면을 보고 직접 작업해요.")
+
+    def _start_screen_task(self, txt: str, mode: str):
+        from PyQt6.QtWidgets import QMessageBox
+        try:
+            import mss, pynput  # noqa: F401 — 설치 여부만 확인
+        except ImportError:
+            self.display_ai_response("🤖 로컬 비서: 화면 작업에 필요한 구성요소가 아직 설치되지 않았어요. "
+                                     "앱을 다시 실행하면 자동으로 설치됩니다.")
+            return
+
+        # macOS 권한 — 캡처엔 '화면 기록', 조작엔 '손쉬운 사용'이 필요하다
+        missing = screen_agent.missing_permissions()
+        if mode == "describe":
+            missing = [m for m in missing if m == "screen"]
+        if missing:
+            names = {"screen": "화면 기록", "accessibility": "손쉬운 사용"}
+            msg = ("루미가 화면을 보고 조작하려면 macOS 권한이 필요해요:\n\n"
+                   + "\n".join(f"· 개인정보 보호 및 보안 > {names[m]}" for m in missing)
+                   + "\n\n루미를 실행한 프로그램(터미널, VS Code 또는 Python)을 목록에서 켜고, "
+                     "루미를 다시 실행해 주세요.\n지금 설정을 열까요?")
+            reply = QMessageBox.question(self, "권한 필요", msg,
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                for m in missing:
+                    screen_agent.open_permission_settings(m)
+            self.display_ai_response("🤖 로컬 비서: 화면 작업에 필요한 macOS 권한("
+                                     + ", ".join(names[m] for m in missing)
+                                     + ")을 허용한 뒤 루미를 다시 실행하고 요청해 주세요.")
+            return
+
+        # 화면 인식 모델 — 없으면 동의를 받고 내려받은 뒤 이어서 실행
+        if not screen_agent.model_installed():
+            if self._screen_pull_worker is not None:
+                self._show_toast("⏬ 화면 인식 모델을 내려받는 중이에요. 잠시만 기다려주세요.")
+                return
+            reply = QMessageBox.question(
+                self, "화면 인식 모델 설치",
+                f"화면을 보려면 로컬 비전 모델({screen_agent.SCREEN_MODEL}, 약 6GB)이 필요해요.\n"
+                "지금 내려받을까요? (처음 한 번만, 화면은 인터넷으로 보내지 않고 이 컴퓨터에서만 처리해요)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if reply != QMessageBox.StandardButton.Yes:
+                self.display_ai_response("🤖 로컬 비서: 화면 인식 모델이 없어서 화면 작업을 할 수 없어요.")
+                return
+            self._screen_pending = (txt, mode)
+            self._screen_pull_worker = screen_agent.ModelPullWorker(self)
+            self._screen_pull_worker.progress.connect(
+                lambda pct: self.input_field.setPlaceholderText(f"⏬ 화면 인식 모델 내려받는 중... {pct}%"))
+            self._screen_pull_worker.finished_pull.connect(self._on_screen_model_pulled)
+            self._screen_pull_worker.start()
+            self._update_voice_buttons()
+            self._show_toast("⏬ 화면 인식 모델을 내려받기 시작했어요. 끝나면 바로 이어서 작업할게요.")
+            return
+
+        self.chat_history.append({'role': 'user', 'content': txt})
+        self._set_input_enabled(False)
+        self._show_typing_indicator()
+        self._on_status_update("👀 화면을 보는 중")
+
+        controller = None
+        if mode == "act":
+            # 마우스/키보드 제어는 반드시 메인 스레드에서 만든다 (ScreenAgentWorker 설명 참고 —
+            # macOS에서 다른 스레드에서 만들면 앱이 강제 종료된다)
+            try:
+                controller = screen_agent.InputController()
+            except Exception as e:
+                self._hide_typing_indicator()
+                self.display_ai_response(f"🤖 로컬 비서: 마우스/키보드 제어를 준비하지 못했어요. ({e})")
+                return
+        worker = screen_agent.ScreenAgentWorker(txt, mode, self, controller=controller)
+        worker.input_requested.connect(self._on_screen_input)
+        worker.step_started.connect(self._on_screen_step)
+        worker.capture_begin.connect(self._on_screen_capture_begin)
+        worker.capture_end.connect(self._on_screen_capture_end)
+        worker.confirm_required.connect(self._on_screen_confirm)
+        worker.finished_task.connect(self._on_screen_finished)
+        self._screen_worker = worker
+        self._screen_hid_window = False
+
+        if mode == "act":
+            self._screen_hid_window = self.isVisible()
+            self.hide()
+            self._screen_overlay = AgentOverlay()
+            self._screen_overlay.place()
+            self._screen_overlay.show()
+            screen_agent.exclude_from_capture(self._screen_overlay)
+            QTimer.singleShot(400, worker.start)   # 창이 완전히 사라진 뒤 첫 캡처
+        else:
+            worker.start()
+
+    def _on_screen_model_pulled(self, ok: bool, err: str):
+        self._screen_pull_worker = None
+        self._update_voice_buttons()
+        pending, self._screen_pending = self._screen_pending, None
+        if not ok:
+            self.display_ai_response(f"🤖 로컬 비서: 화면 인식 모델을 내려받지 못했어요. ({err})")
+            return
+        self._show_toast("✅ 화면 인식 모델 준비 완료!")
+        if pending:
+            self._start_screen_task(*pending)
+
+    def _on_screen_capture_begin(self):
+        worker = self._screen_worker
+        if worker is None:
+            return
+        if worker.mode == "describe" and self.isVisible():
+            # 루미 창 뒤의 화면을 봐야 하므로 잠깐 숨긴다
+            self._screen_hid_window = True
+            self.hide()
+            QTimer.singleShot(400, worker.allow_capture)
+        else:
+            worker.allow_capture()
+
+    def _on_screen_capture_end(self):
+        worker = self._screen_worker
+        if worker is not None and worker.mode == "describe" and self._screen_hid_window:
+            self._screen_hid_window = False
+            self._restore_window()
+
+    def _on_screen_input(self, req: dict):
+        """ScreenAgentWorker가 요청한 마우스/키보드 동작을 메인 스레드에서 실행."""
+        worker = self._screen_worker
+        if worker is None:
+            return
+        try:
+            worker._controller.run(req["act"], req["mon"])
+            worker.input_finished()
+        except Exception as e:
+            print(f"[화면 작업] 동작 실행 오류: {e}")
+            worker.input_finished(f"동작을 실행하지 못했어요: {e}")
+
+    def _on_screen_step(self, n: int, desc: str):
+        self._on_status_update(desc)
+        self._refresh_orb()
+        if self._screen_overlay is not None:
+            self._screen_overlay.set_step(n, screen_agent.SCREEN_AGENT_MAX_STEPS, desc)
+
+    def _on_screen_confirm(self, desc: str):
+        from PyQt6.QtWidgets import QMessageBox
+        box = QMessageBox(QMessageBox.Icon.Warning, "루미 — 이 동작을 할까요?",
+                          f"되돌리기 어려울 수 있는 동작이에요.\n\n{desc}",
+                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        ok = box.exec() == QMessageBox.StandardButton.Yes
+        if self._screen_worker is not None:
+            self._screen_worker.answer_confirm(ok)
+
+    def _stop_screen_task(self):
+        if self._screen_task_running():
+            self._screen_worker.stop()
+
+    def _restore_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_screen_finished(self, ok: bool, message: str, log: list):
+        worker, self._screen_worker = self._screen_worker, None
+        if self._screen_overlay is not None:
+            self._screen_overlay.close()
+            self._screen_overlay.deleteLater()
+            self._screen_overlay = None
+        if worker is not None and worker.mode == "act" and self._screen_hid_window:
+            self._screen_hid_window = False
+            self._restore_window()
+
+        message = message or ("작업을 마쳤어요." if ok else "작업을 끝내지 못했어요.")
+        self.chat_history.append({'role': 'assistant', 'content': message})
+        text = f"🤖 로컬 비서: {'' if ok or (worker and worker.mode == 'describe') else '⚠️ '}{message}"
+        if log:
+            steps = "\n".join(f"{i}. {line.split(' — ')[0]}" for i, line in enumerate(log, 1))
+            text += f"\n\n🖥️ 수행한 동작 ({len(log)}단계)\n{steps}"
+        self.display_ai_response(text, speak_text=message)
+
     def _set_input_enabled(self, enabled: bool):
         """입력창·전송 버튼·빠른 실행(pill) 버튼 활성/비활성 토글.
         pill 버튼은 send_message()의 중복 요청 방지 가드로도 걸러지지만,
@@ -1721,7 +2891,7 @@ class AssistantApp(QWidget):
         opacity = 1.0 if enabled else 0.4
         s = ui_scale.get_scale()
         self.send_button.setStyleSheet(
-            f"background-color: #2EA043; color: #FFFFFF; border-radius: {round(18*s)}px; "
+            f"background-color: #8B78EE; color: #FFFFFF; border-radius: {round(18*s)}px; "
             f"border: none; font-size: {round(18*s)}px; opacity: {opacity};"
         )
 
@@ -1731,6 +2901,7 @@ class AssistantApp(QWidget):
         self._typing.update_theme(self.is_dark_mode)
         self.chat_main_layout.insertWidget(self.chat_main_layout.count() - 1, self._typing)
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
+        self._refresh_orb()
 
     def _on_status_update(self, text: str):
         """AIWorker에서 단계 변경 신호가 올 때마다 인디케이터 텍스트 갱신."""
@@ -1744,8 +2915,9 @@ class AssistantApp(QWidget):
             self.chat_main_layout.removeWidget(self._typing)
             self._typing.deleteLater()
             self._typing = None
+        self._refresh_orb()
 
-    def display_ai_response(self, text):
+    def display_ai_response(self, text, speak_text=None):
         self._hide_typing_indicator()
         self._set_input_enabled(True)
 
@@ -1762,6 +2934,7 @@ class AssistantApp(QWidget):
 
         self._track_last_event()
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
+        QTimer.singleShot(0, self._refresh_info_panels)   # 대화로 일정/할 일이 바뀌었을 수 있음
 
         # ── 실시간 감시 알림 결과를 실제로 확인했으면 대화창 뱃지 초기화 ──
         if "🛰️ 실시간 감시 알림" in text and self._unread_alert_count > 0:
@@ -1772,6 +2945,10 @@ class AssistantApp(QWidget):
         if self._pending_steps:
             next_step = self._pending_steps.pop(0)
             QTimer.singleShot(500, lambda t=next_step: self.send_message(t))
+
+        # ── 음성으로 물어본 거면 답변도 소리로 ──
+        if self._voice_turn:
+            self._voice_say(speak_text or text)
 
     def _display_cpu_process_result(self, text):
         """CPU 프로세스 결과를 카드 UI로 표시"""
@@ -2045,4 +3222,25 @@ if __name__ == "__main__":
     app.setQuitOnLastWindowClosed(False)
     ex  = AssistantApp()
     ex.show()
-    sys.exit(app.exec())
+    app.aboutToQuit.connect(ex.shutdown_background_work)   # Cmd+Q 등 모든 종료 경로
+
+    # 터미널에서 Ctrl+C / 종료 신호 → 곧바로 죽지 않고 정상 종료 절차를 밟는다.
+    # Qt 이벤트 루프가 도는 동안엔 파이썬이 신호를 처리할 틈이 없어서, 짧은
+    # 타이머로 주기적으로 파이썬에 제어를 넘겨준다.
+    import os
+    import signal
+    for _sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(_sig, lambda *_: QTimer.singleShot(0, ex._quit_app))
+    _signal_pump = QTimer()
+    _signal_pump.timeout.connect(lambda: None)
+    _signal_pump.start(300)
+
+    exit_code = app.exec()
+    ex.shutdown_background_work()
+    # 파이썬 종료 정리 단계는 건너뛴다: 그 단계에서 PyQt가 위젯/스레드를 순서 없이
+    # 지우다가, 아직 끝나지 않은 스레드(응답 대기 중인 AIWorker 등)가 있으면
+    # "QThread: Destroyed while thread is still running"으로 앱이 강제 종료된다.
+    # 저장해야 할 것(대화 기록/설정)은 모두 그때그때 파일에 바로 쓰므로 잃는 게 없다.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_code)

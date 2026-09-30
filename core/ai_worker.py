@@ -5698,6 +5698,16 @@ class AIWorker(QThread):
                             })
                             continue
 
+                        # 웹사이트를 여는 도구가 이것 하나뿐이라, "크롬 열고 네이버 접속해줘"
+                        # 같은 요청에 LLM이 이걸 골라 구글 캘린더를 열어버린 적이 있다
+                        # (2026-09-30). 캘린더 얘기가 없으면 실행하지 않는다 — 일반
+                        # 웹사이트 열기는 app_main.py에서 core/web_launcher.py가 먼저 처리.
+                        if func_name == 'open_calendar_website' and not re.search(
+                                r"캘린더|일정|달력|calendar", self.user_text, re.IGNORECASE):
+                            tool_results.append(
+                                "❌ 캘린더를 열어달라는 요청이 아니라서 구글 캘린더를 열지 않았습니다.")
+                            continue
+
                         try:
                             tool_result = func_map[func_name](**args)
                         except Exception as tool_err:

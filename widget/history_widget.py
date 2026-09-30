@@ -129,15 +129,12 @@ class HistoryBubble(QFrame):
             self._apply_bubble_width(w)
 
     def update_theme(self, is_dark):
-        if is_dark:
-            if self._is_user: bg, border, color = "#FFFFFF", "#FFFFFF", "#000000"
-            else:              bg, border, color = "#3D3D3D", "#444444", "#FFFFFF"
-            time_color = "#888888"
-        else:
-            if self._is_user: bg, border, color = "#1A1A1A", "#1A1A1A", "#FFFFFF"
-            else:              bg, border, color = "#F0F2F5", "#E1E5EA", "#1A1A1A"
-            time_color = "#AAAAAA"
-        self.bubble.setStyleSheet(f"background-color: {bg}; border-radius: 12px; border: 1px solid {border};")
+        from settings.theme import get_palette
+        p = get_palette(is_dark)
+        if self._is_user: bg, border, color = p['bubble_user'], p['bubble_user_brd'], p['bubble_user_tc']
+        else:              bg, border, color = p['bubble_ai'], p['bubble_ai_brd'], p['tc']
+        time_color = p['tc2']
+        self.bubble.setStyleSheet(f"background-color: {bg}; border-radius: 16px; border: 1px solid {border};")
         self.msg_lbl.setStyleSheet(f"color: {color}; background: transparent; border: none; font-size: 14px;")
         self.time_lbl.setStyleSheet(f"color: {time_color}; background: transparent; border: none; font-size: 11px;")
 
@@ -163,10 +160,10 @@ class SessionItem(QPushButton):
         if is_selected is None: is_selected = self.isChecked()
         if is_dark:
             bg_n = "transparent"; bg_h = "#2A2A2A"; bg_s = "#1E3A2A"
-            bsel = "#2EA043"; tc = "#E0E0E0"; mc = "#888888"
+            bsel = "#8B78EE"; tc = "#E0E0E0"; mc = "#888888"
         else:
             bg_n = "transparent"; bg_h = "#F0F2F5"; bg_s = "#E6F4EA"
-            bsel = "#2EA043"; tc = "#1A1A1A"; mc = "#888888"
+            bsel = "#8B78EE"; tc = "#1A1A1A"; mc = "#888888"
 
         bg  = bg_s if is_selected else bg_n
         brd = f"border-left: 3px solid {bsel};" if is_selected else "border-left: 3px solid transparent;"
@@ -200,7 +197,7 @@ class HistoryWidget(QWidget):
         self.title_lbl = QLabel("🕒 대화 기록"); hl.addWidget(self.title_lbl); hl.addStretch()
         self.refresh_btn = QPushButton("🔄 새로고침"); self.refresh_btn.setFixedSize(110, 34)
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.refresh_btn.setStyleSheet("background-color: #2EA043; color: white; font-weight: bold; border-radius: 6px; border: none;")
+        self.refresh_btn.setStyleSheet("background-color: #8B78EE; color: white; font-weight: bold; border-radius: 6px; border: none;")
         self.refresh_btn.clicked.connect(self.load_sessions); hl.addWidget(self.refresh_btn)
         root.addWidget(hf)
 
@@ -360,6 +357,6 @@ class HistoryWidget(QWidget):
         self.search_input.setStyleSheet(
             f"QLineEdit {{ background-color: {ib}; color: {tc}; border: 1px solid {sc};"
             f" border-radius: 6px; padding: 0 8px; font-size: 13px; }}"
-            f"QLineEdit:focus {{ border: 1px solid #2EA043; }}")
+            f"QLineEdit:focus {{ border: 1px solid #8B78EE; }}")
         for item in self.session_items: item.update_theme(is_dark_mode, item.isChecked())
         for b in self.bubbles: b.update_theme(is_dark_mode)

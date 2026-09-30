@@ -21,3 +21,16 @@ os.makedirs(PLUGIN_DIR, exist_ok=True)
 
 # 플러그인 로드 시 동적으로 채워집니다
 TOOL_SCHEMAS: dict = {}
+
+# 음성 대화(core/voice.py) — 호출어.
+# 받아쓰기 모델은 환경설정 > 음성 > "음성 인식 정확도"에서 고른다 (core/voice.py VOICE_MODELS).
+# 호출어 대기 모드에서 이 말로 시작해야 명령으로 받아들인다.
+# whisper가 "루미야"를 "누미야"/"루미아"로 받아적는 경우가 있어 비슷한 말도 넣어둔다.
+VOICE_WAKE_WORDS = ("루미야", "루미아", "누미야", "루미", "자비스", "jarvis")
+
+# 화면 보고 스스로 작업하기(core/screen_agent.py) — 로컬 비전 모델과 최대 단계 수.
+# 모델은 thinking이 없는 instruct 버전을 쓴다: 기본 태그(qwen3-vl:8b)는 매 단계
+# 긴 생각을 먼저 해서 한 번 동작하는 데 2분 넘게 걸렸다 (M1 Pro 16GB 실측).
+# RAM이 8GB 정도인 PC는 "qwen3-vl:4b-instruct"(3.3GB)로 바꾸면 가볍다 (정확도는 낮아짐).
+SCREEN_MODEL = "qwen3-vl:8b-instruct"
+SCREEN_AGENT_MAX_STEPS = 20
