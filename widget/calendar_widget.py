@@ -105,7 +105,7 @@ class CalendarWidget(QWidget):
         self.refresh_btn.setFixedSize(110, 34)
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.setStyleSheet(
-            "background-color: #2EA043; color: white; font-weight: bold; border-radius: 6px; border: none;"
+            "background-color: #8B78EE; color: white; font-weight: bold; border-radius: 6px; border: none;"
         )
         self.refresh_btn.clicked.connect(self.load_events)
         hl.addWidget(self.refresh_btn)
@@ -206,7 +206,7 @@ class CalendarWidget(QWidget):
             f"color: {p['tc']}; font-size: 13px; background: transparent; border: none;"
         )
         self.google_auth_btn.setStyleSheet(
-            "background-color: #2EA043; color: white; font-weight: bold; border-radius: 6px; border: none;"
+            "background-color: #8B78EE; color: white; font-weight: bold; border-radius: 6px; border: none;"
         )
         self.status_lbl.setStyleSheet(
             f"color: {p['gc']}; background: transparent; border: none; font-size: 13px; padding: 40px;"

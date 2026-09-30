@@ -128,7 +128,7 @@ class PluginMarketplaceWidget(QFrame):
         )
         self.search_input.setStyleSheet(
             f"background-color: {search_bg}; color: {title_color}; "
-            f"border: 1px solid {search_border}; border-radius: 6px; padding: 5px 15px;"
+            f"border: 1px solid {search_border}; border-radius: 14px; padding: 5px 15px;"
         )
         for card in self.plugin_items:
             card.update_theme(d)

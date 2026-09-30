@@ -70,20 +70,20 @@ class GoogleLoginWorker(QThread):
 
 def get_stylesheet(is_dark: bool) -> str:
     if is_dark:
-        bg = "#111318"; card = "#1C1F26"; text = "#E8EAF0"
-        sub = "#6B7280"; inp = "#252830"; brd = "#2E3340"
-        acc = "#4ADE80"; b2bg = "#252830"; b2tx = "#9CA3AF"; b2hv = "#2E3340"
+        bg = "#221D40"; card = "#28224B"; text = "#E8EAF0"
+        sub = "#6B7280"; inp = "#2F2959"; brd = "#3A3366"
+        acc = "#B7A6FF"; b2bg = "#2F2959"; b2tx = "#9CA3AF"; b2hv = "#3A3366"
     else:
-        bg = "#F0F2F7"; card = "#FFFFFF"; text = "#111318"
+        bg = "#F3EEFF"; card = "#FFFFFF"; text = "#221D40"
         sub = "#6B7280"; inp = "#F8F9FC"; brd = "#E5E7EB"
-        acc = "#16A34A"; b2bg = "#F3F4F6"; b2tx = "#374151"; b2hv = "#E5E7EB"
+        acc = "#8B78EE"; b2bg = "#F3F4F6"; b2tx = "#374151"; b2hv = "#E5E7EB"
 
     return f"""
         QWidget   {{ background: transparent; }}
         QFrame#Root {{ background-color: {bg}; border: none; border-radius: 0px; }}
         QFrame#Card {{
             background-color: {card};
-            border-radius: 14px;
+            border-radius: 22px;
             border: 1px solid {brd};
         }}
         QFrame#Sep  {{ background-color: {brd}; max-height: 1px; border: none; }}
@@ -95,26 +95,26 @@ def get_stylesheet(is_dark: bool) -> str:
         QLabel#Ok   {{ font-size: 11px; color: {acc}; }}
         QLineEdit {{
             background-color: {inp}; color: {text};
-            border: 1px solid {brd}; border-radius: 7px;
+            border: 1px solid {brd}; border-radius: 12px;
             padding: 8px 11px; font-size: 12px;
         }}
         QLineEdit:focus {{ border: 1px solid {acc}; background-color: {card}; }}
         QPushButton#P {{
-            background-color: {acc}; color: #0A0E14;
-            border: none; border-radius: 7px;
+            background-color: {acc}; color: #1A1731;
+            border: none; border-radius: 12px;
             padding: 8px; font-size: 13px; font-weight: 700; min-height: 34px;
         }}
-        QPushButton#P:hover  {{ background-color: {'#6EE79A' if is_dark else '#15803D'}; }}
-        QPushButton#P:pressed {{ background-color: {'#22C55E' if is_dark else '#166534'}; }}
+        QPushButton#P:hover  {{ background-color: {'#A08FF3' if is_dark else '#7A66E0'}; }}
+        QPushButton#P:pressed {{ background-color: {'#22C55E' if is_dark else '#6A56D0'}; }}
         QPushButton#S {{
             background-color: {b2bg}; color: {b2tx};
-            border: 1px solid {brd}; border-radius: 7px;
+            border: 1px solid {brd}; border-radius: 12px;
             padding: 7px; font-size: 12px; font-weight: 500; min-height: 30px;
         }}
         QPushButton#S:hover {{ background-color: {b2hv}; }}
         QPushButton#G {{
             background-color: {card}; color: {text};
-            border: 1px solid {brd}; border-radius: 7px;
+            border: 1px solid {brd}; border-radius: 12px;
             padding: 8px; font-size: 13px; font-weight: 600; min-height: 34px;
         }}
         QPushButton#G:hover {{ background-color: {b2hv}; }}
@@ -124,7 +124,7 @@ def get_stylesheet(is_dark: bool) -> str:
             border: none; padding: 1px 3px;
             font-size: 12px; font-weight: 600; min-height: 20px;
         }}
-        QPushButton#L:hover {{ color: {'#86EFAC' if is_dark else '#166534'}; }}
+        QPushButton#L:hover {{ color: {'#C9BCFF' if is_dark else '#6A56D0'}; }}
     """
 
 

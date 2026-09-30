@@ -1,8 +1,14 @@
+import html
+import re
+
 from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QGraphicsOpacityEffect, QLayout, QWidget,
-                             QDialog, QScrollArea, QStackedWidget)
-from PyQt6.QtCore import pyqtSignal, Qt, QPropertyAnimation, QTimer, QRect, QPoint, QSize
-from PyQt6.QtGui import QFontMetrics, QFont
+                             QDialog, QScrollArea, QStackedWidget, QAbstractButton)
+from PyQt6.QtCore import (pyqtSignal, pyqtProperty, Qt, QPropertyAnimation, QEasingCurve,
+                          QTimer, QRect, QRectF, QPoint, QSize)
+from PyQt6.QtGui import QFontMetrics, QFont, QPainter, QColor, QLinearGradient
+
+from settings.theme import get_palette
 
 
 # ==========================================
@@ -170,6 +176,19 @@ class ResponsiveCardRow(QWidget):
         super().resizeEvent(event)
         self._relayout()
 
+    def _row_height(self, cards, card_w: int) -> int:
+        """이 줄 카드들이 글자 잘림 없이 들어갈 높이 — 카드 높이를 고정하면 제목이 두 줄로
+        넘어가거나 설명이 긴 카드에서 아랫부분이 잘렸다 (2026-09-30 대화 패널이 좁아지면서
+        드러남). 같은 줄 카드는 가장 긴 카드에 맞춰 높이를 통일한다. _card_h는 최소 높이."""
+        h = self._card_h
+        for c in cards:
+            c.setFixedWidth(card_w)
+            need = c.heightForWidth(card_w) if c.hasHeightForWidth() else -1
+            if need <= 0 and c.layout() is not None:
+                need = c.layout().totalHeightForWidth(card_w)
+            h = max(h, need)
+        return h
+
     def _relayout(self):
         n = len(self._cards)
         if n == 0:
@@ -183,27 +202,29 @@ class ResponsiveCardRow(QWidget):
             # 한 줄 유지 — 카드 폭을 균등하게 줄여서 딱 맞춤 (최대 max_w)
             card_w = min(self._max_w, (avail - self._h_spacing * (n - 1)) // n)
             row_w = card_w * n + self._h_spacing * (n - 1)
+            row_h = self._row_height(self._cards, card_w)
             x = max(0, (avail - row_w) // 2)
             for c in self._cards:
-                c.setFixedSize(card_w, self._card_h)
+                c.setFixedSize(card_w, row_h)
                 c.move(x, 0)
                 x += card_w + self._h_spacing
-            self.setFixedHeight(self._card_h)
+            self.setFixedHeight(row_h)
         else:
-            # 최소 폭으로도 한 줄에 안 들어가면 줄바꿈
-            card_w = self._min_w
-            cols = max(1, (avail + self._h_spacing) // (card_w + self._h_spacing))
-            rows = -(-n // cols)  # ceil
-            for i, c in enumerate(self._cards):
-                r, col = divmod(i, cols)
-                items_in_row = min(cols, n - r * cols)
-                row_w = card_w * items_in_row + self._h_spacing * (items_in_row - 1)
-                x0 = max(0, (avail - row_w) // 2)
-                x = x0 + col * (card_w + self._h_spacing)
-                y = r * (self._card_h + self._v_spacing)
-                c.setFixedSize(card_w, self._card_h)
-                c.move(x, y)
-            self.setFixedHeight(rows * self._card_h + (rows - 1) * self._v_spacing)
+            # 최소 폭으로도 한 줄에 안 들어가면 줄바꿈 — 남는 폭은 카드에 나눠준다
+            cols = max(1, (avail + self._h_spacing) // (self._min_w + self._h_spacing))
+            card_w = min(self._max_w, (avail - self._h_spacing * (cols - 1)) // cols)
+            y = 0
+            for r in range(-(-n // cols)):
+                row_cards = self._cards[r * cols:(r + 1) * cols]
+                row_h = self._row_height(row_cards, card_w)
+                row_w = card_w * len(row_cards) + self._h_spacing * (len(row_cards) - 1)
+                x = max(0, (avail - row_w) // 2)
+                for c in row_cards:
+                    c.setFixedSize(card_w, row_h)
+                    c.move(x, y)
+                    x += card_w + self._h_spacing
+                y += row_h + self._v_spacing
+            self.setFixedHeight(y - self._v_spacing)
 
 
 def bubble_max_width(container_width: int) -> int:
@@ -263,14 +284,11 @@ class CommandCard(QFrame):
         s = ui_scale.get_scale()
         self._layout.setContentsMargins(round(20*s), round(20*s), round(20*s), round(20*s))
         self._layout.setSpacing(round(10*s))
-        bg  = "#2D2D2D" if d else "#FFFFFF"
-        brd = "#444444" if d else "#E1E5EA"
-        hv  = "#3D3D3D" if d else "#F0F2F5"
-        tc  = "#FFFFFF"  if d else "#000000"
-        dc  = "#AAAAAA" if d else "#666666"
+        p   = get_palette(d)
+        bg, brd, hv, tc, dc = p['card'], p['card_brd'], p['card_hover'], p['tc'], p['tc2']
         self.setStyleSheet(
-            f"QFrame {{ background-color: {bg}; border: 1px solid {brd}; border-radius: 12px; }}"
-            f"QFrame:hover {{ border: 1px solid #2EA043; background-color: {hv}; }}"
+            f"QFrame {{ background-color: {bg}; border: 1px solid {brd}; border-radius: {round(20*s)}px; }}"
+            f"QFrame:hover {{ border: 1px solid {p['accent']}; background-color: {hv}; }}"
         )
         self.icon_lbl.setStyleSheet(
             f"font-size: {round(26*s)}px; padding-bottom: 5px; border: none; background: transparent;"
@@ -326,22 +344,19 @@ class PluginCard(QFrame):
             self.btn.setText("설치됨")
             self.btn.setStyleSheet(
                 "background-color: transparent; color: gray; "
-                "border: 1px solid gray; border-radius: 4px; font-weight: bold;"
+                "border: 1px solid #CFC5EE; color: #7A7699; border-radius: 12px; font-weight: bold;"
             )
         else:
             self.btn.setStyleSheet(
-                "background-color: #2EA043; color: white; font-weight: bold; border-radius: 4px;"
+                "background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #B69CF6, stop:1 #85C6F6); color: #2E2A4F; font-weight: bold; border-radius: 12px; border: none;"
             )
 
     def update_theme(self, d):
-        bg  = "#2D2D2D" if d else "#FFFFFF"
-        brd = "#444444" if d else "#CCCCCC"
-        hv  = "#3D3D3D" if d else "#F0F2F5"
-        tc  = "#FFFFFF"  if d else "#000000"
-        dc  = "#AAAAAA" if d else "#666666"
+        p   = get_palette(d)
+        bg, brd, hv, tc, dc = p['card'], p['card_brd'], p['card_hover'], p['tc'], p['tc2']
         self.setStyleSheet(
-            f"QFrame {{ background-color: {bg}; border: 1px solid {brd}; border-radius: 12px; }}"
-            f"QFrame:hover {{ border: 1px solid #2EA043; background-color: {hv}; }}"
+            f"QFrame {{ background-color: {bg}; border: 1px solid {brd}; border-radius: 20px; }}"
+            f"QFrame:hover {{ border: 1px solid {p['accent']}; background-color: {hv}; }}"
         )
         self.name_lbl.setStyleSheet(
             f"color: {tc}; font-size: 16px; font-weight: bold; background: transparent; border: none;"
@@ -352,13 +367,155 @@ class PluginCard(QFrame):
 
 
 # ==========================================
+# 🔘 토글 스위치 — 환경설정의 켜기/끄기
+# ==========================================
+class ToggleSwitch(QAbstractButton):
+    """iOS 스타일 켜기/끄기 스위치. QCheckBox처럼 setChecked/toggled를 그대로 쓴다."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(46, 26)
+        self._offset = 0.0
+        self._on_color, self._off_color = QColor("#8B78EE"), QColor("#DAD4EE")
+        self._on_color2 = QColor("#5FA8EE")   # 켜졌을 때 오른쪽 끝 색 (보라 → 파랑 그라데이션)
+        self._anim = QPropertyAnimation(self, b"offset", self)
+        self._anim.setDuration(160)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.toggled.connect(self._animate)
+
+    def set_colors(self, on_color: str, off_color: str, on_color2: str = None):
+        self._on_color, self._off_color = QColor(on_color), QColor(off_color)
+        self._on_color2 = QColor(on_color2 or on_color)
+        self.update()
+
+    def setChecked(self, checked: bool):
+        super().setChecked(checked)
+        self._anim.stop()
+        self._offset = 1.0 if checked else 0.0   # 코드로 바꿀 땐 애니메이션 없이 바로
+        self.update()
+
+    def _animate(self, checked: bool):
+        self._anim.stop()
+        self._anim.setStartValue(self._offset)
+        self._anim.setEndValue(1.0 if checked else 0.0)
+        self._anim.start()
+
+    def _get_offset(self):
+        return self._offset
+
+    def _set_offset(self, value):
+        self._offset = value
+        self.update()
+
+    offset = pyqtProperty(float, _get_offset, _set_offset)
+
+    def sizeHint(self):
+        return QSize(46, 26)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        t = self._offset
+        mix = lambda a, b: QColor(round(a.red() + (b.red() - a.red()) * t),
+                                  round(a.green() + (b.green() - a.green()) * t),
+                                  round(a.blue() + (b.blue() - a.blue()) * t),
+                                  255 if self.isEnabled() else 110)
+        h = self.height()
+        track = QLinearGradient(0, 0, self.width(), 0)
+        track.setColorAt(0, mix(self._off_color, self._on_color))
+        track.setColorAt(1, mix(self._off_color, self._on_color2))
+        p.setBrush(track)
+        p.drawRoundedRect(QRectF(0, 0, self.width(), h), h / 2, h / 2)
+        knob = h - 6
+        x = 3 + (self.width() - knob - 6) * t
+        p.setBrush(QColor("#FFFFFF"))
+        p.drawEllipse(QRectF(x, 3, knob, knob))
+        p.end()
+
+
+# ==========================================
+# 🖥️ 화면 작업 중 안내 창
+# ==========================================
+class AgentOverlay(QWidget):
+    """루미가 화면을 조작하는 동안 화면 오른쪽 아래에 떠 있는 안내 창.
+    - 클릭이 통과한다 (루미의 클릭이 이 창에 막히지 않게)
+    - 포커스를 가져가지 않는다 (루미가 입력하는 글자가 엉뚱한 곳에 가지 않게)
+    - 한 번 띄우면 작업이 끝날 때까지 숨겼다 켰다 하지 않는다 — 맥에서는 창을 다시
+      띄울 때마다 루미가 앞으로 나오면서 작업 중인 앱의 포커스를 뺏기 때문."""
+
+    def __init__(self):
+        import sys
+        flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                 | Qt.WindowType.WindowTransparentForInput | Qt.WindowType.WindowDoesNotAcceptFocus)
+        if sys.platform == "win32":
+            flags |= Qt.WindowType.Tool   # 작업 표시줄에 안 보이게 (맥에서는 앱이 비활성화되면 숨어버려서 제외)
+        super().__init__(None, flags)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setFixedWidth(360)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        box = QFrame()
+        box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        box.setStyleSheet("QFrame { background-color: rgba(46, 42, 79, 235); border: 1px solid #B69CF6; "
+                          "border-radius: 14px; }")
+        outer.addWidget(box)
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(16, 12, 16, 12)
+        bl.setSpacing(4)
+        self.title = QLabel("🖥️ 루미가 작업 중")
+        self.step = QLabel("화면을 보는 중...")
+        self.step.setWordWrap(True)
+        self.hint = QLabel("Esc 또는 마우스를 화면 왼쪽 위 모서리로 → 즉시 중지")
+        for lbl, css in ((self.title, "color: #A08FF3; font-size: 13px; font-weight: bold;"),
+                         (self.step, "color: #ECEDEF; font-size: 13px;"),
+                         (self.hint, "color: #9A9DA5; font-size: 11px;")):
+            lbl.setStyleSheet(css + " background: transparent; border: none;")
+            bl.addWidget(lbl)
+
+    def set_step(self, n: int, total: int, desc: str):
+        self.title.setText(f"🖥️ 루미가 작업 중  ·  {n}/{total}단계")
+        self.step.setText(desc)
+        self.adjustSize()
+        self.place()
+
+    def place(self):
+        from PyQt6.QtWidgets import QApplication
+        geo = QApplication.primaryScreen().availableGeometry()
+        self.adjustSize()
+        self.move(geo.right() - self.width() - 16, geo.bottom() - self.height() - 16)
+
+
+# ==========================================
 # 💬 메시지 버블
 # ==========================================
+_AI_PREFIX   = re.compile(r"^\s*🤖\s*로컬 비서\s*:\s*")
+_USER_PREFIX = re.compile(r"^\s*나\s*:\s*")
+_BOLD        = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+
+
+def bubble_plain_text(text: str, is_user: bool) -> str:
+    """말풍선에 보일 글자 — "나: " / "🤖 로컬 비서: " 접두어는 말풍선 위치와
+    발신자 표시로 이미 구분되므로 뺀다 (저장되는 대화 기록 원문은 그대로)."""
+    return (_USER_PREFIX if is_user else _AI_PREFIX).sub("", text or "", count=1)
+
+
+def bubble_html(plain: str) -> str:
+    """LLM 답변의 **굵게**만 실제 굵은 글씨로 — 나머지는 글자 그대로 보여준다."""
+    escaped = html.escape(plain)
+    return _BOLD.sub(r"<b>\1</b>", escaped).replace("\n", "<br>")
+
+
 class MessageBubble(QFrame):
     def __init__(self, text, is_user=False, max_width=None):
         super().__init__()
         self.is_user = is_user
-        self._raw_text = text
+        plain = bubble_plain_text(text, is_user)
+        self._raw_text = _BOLD.sub(r"\1", plain)   # 너비 계산용 (** 기호 제외)
         # VBoxLayout 안에서 가로로 꽉 채워야 resizeEvent가 올바른 width를 받음
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
@@ -371,7 +528,12 @@ class MessageBubble(QFrame):
         self._bubble_layout = bl
         self._apply_margins()
 
-        self.message_label = QLabel(text)
+        if not is_user:
+            # 루미 답변 위에 작은 발신자 표시
+            self.sender_label = QLabel("✨ LUMI")
+            bl.addWidget(self.sender_label)
+        self.message_label = QLabel(bubble_html(plain))
+        self.message_label.setTextFormat(Qt.TextFormat.RichText)
         self.message_label.setWordWrap(True)
         # Preferred+MinimumExpanding 대신 Preferred+Preferred 사용 —
         # Expanding 수직 정책이 스크롤 시 높이 재계산을 틀어뜨리는 원인
@@ -404,13 +566,15 @@ class MessageBubble(QFrame):
 
     def _apply_bubble_width(self, container_width: int):
         cap = bubble_max_width(container_width)
-        self.bubble.setFixedWidth(ideal_bubble_width(self._raw_text, cap))
+        # 굵은 글씨는 폭이 조금 더 넓어서 여유를 둔다
+        self.bubble.setFixedWidth(ideal_bubble_width(self._raw_text, cap, h_padding=48))
 
     def _apply_margins(self):
         from settings import ui_scale
         s = ui_scale.get_scale()
         self._outer_layout.setContentsMargins(round(10*s), round(8*s), round(10*s), round(8*s))
-        self._bubble_layout.setContentsMargins(round(14*s), round(14*s), round(14*s), round(14*s))
+        self._bubble_layout.setContentsMargins(round(16*s), round(12*s), round(16*s), round(12*s))
+        self._bubble_layout.setSpacing(round(4*s))
 
     def resizeEvent(self, event):
         """창 크기 변경 시 버블 너비를 다시 계산 — 화면 비율에 맞춰 반응형으로 동작."""
@@ -425,13 +589,20 @@ class MessageBubble(QFrame):
         self._apply_margins()
         if self.width() > 100:
             self._apply_bubble_width(self.width())
-        if d:
-            bg, brd, color = ("#FFFFFF", "#FFFFFF", "#000000") if self.is_user else ("#3D3D3D", "#444444", "#FFFFFF")
+        p = get_palette(d)
+        r = round(18*s)
+        if self.is_user:
+            # 내 말풍선: 대표 색 + 오른쪽 아래 모서리만 덜 둥글게 (말꼬리 느낌)
+            bg, brd, color = p['bubble_user'], p['bubble_user_brd'], p['bubble_user_tc']
+            radius = f"border-radius: {r}px; border-bottom-right-radius: {round(6*s)}px;"
         else:
-            bg, brd, color = ("#1A1A1A", "#1A1A1A", "#FFFFFF") if self.is_user else ("#F0F2F5", "#E1E5EA", "#1A1A1A")
-        self.bubble.setStyleSheet(
-            f"background-color: {bg}; border-radius: 12px; border: 1px solid {brd};"
-        )
+            bg, brd, color = p['bubble_ai'], p['bubble_ai_brd'], p['tc']
+            radius = f"border-radius: {r}px; border-top-left-radius: {round(6*s)}px;"
+            self.sender_label.setStyleSheet(
+                f"color: {p['accent']}; background: transparent; border: none; "
+                f"font-size: {round(12*s)}px; font-weight: bold;"
+            )
+        self.bubble.setStyleSheet(f"background-color: {bg}; {radius} border: 1px solid {brd};")
         self.message_label.setStyleSheet(
             f"color: {color}; background: transparent; border: none; font-size: {round(15*s)}px;"
         )
@@ -484,11 +655,10 @@ class TypingIndicator(QFrame):
         self._timer.stop()
 
     def update_theme(self, d):
-        bg  = "#3D3D3D" if d else "#F0F2F5"
-        brd = "#444444" if d else "#E1E5EA"
-        clr = "#AAAAAA" if d else "#666666"
+        p = get_palette(d)
+        bg, brd, clr = p['bubble_ai'], p['bubble_ai_brd'], p['tc2']
         self.bubble.setStyleSheet(
-            f"background-color: {bg}; border-radius: 12px; border: 1px solid {brd};"
+            f"background-color: {bg}; border-radius: 18px; border-top-left-radius: 6px; border: 1px solid {brd};"
         )
         self.label.setStyleSheet(
             f"color: {clr}; font-size: 14px; border: none; background: transparent;"
@@ -516,7 +686,7 @@ class NotificationToast(QFrame):
         layout.addWidget(self.label)
 
         self.setStyleSheet(
-            "background-color: #2D2D2D; border: 1px solid #2EA043; border-radius: 10px;"
+            "background-color: #2E2A4F; border: 1px solid #B69CF6; border-radius: 18px;"
         )
         self.label.setStyleSheet(
             "color: #FFFFFF; background: transparent; border: none; font-size: 13px;"
@@ -600,6 +770,6 @@ class RealtimeAlertsDialog(QDialog):
             f"color: {tc}; background: transparent; border: none; font-size: 13px; padding: 12px;"
         )
         self.close_btn.setStyleSheet(
-            "background-color: #2EA043; color: white; font-weight: bold; "
+            "background-color: #8B78EE; color: white; font-weight: bold; "
             "border-radius: 8px; border: none;"
         )

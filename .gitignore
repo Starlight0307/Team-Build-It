@@ -37,3 +37,9 @@ tests/agent/results/
 
 # PC 상태 이력(plugins/system_history.py)이 1분마다 쌓는 이 PC 전용 CPU/RAM/디스크 기록
 plugins/system_history/
+
+# 환경설정(settings/app_settings.py) — 사람마다 다른 테마/음성 설정
+settings/app_settings.json
+
+# 🪄 스킬 화면에서 설치한 OpenClaw 스킬 (사람마다 다름 — core/skills.py)
+skills/

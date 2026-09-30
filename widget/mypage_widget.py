@@ -205,36 +205,36 @@ class MyPageWidget(QWidget):
     def update_theme(self, is_dark: bool):
         if is_dark:
             root_bg     = "#1A1A1A"
-            card_bg     = "#1C1F26"
-            card_border = "#2E3340"
+            card_bg     = "#28224B"
+            card_border = "#3A3366"
             name_color  = "#E8EAF0"
-            sep_color   = "#2E3340"
-            stat_bg     = "#252830"
-            stat_border = "#2E3340"
-            count_color = "#4ADE80"
+            sep_color   = "#3A3366"
+            stat_bg     = "#2F2959"
+            stat_border = "#3A3366"
+            count_color = "#B7A6FF"
             sub_color   = "#6B7280"
             logout_bg   = "#DC2626"
             logout_hover= "#B91C1C"
-            input_bg    = "#252830"
-            input_brd   = "#2E3340"
-            save_bg     = "#2EA043"
+            input_bg    = "#2F2959"
+            input_brd   = "#3A3366"
+            save_bg     = "#8B78EE"
             save_hover  = "#3FB855"
         else:
-            root_bg     = "#F0F2F7"
+            root_bg     = "#F3EEFF"
             card_bg     = "#FFFFFF"
             card_border = "#E5E7EB"
-            name_color  = "#111318"
+            name_color  = "#221D40"
             sep_color   = "#E5E7EB"
             stat_bg     = "#F3F4F6"
             stat_border = "#E5E7EB"
-            count_color = "#16A34A"
+            count_color = "#8B78EE"
             sub_color   = "#6B7280"
             logout_bg   = "#DC2626"
             logout_hover= "#B91C1C"
             input_bg    = "#F8F9FC"
             input_brd   = "#E5E7EB"
-            save_bg     = "#16A34A"
-            save_hover  = "#15803D"
+            save_bg     = "#8B78EE"
+            save_hover  = "#7A66E0"
 
         self.setStyleSheet(f"""
             QFrame#MPRoot {{
@@ -276,7 +276,7 @@ class MyPageWidget(QWidget):
             }}
             QLineEdit {{
                 background-color: {input_bg}; color: {name_color};
-                border: 1px solid {input_brd}; border-radius: 7px;
+                border: 1px solid {input_brd}; border-radius: 12px;
                 padding: 8px 11px; font-size: 12px;
             }}
             QPushButton#MPSave {{
