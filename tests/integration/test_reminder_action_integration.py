@@ -495,3 +495,83 @@ def test_due_condition_handles_pre_feature_data_without_action_key(isolated_remi
 
     assert len(due) == 1
     assert due[0]["action_result"]["executed"] is False
+
+
+# ── C7 확장(2026-09-30): add_todo 액션 ──────────────────────────────
+
+def _fake_todo_func_map():
+    added = []
+
+    def fake_add_todo(text):
+        added.append(text)
+        return f"[✅ 할 일 추가]\n'{text}'을(를) 할 일 목록에 추가했어요. (번호: {len(added)})"
+
+    return {"add_todo": fake_add_todo}, added
+
+
+def test_set_daily_reminder_with_todo_text_stores_add_todo_action(isolated_reminder):
+    result = rm.set_daily_reminder(9, 0, "아침 루틴", todo_text="스트레칭하기")
+    assert "자동" in result
+    routine = list(rm._routines.values())[0]
+    assert routine["action"] == {"type": "add_todo", "text": "스트레칭하기"}
+
+
+def test_set_daily_reminder_rejects_both_iot_and_todo_together(isolated_reminder):
+    result = rm.set_daily_reminder(9, 0, iot_device_name="거실 전등", iot_state="on", todo_text="스트레칭하기")
+    assert "하나만" in result
+    assert rm._routines == {}
+
+
+def test_set_cpu_condition_with_todo_text_stores_action(isolated_reminder):
+    result = rm.set_cpu_condition(90, todo_text="원인 프로세스 확인하기")
+    assert "자동" in result
+    cond = list(rm._conditions.values())[0]
+    assert cond["action"] == {"type": "add_todo", "text": "원인 프로세스 확인하기"}
+
+
+def test_due_daily_reminder_executes_add_todo_action(isolated_reminder):
+    past = datetime.now() - timedelta(minutes=1)
+    rm.set_daily_reminder(past.hour, past.minute, "아침 루틴", todo_text="스트레칭하기")
+
+    func_map, added = _fake_todo_func_map()
+    due = rm.get_due_daily_reminders(func_map)
+
+    assert len(due) == 1
+    result = due[0]["action_result"]
+    assert result["executed"] is True
+    assert result["success"] is True
+    assert added == ["스트레칭하기"]
+
+
+def test_due_condition_executes_add_todo_action_on_edge_trigger(isolated_reminder):
+    rm.set_disk_condition(10, todo_text="디스크 정리하기")
+    func_map = {"get_disk_free_percent": lambda: 5.0}
+    todo_map, added = _fake_todo_func_map()
+    func_map.update(todo_map)
+
+    due = rm.get_due_conditions(func_map)
+
+    assert len(due) == 1
+    assert due[0]["action_result"]["success"] is True
+    assert added == ["디스크 정리하기"]
+
+
+def test_add_todo_action_requires_login_same_as_iot(isolated_reminder, monkeypatch):
+    """add_todo도 iot_control과 마찬가지로 owner를 특정할 수 없는 게스트
+    등록은 막아야 한다(_require_login_for_action은 action 종류를 가리지
+    않고 "action이 있으면" 전부 적용되는 공통 게이트)."""
+    monkeypatch.setattr(rm, "_current_user_id", "guest")
+    result = rm.set_daily_reminder(9, 0, todo_text="스트레칭하기")
+    assert "로그인" in result
+    assert rm._routines == {}
+
+
+def test_action_log_records_add_todo_execution(isolated_reminder):
+    past = datetime.now() - timedelta(minutes=1)
+    rm.set_daily_reminder(past.hour, past.minute, "아침 루틴", todo_text="스트레칭하기")
+    func_map, _ = _fake_todo_func_map()
+    rm.get_due_daily_reminders(func_map)
+
+    log = rm.list_action_log()
+    assert "스트레칭하기" in log
+    assert "✅" in log

@@ -179,7 +179,18 @@ def exclude_from_capture(widget):
 
 
 def classify_screen_request(text: str, act_mode: bool = False):
-    """이 메시지가 화면 작업인지 판단: "act"(직접 조작) / "describe"(화면 보고 답만) / None."""
+    """이 메시지가 화면 작업인지 판단: "act"(직접 조작) / "describe"(화면 보고 답만) / None.
+
+    2026-10-01 수정: "직접"/"대신"/"알아서"를 단독 접두사로 매칭했더니 "직접
+    할 일 추가해줘", "알아서 메모해줘", "대신 처리해줘 지출 기록"처럼 다른
+    모든 플러그인 기능에 흔히 붙는 강조 표현까지 전부 화면 조작으로
+    가로채는 걸 실측으로 확인했다(이 세 단어는 한국어에서 "그냥 네가
+    해줘"라는 뜻으로 어떤 요청에나 자연스럽게 붙는다). 단독 접두사
+    매칭을 없애고, 대신 이 강조어가 실제 화면 조작 동사(클릭/스크롤/
+    열어/써줘 등)와 함께 쓰일 때만 화면 작업으로 좁혔다 — 기존 테스트
+    케이스("크롬 열고 날씨 검색 대신 해줘", "직접 메모장 열어서
+    안녕이라고 써줘")는 각각 "열고"/"열어서+써줘"라는 실제 동사를 이미
+    포함하고 있어서 그대로 통과한다."""
     t = (text or "").strip()
     if not t:
         return None
@@ -187,13 +198,20 @@ def classify_screen_request(text: str, act_mode: bool = False):
         return "act"
     if t.startswith(_ACT_PREFIXES) or any(p in t for p in _ACT_PHRASES):
         return "act"
+    if any(w in t for w in _ACT_INTENSIFIERS) and _ACT_ACTION_VERBS.search(t):
+        return "act"
     if _DESCRIBE_PATTERN.search(t):
         return "describe"
     return None
 
 
-_ACT_PREFIXES = ("화면에서", "화면 보고", "화면보고", "직접", "대신", "알아서")
-_ACT_PHRASES  = ("직접 해줘", "직접 해 줘", "대신 해줘", "대신 해 줘", "화면 조작", "클릭해줘", "클릭해 줘")
+_ACT_PREFIXES = ("화면에서", "화면 보고", "화면보고")
+_ACT_PHRASES  = ("화면 조작", "클릭해줘", "클릭해 줘")
+# "직접"/"대신"/"알아서" 단독으로는 화면 조작 신호로 보기엔 너무 넓다 — 실제
+# 화면을 조작하는 동사(클릭/스크롤/드래그/입력/열기/타이핑 등)가 같이 있을
+# 때만 화면 작업으로 본다(classify_screen_request 수정 이력 참고).
+_ACT_INTENSIFIERS = ("직접", "대신", "알아서")
+_ACT_ACTION_VERBS = re.compile(r"클릭|눌러|스크롤|드래그|입력해|타이핑|열어|열고|써줘|써 줘")
 _DESCRIBE_PATTERN = re.compile(
     r"(지금|현재|내)?\s*화면(에|을|이|엔|에서)?\s*.*(뭐|무엇|무슨|설명|읽어|요약|보여|떠\s*있|있는\s*거|내용)")
 

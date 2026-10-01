@@ -39,24 +39,41 @@ def _query_core(query: str) -> str:
     return re.sub(r"\s+", "", core).strip()
 
 
-def _build_match_summary(parsed_products: list, search_query: str) -> str:
-    """검색어와 실제로 이름이 일치하는 상품 판정 + 그중 최저가 계산을 LLM에게
-    맡기지 않고 여기서 결정론적으로 끝낸다 (LLM은 이 결과를 그대로 옮기기만
-    하면 됨). parsed_products는 (상품명, 가격원|None) 튜플 리스트.
+def _match_products(parsed_products: list, search_query: str):
+    """검색어와 실제로 이름이 일치하는 상품 판정 + 그중 최저가 계산의 순수
+    부분만 담당한다(전역 상태 변경 없음). (matched, matched_with_price,
+    cheapest_name, cheapest_price) 튜플을 반환하고, 매칭된 상품 중 가격
+    정보가 있는 게 하나도 없으면 cheapest_name/cheapest_price는 둘 다
+    None이다.
 
-    다나와 스크래핑(네트워크 I/O)과 분리해서 여기 독립 함수로 뺀 이유: 이
-    판정/계산 로직 자체가 정확한지는 네트워크 없이도 검증 가능해야 테스트가
-    빠르고 안정적이기 때문 (tests/unit/test_price_search_matching.py 참고)."""
+    _build_match_summary(사용자에게 보여줄 텍스트 생성 + LAST_SEARCH 갱신)와
+    get_cheapest_matched_price(E10 조건부 알림 getter)가 이 판정 로직을
+    공유한다 — 후자가 LAST_SEARCH까지 건드리면, 조건부 알림이 백그라운드로
+    폴링할 때마다 사용자가 방금 직접 검색한 것과 무관한 쿼리로 LAST_SEARCH를
+    덮어써서 "이 중에 제일 싼 거 뭐야?" 후속 질문 기능이 조용히 망가지는
+    실제 버그가 되므로, 반드시 이 부작용 없는 버전을 공유해야 한다."""
     query_core = _query_core(search_query)
     if query_core:
         matched = [p for p in parsed_products if query_core in p[0].replace(" ", "")]
     else:
         matched = list(parsed_products)
     matched_with_price = [p for p in matched if p[1] is not None]
+    if not matched_with_price:
+        return matched, matched_with_price, None, None
+    cheapest_name, cheapest_price = min(matched_with_price, key=lambda p: p[1])
+    return matched, matched_with_price, cheapest_name, cheapest_price
+
+
+def _build_match_summary(parsed_products: list, search_query: str) -> str:
+    """검색어와 실제로 일치하는 상품 중 최저가를 LLM 판단 없이 결정론적으로
+    계산해 사용자에게 보여줄 텍스트로 만들고, 후속 질문 재사용을 위해
+    LAST_SEARCH를 갱신한다(위 LAST_SEARCH 설명 참고). 판정 로직 자체는
+    _match_products가 담당한다(네트워크 없이 검증 가능 —
+    tests/unit/test_price_search_matching.py 참고)."""
+    matched, matched_with_price, cheapest_name, cheapest_price = _match_products(parsed_products, search_query)
 
     lines = [""]
     if matched_with_price:
-        cheapest_name, cheapest_price = min(matched_with_price, key=lambda p: p[1])
         lines.append("[💡 검색어와 이름이 일치하는 상품 중 최저가 — 이미 계산됨]")
         lines.append(f"{cheapest_name}: {cheapest_price:,}원")
         unmatched = [p for p in parsed_products if p not in matched]
@@ -83,6 +100,81 @@ def _build_match_summary(parsed_products: list, search_query: str) -> str:
             "그대로 확인해주세요."
         )
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# 💰 가격 조건부 알림(E10, 2026-09-30) — plugins/reminder.py의 조건부 알림이
+# 쓰는 내부 전용 getter. TOOL_SCHEMAS에 없어 LLM이 직접 호출할 수 없다
+# (system_history.get_metric_increase_streak_days와 같은 패턴).
+# ─────────────────────────────────────────────
+
+# reminder.get_due_conditions는 약 30초마다 폴링하는데, 가격 조건 하나당
+# 매번 실제로 다나와를 긁으면 하루 수천 번 외부 사이트에 요청을 보내게 돼
+# 대상 사이트에 부담을 주고 차단당할 위험이 크다 — 가격 추적은 "오늘 안에만
+# 알면 충분한" 용도라 실시간성이 필요 없으므로, 같은 검색어는 1시간 안에는
+# 실제 스크래핑 없이 캐시된 값을 재사용한다. {query: (price:int|None, checked_at: float)}
+_PRICE_CONDITION_CACHE: dict = {}
+_PRICE_CONDITION_CACHE_TTL = 3600  # 1시간(성공 시)
+# ChatGPT 검수 지적(2026-09-30): 스크래핑 실패(None)도 성공과 같은 1시간을
+# 그대로 캐시하면, 일시적 네트워크 오류 한 번으로 그 조건이 최대 1시간 동안
+# 완전히 멈춘다(다나와가 진짜로 막혔는지, 그냥 한 번 타임아웃 났는지 구분 없이
+# 똑같이 취급됨) — 실패는 훨씬 짧게만 캐시해서 다음 폴링(30초~수분 뒤)에
+# 금방 재시도되게 한다. 그래도 실패가 계속되면(예: 다나와가 실제로 페이지
+# 구조를 바꿔서 계속 실패) 5분마다이긴 해도 재시도 자체는 무해한 수준이다.
+_PRICE_CONDITION_FAILURE_CACHE_TTL = 300  # 5분(실패 시)
+
+
+def _normalize_query(query: str) -> str:
+    """ChatGPT 검수 지적(2026-09-30): "아이폰 15"와 "아이폰  15"(공백 2개)가
+    캐시 키로는 다른 문자열이라 같은 상품인데도 각자 1시간 TTL을 따로
+    소비하며 중복 스크래핑될 수 있었다 — 연속 공백을 하나로 줄이고
+    대소문자 차이를 없애서(영문 상품명이 섞인 검색어 대비) 같은 의미의
+    검색어가 같은 캐시 키를 쓰게 한다."""
+    return " ".join((query or "").split()).casefold()
+
+
+def get_cheapest_matched_price(query: str = ""):
+    """query로 다나와를 검색해 이름이 실제로 일치하는 상품 중 최저가를
+    반환한다(정수 원 단위, 실패/결과없음이면 None — reminder.get_due_conditions가
+    None이면 그 조건만 조용히 건너뜀). search_product_price와 달리 카드
+    텍스트가 아니라 숫자 하나만 반환하고, LAST_SEARCH를 건드리지 않는다
+    (_match_products의 docstring 참고 — 건드리면 백그라운드 폴링이 사용자의
+    실제 검색 후속 질문 기능을 조용히 망가뜨린다). 위 모듈 상수 설명대로
+    쿼리당 성공은 1시간, 실패는 5분만 캐시된다."""
+    query = (query or "").strip()
+    if not query:
+        return None
+    cache_key = _normalize_query(query)
+    now = time.time()
+    cached = _PRICE_CONDITION_CACHE.get(cache_key)
+    if cached is not None:
+        cached_price, checked_at = cached
+        ttl = _PRICE_CONDITION_CACHE_TTL if cached_price is not None else _PRICE_CONDITION_FAILURE_CACHE_TTL
+        if (now - checked_at) < ttl:
+            return cached_price
+    price = _fetch_cheapest_matched_price(query)
+    _PRICE_CONDITION_CACHE[cache_key] = (price, now)
+    return price
+
+
+def _fetch_cheapest_matched_price(query: str):
+    """실제 네트워크 스크래핑 — get_cheapest_matched_price가 캐시 미스일
+    때만 호출한다. 조용히 숫자만 필요한 용도라, 실패하면 사용자에게 보여줄
+    문구 대신 로그만 남기고 None을 반환한다(search_product_price는 반대로
+    사용자에게 보여줄 안내 문구가 목적이라 별도 함수로 남겨둔다)."""
+    try:
+        products = _fetch_products_html(query)
+        parsed_products = []
+        for product in products:
+            item = _parse_product_item(product)
+            if item is not None:
+                parsed_products.append((item['name'], item['price_won']))
+        _, _, _, cheapest_price = _match_products(parsed_products, query)
+        return cheapest_price
+    except Exception as e:
+        print(f"[가격 조건] '{query}' 최저가 조회 실패: {e}")
+        return None
+
 
 # ==========================================
 # 🛠️ Tool Schemas (ollama tool calling용)
@@ -112,6 +204,80 @@ TOOL_SCHEMAS = {
     }
 }
 
+_DANAWA_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+}
+
+
+def _fetch_products_html(search_query: str):
+    """다나와 검색 결과 페이지를 요청해서 li.prod_item 목록(BeautifulSoup
+    Tag 리스트, 최대 5개)을 반환한다. search_product_price(카드 UI 텍스트
+    생성)와 E10(price_search.get_cheapest_matched_price, 조건부 알림 getter)이
+    이 네트워크 요청 부분을 공유한다 — 요청/셀렉터가 바뀌면(다나와 페이지
+    구조 변경 등) 한 곳만 고치면 되게 한다."""
+    encoded_query = urllib.parse.quote(search_query)
+    url = f"https://search.danawa.com/dsearch.php?query={encoded_query}"
+    response = requests.get(url, headers=_DANAWA_HEADERS, timeout=10)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, 'html.parser')
+    return soup.select('li.prod_item')[:5]
+
+
+def _parse_product_item(product):
+    """li.prod_item 태그 하나에서 상품명/가격/링크/이미지를 추출한다.
+    상품명을 못 찾으면 None(호출부가 건너뜀) — search_product_price의
+    원래 인라인 파싱 로직을 그대로 옮긴 것으로 동작 변화 없음(회귀 테스트:
+    tests/unit/test_price_search_parsing.py가 실제 다나와 HTML 구조를 흉내낸
+    조각으로 이 함수만 오프라인 검증한다)."""
+    name_elem = product.select_one('a.click_log_product_standard_title_')
+    if not name_elem:
+        name_elem = product.select_one('p.prod_name a')
+    if not name_elem:
+        return None
+
+    name = name_elem.get_text(strip=True)
+    price_won = None
+    price_formatted = "가격 정보 없음"
+
+    # 방법 1: hidden input의 min_price
+    price_input = product.select_one('input[id^="min_price_"]')
+    if price_input and price_input.get('value'):
+        try:
+            price_won = int(price_input.get('value'))
+            price_formatted = f"{price_won:,}원"
+        except (TypeError, ValueError):
+            pass
+
+    # 방법 2: 가격 텍스트에서 추출 (백업)
+    if price_won is None:
+        price_elem = (product.select_one('span.price_sect a strong')
+                      or product.select_one('span.lwst_prc strong')
+                      or product.select_one('strong.price'))
+        if price_elem:
+            price_text = price_elem.get_text(strip=True).replace(',', '').replace('원', '')
+            try:
+                price_won = int(price_text)
+                price_formatted = f"{price_won:,}원"
+            except (TypeError, ValueError):
+                pass
+
+    img_elem = product.select_one('img')
+    img_url = img_elem.get('src', '') if img_elem else ''
+
+    if name_elem.get('href'):
+        link = name_elem.get('href')
+        if not link.startswith('http'):
+            link = "https://prod.danawa.com" + link
+    else:
+        link = "링크 없음"
+
+    return {
+        "name": name, "price_won": price_won, "price_formatted": price_formatted,
+        "link": link, "img_url": img_url,
+    }
+
+
 def search_product_price(query: str = "", keyword: str = "") -> str:
     """다나와에서 상품의 최저가 정보를 검색하여 반환합니다."""
     # query 혹은 keyword 중 전달된 값을 검색어로 사용 (호환성 보장)
@@ -125,22 +291,8 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
     if not search_query:
         return "검색어가 없습니다. 어떤 상품을 찾으시는지 말씀해주세요."
 
-    # 다나와 검색 URL
-    encoded_query = urllib.parse.quote(search_query)
-    url = f"https://search.danawa.com/dsearch.php?query={encoded_query}"
-
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
-    }
-
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # 상품 리스트 추출
-        products = soup.select('li.prod_item')
+        products = _fetch_products_html(search_query)
 
         if not products:
             return f"'{search_query}'에 대한 검색 결과가 없습니다."
@@ -153,81 +305,32 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
         parsed_products = []  # (name, price_won:int|None) — 매칭/최저가 계산용
 
         # 최대 5개 상품 정보 추출
-        for idx, product in enumerate(products[:5], 1):
+        for idx, product in enumerate(products, 1):
             try:
-                # 상품명 추출
-                name_elem = product.select_one('a.click_log_product_standard_title_')
-                if not name_elem:
-                    name_elem = product.select_one('p.prod_name a')
-
-                if not name_elem:
+                item = _parse_product_item(product)
+                if item is None:
                     continue
-
-                name = name_elem.get_text(strip=True)
-                price_won = None
-
-                # 가격 추출 - hidden input에서 가져오기
-                price_formatted = "가격 정보 없음"
-
-                # 방법 1: hidden input의 min_price
-                price_input = product.select_one('input[id^="min_price_"]')
-                if price_input and price_input.get('value'):
-                    try:
-                        price = int(price_input.get('value'))
-                        price_formatted = f"{price:,}원"
-                        price_won = price
-                    except:
-                        pass
-
-                # 방법 2: 가격 텍스트에서 추출 (백업)
-                if price_formatted == "가격 정보 없음":
-                    price_elem = product.select_one('span.price_sect a strong')
-                    if not price_elem:
-                        price_elem = product.select_one('span.lwst_prc strong')
-                    if not price_elem:
-                        price_elem = product.select_one('strong.price')
-
-                    if price_elem:
-                        price_text = price_elem.get_text(strip=True).replace(',', '').replace('원', '')
-                        try:
-                            price = int(price_text)
-                            price_formatted = f"{price:,}원"
-                            price_won = price
-                        except:
-                            pass
-
-                # 이미지 URL 추출
-                img_elem = product.select_one('img')
-                img_url = img_elem.get('src', '') if img_elem else ''
-
-                # 상품 링크 추출
-                if name_elem.get('href'):
-                    link = name_elem.get('href')
-                    if not link.startswith('http'):
-                        link = "https://prod.danawa.com" + link
-                else:
-                    link = "링크 없음"
 
                 # 카드 형식으로 출력
                 results.append(f"┌─────────────────────────────────────────────────────┐")
                 results.append(f"│ #{idx}")
                 results.append(f"├─────────────────────────────────────────────────────┤")
                 results.append(f"│ 📦 상품명:")
-                results.append(f"│    {name[:50]}")
-                if len(name) > 50:
-                    results.append(f"│    {name[50:]}")
+                results.append(f"│    {item['name'][:50]}")
+                if len(item['name']) > 50:
+                    results.append(f"│    {item['name'][50:]}")
                 results.append(f"│")
-                results.append(f"│ 💰 최저가: {price_formatted}")
+                results.append(f"│ 💰 최저가: {item['price_formatted']}")
                 results.append(f"│")
                 results.append(f"│ 🔗 다나와 링크:")
-                results.append(f"│    {link}")
-                if img_url:
+                results.append(f"│    {item['link']}")
+                if item['img_url']:
                     results.append(f"│")
-                    results.append(f"│ 🖼️  이미지: {img_url}")
+                    results.append(f"│ 🖼️  이미지: {item['img_url']}")
                 results.append(f"└─────────────────────────────────────────────────────┘")
                 results.append("")
 
-                parsed_products.append((name, price_won))
+                parsed_products.append((item['name'], item['price_won']))
 
             except Exception as e:
                 continue

@@ -41,12 +41,20 @@ def test_has_automation_action_true_even_if_state_missing():
     assert _has_automation_action({"iot_device_name": "거실 전등"}) is True
 
 
+def test_has_automation_action_false_for_todo_text_alone():
+    """2026-09-30 C7 확장: add_todo 액션(todo_text)은 의도적으로 이 확인
+    게이트 대상이 아니다 — _has_automation_action의 docstring 참고(되돌리기
+    쉬운 할 일 추가는 등록마다 확인창을 띄울 만큼 위험하지 않다고 판단)."""
+    assert _has_automation_action({"todo_text": "디스크 정리하기"}) is False
+
+
 # ── _ACTION_BEARING_REMINDER_FUNCS ──────────────────────────────────
 
 def test_action_bearing_funcs_matches_expected_set():
     assert _ACTION_BEARING_REMINDER_FUNCS == {
         "set_daily_reminder", "set_usage_condition", "set_spending_condition",
-        "set_cpu_condition", "set_disk_condition",
+        "set_cpu_condition", "set_disk_condition", "set_trend_condition", "set_price_condition",
+        "set_app_usage_trend_condition",
     }
 
 
@@ -78,6 +86,26 @@ def test_describe_registration_cpu_condition_mentions_threshold():
     assert "90" in desc
     assert "선풍기" in desc
     assert "켜기" in desc
+
+
+def test_describe_registration_trend_condition_mentions_target_and_days():
+    desc = _describe_reminder_action_registration(
+        "set_trend_condition",
+        {"target": "disk_free_decreasing", "threshold_days": 3, "iot_device_name": "선풍기", "iot_state": "off"},
+    )
+    assert "디스크 여유공간 감소" in desc
+    assert "3일 연속" in desc
+    assert "선풍기" in desc
+
+
+def test_describe_registration_price_condition_mentions_query_and_target_price():
+    desc = _describe_reminder_action_registration(
+        "set_price_condition",
+        {"query": "아이폰 15", "target_price": 900000, "iot_device_name": "선풍기", "iot_state": "off"},
+    )
+    assert "아이폰 15" in desc
+    assert "900000" in desc
+    assert "선풍기" in desc
 
 
 def test_describe_registration_handles_unknown_state_gracefully():

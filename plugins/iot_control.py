@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 import kasa
 
 # ==========================================
@@ -11,7 +13,20 @@ import kasa
 #
 # python-kasa 라이브러리는 async 전용이라 asyncio.run()으로 감싸서 다른
 # 플러그인들과 동일하게 동기 함수로 노출한다.
-
+#
+# 2026-09-30 "씬(Scene)" 확장: "취침모드 만들어줘, 거실전등이랑 TV 꺼줘"처럼
+# 여러 기기의 on/off 조합을 이름 하나로 묶어뒀다가 한 번에 실행하는 기능.
+# 소유자 분리 없음(전역 공유) — discover_iot_devices/control_iot_device
+# 자체가 애초에 로그인 여부와 무관하게 동작하는 "물리적 기기 제어" 기능이라
+# (todo_list/notes/expense_tracker처럼 사람마다 분리해야 하는 개인 기록이
+# 아니라 집 안의 공유 기기다), 씬도 같은 원칙으로 plugins/iot_scenes.json
+# 하나에 전역으로 저장한다. iot_scenes.json은 [{"name": str, "devices":
+# [{"device_name": str, "action": "on"|"off"}, ...]}, ...] 형태의 리스트다.
+#
+# run_scene()의 핵심 설계 결정: 기기 N개짜리 씬이라고 discover()를 N번
+# 부르면(각자 기본 5초 타임아웃의 UDP 브로드캐스트) 씬 하나 실행에
+# 5*N초가 걸린다 — control_iot_device를 기기마다 재사용하지 않고, discover()
+# 를 씬당 딱 한 번만 호출해서 그 결과 안에서 각 기기를 매칭한다.
 TOOL_SCHEMAS = {
     "discover_iot_devices": {
         "type": "function",
@@ -48,6 +63,77 @@ TOOL_SCHEMAS = {
                     }
                 },
                 "required": ["device_name", "action"]
+            }
+        }
+    },
+    "create_scene": {
+        "type": "function",
+        "function": {
+            "name": "create_scene",
+            "description": (
+                "여러 스마트 기기의 on/off 조합을 씬(이름 하나)으로 저장합니다. "
+                "사용자가 '취침모드 만들어줘, 거실전등이랑 TV 꺼줘', '외출모드로 "
+                "에어컨이랑 조명 다 꺼주는 씬 만들어줘'처럼 말할 때 호출하세요. "
+                "이미 같은 이름의 씬이 있으면 새 내용으로 덮어씁니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scene_name": {"type": "string", "description": "씬 이름(예: '취침모드', '외출모드')"},
+                    "devices": {
+                        "type": "string",
+                        "description": (
+                            "씬에 포함할 기기와 동작을 '기기이름:on' 또는 '기기이름:off' 형식으로, "
+                            "여러 개면 쉼표로 구분해서 나열하세요. 예: '거실 전등:off, TV:off, 에어컨:off'"
+                        )
+                    }
+                },
+                "required": ["scene_name", "devices"]
+            }
+        }
+    },
+    "list_scenes": {
+        "type": "function",
+        "function": {
+            "name": "list_scenes",
+            "description": (
+                "저장된 씬 목록과 각 씬에 포함된 기기/동작을 보여줍니다. "
+                "사용자가 '저장된 씬 뭐 있어', '씬 목록 보여줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "run_scene": {
+        "type": "function",
+        "function": {
+            "name": "run_scene",
+            "description": (
+                "저장된 씬을 실행해서 그 씬에 포함된 모든 기기를 한 번에 켜거나 끕니다. "
+                "사용자가 '취침모드 실행해줘', '외출모드로 해줘' 등을 말할 때 호출하세요. "
+                "정확한 씬 이름을 모르면 먼저 list_scenes로 확인하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scene_name": {"type": "string", "description": "실행할 씬 이름"}
+                },
+                "required": ["scene_name"]
+            }
+        }
+    },
+    "delete_scene": {
+        "type": "function",
+        "function": {
+            "name": "delete_scene",
+            "description": (
+                "저장된 씬을 삭제합니다. 사용자가 '취침모드 씬 지워줘'처럼 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scene_name": {"type": "string", "description": "삭제할 씬 이름"}
+                },
+                "required": ["scene_name"]
             }
         }
     }
@@ -133,3 +219,235 @@ def control_iot_device(device_name: str, action: str) -> str:
     except Exception as e:
         print(f"[IoT 제어] 기기 제어 오류: {e}")
         return "⚠️ 기기 제어 중 문제가 발생했습니다. 기기가 켜져 있고 네트워크에 연결되어 있는지 확인해주세요."
+
+
+# ==========================================
+# 🏠🎬 IoT 씬(Scene) — 여러 기기의 on/off 조합을 이름 하나로 저장/실행
+# ==========================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SCENES_FILE = os.path.join(BASE_DIR, "iot_scenes.json")
+
+_MAX_SCENE_NAME_LENGTH = 20
+_MAX_DEVICES_PER_SCENE = 10
+
+
+def _load_scenes() -> list:
+    try:
+        with open(SCENES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_scenes(scenes: list):
+    try:
+        with open(SCENES_FILE, "w", encoding="utf-8") as f:
+            json.dump(scenes, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[IoT 씬] 저장 오류: {e}")
+
+
+def _find_scene(scenes: list, scene_name: str):
+    """씬 이름으로 찾는다 — notes.py 태그/expense_tracker.py category와
+    동일한 "저장값은 원문, 비교만 casefold" 원칙: 표시는 최초 저장된 대소문자
+    그대로, 검색만 대소문자를 무시한다."""
+    key = (scene_name or "").strip().casefold()
+    for s in scenes:
+        if s.get("name", "").strip().casefold() == key:
+            return s
+    return None
+
+
+def _parse_scene_devices(devices: str):
+    """'거실 전등:off, TV:off' 형식의 문자열을 [{"device_name":..., "action":...}]로
+    변환한다. 파싱은 전부 코드가 결정론적으로 처리하고(project deterministic-first
+    원칙), LLM은 사용자가 말한 걸 이 형식의 문자열로 옮겨 담기만 하면 된다."""
+    devices = (devices or "").strip()
+    if not devices:
+        return None, "⚠️ 씬에 포함할 기기와 동작을 알려주세요. (예: '거실 전등:off, TV:off')"
+
+    entries = []
+    seen = set()
+    for raw in devices.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        if ":" not in raw:
+            return None, f"⚠️ '{raw}'를 이해하지 못했습니다. '기기이름:on' 또는 '기기이름:off' 형식으로 알려주세요."
+
+        name_part, action_part = raw.split(":", 1)
+        name_part = name_part.strip()
+        action_part = action_part.strip().lower()
+
+        if not name_part:
+            return None, f"⚠️ 기기 이름이 비어 있는 항목이 있어요('{raw}')."
+        if action_part not in ("on", "off"):
+            return None, f"⚠️ '{name_part}'의 동작은 'on' 또는 'off'만 가능해요."
+
+        key = name_part.casefold()
+        if key in seen:
+            return None, f"⚠️ '{name_part}' 기기가 씬 안에 중복으로 들어 있어요."
+        seen.add(key)
+        entries.append({"device_name": name_part, "action": action_part})
+
+    if not entries:
+        return None, "⚠️ 씬에 포함할 기기와 동작을 알려주세요. (예: '거실 전등:off, TV:off')"
+    if len(entries) > _MAX_DEVICES_PER_SCENE:
+        return None, f"⚠️ 씬 하나에는 기기를 최대 {_MAX_DEVICES_PER_SCENE}개까지만 담을 수 있어요."
+    return entries, None
+
+
+def create_scene(scene_name: str = "", devices: str = "") -> str:
+    """여러 기기의 on/off 조합을 씬 이름으로 저장한다. 같은 이름의 씬이
+    이미 있으면(대소문자 무시 비교) 덮어쓴다."""
+    scene_name = (scene_name or "").strip()
+    print(f"\n[IoT 씬] 씬 저장 중: {scene_name!r} ← {devices!r}")
+    if not scene_name:
+        return "⚠️ 씬 이름을 알려주세요."
+    if len(scene_name) > _MAX_SCENE_NAME_LENGTH:
+        return f"⚠️ 씬 이름이 너무 길어요(최대 {_MAX_SCENE_NAME_LENGTH}자) — 조금 줄여서 다시 말씀해주세요."
+
+    entries, error = _parse_scene_devices(devices)
+    if error:
+        return error
+
+    scenes = _load_scenes()
+    existing = _find_scene(scenes, scene_name)
+    summary = ", ".join(f"{e['device_name']}({e['action']})" for e in entries)
+
+    if existing:
+        # ChatGPT 검수 지적(2026-09-30): 같은 이름이면 확인 없이 통째로
+        # 덮어쓰는데, "씬에 기기 하나 추가해줘" 같은 요청을 LLM이 (기존
+        # 기기 목록 없이) 새 기기 하나만 담아 create_scene을 호출하면
+        # 기존 씬이 조용히 통째로 사라질 위험이 있다. 별도의
+        # reject-then-update 2단계 API 대신(LLM 도구 선택 부담이 커지고
+        # "씬을 완전히 새로 정의해줘" 같은 정당한 요청을 막게 됨), 덮어쓸
+        # 때 이전 내용을 응답에 그대로 보여줘서 그 자리에서 바로 눈에
+        # 띄게 한다 — 잘못됐으면 사용자가 같은 턴에서 바로잡을 수 있다.
+        old_summary = ", ".join(f"{e['device_name']}({e['action']})" for e in existing.get("devices", []))
+        existing["devices"] = entries
+        _save_scenes(scenes)
+        return (f"[✅ 씬 수정 완료]\n'{existing['name']}' 씬을 새 내용으로 업데이트했어요.\n"
+                f"  이전: {old_summary}\n  이후: {summary}")
+
+    scenes.append({"name": scene_name, "devices": entries})
+    _save_scenes(scenes)
+    return f"[✅ 씬 저장 완료]\n'{scene_name}' 씬을 만들었어요: {summary}"
+
+
+def list_scenes() -> str:
+    print("\n[IoT 씬] 씬 목록 조회 중...")
+    scenes = _load_scenes()
+    if not scenes:
+        return ("[🏠 저장된 씬 목록]\n저장된 씬이 없습니다. "
+                "'취침모드 씬 만들어줘, 거실전등이랑 TV 꺼줘'처럼 말씀해주시면 만들어드려요.")
+
+    lines = [f"[🏠 저장된 씬 목록] (총 {len(scenes)}개)"]
+    for s in scenes:
+        summary = ", ".join(f"{e['device_name']}({e['action']})" for e in s.get("devices", []))
+        lines.append(f"  · {s['name']}: {summary}")
+    return "\n".join(lines)
+
+
+async def _run_scene_async(entries: list) -> list:
+    """씬에 포함된 모든 기기를 discover() 딱 한 번으로 처리한다 — 기기마다
+    control_iot_device를 재호출하면 discover()의 기본 5초 타임아웃이 기기
+    수만큼 곱해져(N개짜리 씬이면 5*N초) 실행이 지나치게 느려진다."""
+    devices = await _discover_devices()
+    results = []
+
+    for entry in entries:
+        device_name = entry["device_name"]
+        action = entry["action"]
+        matches = [
+            dev for dev in devices.values()
+            if dev.alias and dev.alias.strip().casefold() == device_name.strip().casefold()
+        ]
+
+        if not matches:
+            results.append({"device_name": device_name, "ok": False, "state_label": None,
+                             "error": "기기를 찾지 못함"})
+            continue
+        if len(matches) > 1:
+            # control_iot_device와 동일한 원칙 — 이름이 겹치면 조용히 하나를
+            # 고르지 않고 실패로 표시한다.
+            results.append({"device_name": device_name, "ok": False, "state_label": None,
+                             "error": "이름이 겹치는 기기가 여러 개 발견됨"})
+            continue
+
+        target = matches[0]
+        try:
+            if action == "on":
+                await target.turn_on()
+            else:
+                await target.turn_off()
+            await target.update()
+            results.append({"device_name": device_name, "ok": True,
+                             "state_label": "켬" if target.is_on else "끔", "error": None})
+        except Exception as e:
+            results.append({"device_name": device_name, "ok": False, "state_label": None, "error": str(e)})
+
+    return results
+
+
+def run_scene(scene_name: str = "") -> str:
+    scene_name = (scene_name or "").strip()
+    print(f"\n[IoT 씬] 씬 실행 요청: {scene_name!r}")
+    if not scene_name:
+        return "⚠️ 실행할 씬 이름을 알려주세요."
+
+    scenes = _load_scenes()
+    found = _find_scene(scenes, scene_name)
+    if found is None:
+        return f"⚠️ '{scene_name}'이라는 씬을 찾을 수 없어요. list_scenes로 저장된 씬을 확인해주세요."
+
+    entries = found.get("devices", [])
+    if not entries:
+        return f"⚠️ '{found['name']}' 씬에 등록된 기기가 없어요."
+
+    try:
+        results = asyncio.run(_run_scene_async(entries))
+    except Exception as e:
+        print(f"[IoT 씬] 씬 실행 오류: {e}")
+        return "⚠️ 씬 실행 중 문제가 발생했습니다. 네트워크 연결 상태를 확인하고 잠시 후 다시 시도해주세요."
+
+    succeeded = [r for r in results if r["ok"]]
+    failed = [r for r in results if not r["ok"]]
+
+    lines = [f"[🏠 씬 실행: '{found['name']}']"]
+    for r in results:
+        mark = "✅" if r["ok"] else "❌"
+        detail = r["state_label"] if r["ok"] else f"실패({r['error']})"
+        lines.append(f"  {mark} {r['device_name']}: {detail}")
+
+    # ChatGPT 검수 지적(2026-09-30): 부분 실패("1/2개 성공")를 LLM 요약
+    # 단계에서 "완료했습니다"로 뭉갤 위험이 discover_iot_devices/
+    # control_iot_device의 기존 날조 전례(core/ai_worker.py
+    # _build_iot_control_reply 문서 참고)와 같은 클래스다. 성공/전체
+    # 개수를 항상(성공이든 실패든) 명시적으로 남겨서, 이 결과를 그대로
+    # 통과시키는 core/ai_worker.py의 _build_run_scene_reply가 LLM을
+    # 거치지 않고 정확한 개수를 보존하게 한다.
+    if failed:
+        lines.append(f"\n{len(succeeded)}/{len(results)}개 성공, {len(failed)}개 실패했어요.")
+    else:
+        lines.append(f"\n{len(succeeded)}/{len(results)}개 모두 성공했어요.")
+    return "\n".join(lines)
+
+
+def delete_scene(scene_name: str = "") -> str:
+    scene_name = (scene_name or "").strip()
+    print(f"\n[IoT 씬] 씬 삭제 요청: {scene_name!r}")
+    if not scene_name:
+        return "⚠️ 삭제할 씬 이름을 알려주세요."
+
+    scenes = _load_scenes()
+    found = _find_scene(scenes, scene_name)
+    if found is None:
+        return f"⚠️ '{scene_name}'이라는 씬을 찾을 수 없어요."
+
+    scenes = [s for s in scenes if s is not found]
+    _save_scenes(scenes)
+    return f"[✅ 씬 삭제 완료]\n'{found['name']}' 씬을 삭제했어요."

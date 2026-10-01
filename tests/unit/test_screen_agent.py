@@ -24,6 +24,21 @@ def test_screen_mode_button_makes_everything_act():
     assert classify_screen_request("오늘 일정 알려줘", act_mode=True) == "act"
 
 
+@pytest.mark.parametrize("text", [
+    "직접 할 일 추가해줘, 우유 사기",
+    "알아서 메모해줘 회의 내용",
+    "대신 처리해줘 지출 기록",
+    "직접 씬 실행해줘 취침모드",
+    "알아서 백업해줘",
+])
+def test_bare_intensifier_without_screen_verb_does_not_hijack_other_features(text):
+    """2026-10-01 발견: "직접"/"대신"/"알아서"는 한국어에서 어떤 요청에나
+    자연스럽게 붙는 강조 표현이라, 단독 접두사 매칭이면 할 일/메모/가계부/
+    IoT 씬/데이터 백업 등 다른 모든 기능의 요청을 전부 화면 조작으로
+    가로챈다 — 실제 화면 조작 동사가 없으면 act로 분류하면 안 된다."""
+    assert classify_screen_request(text) is None
+
+
 def test_parse_action_extracts_json_and_validates():
     act = parse_action('설명 {"thought": "t", "action": "click", "x": 10, "y": 20} 끝')
     assert act["action"] == "click" and act["x"] == 10

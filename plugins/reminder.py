@@ -222,7 +222,71 @@ _CONDITION_TYPES = {
         "comparison": "lte",
         "label": lambda c: f"디스크 여유공간 {c['threshold']:.0f}% 미만",
     },
+    "price_drop": {
+        # 2026-09-30 E10: plugins/price_search.py의 get_cheapest_matched_price를
+        # getter로 쓴다. target=검색어(query), threshold=목표가(이 가격
+        # 이하로 떨어지면 알림) — comparison="lte"가 disk_limit와 같은
+        # "적어지면 알림" 방향이다. getter 자체가 쿼리당 1시간 캐시를 갖고
+        # 있어서(price_search.py 모듈 docstring 참고) 여기서 폴링 주기를
+        # 따로 조절할 필요가 없다 — get_due_conditions는 그대로 30초마다
+        # 부르지만, 실제 스크래핑은 그 안에서 자체적으로 억제된다.
+        "getter": "get_cheapest_matched_price",
+        "needs_target": True,
+        "period": None,
+        "comparison": "lte",
+        "label": lambda c: f"'{c['target']}' 가격이 {int(c['threshold']):,}원 이하",
+    },
+    "trend_streak": {
+        # 2026-09-30 D9: plugins/system_history.py의 일별 집계를 기반으로
+        # "N일 연속 증가/감소" 추세를 조건으로 건다. period=None인 이유는
+        # cpu_limit/disk_limit와 다르다 — 리셋할 "기간" 개념이 없어서가
+        # 아니라, streak 값 자체가 이미 getter 내부에서 흐름이 끊기면 0으로
+        # 자연스럽게 재설정되므로(system_history.get_metric_increase_streak_days
+        # 참고) last_state를 별도로 강제 리셋할 필요가 없기 때문이다.
+        "getter": "get_metric_increase_streak_days",
+        "needs_target": True,
+        "period": None,
+        "comparison": "gte",
+        "label": lambda c: f"{_TREND_TARGET_LABELS.get(c['target'], c['target'])} {int(c['threshold'])}일 연속",
+    },
+    "app_usage_trend": {
+        # 2026-09-30 신규 6번: plugins/app_usage.py의 일별 기록을 기반으로
+        # "OO 사용 시간이 N일 연속 늘고 있다"를 조건으로 건다. trend_streak
+        # (system_history 전용, cpu/ram/disk 3개 고정 enum)과 굳이 합치지
+        # 않고 별도 조건 타입으로 둔 이유: app_usage의 target은
+        # get_usage_report/set_usage_goal과 동일한 자유 서술(프로그램
+        # 이름/분류)이라, trend_streak의 "정해진 enum만 받아 오타를 등록
+        # 시점에 막는다"는 검증 방식과 근본적으로 다르다 — 하나의
+        # getter/target 규약에 억지로 합치면 둘 중 한쪽의 안전장치가
+        # 반드시 약해진다. label도 _TREND_TARGET_LABELS 같은 한글 매핑이
+        # 필요 없다(target 자체가 이미 사용자가 말한 그대로라 표시용으로
+        # 충분).
+        "getter": "get_app_usage_increase_streak_days",
+        "needs_target": True,
+        "period": None,
+        "comparison": "gte",
+        "label": lambda c: f"'{c['target'] or '전체'}' 사용 시간 {int(c['threshold'])}일 연속 증가",
+    },
 }
+
+# _CONDITION_TYPES["trend_streak"]의 label 람다와 set_trend_condition이 함께
+# 쓰는 표시용 한글 이름 — LLM에는 target을 영문 enum(cpu_increasing 등)으로
+# 받게 해서 오타/자유 서술을 막고(_TREND_TARGET_LABELS.keys()가 유효한
+# target 전체 집합), 사람에게 보여줄 때만 한글로 바꾼다.
+_TREND_TARGET_LABELS = {
+    "cpu_increasing": "CPU 사용률 증가",
+    "ram_increasing": "메모리 사용률 증가",
+    "disk_free_decreasing": "디스크 여유공간 감소",
+}
+
+# set_trend_condition/set_app_usage_trend_condition이 공유하는 threshold_days
+# 상한 — 두 getter(system_history.get_metric_increase_streak_days,
+# app_usage.get_app_usage_increase_streak_days) 모두 최대 400일치 기록만
+# 조사하는 동일한 안전장치를 갖고 있어(각 모듈의 _MAX_RETAINED_DAYS/
+# _MAX_STREAK_LOOKBACK_DAYS), 인접 날짜쌍 비교로 셀 수 있는 최대 streak는
+# 399다. ChatGPT 검수 지적(2026-09-30): 상한 없이 등록을 허용하면 절대
+# 만족될 수 없는 "죽은 조건"이 조용히 등록될 수 있다.
+_MAX_TREND_THRESHOLD_DAYS = 399
 
 # ChatGPT 검수 지적(2026-09-23): get_due_conditions()가 원래
 # `current <= threshold if spec["comparison"] == "lte" else current >= threshold`
@@ -241,10 +305,12 @@ assert all(spec["comparison"] in _COMPARATORS for spec in _CONDITION_TYPES.value
 
 
 # ── Trigger → Action (IoT 자동 실행) ──
-# 모듈 docstring 2026-09-28 항목 참고. 실행 가능한 action 타입을 여기 하나로
-# 고정한다 — 나중에 다른 action을 추가하고 싶어도 여기부터 늘려야 하고,
-# 절대 kill_process/delete_* 같은 되돌리기 어려운 함수를 넣지 않는다.
-ALLOWED_ACTIONS = {"notify", "iot_control"}
+# 모듈 docstring 2026-09-28 항목 참고. 실행 가능한 action 타입을 여기에서만
+# 늘린다 — 절대 kill_process/delete_* 같은 되돌리기 어려운 함수를 넣지
+# 않는다. 2026-09-30 add_todo 추가: 할 일 추가는 사용자가 목록에서 언제든
+# 지우거나 완료 취소할 수 있어 iot_control과 마찬가지로 안전하게 되돌릴 수
+# 있다는 기준을 그대로 만족한다.
+ALLOWED_ACTIONS = {"notify", "iot_control", "add_todo"}
 
 ACTION_LOG_FILE      = os.path.join(ROUTINES_DIR, "action_log.jsonl")
 _action_log_lock     = threading.Lock()
@@ -266,6 +332,29 @@ def _build_action_from_iot_args(iot_device_name: str = "", iot_state: str = ""):
     return {"type": "iot_control", "device_name": iot_device_name, "state": iot_state}
 
 
+def _build_action_from_todo_args(todo_text: str = ""):
+    """LLM tool-calling에서 넘어오는 평평한 todo_text 인자를 내부 action
+    dict로 변환한다. _build_action_from_iot_args와 같은 이유로 평평한 인자
+    방식을 쓴다(모듈 docstring 참고) — 비어있으면 자동 실행 없음(None)."""
+    todo_text = (todo_text or "").strip()
+    if not todo_text:
+        return None
+    return {"type": "add_todo", "text": todo_text}
+
+
+def _build_action(iot_device_name: str = "", iot_state: str = "", todo_text: str = ""):
+    """여러 종류의 자동 실행 평평한 인자를 조합해 action dict 하나로 만든다.
+    (action, error) 튜플을 반환 — error가 있으면 action은 항상 None이다.
+    두 종류를 동시에 채우면 어느 것을 실행할지 모호하므로, 조용히 하나를
+    고르지 않고 명시적으로 되묻는다(file_search/todo_list와 동일한 '모호하면
+    되묻는다' 원칙)."""
+    iot_action = _build_action_from_iot_args(iot_device_name, iot_state)
+    todo_action = _build_action_from_todo_args(todo_text)
+    if iot_action and todo_action:
+        return None, "⚠️ 기기 자동 제어와 할 일 자동 추가를 동시에 등록할 수 없어요 — 하나만 선택해주세요."
+    return (iot_action or todo_action), None
+
+
 def _validate_action(action) -> str:
     """action이 None이면 통과(None 반환). 문제가 있으면 사용자에게 그대로
     보여줄 에러 메시지를 반환한다."""
@@ -278,6 +367,9 @@ def _validate_action(action) -> str:
             return "⚠️ 자동으로 제어할 기기 이름을 함께 알려주세요."
         if action.get("state") not in ("on", "off"):
             return "⚠️ 기기를 켤지(on) 끌지(off) 함께 알려주세요."
+    if action["type"] == "add_todo":
+        if not action.get("text"):
+            return "⚠️ 자동으로 추가할 할 일 내용을 함께 알려주세요."
     return None
 
 
@@ -293,10 +385,14 @@ def _require_login_for_action(action) -> str:
 
 def _describe_action(action) -> str:
     """등록 완료 메시지에 덧붙일 한 줄 — action이 없으면 빈 문자열."""
-    if not action or action.get("type") != "iot_control":
+    if not action:
         return ""
-    state_kr = "켭니다" if action.get("state") == "on" else "끕니다"
-    return f"'{action.get('device_name')}' 기기를 자동으로 {state_kr}."
+    if action.get("type") == "iot_control":
+        state_kr = "켭니다" if action.get("state") == "on" else "끕니다"
+        return f"'{action.get('device_name')}' 기기를 자동으로 {state_kr}."
+    if action.get("type") == "add_todo":
+        return f"'{action.get('text')}' 할 일을 자동으로 추가합니다."
+    return ""
 
 
 def _execute_action(action, func_map: dict) -> dict:
@@ -326,6 +422,21 @@ def _execute_action(action, func_map: dict) -> dict:
         # 성공으로 잘못 분류하는 버그가 있어서(자체 재검토로 발견) "✅로
         # 시작해야만 성공"이라는 화이트리스트 판정으로 바꿨다.
         success = isinstance(result, str) and result.startswith("✅")
+        return {"executed": True, "success": success, "detail": str(result)}
+
+    if action.get("type") == "add_todo":
+        add_todo_func = (func_map or {}).get("add_todo")
+        if not add_todo_func:
+            return {"executed": True, "success": False,
+                    "detail": "⚠️ 할 일 목록 플러그인이 설치되어 있지 않습니다."}
+        try:
+            result = add_todo_func(text=action.get("text", ""))
+        except Exception as e:
+            return {"executed": True, "success": False, "detail": f"⚠️ 실행 중 오류가 발생했습니다: {e}"}
+        # todo_list.add_todo는 성공 시 "[✅ 할 일 추가]\n..." 형태로 반환한다(대괄호로
+        # 시작) — iot_control과 동일한 화이트리스트 판정 원칙을 유지하되, "✅"가
+        # 문자열 맨 앞이 아니라 대괄호 다음에 오는 이 함수의 실제 포맷에 맞춘다.
+        success = isinstance(result, str) and result.strip().startswith(("✅", "[✅"))
         return {"executed": True, "success": success, "detail": str(result)}
 
     return {"executed": True, "success": False,
@@ -518,6 +629,15 @@ TOOL_SCHEMAS = {
                         "type": "string",
                         "enum": ["on", "off"],
                         "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    },
+                    "todo_text": {
+                        "type": "string",
+                        "description": (
+                            "이 시각이 되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
+                            "'매일 아침 9시에 스트레칭하기 할 일로 추가해줘'처럼 자동 추가까지 "
+                            "명시적으로 요청한 경우에만 채우세요. iot_device_name과 동시에 채우지 "
+                            "마세요(하나만 선택). 단순히 알림만 원하면 반드시 비워두세요."
+                        )
                     }
                 },
                 "required": ["hour"]
@@ -578,6 +698,14 @@ TOOL_SCHEMAS = {
                         "type": "string",
                         "enum": ["on", "off"],
                         "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    },
+                    "todo_text": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
+                            "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
+                            "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
                     }
                 },
                 "required": ["target", "threshold_minutes"]
@@ -609,6 +737,14 @@ TOOL_SCHEMAS = {
                         "type": "string",
                         "enum": ["on", "off"],
                         "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    },
+                    "todo_text": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
+                            "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
+                            "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
                     }
                 },
                 "required": ["threshold_amount"]
@@ -641,6 +777,14 @@ TOOL_SCHEMAS = {
                         "type": "string",
                         "enum": ["on", "off"],
                         "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    },
+                    "todo_text": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
+                            "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
+                            "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
                     }
                 },
                 "required": ["threshold_percent"]
@@ -675,9 +819,158 @@ TOOL_SCHEMAS = {
                         "type": "string",
                         "enum": ["on", "off"],
                         "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    },
+                    "todo_text": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
+                            "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
+                            "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
                     }
                 },
                 "required": ["threshold_percent"]
+            }
+        }
+    },
+    "set_trend_condition": {
+        "type": "function",
+        "function": {
+            "name": "set_trend_condition",
+            "description": (
+                "PC 상태 이력(system_history)을 기반으로 CPU/메모리 사용률이나 디스크 "
+                "여유공간이 여러 날 연속으로 나빠지고 있으면 알려주는 조건부 알림을 "
+                "등록합니다. 사용자가 '요즘 메모리 사용량이 계속 늘어나면 알려줘', "
+                "'디스크 여유공간이 3일 연속 줄어들면 알림 줘' 등을 말할 때 호출하세요. "
+                "'지금 CPU 몇 퍼센트야'처럼 순간값을 묻는 건 이 함수가 아니라 "
+                "set_cpu_condition/set_disk_condition을 쓰세요 — 이 함수는 여러 날에 "
+                "걸친 추세에만 쓰입니다. 하루 단위로 완료된 기록끼리만 비교하므로 "
+                "등록 당일에는 반영되지 않습니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "enum": ["cpu_increasing", "ram_increasing", "disk_free_decreasing"],
+                        "description": (
+                            "cpu_increasing=CPU 사용률 증가, ram_increasing=메모리 사용률 증가, "
+                            "disk_free_decreasing=디스크 여유공간 감소. 사용자 말에서 가장 가까운 "
+                            "것으로 고르세요."
+                        )
+                    },
+                    "threshold_days": {"type": "integer", "description": "며칠 연속이면 알림. 2 이상, 기본값 3"},
+                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"},
+                    "iot_device_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 켜거나 끌 IoT 기기 이름(선택). 사용자가 기기 "
+                            "자동 제어까지 명시적으로 요청한 경우에만 채우고, 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "iot_state": {
+                        "type": "string",
+                        "enum": ["on", "off"],
+                        "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    },
+                    "todo_text": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
+                            "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
+                            "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
+                    }
+                },
+                "required": ["target"]
+            }
+        }
+    },
+    "set_app_usage_trend_condition": {
+        "type": "function",
+        "function": {
+            "name": "set_app_usage_trend_condition",
+            "description": (
+                "특정 프로그램이나 분류(게임/브라우저/메신저/개발/영상/음악)의 사용 시간이 "
+                "여러 날 연속으로 늘어나고 있으면 알려주는 조건부 알림을 등록합니다. "
+                "사용자가 '요즘 게임 시간이 계속 늘어나면 알려줘', '유튜브 3일 연속 늘면 "
+                "알림 줘' 등을 말할 때 호출하세요. '오늘 게임 몇 시간 했어'처럼 특정 기간의 "
+                "총량만 묻는 건 get_usage_report를, '이번주 지난주보다 늘었어?'처럼 두 기간을 "
+                "한 번만 비교하는 건 get_usage_trend를 쓰세요 — 이 함수는 여러 날에 걸친 "
+                "연속 증가 추세를 감시하는 조건 등록 전용입니다. 하루 단위로 완료된 기록끼리만 "
+                "비교하므로 등록 당일에는 반영되지 않습니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "감시할 프로그램 이름 또는 분류. 비우면 전체 사용 시간"},
+                    "threshold_days": {"type": "integer", "description": "며칠 연속이면 알림. 2 이상, 기본값 3"},
+                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"},
+                    "iot_device_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 켜거나 끌 IoT 기기 이름(선택). 사용자가 기기 "
+                            "자동 제어까지 명시적으로 요청한 경우에만 채우고, 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "iot_state": {
+                        "type": "string",
+                        "enum": ["on", "off"],
+                        "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    },
+                    "todo_text": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
+                            "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
+                            "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    "set_price_condition": {
+        "type": "function",
+        "function": {
+            "name": "set_price_condition",
+            "description": (
+                "다나와 최저가가 목표 가격 이하로 떨어지면 알려주는 조건부 알림을 "
+                "등록합니다. 사용자가 '아이폰 15 90만원 밑으로 떨어지면 알려줘', "
+                "'이 노트북 최저가 150만원 이하되면 알림 줘' 등을 말할 때 호출하세요. "
+                "'지금 얼마야'처럼 즉시 가격을 물어보는 건 이 함수가 아니라 "
+                "search_product_price를 쓰세요 — 이 함수는 나중에 가격이 떨어지면 "
+                "알려주는 조건 등록 전용입니다. 다나와 최저가는 최대 1시간 지연으로 확인됩니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "가격을 추적할 상품명. 예: '아이폰 15', '갤럭시 S24'"},
+                    "target_price": {"type": "number", "description": "이 가격(원) 이하로 떨어지면 알림(예: 90만원 → 900000)"},
+                    "label": {"type": "string", "description": "무엇에 대한 알림인지. 없으면 생략 가능"},
+                    "iot_device_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 켜거나 끌 IoT 기기 이름(선택). 사용자가 기기 "
+                            "자동 제어까지 명시적으로 요청한 경우에만 채우고, 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "iot_state": {
+                        "type": "string",
+                        "enum": ["on", "off"],
+                        "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    },
+                    "todo_text": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
+                            "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
+                            "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
+                    }
+                },
+                "required": ["query", "target_price"]
             }
         }
     },
@@ -834,7 +1127,7 @@ def _save_routines():
 
 
 def set_daily_reminder(hour: int, minute: int = 0, label: str = "",
-                        iot_device_name: str = "", iot_state: str = "") -> str:
+                        iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
     print(f"\n🔁 [정기 알림] 설정 중: 매일 {hour}시 {minute}분" + (f" ('{label}')" if label else ""))
     try:
         hour = int(hour)
@@ -844,7 +1137,9 @@ def set_daily_reminder(hour: int, minute: int = 0, label: str = "",
     if not (0 <= hour <= 23) or not (0 <= minute <= 59):
         return "⚠️ 시각은 0~23시, 0~59분 사이로 말씀해주세요."
 
-    action = _build_action_from_iot_args(iot_device_name, iot_state)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    if build_error:
+        return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
     if action_error:
         return action_error
@@ -1018,7 +1313,7 @@ def _register_condition(ctype: str, threshold: float, target: str = "", label: s
 
 
 def set_usage_condition(target: str, threshold_minutes: float, label: str = "",
-                         iot_device_name: str = "", iot_state: str = "") -> str:
+                         iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
     print(f"\n🎯🔁 [조건부 알림] 설정 중: '{target}' {threshold_minutes}분 넘으면" + (f" ('{label}')" if label else ""))
     target = (target or "").strip()
     if not target:
@@ -1030,7 +1325,9 @@ def set_usage_condition(target: str, threshold_minutes: float, label: str = "",
     if threshold_minutes <= 0:
         return "⚠️ 기준 시간은 0분보다 커야 해요."
 
-    action = _build_action_from_iot_args(iot_device_name, iot_state)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    if build_error:
+        return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
     if action_error:
         return action_error
@@ -1054,7 +1351,7 @@ def set_usage_condition(target: str, threshold_minutes: float, label: str = "",
 
 
 def set_spending_condition(threshold_amount: float, label: str = "",
-                            iot_device_name: str = "", iot_state: str = "") -> str:
+                            iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
     print(f"\n💰🔁 [조건부 알림] 설정 중: 이번달 지출 {threshold_amount}원 넘으면" + (f" ('{label}')" if label else ""))
     try:
         threshold_amount = float(threshold_amount)
@@ -1063,7 +1360,9 @@ def set_spending_condition(threshold_amount: float, label: str = "",
     if threshold_amount <= 0:
         return "⚠️ 기준 금액은 0원보다 커야 해요."
 
-    action = _build_action_from_iot_args(iot_device_name, iot_state)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    if build_error:
+        return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
     if action_error:
         return action_error
@@ -1082,7 +1381,7 @@ def set_spending_condition(threshold_amount: float, label: str = "",
 
 
 def set_cpu_condition(threshold_percent: float, label: str = "",
-                       iot_device_name: str = "", iot_state: str = "") -> str:
+                       iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
     print(f"\n🖥️🔁 [조건부 알림] 설정 중: CPU {threshold_percent}% 넘으면" + (f" ('{label}')" if label else ""))
     try:
         threshold_percent = float(threshold_percent)
@@ -1091,7 +1390,9 @@ def set_cpu_condition(threshold_percent: float, label: str = "",
     if not (0 < threshold_percent <= 100):
         return "⚠️ 기준 퍼센트는 0보다 크고 100 이하여야 해요."
 
-    action = _build_action_from_iot_args(iot_device_name, iot_state)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    if build_error:
+        return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
     if action_error:
         return action_error
@@ -1117,7 +1418,7 @@ def set_cpu_condition(threshold_percent: float, label: str = "",
 
 
 def set_disk_condition(threshold_percent: float, label: str = "",
-                        iot_device_name: str = "", iot_state: str = "") -> str:
+                        iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
     print(f"\n💾🔁 [조건부 알림] 설정 중: 디스크 여유공간 {threshold_percent}% 미만" + (f" ('{label}')" if label else ""))
     try:
         threshold_percent = float(threshold_percent)
@@ -1126,7 +1427,9 @@ def set_disk_condition(threshold_percent: float, label: str = "",
     if not (0 < threshold_percent <= 100):
         return "⚠️ 기준 퍼센트는 0보다 크고 100 이하여야 해요."
 
-    action = _build_action_from_iot_args(iot_device_name, iot_state)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    if build_error:
+        return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
     if action_error:
         return action_error
@@ -1143,6 +1446,147 @@ def set_disk_condition(threshold_percent: float, label: str = "",
             f"알려드릴게요. 실제 정리는 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. "
             f"(이 조건은 Team-Build-It이 실행 중일 때 약 30초마다 확인해요 — 앱이 꺼져 있거나 "
             f"확인 사이에 잠깐 조건을 넘었다가 돌아온 경우에는 알림을 놓칠 수 있어요)")
+
+
+def set_trend_condition(target: str, threshold_days: float = 3, label: str = "",
+                         iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
+    """2026-09-30 D9: plugins/system_history.py의 일별 집계 기록을 기반으로
+    "CPU/메모리 사용률이 N일 연속 늘고 있다" 또는 "디스크 여유공간이 N일
+    연속 줄고 있다"를 조건으로 건다. target은 자유 서술이 아니라 정해진
+    enum 3개(cpu_increasing/ram_increasing/disk_free_decreasing)만 받아서,
+    LLM이 임의로 "cpu가 늘어나면" 같은 자연어를 그대로 넘겨 매칭 실패하는
+    걸 등록 시점에 막는다(_TREND_TARGET_LABELS.keys()가 유효 집합)."""
+    print(f"\n📈🔁 [조건부 알림] 설정 중: {target} {threshold_days}일 연속" + (f" ('{label}')" if label else ""))
+    target = (target or "").strip().lower()
+    if target not in _TREND_TARGET_LABELS:
+        return ("⚠️ 추세 종류를 이해하지 못했습니다. 'CPU 사용률 증가', '메모리 사용률 증가', "
+                "'디스크 여유공간 감소' 중 하나로 다시 말씀해주세요.")
+    try:
+        threshold_days = int(threshold_days)
+    except (TypeError, ValueError):
+        return "⚠️ 며칠 연속인지 숫자로 다시 말씀해주세요(예: 3일 연속 → 3)."
+    if threshold_days < 2:
+        return "⚠️ 연속 일수는 2일 이상이어야 해요(1일은 '연속'이라고 부르기 어려워요)."
+    if threshold_days > _MAX_TREND_THRESHOLD_DAYS:
+        # ChatGPT 검수 지적(2026-09-30, app_usage_trend 검수 중 발견 — 이
+        # trend_streak에도 원래부터 있던 동일한 잠재 버그): getter
+        # (system_history.get_metric_increase_streak_days)가 안전장치로
+        # 최대 400일치 기록만 조사하므로(_MAX_RETAINED_DAYS), 그 안에서
+        # 인접 날짜쌍 비교로 셀 수 있는 최대 streak는 399다. 상한 검증
+        # 없이 threshold_days=500 같은 값을 등록하면 실제로는 절대
+        # 만족될 수 없는(streak가 399를 못 넘음) 조건이 조용히 등록되는
+        # "죽은 조건" 버그가 생긴다.
+        return f"⚠️ 연속 일수는 {_MAX_TREND_THRESHOLD_DAYS}일 이하로 설정해주세요."
+
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    if build_error:
+        return build_error
+    action_error = _validate_action(action) or _require_login_for_action(action)
+    if action_error:
+        return action_error
+
+    _register_condition("trend_streak", threshold_days, target=target, label=label, action=action)
+
+    label_str = f" ('{label}')" if label else ""
+    target_kr = _TREND_TARGET_LABELS[target]
+    action_desc = _describe_action(action)
+    # PC 상태 이력이 하루 단위 집계라(system_history.py 모듈 docstring 참고)
+    # 이 조건은 다른 조건들과 달리 "실행 중일 때 30초마다"가 아니라 "매일
+    # 완료된 기록을 기준으로" 확인된다는 점을 명시한다 — 사용자가 오늘 막
+    # 조건을 걸었는데 몇 시간 안에 바로 알림이 오길 기대하면 안 되므로.
+    note = ("(하루 단위로 완료된 기록끼리만 비교하므로 등록 당일에는 반영되지 않고, "
+            "PC 상태 이력이 최소 며칠 쌓여야 판단할 수 있어요)")
+    if action_desc:
+        return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\n{target_kr}가 {threshold_days}일 연속되면{label_str} "
+                f"{action_desc} {note}")
+    return (f"[✅ 조건부 알림 설정 완료]\n{target_kr}가 {threshold_days}일 연속되면{label_str} "
+            f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. {note}")
+
+
+def set_app_usage_trend_condition(target: str = "", threshold_days: float = 3, label: str = "",
+                                   iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
+    """2026-09-30 신규 6번: plugins/app_usage.py의 일별 기록을 기반으로
+    "OO 사용 시간이 N일 연속 늘고 있다"를 조건으로 건다. target은
+    set_trend_condition(cpu_increasing 등 고정 enum)과 달리 get_usage_report/
+    set_usage_goal과 동일한 자유 서술(프로그램 이름 또는 분류)이라 enum
+    검증을 하지 않는다 — 빈 문자열은 "전체 사용 시간"을 뜻한다(app_usage.py의
+    기존 target='' 관례와 동일)."""
+    print(f"\n📈⏳ [조건부 알림] 설정 중: 앱 사용 '{target or '전체'}' {threshold_days}일 연속 증가" + (f" ('{label}')" if label else ""))
+    target = (target or "").strip()
+    try:
+        threshold_days = int(threshold_days)
+    except (TypeError, ValueError):
+        return "⚠️ 며칠 연속인지 숫자로 다시 말씀해주세요(예: 3일 연속 → 3)."
+    if threshold_days < 2:
+        return "⚠️ 연속 일수는 2일 이상이어야 해요(1일은 '연속'이라고 부르기 어려워요)."
+    if threshold_days > _MAX_TREND_THRESHOLD_DAYS:
+        # set_trend_condition과 동일한 이유 — get_app_usage_increase_streak_days
+        # (app_usage.py)도 최대 400일치 기록만 조사하는 동일한 안전장치를
+        # 갖고 있어, 그 상한을 넘는 threshold_days는 영원히 만족될 수 없는
+        # "죽은 조건"이 된다.
+        return f"⚠️ 연속 일수는 {_MAX_TREND_THRESHOLD_DAYS}일 이하로 설정해주세요."
+
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    if build_error:
+        return build_error
+    action_error = _validate_action(action) or _require_login_for_action(action)
+    if action_error:
+        return action_error
+
+    _register_condition("app_usage_trend", threshold_days, target=target, label=label, action=action)
+
+    label_str = f" ('{label}')" if label else ""
+    target_label = target or "전체"
+    action_desc = _describe_action(action)
+    # app_usage도 system_history와 동일하게 하루 단위 완료된 기록끼리만
+    # 비교한다(trend_streak과 같은 이유) — 등록 당일에는 반영되지 않는다.
+    note = ("(하루 단위로 완료된 기록끼리만 비교하므로 등록 당일에는 반영되지 않고, "
+            "앱 사용 기록이 최소 며칠 쌓여야 판단할 수 있어요)")
+    if action_desc:
+        return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\n'{target_label}' 사용 시간이 {threshold_days}일 연속 늘면{label_str} "
+                f"{action_desc} {note}")
+    return (f"[✅ 조건부 알림 설정 완료]\n'{target_label}' 사용 시간이 {threshold_days}일 연속 늘면{label_str} "
+            f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. {note}")
+
+
+def set_price_condition(query: str, target_price: float, label: str = "",
+                         iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
+    """2026-09-30 E10: plugins/price_search.py를 통해 다나와 최저가가
+    target_price 이하로 떨어지면 알려주는 조건부 알림을 등록한다. query는
+    search_product_price와 동일한 검색어 자유 텍스트이고, 매칭/최저가 계산은
+    get_cheapest_matched_price(내부적으로 price_search._match_products 재사용)가
+    맡아 이 함수는 등록/검증만 담당한다."""
+    print(f"\n💸🔁 [조건부 알림] 설정 중: '{query}' {target_price}원 이하" + (f" ('{label}')" if label else ""))
+    query = (query or "").strip()
+    if not query:
+        return "⚠️ 가격을 추적할 상품명을 알려주세요."
+    try:
+        target_price = float(target_price)
+    except (TypeError, ValueError):
+        return "⚠️ 목표 가격을 이해하지 못했습니다. 숫자로 다시 말씀해주세요(예: 90만원 → 900000)."
+    if target_price <= 0:
+        return "⚠️ 목표 가격은 0원보다 커야 해요."
+
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    if build_error:
+        return build_error
+    action_error = _validate_action(action) or _require_login_for_action(action)
+    if action_error:
+        return action_error
+
+    _register_condition("price_drop", target_price, target=query, label=label, action=action)
+
+    label_str = f" ('{label}')" if label else ""
+    action_desc = _describe_action(action)
+    # price_search.get_cheapest_matched_price가 쿼리당 1시간 캐시를 쓰므로
+    # (모듈 docstring 참고) "실시간"이 아니라는 걸 등록 시점에 명시한다 —
+    # 다른 조건들의 "30초마다" 문구와 다른 이유를 사용자가 알 수 있게.
+    note = "(다나와 최저가는 최대 1시간 지연으로 확인돼요 — 검색 결과가 없는 상품이면 알림이 안 올 수 있어요)"
+    if action_desc:
+        return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\n'{query}' 최저가가 {int(target_price):,}원 이하로 "
+                f"떨어지면{label_str} {action_desc} {note}")
+    return (f"[✅ 조건부 알림 설정 완료]\n'{query}' 최저가가 {int(target_price):,}원 이하로 떨어지면{label_str} "
+            f"알려드릴게요. 실제 구매는 자동으로 실행되지 않으니, 알림을 보시면 직접 확인해주세요. {note}")
 
 
 def list_conditions() -> str:

@@ -8,7 +8,7 @@ tests/conftest.py 참고)을 따른다. 날짜/시간이 전혀 없는 단순 �
 core/ai_worker.py 라우팅 테스트에서 별도로 확인한다.
 """
 import plugins.todo_list as tl
-from plugins.todo_list import add_todo, list_todos, complete_todo, delete_todo
+from plugins.todo_list import add_todo, list_todos, complete_todo, delete_todo, reopen_todo
 
 
 # ── 로그인 필요 ──────────────────────────────────────────────────────
@@ -152,6 +152,71 @@ def test_complete_already_done_gives_specific_message(isolated_todo_list):
 
 def test_complete_empty_item_asks_for_specifics(isolated_todo_list):
     assert "알려주세요" in complete_todo("")
+
+
+# ── reopen_todo(완료 취소, 2026-09-29 신규 — 1라운드 검수에서 의도적으로
+# 미뤄뒀던 undo 기능) ────────────────────────────────────────────────────
+
+def test_reopen_requires_login():
+    tl.set_current_user(None)
+    assert "로그인" in reopen_todo("1")
+    tl.set_current_user("testuser")
+
+
+def test_reopen_by_number(isolated_todo_list):
+    add_todo("우유 사기")
+    complete_todo("1")
+    result = reopen_todo("1")
+    assert "우유 사기" in result and "되돌렸어요" in result
+    assert "우유 사기" in list_todos("pending")
+    assert "우유 사기" not in list_todos("done")
+
+
+def test_reopen_by_text_substring(isolated_todo_list):
+    add_todo("우유 사기")
+    complete_todo("1")
+    result = reopen_todo("우유")
+    assert "되돌렸어요" in result
+
+
+def test_reopen_only_searches_among_done_items(isolated_todo_list):
+    """아직 완료 안 된 항목 번호를 주면 "이미 완료"가 아니라 "아직 완료
+    안 됨"이라는 반대 방향의 친절한 안내가 나와야 한다."""
+    add_todo("우유 사기")  # 아직 미완료
+    result = reopen_todo("1")
+    assert "아직 완료되지 않은" in result
+
+
+def test_reopen_not_found(isolated_todo_list):
+    assert "찾을 수 없어요" in reopen_todo("99")
+
+
+def test_reopen_ambiguous_done_duplicate_text_asks_for_number(isolated_todo_list):
+    add_todo("우유 사기")
+    add_todo("우유 사기")
+    complete_todo("1")
+    complete_todo("2")
+    result = reopen_todo("우유 사기")
+    assert "여러 개가 일치" in result
+
+
+def test_reopen_then_complete_again_round_trip(isolated_todo_list):
+    """완료 → 취소 → 다시 완료가 계속 정상 동작해야 한다(상태 왕복)."""
+    add_todo("우유 사기")
+    complete_todo("1")
+    reopen_todo("1")
+    result = complete_todo("1")
+    assert "완료 처리" in result
+    assert "우유 사기" in list_todos("done")
+
+
+def test_delete_todo_still_works_after_reopen_refactor(isolated_todo_list):
+    """_find_todo가 filter_done 3단계로 바뀌었어도 delete_todo(전체 검색)는
+    기존과 동일하게 완료/미완료 무관하게 찾아야 한다(회귀 방지)."""
+    add_todo("우유 사기")
+    complete_todo("1")
+    result = delete_todo("1")
+    assert "삭제" in result
 
 
 # ── delete_todo ──────────────────────────────────────────────────────
@@ -344,3 +409,93 @@ def test_mixed_status_duplicate_text_exact_seq_still_targets_correctly(isolated_
     assert "우유 사기" in result and "여러 개가 일치" not in result
     remaining = list_todos("all")
     assert "전체 1개" in remaining  # seq 1(완료)만 남아야 함
+
+
+# ── 마감일(due_date, 2026-09-30) ─────────────────────────────────────
+
+def test_add_todo_with_valid_due_date(isolated_todo_list):
+    result = add_todo("과제 제출", due_date="2026-10-05")
+    assert "마감: 2026-10-05" in result
+    assert "마감: 2026-10-05" in list_todos("pending")
+
+
+def test_add_todo_without_due_date_shows_no_due_suffix(isolated_todo_list):
+    result = add_todo("우유 사기")
+    assert "마감" not in result
+    assert "마감" not in list_todos("pending")
+
+
+def test_add_todo_rejects_malformed_due_date(isolated_todo_list):
+    result = add_todo("과제 제출", due_date="10월 5일")  # 형식이 아님(코드가 미리 변환해야 함)
+    assert "올바르지 않습니다" in result
+    assert list_todos("all") == "[✅ 할 일 목록]\n등록된 할 일이 없습니다."  # 저장 안 됨
+
+
+def test_add_todo_rejects_invalid_calendar_date(isolated_todo_list):
+    result = add_todo("과제 제출", due_date="2026-13-99")  # 형식은 맞지만 실존 안 하는 날짜
+    assert "올바르지 않습니다" in result
+
+
+# ── get_due_todo_reminders() ─────────────────────────────────────────
+
+def test_due_todo_reminder_guest_returns_empty(isolated_todo_list):
+    tl.set_current_user(None)
+    assert tl.get_due_todo_reminders() == []
+
+
+def test_due_todo_reminder_fires_when_due_today(isolated_todo_list):
+    today = tl.datetime.now().strftime("%Y-%m-%d")
+    add_todo("과제 제출", due_date=today)
+    due = tl.get_due_todo_reminders()
+    assert len(due) == 1
+    assert due[0]["text"] == "과제 제출"
+
+
+def test_due_todo_reminder_fires_when_overdue(isolated_todo_list):
+    """local_calendar의 이벤트 알림과 의도적으로 다른 정책 — 마감일이 지난
+    할 일도(캘린더처럼 조용히 넘기지 않고) 알린다."""
+    from datetime import timedelta
+    yesterday = (tl.datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    add_todo("과제 제출", due_date=yesterday)
+    due = tl.get_due_todo_reminders()
+    assert len(due) == 1
+
+
+def test_due_todo_reminder_not_yet_due_does_not_fire(isolated_todo_list):
+    from datetime import timedelta
+    tomorrow = (tl.datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    add_todo("과제 제출", due_date=tomorrow)
+    assert tl.get_due_todo_reminders() == []
+
+
+def test_due_todo_reminder_fires_only_once(isolated_todo_list):
+    today = tl.datetime.now().strftime("%Y-%m-%d")
+    add_todo("과제 제출", due_date=today)
+    first = tl.get_due_todo_reminders()
+    second = tl.get_due_todo_reminders()
+    assert len(first) == 1
+    assert second == []
+
+
+def test_due_todo_reminder_skips_completed_items(isolated_todo_list):
+    today = tl.datetime.now().strftime("%Y-%m-%d")
+    add_todo("과제 제출", due_date=today)
+    complete_todo("1")
+    assert tl.get_due_todo_reminders() == []
+
+
+def test_due_todo_reminder_skips_items_without_due_date(isolated_todo_list):
+    add_todo("우유 사기")
+    assert tl.get_due_todo_reminders() == []
+
+
+def test_due_todo_reminder_multiple_items_independent(isolated_todo_list):
+    from datetime import timedelta
+    today = tl.datetime.now().strftime("%Y-%m-%d")
+    tomorrow = (tl.datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    add_todo("오늘 마감", due_date=today)
+    add_todo("내일 마감", due_date=tomorrow)
+    add_todo("마감 없음")
+    due = tl.get_due_todo_reminders()
+    assert len(due) == 1
+    assert due[0]["text"] == "오늘 마감"

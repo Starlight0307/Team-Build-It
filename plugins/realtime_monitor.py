@@ -89,9 +89,21 @@ TOOL_SCHEMAS = {
                 "사용자가 '실시간 감시 결과 알려줘', '감지된 거 있어?'처럼 실시간/감시라는 "
                 "단어를 명시했을 때만 호출하세요. "
                 "'의심스러운 프로세스 확인해줘'처럼 지금 당장 검사해달라는 요청에는 이 함수 대신 "
-                "get_malware_report나 detect_suspicious_processes를 호출하세요."
+                "get_malware_report나 detect_suspicious_processes를 호출하세요. "
+                "사용자가 '확인했으니 지워줘', '알림 목록 비워줘'처럼 확인 후 정리를 요청하면 "
+                "clear=true로 호출하세요 — 이번에 보여준 알림은 그대로 보여주고, 그 이후에는 "
+                "누적 목록에서 비웁니다."
             ),
-            "parameters": {"type": "object", "properties": {}, "required": []}
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clear": {
+                        "type": "boolean",
+                        "description": "true면 이번 조회 결과를 보여준 뒤 누적된 알림 목록을 비웁니다. 기본값 false(그냥 조회만)"
+                    }
+                },
+                "required": []
+            }
         }
     },
 }
@@ -484,7 +496,19 @@ def get_realtime_monitor_status() -> str:
 
 
 def get_realtime_alerts(clear: bool = False) -> str:
-    """지금까지 누적된 실시간 감시 알림을 반환합니다."""
+    """지금까지 누적된 실시간 감시 알림을 반환한다. 2026-09-29 — clear를 처음으로
+    LLM에 노출하면서(이 프로젝트 최초의 LLM 노출 boolean 인자) 방어적으로
+    처리한다: LLM이 순수 bool이 아니라 문자열 "true"/"false"로 잘못 보낼
+    가능성이 있는데, 그걸 그냥 `if clear:`로 판정하면 "false"(비어있지 않은
+    문자열이라 파이썬에서는 참)도 알림을 지워버리는 실수가 생긴다."""
+    if isinstance(clear, str):
+        # ChatGPT 검수 지적(2026-09-30): 화이트리스트에 없는 긍정 표현("네",
+        # "그래", "맞아")이 오면 조용히 False(안 지움)로 처리되는 게
+        # fail-closed라 안전하긴 하지만, 자연스러운 한국어 긍정 표현을
+        # 놓치는 범위를 최대한 줄인다 — 흔한 긍정 표현을 추가하되, 그래도
+        # 목록에 없는 값은 여전히 안전하게 False로 남긴다(이 기능이 데이터를
+        # 지우는 동작이라, 모르는 입력을 "지운다"로 추측하지 않는 원칙 유지).
+        clear = clear.strip().lower() in ("true", "1", "yes", "예", "응", "네", "그래", "맞아", "지워", "삭제")
     with _alerts_lock:
         if not _alerts:
             return "[🛰️ 실시간 감시 알림]\n누적된 알림이 없습니다."

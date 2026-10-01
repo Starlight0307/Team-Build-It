@@ -119,6 +119,20 @@ def _sync_calendar_user(user_id: str):
         set_notes_user(user_id)
     except ImportError:
         pass
+    try:
+        # 2026-09-30 Agent 활동 이력(C8) — todo_list/notes와 같은 이유로
+        # 로그인한 사용자만 자신의 이력을 남기고 볼 수 있게 한다.
+        from plugins.activity_log import set_current_user as set_activity_user
+        set_activity_user(user_id)
+    except ImportError:
+        pass
+    try:
+        # 2026-09-30 데이터 백업/내보내기(신규 7번) — todo_list/notes/
+        # expense_tracker와 같은 이유로 로그인한 사용자의 데이터만 내보낼 수 있게 한다.
+        from plugins.data_backup import set_current_user as set_backup_user
+        set_backup_user(user_id)
+    except ImportError:
+        pass
 
 
 # ==========================================
@@ -285,6 +299,22 @@ class AssistantApp(QWidget):
         self._history_poll_timer = QTimer(self)
         self._history_poll_timer.timeout.connect(self._poll_system_history)
         self._history_poll_timer.start(60000)
+
+        # 2026-09-29 캘린더 일정 알림 — local_create_event가 "- 알림: N분 전"
+        # 이라고 확인해놓고 실제로 띄우는 코드가 없던 공백(실사용 감사에서
+        # 발견)을 메운다. 정기 알림/조건부 알림과 같은 이유로 같은 30초
+        # 주기를 재사용한다("몇 분 전" 단위 정확도면 이 정도 주기로 충분).
+        self._event_reminder_poll_timer = QTimer(self)
+        self._event_reminder_poll_timer.timeout.connect(self._poll_due_event_reminders)
+        self._event_reminder_poll_timer.start(30000)
+
+        # 2026-09-30 할 일 마감일 알림 — 날짜 단위 정확도면 충분해서(시:분
+        # 개념이 없음) 이벤트 알림(30초)보다 훨씬 긴 주기를 쓴다. 앱이 켜져
+        # 있는 동안 자정을 넘기자마자 바로 뜰 필요는 없고, 몇 분 안에만
+        # 뜨면 충분하다고 판단.
+        self._todo_reminder_poll_timer = QTimer(self)
+        self._todo_reminder_poll_timer.timeout.connect(self._poll_due_todo_reminders)
+        self._todo_reminder_poll_timer.start(300000)
 
     # ─────────────────────────────────────────────
     # 🖥️ 시스템 트레이 — 창을 닫아도 백그라운드에서 계속 실행
@@ -483,6 +513,52 @@ class AssistantApp(QWidget):
                 mark = "✅" if action_result.get('success') else "⚠️"
                 message = f"{message}\n{mark} 자동 실행 결과: {action_result.get('detail', '')}"
             self._show_toast(message)
+
+    def _poll_due_event_reminders(self):
+        """get_due_event_reminders()도 get_due_timers()와 같은 내부 전용
+        폴링 패턴 — func_map이 필요 없다(local_calendar.py가 자기 데이터만
+        보고 판단). 구글 캘린더(calendar_tool.py)는 reminder_minutes를 구글
+        서버에 그대로 넘겨 구글 자체 알림(팝업/이메일)으로 처리되므로 이
+        폴링 대상이 아니다 — 내부 캘린더만 LUMI가 직접 알림을 책임진다."""
+        func = next((f for f in self.installed_tools if f.__name__ == 'get_due_event_reminders'), None)
+        if not func:
+            return
+        try:
+            due = func()
+        except Exception:
+            return
+        for ev in due:
+            title = ev.get('title') or '일정'
+            minutes = ev.get('reminder_minutes', 0)
+            message = f"📅⏰ '{title}' 일정이 {minutes}분 후에 시작해요."
+            self._show_toast(message)
+
+    def _poll_due_todo_reminders(self):
+        """get_due_todo_reminders()도 get_due_event_reminders()와 같은 내부
+        전용 폴링 패턴(plugins/todo_list.py의 함수 docstring 참고 — 이미
+        지난 마감일도 조용히 넘기지 않고 알린다는 점이 캘린더 알림과 다른
+        의도적 차이). ChatGPT 검수 지적(2026-09-30): 이 폴링 주기가 5분으로
+        길고 지난 마감도 그대로 알리는 정책이라, 앱을 며칠 꺼뒀다가 켰을 때
+        여러 건이 한꺼번에 밀려 있을 수 있다 — 항목마다 토스트를 따로
+        띄우면 토스트 여러 개가 연달아 쏟아지는 나쁜 UX가 된다. 2건 이상이면
+        요약 토스트 하나로 묶는다(1건이면 기존처럼 그대로)."""
+        func = next((f for f in self.installed_tools if f.__name__ == 'get_due_todo_reminders'), None)
+        if not func:
+            return
+        try:
+            due = func()
+        except Exception:
+            return
+        if not due:
+            return
+        if len(due) == 1:
+            t = due[0]
+            message = f"✅⏰ '{t.get('text', '')}' 할 일의 마감일({t.get('due_date', '')})이에요."
+        else:
+            first = due[0]
+            message = (f"✅⏰ 마감된 할 일이 {len(due)}개 있어요.\n"
+                       f"가장 최근: '{first.get('text', '')}' ({first.get('due_date', '')})")
+        self._show_toast(message)
 
     def _poll_due_conditions(self):
         """get_due_conditions(func_map)도 같은 내부 전용 폴링 패턴이지만,

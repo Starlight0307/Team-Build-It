@@ -375,3 +375,74 @@ def test_day_rollover_flush_restart_reload_and_prune_regression(isolated_history
     assert day1 not in sh._history
     assert day2 not in sh._history
     assert _FrozenDatetime._now.strftime("%Y-%m-%d") in sh._history
+
+
+# ── get_metric_increase_streak_days (D9, 2026-09-30) ────────────────
+# reminder.py의 trend_streak 조건 타입이 쓰는 내부 전용 getter. "완료된
+# 날짜"(어제부터 거슬러 올라감, 오늘 제외) 기준으로 인접한 날짜끼리
+# 비교해 연속 악화 일수를 센다.
+
+def test_streak_unknown_target_returns_none(isolated_history):
+    assert sh.get_metric_increase_streak_days("이상한값") is None
+
+
+def test_streak_zero_when_no_history(isolated_history):
+    assert sh.get_metric_increase_streak_days("cpu_increasing") == 0
+
+
+def test_streak_zero_when_only_one_day_of_history(isolated_history):
+    """비교할 "전날"이 아예 없으면 증가/감소를 판단할 수 없으므로 0."""
+    sh._history[_day_key(1)] = _day_record(10, 50, 50, 50)
+    assert sh.get_metric_increase_streak_days("cpu_increasing") == 0
+
+
+def test_streak_counts_consecutive_cpu_increases(isolated_history):
+    """어제(1일전)=70 > 2일전=50 > 3일전=30 > 4일전=40(증가 아님, 여기서 멈춤)
+    → 연속 증가는 2번(70>50, 50>30)."""
+    sh._history[_day_key(1)] = _day_record(10, 70, 20, 50)
+    sh._history[_day_key(2)] = _day_record(10, 50, 20, 50)
+    sh._history[_day_key(3)] = _day_record(10, 30, 20, 50)
+    sh._history[_day_key(4)] = _day_record(10, 40, 20, 50)  # 여기서 증가 흐름이 끊김
+    assert sh.get_metric_increase_streak_days("cpu_increasing") == 2
+
+
+def test_streak_counts_consecutive_ram_increases(isolated_history):
+    sh._history[_day_key(1)] = _day_record(10, 20, 60, 50)
+    sh._history[_day_key(2)] = _day_record(10, 20, 40, 50)
+    assert sh.get_metric_increase_streak_days("ram_increasing") == 1
+    assert sh.get_metric_increase_streak_days("cpu_increasing") == 0  # CPU는 변화 없음
+
+
+def test_streak_disk_free_decreasing_direction_is_reversed(isolated_history):
+    """디스크는 "줄어드는" 쪽이 악화 방향이다(get_system_trend의 여유율
+    해석과 동일) — 늘어나는 건 streak에 포함되면 안 된다."""
+    sh._history[_day_key(1)] = _day_record(10, 20, 20, 30)  # 여유공간 30
+    sh._history[_day_key(2)] = _day_record(10, 20, 20, 50)  # 여유공간 50 (더 많았음 → 어제 감소)
+    sh._history[_day_key(3)] = _day_record(10, 20, 20, 70)  # 더 많았음 → 계속 감소 추세
+    assert sh.get_metric_increase_streak_days("disk_free_decreasing") == 2
+
+
+def test_streak_resets_to_zero_when_direction_immediately_reverses(isolated_history):
+    sh._history[_day_key(1)] = _day_record(10, 30, 20, 50)  # 어제가 그저께보다 낮음(증가 아님)
+    sh._history[_day_key(2)] = _day_record(10, 50, 20, 50)
+    assert sh.get_metric_increase_streak_days("cpu_increasing") == 0
+
+
+def test_streak_stops_at_missing_day_gap(isolated_history):
+    """중간에 기록이 없는 날(플러그인이 잠시 꺼져 있었을 수 있음)을 만나면
+    거기서 멈추고, 그 이전 기록까지 이어붙여 streak을 이어가지 않는다 —
+    "그 빈 날엔 실제로 어땠는지 모른다"는 사실을 정직하게 반영한다."""
+    sh._history[_day_key(1)] = _day_record(10, 70, 20, 50)
+    sh._history[_day_key(2)] = _day_record(10, 50, 20, 50)
+    # _day_key(3)은 기록 없음(빈 날)
+    sh._history[_day_key(4)] = _day_record(10, 10, 20, 50)  # 이 이전 기록은 무시돼야 함
+    assert sh.get_metric_increase_streak_days("cpu_increasing") == 1
+
+
+def test_streak_ignores_today_even_if_recorded(isolated_history):
+    """오늘(아직 안 끝난 하루)은 표본이 적어 왜곡될 수 있으므로 streak
+    계산에서 제외해야 한다 — get_system_trend의 'today' 처리와 동일한 이유."""
+    sh._history[_day_key(0)] = _day_record(1, 999, 20, 50)  # 오늘, 극단값이어도 무시돼야 함
+    sh._history[_day_key(1)] = _day_record(10, 70, 20, 50)
+    sh._history[_day_key(2)] = _day_record(10, 50, 20, 50)
+    assert sh.get_metric_increase_streak_days("cpu_increasing") == 1
