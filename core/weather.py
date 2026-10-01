@@ -60,6 +60,13 @@ _WMO = {
     95: ("뇌우", "⛈️", "⛈️"), 96: ("우박 뇌우", "⛈️", "⛈️"), 99: ("강한 우박 뇌우", "⛈️", "⛈️"),
 }
 
+# 이모지 → 화면 아이콘 이름 (assets/icons, widget/icons.py)
+_ICON_NAME = {
+    "☀️": "sun", "🌙": "moon", "🌤️": "cloud-sun", "⛅": "cloud-sun", "☁️": "cloud", "🌫️": "cloud-fog",
+    "🌦️": "cloud-drizzle", "🌧️": "cloud-rain", "🌨️": "cloud-snow", "❄️": "cloud-snow", "⛈️": "cloud-lightning",
+}
+_NIGHT_ICON_NAME = {"cloud-sun": "cloud-moon", "sun": "moon"}
+
 _geo_cache = {}
 
 
@@ -206,4 +213,13 @@ def fetch_weather(city: str, coords: tuple = None) -> dict:
         "wind": cur.get("wind_speed_10m"),
         "desc": desc,
         "icon": day_icon if cur.get("is_day", 1) else night_icon,
+        "icon_name": _icon_name(day_icon, night_icon, cur.get("is_day", 1)),
     }
+
+
+def _icon_name(day_icon: str, night_icon: str, is_day) -> str:
+    if is_day:
+        return _ICON_NAME.get(day_icon, "cloud-sun")
+    # "구름 조금" 밤은 이모지가 ☁️이지만 그림은 달+구름이 더 맞다
+    name = _ICON_NAME.get(day_icon, "cloud")
+    return _NIGHT_ICON_NAME.get(name) or _ICON_NAME.get(night_icon, "cloud")

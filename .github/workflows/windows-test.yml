@@ -32,8 +32,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --only-binary=:all: -r requirements.txt pytest
 
-      - name: 단위/기본 테스트
-        run: python -m pytest tests/unit tests/smoke -q
+      - name: 단위/통합/기본 테스트
+        run: python -m pytest -q
 
       - name: 실제 OS 테스트 (slow 표시된 것)
         continue-on-error: true

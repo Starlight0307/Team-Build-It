@@ -23,7 +23,13 @@ plugins/realtime_monitor.py 통합 테스트.
 """
 from unittest.mock import MagicMock, patch
 
+import sys
+
 import pytest
+
+# Windows에만 있는 레지스트리(winreg)를 써야 하는 테스트 — 맥/리눅스에서는 기능 자체가
+# "Windows 전용입니다"를 돌려주므로 건너뛴다 (Windows에서는 GitHub Actions에서 돈다).
+WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Windows 전용 기능 (winreg)")
 
 import plugins.realtime_monitor as rtm
 from plugins.realtime_monitor import (
@@ -73,17 +79,20 @@ def test_status_before_start_is_not_running():
     assert "실행 중이 아닙니다" in result
 
 
+@WINDOWS_ONLY
 def test_start_reports_intervals():
     result = start_realtime_monitor(startup_interval_seconds=10, process_interval_seconds=60)
     assert "10초마다" in result
 
 
+@WINDOWS_ONLY
 def test_status_after_start_is_running():
     start_realtime_monitor(startup_interval_seconds=10, process_interval_seconds=60)
     result = get_realtime_monitor_status()
     assert "✅ 실행 중" in result
 
 
+@WINDOWS_ONLY
 def test_starting_twice_does_not_restart(monkeypatch):
     """이미 실행 중이면 새로 또 시작하지 않고 안내만 해야 한다 — 스레드가
     중복으로 여러 개 생기면 안 됨."""
@@ -101,6 +110,7 @@ def test_stop_when_not_running_reports_honestly():
     assert "실행 중이 아닙니다" in result
 
 
+@WINDOWS_ONLY
 def test_stop_after_start_actually_stops():
     start_realtime_monitor(startup_interval_seconds=10, process_interval_seconds=60)
     result = stop_realtime_monitor()
@@ -109,6 +119,7 @@ def test_stop_after_start_actually_stops():
     assert "실행 중이 아닙니다" in get_realtime_monitor_status()
 
 
+@WINDOWS_ONLY
 def test_interval_below_minimum_is_clamped():
     """startup_interval_seconds는 최소 10초로 보정돼야 한다(너무 잦은 점검
     방지)."""
@@ -116,6 +127,7 @@ def test_interval_below_minimum_is_clamped():
     assert "10초마다" in result  # _MIN_STARTUP_INTERVAL = 10
 
 
+@WINDOWS_ONLY
 def test_interval_above_maximum_is_clamped():
     result = start_realtime_monitor(startup_interval_seconds=99999, process_interval_seconds=99999)
     assert "300초마다" in result  # _MAX_STARTUP_INTERVAL = 300

@@ -1,5 +1,5 @@
 """
-skills_widget.py  ─  🪄 스킬 화면: 설치된 OpenClaw 스킬 관리 + ClawHub 검색/설치
+skills_widget.py  ─  스킬 화면: 설치된 OpenClaw 스킬 관리 + ClawHub 검색/설치
 
 - 설치된 스킬: 사용 가능 여부(필요한 프로그램/환경변수/OS), 켜기/끄기, 삭제(루미 폴더만)
 - ClawHub 검색 → 설치: 설치 전에 SKILL.md 전체를 보여주고 확인을 받는다
@@ -14,6 +14,8 @@ from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
                              QMessageBox, QPushButton, QScrollArea, QTextEdit, QVBoxLayout, QWidget)
+
+from widget import icons
 
 from core import skills
 from settings import app_settings
@@ -85,12 +87,14 @@ class SkillsPage(QWidget):
         lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         head = QHBoxLayout()
-        self.title = QLabel("🪄  OpenClaw 스킬")
+        self.title = QLabel(icons.label_html("wand-sparkles", "OpenClaw 스킬", 26))
         head.addWidget(self.title)
         head.addStretch()
-        self.btn_folder = QPushButton("📂 스킬 폴더 열기")
-        self.btn_zip = QPushButton("📦 zip으로 설치")
-        self.btn_reload = QPushButton("🔄 새로고침")
+        self.btn_folder = QPushButton(" 스킬 폴더 열기")
+        self.btn_zip = QPushButton(" zip으로 설치")
+        self.btn_reload = QPushButton(" 새로고침")
+        for b, name in ((self.btn_folder, "folder-open"), (self.btn_zip, "package"), (self.btn_reload, "refresh-cw")):
+            b.setIcon(icons.icon(name))
         for b, fn in ((self.btn_folder, self._open_folder), (self.btn_zip, self._install_from_zip),
                       (self.btn_reload, self.refresh)):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -115,7 +119,7 @@ class SkillsPage(QWidget):
         lay.addLayout(auto)
 
         # ClawHub 검색
-        self.search_title = QLabel("🔎  ClawHub에서 찾기")
+        self.search_title = QLabel(icons.label_html("search", "ClawHub에서 찾기", 18))
         lay.addSpacing(8)
         lay.addWidget(self.search_title)
         srow = QHBoxLayout()
@@ -132,7 +136,7 @@ class SkillsPage(QWidget):
         self.results_box.setSpacing(8)
         lay.addLayout(self.results_box)
 
-        self.installed_title = QLabel("📚  설치된 스킬")
+        self.installed_title = QLabel(icons.label_html("library", "설치된 스킬", 18))
         lay.addSpacing(10)
         lay.addWidget(self.installed_title)
         self.installed_box = QVBoxLayout()
@@ -182,6 +186,7 @@ class SkillsPage(QWidget):
         while box.count():
             item = box.takeAt(0)
             if item.widget():
+                item.widget().hide()   # 지워지기 전 한 순간 옛 내용이 겹쳐 보이지 않게
                 item.widget().deleteLater()
 
     # ── 설치된 스킬 ──

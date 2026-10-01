@@ -47,6 +47,18 @@ def test_fetch_weather_converts_response(monkeypatch):
     data = weather.fetch_weather("서울")
     assert data["city"] == "서울" and data["temp"] == 23.8
     assert data["desc"] == "약한 비" and data["icon"] == "🌧️"   # 밤 아이콘
+    assert data["icon_name"] == "cloud-rain"
+
+
+def test_every_weather_code_has_an_icon_png():
+    import os
+    from widget import icons
+    for code, (_, day, night) in weather._WMO.items():
+        for is_day in (1, 0):
+            name = weather._icon_name(day, night, is_day)
+            assert os.path.exists(icons.path(name)), (code, is_day, name)
+    assert weather._icon_name("⛅", "☁️", 0) == "cloud-moon"   # 구름 조금 밤
+    assert weather._icon_name("☀️", "🌙", 0) == "moon"
 
 
 def test_network_failure_becomes_friendly_error(monkeypatch):

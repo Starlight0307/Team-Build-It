@@ -17,6 +17,9 @@ def isolated_app_usage_trend_conditions(tmp_path, monkeypatch):
     fake_dir.mkdir()
     monkeypatch.setattr(rm, "ROUTINES_DIR", str(fake_dir))
     monkeypatch.setattr(rm, "CONDITIONS_FILE", str(fake_dir / "conditions.json"))
+    # ACTION_LOG_FILE은 모듈을 불러올 때 원래 ROUTINES_DIR 기준으로 정해져서, ROUTINES_DIR만
+    # 바꾸면 실행 기록이 실제 plugins/reminder/action_log.jsonl에 쌓였다 (2026-10-02 발견)
+    monkeypatch.setattr(rm, "ACTION_LOG_FILE", str(fake_dir / "action_log.jsonl"))
     monkeypatch.setattr(rm, "_conditions", {})
     monkeypatch.setattr(rm, "_conditions_loaded", False)
     return fake_dir

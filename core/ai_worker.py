@@ -10,6 +10,12 @@ import httpx  # ollama 패키지가 이미 의존하는 라이브러리 — 오�
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from settings.config import TOOL_SCHEMAS, MOCK_USER, OLLAMA_MODEL
+
+# 응답 길이 상한 — 2026-10-02 전체 기능 점검 중, 길이 제한이 없던 요청 하나에서 llama3.1이
+# 같은 말을 반복하는 상태에 빠져 24,000토큰 넘게(19분) 끝없이 생성한 것을 확인했다. Ollama는
+# 한 번에 요청 하나만 처리해서 그동안 루미 전체가 "생각 중..."에서 멈춘다. 채팅 답변은 이
+# 길이(약 50초 분량)면 충분하다. 요약은 위 _SUMMARY_OPTIONS(700)를 그대로 쓴다.
+_MAX_REPLY_TOKENS = 1024
 from calendar_feature import calendar_preference
 from core.preference_memory import get_pref, save_pref
 
@@ -579,7 +585,9 @@ _TOOL_CATEGORIES = {
     ),
     "expense_tracker": (
         ("구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼", "얼마 썼", "구매내역", "구매 내역",
-         "예산"),
+         "예산",
+         # 2026-10-02: "한달에 30만원까지만 쓰고 싶어" 같은 예산 표현이 어디에도 안 걸렸다
+         "까지만 쓰", "까지만 써", "만원까지", "만 원까지"),
         ("mark_as_purchased", "get_spending_summary", "list_purchases",
          "set_monthly_budget", "get_budget_status", "delete_purchase", "edit_purchase"),
     ),
@@ -710,6 +718,161 @@ for _cat_name, (_kws, _funcs) in _TOOL_CATEGORIES.items():
 _CALENDAR_WEAK_KEYWORDS = frozenset((
     "오늘", "내일", "모레", "글피", "어제", "이번주", "다음주", "이번달", "다음달", "언제",
 ))
+_CALENDAR_EXPLICIT_WORDS = ("일정", "약속", "회의", "캘린더", "미팅", "예약", "schedule", "calendar")
+
+
+# ── 도구 인자 정리 (2026-10-02 인자 정확도 평가에서 발견) ──
+def _coerce_arg_types(func_name: str, args):
+    """도구 설명에서 숫자(integer/number)로 정한 칸에 "240" 같은 글자가 오면 숫자로 바꾼다 —
+    llama3.1이 "게임 하루 4시간 넘으면"에 threshold_minutes="240"(글자)을 넘긴 사례."""
+    if not isinstance(args, dict):
+        return args
+    schema = (TOOL_SCHEMAS.get(func_name) or {}).get("function", {}).get("parameters", {}).get("properties", {})
+    fixed = dict(args)
+    for key, value in args.items():
+        kind = (schema.get(key) or {}).get("type")
+        if kind in ("integer", "number") and isinstance(value, str):
+            v = value.strip().replace(",", "")
+            try:
+                num = float(v)
+            except ValueError:
+                continue
+            fixed[key] = int(num) if (kind == "integer" or num.is_integer()) else num
+    return fixed
+
+
+# 모델이 도구 호출을 글자로 흉내 내면서 내부 전용/없는 이름을 쓴 경우의 대응표 — "메모리 사용량
+# 확인해줘"에 {"name": "get_ram_percent"}(조건 알림 내부 함수)를 쓴 사례(2026-10-02). 전부 같은 일을
+# 하는 읽기 전용 조회 도구로만 바꾼다(상태를 바꾸는 도구로는 절대 바꾸지 않는다).
+_FAKED_NAME_ALIASES = {
+    "get_ram_percent": "get_system_info", "get_cpu_percent": "get_system_info",
+    "get_memory_usage": "get_system_info", "get_ram_usage": "get_system_info",
+    "get_memory_info": "get_system_info", "get_cpu_usage": "get_system_info",
+    "get_disk_usage": "get_system_info", "get_disk_free_percent": "get_system_info",
+}
+
+_LABELED_REMINDER_FUNCS = frozenset(("set_timer", "set_daily_reminder"))
+_LABEL_PHRASE = re.compile(r"(?:^|\s)([^\s].*?)\s*(?:하라고|라고|하라는|하는\s*거)\s*(?:알려|알림|말해)")
+_LABEL_NOISE = re.compile(
+    r"매일|평일|주말마다|아침마다|저녁마다|날마다|오전|오후|아침|저녁|밤|새벽|"
+    r"\d+\s*(시|분|초|시간)(\s*\d+\s*분)?\s*(뒤|후|반)?\s*(에|에는)?|정각에?")
+
+
+def _ground_reminder_label(args, user_text: str):
+    """알림 이름(label)이 사용자 문장과 전혀 관계없으면 문장에서 직접 뽑는다 — 작은 모델이
+    "매일 오전 7시에 물 마시라고 알려줘"에 label="가백 주소"를 지어낸 사례. 일정 제목을
+    정규식으로 뽑는 것(아래 "일정 등록: title은 LLM 대신 정규식으로")과 같은 이유."""
+    if not isinstance(args, dict):
+        return args
+    label = str(args.get("label") or "").strip()
+    text = user_text or ""
+    squash = lambda x: re.sub(r"\s+", "", x)
+    grams = {squash(label)[i:i + 2] for i in range(max(0, len(squash(label)) - 1))}
+    if label and any(g in squash(text) for g in grams):
+        return args                      # 문장에 근거가 있는 이름 — 그대로
+    m = _LABEL_PHRASE.search(text)
+    if not m:
+        return {k: v for k, v in args.items() if k != "label"} if label else args
+    phrase = _LABEL_NOISE.sub(" ", m.group(1))
+    phrase = re.sub(r"\s+", " ", phrase).strip(" ,.")
+    if not phrase:
+        return {k: v for k, v in args.items() if k != "label"} if label else args
+    # "물 마시라고" → "물 마시" → "물 마시기" (동사 줄기로 끝나면 명사형으로)
+    if m.group(0).rstrip().split()[-2:] and not re.search(r"하라고|하라는", m.group(0)) \
+            and re.search(r"[가-힣]$", phrase) and not phrase.endswith(("기", "것")):
+        phrase += "기"
+    return dict(args, label=phrase)
+
+# 키워드가 다른 단어의 일부로 우연히 들어 있는 경우 — "메모리"의 "메모"가 notes 카테고리에,
+# "사용량"의 "용량"이 저장공간(pc_optimizer/system) 카테고리에 걸려서 "메모리 사용량 확인해줘"에
+# 메모장 도구까지 노출됐다(2026-10-02). 이런 키워드는 겹치는 단어를 뺀 위치에서만 인정한다.
+_KEYWORD_FALSE_FRIENDS = {
+    "메모": re.compile(r"메모(?!리)"),
+    "용량": re.compile(r"(?<!사)용량"),
+}
+
+
+def _any_keyword_in(keywords, text: str) -> bool:
+    for kw in keywords:
+        if kw in text and (kw not in _KEYWORD_FALSE_FRIENDS or _KEYWORD_FALSE_FRIENDS[kw].search(text)):
+            return True
+    return False
+
+
+# ── 알림 카테고리 안에서 한 번 더 좁히기 (2026-10-02) ──
+# reminder 카테고리는 "알려줘"/"넘으면" 하나로 16개 도구(타이머 3, 정기 알림 3, 조건 알림 7종,
+# 조회/취소)를 통째로 노출한다. 조건 알림이 7종으로 늘면서(추세/가격/앱 추세 추가) llama3.1이
+# "10분 뒤에 알려줘"에 set_trend_condition을 고르는 등 인자 정확도가 4/12(33%)까지 떨어진 것을
+# 전체 기능 점검에서 확인했다. 문장에 분명한 신호가 있을 때만 그 하위 묶음으로 좁히고,
+# 애매하면 지금처럼 전부 노출한다(좁히기 실패 시 기존 동작 그대로).
+_TIMER_FUNCS = frozenset(("set_timer", "list_timers", "cancel_timer"))
+_DAILY_FUNCS = frozenset(("set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder"))
+_CONDITION_COMMON_FUNCS = frozenset(("list_conditions", "cancel_condition", "list_action_log"))
+_CONDITION_SETTERS = frozenset(("set_usage_condition", "set_spending_condition", "set_cpu_condition",
+                                "set_disk_condition", "set_trend_condition", "set_price_condition",
+                                "set_app_usage_trend_condition"))
+_REMINDER_FUNCS = _TIMER_FUNCS | _DAILY_FUNCS | _CONDITION_COMMON_FUNCS | _CONDITION_SETTERS
+
+_TIMER_PATTERN = re.compile(r"\d+\s*(초|분|시간)\s*(뒤|후|있다가)|타이머")
+_DAILY_PATTERN = re.compile(r"매일|평일|주말마다|아침마다|저녁마다|밤마다|날마다|정기\s*알림")
+_CONDITION_PATTERN = re.compile(r"넘으면|넘게|넘을\s*때|초과하면|이상이면|떨어지면|아래로|밑으로|부족해지면|이하되면|이하로")
+_TREND_CONDITION_PATTERN = re.compile(r"연속|며칠째|계속\s*(늘|줄)|추세\s*알림")
+_CONDITION_TARGETS = (
+    (re.compile(r"cpu|씨피유|시피유", re.IGNORECASE), "set_cpu_condition"),
+    (re.compile(r"디스크|저장\s*공간|여유\s*공간|용량"), "set_disk_condition"),
+    (re.compile(r"가격|최저가|값이"), "set_price_condition"),
+    (re.compile(r"지출|예산|소비|돈|원\s*(넘|이상|초과)|만\s*원"), "set_spending_condition"),
+    (re.compile(r"게임|유튜브|앱|프로그램|사용\s*시간|\d+\s*시간\s*(넘|이상|초과)"), "set_usage_condition"),
+)
+
+
+def _narrow_reminder_funcs(allowed: set, text: str) -> set:
+    if not (allowed & _REMINDER_FUNCS):
+        return allowed
+    t = (text or "").lower()
+    subset = None
+    if _TIMER_PATTERN.search(t) and not _CONDITION_PATTERN.search(t):
+        subset = _TIMER_FUNCS
+    elif _TREND_CONDITION_PATTERN.search(t):
+        subset = frozenset(("set_trend_condition", "set_app_usage_trend_condition")) | _CONDITION_COMMON_FUNCS
+    elif _CONDITION_PATTERN.search(t):
+        setters = {fn for pat, fn in _CONDITION_TARGETS if pat.search(t)}
+        if "set_price_condition" in setters:
+            setters.discard("set_spending_condition")   # "가격 20만원 밑으로" — 금액이 있어도 가격 조건
+        subset = (setters or _CONDITION_SETTERS) | _CONDITION_COMMON_FUNCS
+        if "알려" in t or "알림" in t:
+            # "이번달 지출 50만원 넘으면 알려줘"에 지출 조회 도구까지 섞이자 아무 도구도
+            # 안 고른 사례 — 조건 등록 의도가 분명하면 조건 도구만 보여준다
+            return subset & allowed or allowed
+    elif _DAILY_PATTERN.search(t):
+        subset = _DAILY_FUNCS
+    if subset is None:
+        return allowed
+    return (allowed - _REMINDER_FUNCS) | (subset & allowed)
+
+
+# "메모리 사용량 확인해줘"처럼 특정 자원의 지금 상태만 묻는데 get_system_trend(이력/변화)까지
+# 노출돼서 그쪽을 고르는 오답이 있었다. 추세 표현이 없고 자원을 콕 집은 요청에서만 뺀다 —
+# "내 컴퓨터 상태 어때?"처럼 넓은 질문은 그대로 둘 다 노출(tests/unit/test_system_trend_routing.py).
+_SYSTEM_RESOURCE_WORDS = re.compile(r"cpu|메모리|ram|램|디스크", re.IGNORECASE)
+_SYSTEM_TREND_WORDS = re.compile(
+    r"어제|지난|예전|최근|며칠|이번\s*주|추세|추이|변화|늘었|줄었|졌어|졌나|느려|빨라|평소|비교|이력|기록")
+
+
+_APP_USAGE_WORDS = re.compile(r"앱|게임|프로그램|유튜브|사용\s*시간|몇\s*시간|얼마나\s*(했|봤|썼)")
+
+
+def _narrow_system_trend(allowed: set, text: str) -> set:
+    t = text or ""
+    if not (_SYSTEM_RESOURCE_WORDS.search(t) and "get_system_info" in allowed):
+        return allowed
+    if "get_system_trend" in allowed and not _SYSTEM_TREND_WORDS.search(t):
+        allowed = allowed - {"get_system_trend"}
+    # "메모리 사용량"의 "사용량"이 앱 사용 시간 카테고리에 걸려 그쪽 도구가 섞이자 아무 도구도
+    # 안 고른 사례(2026-10-02 도구 선택 평가) — 앱/게임/사용 시간 이야기가 없으면 뺀다
+    if not _APP_USAGE_WORDS.search(t) and "app_usage" in _TOOL_CATEGORIES:
+        allowed = allowed - set(_TOOL_CATEGORIES["app_usage"][1])
+    return allowed
 
 
 # 2026-09-14 system_security 2차 재검증에서 발견한 버그: _build_score_report_reply가
@@ -4954,8 +5117,22 @@ class AIWorker(QThread):
                 last_categories.update(_FUNC_TO_CATEGORY.get(fn, ()))
 
         allowed = set()
+        matched_categories = [cat for cat, (kws, _f) in _TOOL_CATEGORIES.items() if _any_keyword_in(kws, text)]
         for cat_name, (keywords, funcs) in _TOOL_CATEGORIES.items():
-            if not any(kw in text for kw in keywords):
+            if not _any_keyword_in(keywords, text):
+                continue
+            # 2026-10-02 전체 기능 점검(인자 정확도 4/12)에서 확장: 위 규칙은 직전 턴이 있을
+            # 때만 적용돼서, 첫 질문 "이번달 지출 50만원 넘으면 알려줘"는 "이번달" 하나로
+            # 캘린더 도구 30여 개가 함께 노출됐다(총 47개). 날짜 표현만으로 걸린 캘린더는
+            # 다른 카테고리가 같이 걸렸으면 넣지 않는다 — "내일 뭐 있어?"처럼 캘린더만
+            # 걸린 경우는 그대로 노출된다.
+            if (cat_name == "calendar" and len(matched_categories) > 1
+                    and all(kw in _CALENDAR_WEAK_KEYWORDS for kw in keywords if kw in text)):
+                continue
+            # "이번달 예산 50만원으로 잡아줘" — "잡아"가 캘린더 키워드라 예산 요청에 일정
+            # 도구가 섞였다. 일정/약속 같은 명시적 신호가 없으면 예산 쪽으로 본다.
+            if (cat_name == "calendar" and "예산" in text
+                    and not any(w in text for w in _CALENDAR_EXPLICIT_WORDS)):
                 continue
             # ChatGPT 2차 검수 실험(2026-09-24, "의도 충돌 감지"): calendar가
             # 순수 날짜 표현(_CALENDAR_WEAK_KEYWORDS)만으로 매칭됐고("일정"/
@@ -4971,6 +5148,9 @@ class AIWorker(QThread):
         for cat_name in last_categories:
             allowed.update(_TOOL_CATEGORIES[cat_name][1])
 
+        if allowed:
+            allowed = _narrow_reminder_funcs(allowed, text)
+            allowed = _narrow_system_trend(allowed, text)
         return allowed if allowed else None
 
     # 계정/로그인 상태 확인 의도 — LLM 판단에 맡기지 않고 직접 함수 호출로 처리
@@ -5125,7 +5305,7 @@ class AIWorker(QThread):
                         final_response = ollama.chat(
                             model=OLLAMA_MODEL,
                             messages=summary_messages,
-                            options={'temperature': 0.3}
+                            options={'temperature': 0.3, 'num_predict': _MAX_REPLY_TOKENS}
                         )
                         clean_reply = final_response['message']['content'].strip()
                         self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
@@ -5278,7 +5458,7 @@ class AIWorker(QThread):
                         final_response = ollama.chat(
                             model=OLLAMA_MODEL,
                             messages=summary_messages,
-                            options={'temperature': 0.3}
+                            options={'temperature': 0.3, 'num_predict': _MAX_REPLY_TOKENS}
                         )
                         clean_reply = final_response['message']['content'].strip()
                         self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
@@ -5626,7 +5806,8 @@ class AIWorker(QThread):
                 model=OLLAMA_MODEL,
                 messages=self.chat_history,
                 tools=ollama_tools if use_tools else None,
-                options={'temperature': 0.1} if use_tools else {'temperature': 0.7}
+                options=({'temperature': 0.1} if use_tools else {'temperature': 0.7})
+                        | {'num_predict': _MAX_REPLY_TOKENS}
             )
 
             sys.stderr.write(f"   - tool_calls: {response.get('message', {}).get('tool_calls')}\n")
@@ -5682,6 +5863,9 @@ class AIWorker(QThread):
                 for tool in response['message']['tool_calls']:
                     func_name = tool['function']['name']
                     args      = tool['function']['arguments']
+                    args      = _coerce_arg_types(func_name, args)
+                    if func_name in _LABELED_REMINDER_FUNCS:
+                        args = _ground_reminder_label(args, self.user_text)
 
                     # ── 파일 조건 라우팅 계약을 실행 단계에서도 강제 (2026-09-28 ChatGPT 2라운드) ──
                     # 노출 함수 제한(_allowed_category_funcs)만으로는 LLM이 노출 안 된 함수를 지어내
@@ -6048,6 +6232,7 @@ class AIWorker(QThread):
                 } if use_tools else set()
 
                 faked_func_name = _extract_faked_tool_call(clean_reply)
+                faked_func_name = _FAKED_NAME_ALIASES.get(faked_func_name, faked_func_name)
                 executed = False
                 can_auto_execute = (
                     use_tools
@@ -6101,7 +6286,8 @@ class AIWorker(QThread):
                             'role': 'user',
                             'content': "JSON이나 코드 형식 말고, 한국어 문장으로만 답변해줘. 함수를 실행한 결과를 자연스럽게 설명해줘."
                         }]
-                        retry_response = ollama.chat(model=OLLAMA_MODEL, messages=retry_messages)
+                        retry_response = ollama.chat(model=OLLAMA_MODEL, messages=retry_messages,
+                                                     options={'num_predict': _MAX_REPLY_TOKENS})
                         clean_reply = retry_response['message']['content'].strip()
 
             clean_reply = clean_reply.strip()

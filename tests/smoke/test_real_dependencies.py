@@ -16,7 +16,12 @@ Windows 환경에서도 정상 동작한다"는 뜻은 아니다 — mock이 실
 import inspect
 
 import psutil
+import sys
 import pytest
+
+# Windows에만 있는 레지스트리(winreg)를 써야 하는 테스트 — 맥/리눅스에서는 기능 자체가
+# "Windows 전용입니다"를 돌려주므로 건너뛴다 (Windows에서는 GitHub Actions에서 돈다).
+WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Windows 전용 기능 (winreg)")
 
 pytestmark = pytest.mark.slow
 
@@ -73,6 +78,7 @@ def test_real_get_disk_free_percent_is_valid_range():
 
 # ── winreg: 실제 레지스트리 읽기(읽기 전용) ────────────────────────
 
+@WINDOWS_ONLY
 def test_real_registry_run_key_read_does_not_crash():
     """plugins/malware_detection.py와 plugins/realtime_monitor.py가 실제로
     쓰는 것과 동일한 레지스트리 키를 읽기 전용으로 접근해봐서, winreg 관련

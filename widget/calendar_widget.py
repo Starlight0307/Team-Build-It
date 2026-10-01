@@ -4,6 +4,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QScrollArea, QFrame, QPushButton)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
+from widget import icons
+
 from settings.theme import get_palette
 
 
@@ -38,13 +40,13 @@ class EventCard(QFrame):
         layout.addWidget(self.title_lbl)
 
         time_text = self._format_range(event.get("start"), event.get("end"))
-        self.time_lbl = QLabel(f"🕐 {time_text}")
+        self.time_lbl = QLabel(icons.label_html("clock", time_text, 14))
         layout.addWidget(self.time_lbl)
 
         location = event.get("location")
         self.location_lbl = None
         if location:
-            self.location_lbl = QLabel(f"📍 {location}")
+            self.location_lbl = QLabel(icons.label_html("map-pin", location, 14))
             layout.addWidget(self.location_lbl)
 
     @staticmethod
@@ -98,10 +100,11 @@ class CalendarWidget(QWidget):
         hf.setFixedHeight(54)
         hl = QHBoxLayout(hf)
         hl.setContentsMargins(20, 0, 20, 0)
-        self.title_lbl = QLabel("📅 캘린더")
+        self.title_lbl = QLabel(icons.label_html("calendar", "캘린더", 22))
         hl.addWidget(self.title_lbl)
         hl.addStretch()
-        self.refresh_btn = QPushButton("🔄 새로고침")
+        self.refresh_btn = QPushButton(" 새로고침")
+        self.refresh_btn.setIcon(icons.icon("refresh-cw", white=True))
         self.refresh_btn.setFixedSize(110, 34)
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.setStyleSheet(

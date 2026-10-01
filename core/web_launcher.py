@@ -185,14 +185,40 @@ def _extract_target(text: str, browser) -> str:
     for word in _FILLER:
         t = t.replace(word, " ")
     t = re.sub(r"(?<=\S)(?:의|에|을|를|으로|로)(?=\s|$)", " ", t)   # 이름 뒤 조사
-    # 연결 표현을 지우고 남은 한 글자 찌꺼기("접속해서"→"서" 등) 제거 — 2026-09-30
-    # "크롬 접속해서 장안대학교…"가 "서 장안대학교"로 검색돼 엉뚱한 사이트가 열렸다
-    words = [w for w in t.split() if not (len(w) == 1 and w in "서고해줘좀")]
-    return " ".join(words).strip(" ,.!?") or None
+    # 동사/말끝 찌꺼기를 단어 단위로 지운다 — 2026-09-30 "접속해서"→"서", 2026-10-02 음성으로
+    # "들어가 줘"가 "들어가죠"로 받아적히자 "죠"가 남아 "장안대학교 죠"로 검색돼 홈택스가 열렸다
+    words = [w.strip(" ,.!?") for w in t.split()]
+    words = [w for w in words if w and not _VERB_TOKEN.match(w) and w not in _ENDING_TOKENS]
+    return " ".join(words) or None
+
+
+# 열기/이동 동사로 시작하는 낱말 ("들어가죠", "열어줄래", "접속해요" 등) — 이름이 아니다
+_VERB_TOKEN = re.compile(r"^(들어가|들어와|접속|열어|열고|열기|열래|띄워|이동|가줘|가자|가봐|켜줘|켜고|실행|보여)")
+# 말끝/높임 찌꺼기만 남은 낱말
+_ENDING_TOKENS = {"죠", "요", "줘", "줘요", "주세요", "줄래", "줄래요", "주라", "라", "서", "고", "해", "좀",
+                  "게", "주", "좀요", "봐", "봐요", "줄래?", "다오"}
+
+
+def _main_word(name: str) -> str:
+    """검색어에서 가장 긴 낱말 — 결과 제목에 이게 있는지로 맞는 사이트인지 본다."""
+    words = [w for w in re.split(r"\s+", name or "") if len(w) >= 2]
+    return max(words, key=len).lower() if words else ""
 
 
 def find_homepage(name: str, timeout: float = 6.0):
-    """이름 → 공식 홈페이지 주소 (못 찾으면 None)."""
+    """이름 → 공식 홈페이지 주소 (못 찾으면 None).
+    검색어에 잘못 들은 말이 섞여 정확히 맞는 결과가 없으면("메소 장안대학교"), 가장 긴 낱말
+    ("장안대학교")만으로 한 번 더 찾는다 — 그래도 정확히 맞는 결과만 연다."""
+    main = _main_word(name)
+    queries = [name] + ([main] if main and main != name.lower() else [])
+    for query in queries:
+        url = _find_exact(query, timeout)
+        if url:
+            return url
+    return None
+
+
+def _find_exact(name: str, timeout: float):
     for finder in (_bing_first_result, _naver_most_common_site):
         try:
             url = finder(name, timeout)
@@ -221,12 +247,14 @@ def _bing_first_result(name: str, timeout: float):
             candidates.append((a.get_text(" ", strip=True), url))
     if not candidates:
         return None
-    # 제목에 찾는 이름이 들어간 결과를 먼저 (검색어가 조금 틀려도 엉뚱한 사이트를 덜 연다)
+    # 제목에 찾는 이름이 들어간 결과만 연다 — 예전엔 없으면 첫 결과를 열어서, 검색어가 조금만
+    # 틀려도("장안대학교 죠") 전혀 다른 사이트(홈택스)가 열렸다 (2026-10-02). 없으면 None → 네이버로.
     key = re.sub(r"\s+", "", name).lower()
+    main = _main_word(name)
     for title, url in candidates:
         if key and key in re.sub(r"\s+", "", title).lower():
             return url
-    return candidates[0][1]
+    return None
 
 
 def _unwrap_bing(href: str) -> str:
@@ -249,8 +277,11 @@ def _naver_most_common_site(name: str, timeout: float):
     r = requests.get("https://search.naver.com/search.naver", params={"query": name + " 홈페이지"},
                      headers=_HEADERS, timeout=timeout)
     soup = BeautifulSoup(r.text, "html.parser")
+    # 링크 글자에 찾는 이름(전체)이 들어간 것만 센다 (아무 링크나 세면 엉뚱한 사이트가 나올 수 있다)
+    key = re.sub(r"\s+", "", name).lower()
     urls = [a["href"] for a in soup.find_all("a", href=True)
-            if _is_official_candidate(a["href"]) and "naver" not in urlparse(a["href"]).netloc]
+            if _is_official_candidate(a["href"]) and "naver" not in urlparse(a["href"]).netloc
+            and key in re.sub(r"\s+", "", a.get_text(" ", strip=True)).lower()]
     if not urls:
         return None
     host, _ = Counter(urlparse(u).netloc for u in urls).most_common(1)[0]
@@ -297,6 +328,8 @@ def _extract_query(text: str, browser, site) -> str:
 def open_request(req: dict, label: str = None) -> str:
     """요청대로 열고 사용자에게 보여줄 문장을 돌려준다."""
     url = req.get("url")
+    if not url and req.get("target"):   # 주소를 못 찾았으면 검색 결과 화면으로 (엉뚱한 곳을 열지 않게)
+        url = "https://search.naver.com/search.naver?query=" + quote_plus(req["target"])
     browser = req.get("browser")
     site_label = SITES[req["site"]][0] if req.get("site") else None
     what = label or (f"'{req['query']}' {site_label} 검색 결과" if req.get("query")

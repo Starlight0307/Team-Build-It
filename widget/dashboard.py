@@ -19,6 +19,8 @@ from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen, QRadialGradient
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton,
                              QSizePolicy, QVBoxLayout, QWidget)
 
+from widget import icons
+
 # 숫자도 둥근 느낌이 나도록 각진 고정폭 글꼴 대신 시스템 기본 글꼴을 쓴다
 NUM_FONT = "'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', sans-serif"
 RADIUS = 20   # 카드 모서리
@@ -28,7 +30,8 @@ RADIUS = 20   # 카드 모서리
 # 🧱 기본 부품
 # ─────────────────────────────────────────────
 class Panel(QFrame):
-    """제목 줄(아이콘 + 제목 + 오른쪽 버튼들) + 내용(self.body)."""
+    """제목 줄(아이콘 + 제목 + 오른쪽 버튼들) + 내용(self.body).
+    icon은 assets/icons의 아이콘 이름 ("monitor" 등, widget/icons.py)."""
 
     def __init__(self, icon: str, title: str, parent=None):
         super().__init__(parent)
@@ -44,7 +47,7 @@ class Panel(QFrame):
         hl = QHBoxLayout(self.header)
         hl.setContentsMargins(16, 12, 12, 6)
         hl.setSpacing(6)
-        self.title = QLabel(f"{icon}  {title}")
+        self.title = QLabel(icons.label_html(icon, title, 17))
         hl.addWidget(self.title)
         hl.addStretch()
         self._header_layout = hl
@@ -58,8 +61,11 @@ class Panel(QFrame):
         self.body.setSpacing(8)
         outer.addWidget(body, 1)
 
-    def add_header_button(self, text: str, tooltip: str, on_click) -> QPushButton:
+    def add_header_button(self, text: str, tooltip: str, on_click, icon: str = None) -> QPushButton:
         btn = QPushButton(text)
+        if icon:
+            btn.setIcon(icons.icon(icon))
+            btn.setIconSize(QSize(14, 14))
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setToolTip(tooltip)
         btn.clicked.connect(on_click)
@@ -165,8 +171,8 @@ class SystemStatsPanel(Panel):
     """CPU/RAM 막대 + CPU/메모리/디스크 칸. 3초마다 psutil로 갱신."""
 
     def __init__(self, parent=None):
-        super().__init__("🖥️", "시스템 상태", parent)
-        self.add_header_button("🔄", "새로고침", self.refresh)
+        super().__init__("monitor", "시스템 상태", parent)
+        self.add_header_button("", "새로고침", self.refresh, icon="refresh-cw")
         self.cpu = StatBar("CPU 사용량")
         self.ram = StatBar("RAM 사용량")
         self.body.addWidget(self.cpu)
@@ -190,7 +196,11 @@ class SystemStatsPanel(Panel):
         self.cpu_history = (self.cpu_history + [cpu])[-20:]
         gb = 1024 ** 3
         self.cpu.set(cpu, f"{cpu:.0f}%")
-        self.ram.set(vm.percent, f"{vm.used / gb:.1f} / {vm.total / gb:.0f} GB")
+        # GB도 %와 같은 기준(전체 − 곧바로 쓸 수 있는 메모리)으로 — vm.used는 맥에서 압축 메모리를
+        # 빼고 세서 "16GB 중 9.9GB"인데 89%로 보이는 엇갈림이 있었다 (2026-10-02 사용자 제보).
+        # 이 기준은 맥 활성 상태 보기 "사용된 메모리", Windows 작업 관리자 "사용 중"과 거의 같다.
+        in_use = vm.total - vm.available
+        self.ram.set(vm.percent, f"{in_use / gb:.1f} / {vm.total / gb:.0f} GB")
         self.t_cpu.value.setText(f"{cpu:.0f}%")
         self.t_mem.value.setText(f"{vm.percent:.0f}%")
         self.t_disk.value.setText(f"{disk.used / gb:.0f}/{disk.total / gb:.0f} GB")
@@ -211,10 +221,10 @@ class WeatherPanel(Panel):
     _result = pyqtSignal(object)           # 스레드 → 메인 스레드 (dict 또는 오류 문장)
 
     def __init__(self, get_location, parent=None):
-        super().__init__("🌤️", "날씨", parent)
+        super().__init__("cloud-sun", "날씨", parent)
         self._get_location = get_location
         self._force_detect = False
-        self.add_header_button("🔄", "새로고침", self.refresh)
+        self.add_header_button("", "새로고침", self.refresh, icon="refresh-cw")
         top = QHBoxLayout()
         texts = QVBoxLayout()
         texts.setSpacing(2)
@@ -225,7 +235,8 @@ class WeatherPanel(Panel):
         for w in (self.temp, self.city, self.desc):
             texts.addWidget(w)
         top.addLayout(texts, 1)
-        self.icon = QLabel("⛅")
+        self.icon = QLabel()
+        self.icon.setPixmap(icons.pixmap("cloud-sun", 52))
         self.icon.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         top.addWidget(self.icon)
         self.body.addLayout(top)
@@ -239,7 +250,7 @@ class WeatherPanel(Panel):
         QTimer.singleShot(500, self.refresh)
 
     def detect_and_refresh(self):
-        """현재 위치를 다시 찾아서 날씨를 갱신 (환경설정 "📍 내 위치 찾기")."""
+        """현재 위치를 다시 찾아서 날씨를 갱신 (환경설정 "내 위치 찾기")."""
         self._force_detect = True
         self.refresh()
 
@@ -275,7 +286,7 @@ class WeatherPanel(Panel):
         self.temp.setText(f"{data['temp']:.1f}°C")
         self.city.setText(data["city"])
         self.desc.setText(data["desc"])
-        self.icon.setText(data["icon"])
+        self.icon.setPixmap(icons.pixmap(data.get("icon_name") or "cloud-sun", 52))
         self.t_hum.value.setText(f"{data['humidity']:.0f}%")
         self.t_wind.value.setText(f"{data['wind']:.1f} m/s")
         self.t_feel.value.setText(f"{data['feels']:.1f}°C")
@@ -287,7 +298,7 @@ class WeatherPanel(Panel):
             f"color: {p['tc']}; font-size: 28px; font-weight: 800; font-family: {NUM_FONT}; background: transparent;")
         self.city.setStyleSheet(f"color: {p['accent']}; font-size: 13px; font-weight: bold; background: transparent;")
         self.desc.setStyleSheet(f"color: {p['tc2']}; font-size: 12px; background: transparent;")
-        self.icon.setStyleSheet("font-size: 42px; background: transparent;")
+        self.icon.setStyleSheet("background: transparent;")
         for t in (self.t_hum, self.t_wind, self.t_feel):
             t.apply_theme(p)
 
@@ -298,7 +309,7 @@ class _ListPanel(Panel):
 
     def __init__(self, icon, title, empty_text, parent=None):
         super().__init__(icon, title, parent)
-        self.add_header_button("🔄", "새로고침", self.refresh)
+        self.add_header_button("", "새로고침", self.refresh, icon="refresh-cw")
         self._empty_text = empty_text
         self._rows = []
         self._p = None
@@ -358,7 +369,7 @@ class TodayPanel(_ListPanel):
     """오늘 일정 (루미 내부 캘린더)."""
 
     def __init__(self, get_user, parent=None):
-        super().__init__("📅", "오늘 일정", "오늘은 등록된 일정이 없어요.", parent)
+        super().__init__("calendar-days", "오늘 일정", "오늘은 등록된 일정이 없어요.", parent)
         self._get_user = get_user
         self.refresh()
 
@@ -382,7 +393,7 @@ class TodoPanel(_ListPanel):
     """할 일 (완료 안 한 것만)."""
 
     def __init__(self, get_user, parent=None):
-        super().__init__("✅", "할 일", "남은 할 일이 없어요. 👍", parent)
+        super().__init__("list-todo", "할 일", "남은 할 일이 없어요.", parent)
         self._get_user = get_user
         self.refresh()
 
@@ -401,7 +412,7 @@ class SessionPanel(Panel):
     """루미 가동 시간 · 이번 세션 명령 수 · PC 켜진 시간 · 시스템 부하."""
 
     def __init__(self, stats_panel: SystemStatsPanel, parent=None):
-        super().__init__("⏱️", "세션", parent)
+        super().__init__("timer", "세션", parent)
         self._stats = stats_panel
         self._started = time.time()
         self.commands = 0

@@ -75,7 +75,26 @@ def current_voice_model() -> str:
         return "small"
 
 
-SAMPLE_RATE = 16000          # whisper 입력 샘플레이트
+SAMPLE_RATE = 16000
+
+
+def resample_to_16k(audio, rate: int, np):
+    """마이크 소리(보통 44.1/48kHz)를 받아쓰기용 16kHz로 — 8kHz 넘는 성분을 잘라내고 줄인다.
+    예전엔 np.interp(선형 보간)로 그냥 줄여서, 걸러지지 않은 고주파가 말소리 대역으로 접혀
+    들어오는 에일리어싱이 생겼다("ㅅ/ㅆ/ㅊ"처럼 고주파가 많은 소리가 특히 뭉개짐). 한 마디(최대
+    20초) 단위라 FFT로 대역을 자르는 방식이 numpy만으로 빠르고 정확하다."""
+    audio = np.asarray(audio, dtype=np.float32)
+    n_in = len(audio)
+    if n_in == 0 or rate == SAMPLE_RATE:
+        return audio
+    n_out = max(1, int(round(n_in * SAMPLE_RATE / rate)))
+    spec = np.fft.rfft(audio)
+    keep = n_out // 2 + 1                       # 새 나이퀴스트(8kHz)까지만 남긴다
+    out_spec = np.zeros(keep, dtype=spec.dtype)
+    m = min(keep, len(spec))
+    out_spec[:m] = spec[:m]
+    out = np.fft.irfft(out_spec, n_out) * (n_out / n_in)
+    return out.astype(np.float32)          # whisper 입력 샘플레이트
 BLOCK_SEC   = 0.03           # 30ms 단위로 소리 크기 판단
 PRE_ROLL_SEC     = 0.3       # 말 시작 직전 소리도 같이 넣어 첫 음절이 잘리지 않게
 END_SILENCE_SEC  = 1.0       # 이만큼 조용하면 말이 끝난 것으로 본다 (0.8초는 "크롬에서… 장안대학교" 처럼
@@ -106,8 +125,61 @@ VOICE_PROMPT_SENTENCES = (
 VOICE_PROMPT = " ".join(VOICE_PROMPT_SENTENCES)
 
 
+def user_words() -> list:
+    """환경설정 > 음성 > 자주 쓰는 단어 (쉼표로 구분, 최대 20개)."""
+    raw = app_settings.get("voice_words") or ""
+    words = [w.strip() for w in re.split(r"[,\n]", raw) if w.strip()]
+    return list(dict.fromkeys(words))[:20]
+
+
+def _user_words_sentence() -> str:
+    words = user_words()
+    # 쉼표 목록 그대로 주면 모델이 목록을 이어서 받아적는 부작용이 있어(9/30 측정) 문장으로 준다
+    return f"{', '.join(words)} 같은 말도 자주 해요." if words else ""
+
+
+def current_hotwords() -> str:
+    """단어 힌트 = 사용자가 등록한 고유명사만. 처음엔 크롬/네이버 같은 기본 단어도 넣었는데,
+    시끄러울 때 모델이 그 단어를 지어내서 "크롬 네이버 서비스 크롬 네이버 접속해줘"처럼 엉뚱한
+    명령이 되는 것을 실측으로 확인했다(2026-10-02). 동작을 일으키는 단어는 넣지 않는다 —
+    기본 단어는 예시 문장(VOICE_PROMPT) 안에서만 알려준다."""
+    return " ".join(user_words())
+
+
+def _copies_hotwords(text: str) -> bool:
+    """힌트 단어를 베낀 받아쓰기인가: 힌트 목록 순서 그대로 3개가 연달아 나오거나,
+    같은 두 단어 묶음이 두 번 나오면("크롬 네이버 … 크롬 네이버") 베낀 것으로 본다."""
+    n = _normalize(text)
+    hot = [_normalize(w) for w in current_hotwords().split() if w.strip()]
+    if any("".join(hot[i:i + 3]) in n for i in range(len(hot) - 2)):
+        return True
+    words = [_normalize(w) for w in (text or "").split() if _normalize(w)]
+    pairs = [words[i] + words[i + 1] for i in range(len(words) - 1)]
+    return any(pairs.count(p) >= 2 for p in pairs)
+
+
+# 명령 끝 "줘"가 "죠"로 받아적히는 경우가 잦다(발음이 비슷 — "들어가 줘" → "들어가죠"). 루미에게 하는
+# 말은 대부분 부탁이라, 동사 뒤 문장 끝의 "죠"만 "줘"로 고친다 ("그렇죠"처럼 동사가 아닌 건 그대로).
+_COMMAND_ENDING = re.compile(r"(가|와|해|봐|켜|어|아|여|워|내)\s?죠([.!?]?)$")
+
+
+def fix_command_ending(text: str) -> str:
+    return _COMMAND_ENDING.sub(r"\1줘\2", (text or "").strip())
+
+
+def current_prompt() -> str:
+    """받아쓰기 힌트 = 기본 예시 문장 + 사용자가 등록한 고유명사.
+    고유명사(사람/학교/회사/앱 이름)는 받아쓰기 모델이 가장 자주 틀리는 부분이라, 미리 알려주면
+    비슷한 소리의 다른 단어로 받아적는 일이 크게 줄어든다."""
+    extra = _user_words_sentence()
+    return f"{VOICE_PROMPT} {extra}".strip()
+
+
 def _copies_prompt(text: str) -> bool:
     n = _normalize(text)
+    words_sentence = _user_words_sentence()
+    if words_sentence and _normalize(words_sentence)[:12] in n:
+        return True
     for sentence in VOICE_PROMPT_SENTENCES:
         core = _normalize(sentence).replace("루미야", "")
         if len(core) >= 6 and core in n:
@@ -392,15 +464,17 @@ class VoiceListener(QThread):
             return None
         audio = np.concatenate(voiced)
         if rate != SAMPLE_RATE:
-            n = int(len(audio) * SAMPLE_RATE / rate)
-            audio = np.interp(np.linspace(0, len(audio) - 1, n), np.arange(len(audio)), audio)
+            audio = resample_to_16k(audio, rate, np)
         return audio.astype(np.float32)
 
     @staticmethod
-    def _run_whisper(model, audio, prompt) -> str:
+    def _run_whisper(model, audio, prompt, use_hotwords: bool = True) -> str:
         segments, _ = model.transcribe(
             audio, language="ko", beam_size=5, vad_filter=True,
             condition_on_previous_text=False, initial_prompt=prompt,
+            # 단어 힌트 — 시끄러운 환경 측정(10/2, 48kHz 마이크 경로 24문장)에서 오류율
+            # 21.4% → 17.1%. 조용한 환경에서는 차이 없음(부작용 없음).
+            hotwords=current_hotwords() if (prompt and use_hotwords) else None,
         )
         parts = [s.text for s in segments
                  if not (s.no_speech_prob > 0.6 and s.avg_logprob < -1.0)]
@@ -411,7 +485,11 @@ class VoiceListener(QThread):
         peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
         if 0 < peak < 0.5:
             audio = audio * (0.5 / peak)
-        text = self._run_whisper(model, audio, VOICE_PROMPT)
+        text = self._run_whisper(model, audio, current_prompt())
+        # 단어 힌트 목록을 그대로 받아적는 경우("크롬에서 장안대학교…" → "루미야 자비스 크롬 네이버…",
+        # 2026-10-02 실측) → 힌트 없이 다시 받아쓴다
+        if _copies_hotwords(text):
+            text = self._run_whisper(model, audio, VOICE_PROMPT, use_hotwords=False) or text
         # 드물게 힌트 문장을 그대로 베껴 쓰는 경우가 있다("캘린더에 다음 주…" →
         # "여러분, 오늘 일정 알려줘.") → 힌트 없이 다시 받아써서 그 결과를 쓴다.
         # 사용자가 정말 그 문장을 말했다면 다시 받아써도 같은 문장이 나온다.
@@ -419,7 +497,7 @@ class VoiceListener(QThread):
             text = self._run_whisper(model, audio, None) or text
         if any(h in text for h in _HALLUCINATIONS):
             return ""
-        return text
+        return fix_command_ending(text)
 
 
 # ─────────────────────────────────────────────

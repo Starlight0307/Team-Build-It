@@ -132,7 +132,9 @@ def _chat_once(system_prompt: str, user_prompt: str) -> str:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        options={"temperature": 0.3},
+        # num_predict: 길이 상한 — 모델이 반복에 빠지면 끝없이 생성해서 루미 전체가 멈춘다
+        # (2026-10-02 core/ai_worker.py _MAX_REPLY_TOKENS 참고). 번역은 원문이 길 수 있어 넉넉히.
+        options={"temperature": 0.3, "num_predict": 2048},
     )
     return (response.get("message", {}).get("content") or "").strip()
 

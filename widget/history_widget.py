@@ -7,6 +7,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QGraphicsOpacityEffect, QSplitter, QLineEdit)
 from PyQt6.QtCore import Qt, QPropertyAnimation, QThread, QTimer, pyqtSignal
 
+from widget import icons
+
 from data.db import load_sessions, load_messages, search_sessions
 from widget.widgets import bubble_max_width, ideal_bubble_width
 
@@ -150,7 +152,7 @@ class SessionItem(QPushButton):
         font = self.title_lbl.font(); font.setBold(True); font.setPointSize(11)
         self.title_lbl.setFont(font)
         meta = f"{date_str}  ·  {msg_count}개"
-        if match_count: meta += f"  ·  🔍 {match_count}건"
+        if match_count: meta += f"  ·  검색 결과 {match_count}건"
         self.meta_lbl = QLabel(meta)
         font2 = self.meta_lbl.font(); font2.setPointSize(9); self.meta_lbl.setFont(font2)
         layout.addWidget(self.title_lbl); layout.addWidget(self.meta_lbl)
@@ -194,8 +196,9 @@ class HistoryWidget(QWidget):
         # 헤더
         hf = QFrame(); hf.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True); hf.setFixedHeight(54)
         hl = QHBoxLayout(hf); hl.setContentsMargins(20, 0, 20, 0)
-        self.title_lbl = QLabel("🕒 대화 기록"); hl.addWidget(self.title_lbl); hl.addStretch()
-        self.refresh_btn = QPushButton("🔄 새로고침"); self.refresh_btn.setFixedSize(110, 34)
+        self.title_lbl = QLabel(icons.label_html("history", "대화 기록", 22)); hl.addWidget(self.title_lbl); hl.addStretch()
+        self.refresh_btn = QPushButton(" 새로고침"); self.refresh_btn.setFixedSize(110, 34)
+        self.refresh_btn.setIcon(icons.icon("refresh-cw", white=True))
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.setStyleSheet("background-color: #8B78EE; color: white; font-weight: bold; border-radius: 6px; border: none;")
         self.refresh_btn.clicked.connect(self.load_sessions); hl.addWidget(self.refresh_btn)
@@ -216,7 +219,8 @@ class HistoryWidget(QWidget):
         # 검색창 — 입력이 멈추고 300ms 뒤에 검색 (타이핑마다 파일을 다 읽지 않도록)
         sw = QWidget(); sw.setStyleSheet("background: transparent;")
         sl = QHBoxLayout(sw); sl.setContentsMargins(8, 8, 8, 8)
-        self.search_input = QLineEdit(); self.search_input.setPlaceholderText("🔍 대화 내용 검색")
+        self.search_input = QLineEdit(); self.search_input.setPlaceholderText("대화 내용 검색")
+        self.search_input.addAction(icons.icon("search"), QLineEdit.ActionPosition.LeadingPosition)
         self.search_input.setClearButtonEnabled(True); self.search_input.setFixedHeight(32)
         sl.addWidget(self.search_input); ll.addWidget(sw)
         self._search_timer = QTimer(self); self._search_timer.setSingleShot(True); self._search_timer.setInterval(300)
