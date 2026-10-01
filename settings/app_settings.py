@@ -22,6 +22,9 @@ DEFAULTS = {
     "voice_reply": True,   # 음성으로 물어보면 답변을 소리로 읽어주기
     "voice_model": None,   # 음성 인식 모델 — None이면 PC 사양 보고 자동 (core/voice.py)
     "voice_words": "",     # 음성 인식이 잘 못 알아듣는 고유명사(이름/학교/회사 등), 쉼표로 구분
+    "quiet_hours_enabled": False,  # 알림 토스트 묵음 시간대 사용 여부 (plugins/reminder.py)
+    "quiet_hours_start": None,     # 묵음 시작 시각(0~23) — enabled=True일 때만 유효
+    "quiet_hours_end": None,       # 묵음 종료 시각(0~23) — start보다 작으면 자정을 넘는 범위
 }
 
 _cache = None

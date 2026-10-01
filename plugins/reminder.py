@@ -140,6 +140,8 @@ import uuid
 import threading
 from datetime import datetime, timedelta
 
+from settings import app_settings
+
 # 2026-09-28 ChatGPT 검수 지적: IoT 자동 실행(action)이 붙은 daily reminder/
 # condition은 반드시 등록한 사용자에게 귀속돼야 한다 — 이 필드가 없으면
 # 로그인 여부와 무관한 기존 전역 저장 구조 때문에 "사용자 A가 등록한 자동
@@ -267,7 +269,47 @@ _CONDITION_TYPES = {
         "comparison": "gte",
         "label": lambda c: f"'{c['target'] or '전체'}' 사용 시간 {int(c['threshold'])}일 연속 증가",
     },
+    "rain_forecast": {
+        # 2026-10-01 브레인스토밍 11번: plugins/weather.py의 get_rain_probability
+        # (30분 캐시)를 getter로 쓴다. target="today"/"tomorrow". period="day"인
+        # 이유 — 강수확률은 날짜가 바뀌면 다른 날 예보가 되므로 usage_limit과
+        # 같이 날짜가 바뀔 때 last_state를 리셋해야 "하루에 한 번"만 알린다.
+        # 선택 필드 active_from_hour/weekdays_only는 get_due_conditions의
+        # _is_condition_active가 처리한다(이 타입에서만 설정됨).
+        "getter": "get_rain_probability",
+        "needs_target": True,
+        "period": "day",
+        "comparison": "gte",
+        "label": lambda c: _rain_condition_label(c),
+    },
 }
+
+
+def _rain_condition_label(c: dict) -> str:
+    when_kr = "내일" if c.get("target") == "tomorrow" else "오늘"
+    parts = []
+    if c.get("weekdays_only") is True:
+        parts.append("평일")
+    hour = c.get("active_from_hour")
+    if isinstance(hour, int) and not isinstance(hour, bool):
+        parts.append(f"{hour}시 이후")
+    prefix = (" ".join(parts) + " ") if parts else ""
+    return f"{prefix}{when_kr} 최대 강수확률 {c['threshold']:.0f}% 이상"
+
+
+def _is_condition_active(c: dict, now: datetime) -> bool:
+    """get_due_conditions가 getter를 부르기 전에 확인하는 선택적 활성 조건 —
+    active_from_hour(그 시각 이전엔 평가하지 않음)와 weekdays_only(주말엔
+    평가하지 않음). 두 필드는 rain_forecast에서만 설정되고 기존 조건(필드
+    없음)은 항상 활성이라 동작이 바뀌지 않는다. 손상된 값(정수가 아닌
+    active_from_hour 등)은 제한 없음으로 무시한다 — 알림이 영원히 안
+    울리는 것보다 평소대로 평가되는 쪽이 안전한 기본값."""
+    hour = c.get("active_from_hour")
+    if isinstance(hour, int) and not isinstance(hour, bool) and now.hour < hour:
+        return False
+    if c.get("weekdays_only") is True and now.weekday() >= 5:
+        return False
+    return True
 
 # _CONDITION_TYPES["trend_streak"]의 label 람다와 set_trend_condition이 함께
 # 쓰는 표시용 한글 이름 — LLM에는 target을 영문 enum(cpu_increasing 등)으로
@@ -310,7 +352,7 @@ assert all(spec["comparison"] in _COMPARATORS for spec in _CONDITION_TYPES.value
 # 않는다. 2026-09-30 add_todo 추가: 할 일 추가는 사용자가 목록에서 언제든
 # 지우거나 완료 취소할 수 있어 iot_control과 마찬가지로 안전하게 되돌릴 수
 # 있다는 기준을 그대로 만족한다.
-ALLOWED_ACTIONS = {"notify", "iot_control", "add_todo"}
+ALLOWED_ACTIONS = {"notify", "iot_control", "add_todo", "run_scene"}
 
 ACTION_LOG_FILE      = os.path.join(ROUTINES_DIR, "action_log.jsonl")
 _action_log_lock     = threading.Lock()
@@ -342,17 +384,32 @@ def _build_action_from_todo_args(todo_text: str = ""):
     return {"type": "add_todo", "text": todo_text}
 
 
-def _build_action(iot_device_name: str = "", iot_state: str = "", todo_text: str = ""):
+def _build_action_from_scene_args(scene_name: str = ""):
+    """LLM tool-calling에서 넘어오는 평평한 scene_name 인자를 내부 action
+    dict로 변환한다. 2026-10-01 "도구 간 연결성" 확장 — IoT 씬(plugins/
+    iot_control.py의 run_scene)을 정기 알림/조건부 알림의 자동 실행
+    액션으로 등록할 수 있게 한다. _build_action_from_iot_args/_todo_args와
+    같은 이유로 평평한 인자 방식을 쓴다(모듈 docstring 참고) — 비어있으면
+    자동 실행 없음(None)."""
+    scene_name = (scene_name or "").strip()
+    if not scene_name:
+        return None
+    return {"type": "run_scene", "scene_name": scene_name}
+
+
+def _build_action(iot_device_name: str = "", iot_state: str = "", todo_text: str = "", scene_name: str = ""):
     """여러 종류의 자동 실행 평평한 인자를 조합해 action dict 하나로 만든다.
     (action, error) 튜플을 반환 — error가 있으면 action은 항상 None이다.
-    두 종류를 동시에 채우면 어느 것을 실행할지 모호하므로, 조용히 하나를
+    두 종류 이상을 동시에 채우면 어느 것을 실행할지 모호하므로, 조용히 하나를
     고르지 않고 명시적으로 되묻는다(file_search/todo_list와 동일한 '모호하면
     되묻는다' 원칙)."""
     iot_action = _build_action_from_iot_args(iot_device_name, iot_state)
     todo_action = _build_action_from_todo_args(todo_text)
-    if iot_action and todo_action:
-        return None, "⚠️ 기기 자동 제어와 할 일 자동 추가를 동시에 등록할 수 없어요 — 하나만 선택해주세요."
-    return (iot_action or todo_action), None
+    scene_action = _build_action_from_scene_args(scene_name)
+    chosen = [a for a in (iot_action, todo_action, scene_action) if a]
+    if len(chosen) > 1:
+        return None, "⚠️ 기기 자동 제어, 할 일 자동 추가, 씬 자동 실행 중 하나만 선택해주세요."
+    return (chosen[0] if chosen else None), None
 
 
 def _validate_action(action) -> str:
@@ -370,6 +427,9 @@ def _validate_action(action) -> str:
     if action["type"] == "add_todo":
         if not action.get("text"):
             return "⚠️ 자동으로 추가할 할 일 내용을 함께 알려주세요."
+    if action["type"] == "run_scene":
+        if not action.get("scene_name"):
+            return "⚠️ 자동으로 실행할 씬 이름을 함께 알려주세요."
     return None
 
 
@@ -392,6 +452,8 @@ def _describe_action(action) -> str:
         return f"'{action.get('device_name')}' 기기를 자동으로 {state_kr}."
     if action.get("type") == "add_todo":
         return f"'{action.get('text')}' 할 일을 자동으로 추가합니다."
+    if action.get("type") == "run_scene":
+        return f"'{action.get('scene_name')}' 씬을 자동으로 실행합니다."
     return ""
 
 
@@ -437,6 +499,36 @@ def _execute_action(action, func_map: dict) -> dict:
         # 시작) — iot_control과 동일한 화이트리스트 판정 원칙을 유지하되, "✅"가
         # 문자열 맨 앞이 아니라 대괄호 다음에 오는 이 함수의 실제 포맷에 맞춘다.
         success = isinstance(result, str) and result.strip().startswith(("✅", "[✅"))
+        return {"executed": True, "success": success, "detail": str(result)}
+
+    if action.get("type") == "run_scene":
+        run_scene_func = (func_map or {}).get("run_scene")
+        if not run_scene_func:
+            return {"executed": True, "success": False,
+                    "detail": "⚠️ IoT 씬 플러그인이 설치되어 있지 않습니다."}
+        try:
+            result = run_scene_func(scene_name=action.get("scene_name", ""))
+        except Exception as e:
+            return {"executed": True, "success": False, "detail": f"⚠️ 실행 중 오류가 발생했습니다: {e}"}
+        # iot_control.run_scene()의 실제 구현을 보면 "✅"로 시작하지 않고
+        # "[🏠 씬 실행: '...']" 헤더 뒤에 기기별 결과와 "N/M개 모두
+        # 성공했어요"/"N개 실패했어요" 요약이 붙는다 — iot_control/add_todo의
+        # 기존 "✅ 접두사" 화이트리스트 판정을 그대로 쓸 수 없어서, 이 함수의
+        # 실제 성공 마커("모두 성공했어요")로 판정한다. 씬 안의 기기 하나라도
+        # 실패하면 전체를 success=False로 처리해 재시도를 유도한다(이미 켜진
+        # 기기를 다시 켜는 건 멱등이라 재시도해도 안전).
+        #
+        # ChatGPT 검수 지적(2026-10-01, P1): 처음엔 "모두 성공했어요" in
+        # result(전체 문자열 부분 검색)로 판정했는데, run_scene()의 첫 줄
+        # "[🏠 씬 실행: '{scene_name}']"에 사용자가 지은 씬 이름이 그대로
+        # 들어간다 — 씬 이름 자체가 "모두 성공했어요"라는 문구를 우연히
+        # 포함하면(예: "모두 성공했어요 테스트") 실제로는 전부 실패했어도
+        # 헤더에 그 문구가 섞여 있다는 이유만으로 성공으로 오판된다. 요약
+        # 줄은 항상 결과 문자열의 마지막 줄이므로(최소 기기 결과 줄 1개 +
+        # 요약 줄로 2줄 이상 보장), 전체가 아니라 마지막 줄만 검사해서 씬
+        # 이름에 어떤 문구가 들어가도 섞이지 않게 한다.
+        last_line = result.strip().split("\n")[-1] if isinstance(result, str) else ""
+        success = last_line.endswith("모두 성공했어요.")
         return {"executed": True, "success": success, "detail": str(result)}
 
     return {"executed": True, "success": False,
@@ -638,6 +730,15 @@ TOOL_SCHEMAS = {
                             "명시적으로 요청한 경우에만 채우세요. iot_device_name과 동시에 채우지 "
                             "마세요(하나만 선택). 단순히 알림만 원하면 반드시 비워두세요."
                         )
+                    },
+                    "scene_name": {
+                        "type": "string",
+                        "description": (
+                            "이 시각이 되면 자동으로 실행할 IoT 씬 이름(선택, 예: '취침모드'). "
+                            "사용자가 '매일 밤 11시에 취침모드 실행해줘'처럼 씬 자동 실행까지 "
+                            "명시적으로 요청한 경우에만 채우세요. iot_device_name/todo_text와 동시에 "
+                            "채우지 마세요(하나만 선택). 단순히 알림만 원하면 반드시 비워두세요."
+                        )
                     }
                 },
                 "required": ["hour"]
@@ -706,6 +807,15 @@ TOOL_SCHEMAS = {
                             "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
                             "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
                         )
+                    },
+                    "scene_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 실행할 IoT 씬 이름(선택, 예: '취침모드'). "
+                            "사용자가 씬 자동 실행까지 명시적으로 요청한 경우에만 채우고, "
+                            "iot_device_name/todo_text와 동시에 채우지 마세요(하나만 선택). 단순 "
+                            "알림만 원하면 비워두세요."
+                        )
                     }
                 },
                 "required": ["target", "threshold_minutes"]
@@ -744,6 +854,15 @@ TOOL_SCHEMAS = {
                             "조건이 충족되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
                             "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
                             "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "scene_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 실행할 IoT 씬 이름(선택, 예: '취침모드'). "
+                            "사용자가 씬 자동 실행까지 명시적으로 요청한 경우에만 채우고, "
+                            "iot_device_name/todo_text와 동시에 채우지 마세요(하나만 선택). 단순 "
+                            "알림만 원하면 비워두세요."
                         )
                     }
                 },
@@ -785,9 +904,76 @@ TOOL_SCHEMAS = {
                             "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
                             "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
                         )
+                    },
+                    "scene_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 실행할 IoT 씬 이름(선택, 예: '취침모드'). "
+                            "사용자가 씬 자동 실행까지 명시적으로 요청한 경우에만 채우고, "
+                            "iot_device_name/todo_text와 동시에 채우지 마세요(하나만 선택). 단순 "
+                            "알림만 원하면 비워두세요."
+                        )
                     }
                 },
                 "required": ["threshold_percent"]
+            }
+        }
+    },
+    "set_weather_condition": {
+        "type": "function",
+        "function": {
+            "name": "set_weather_condition",
+            "description": (
+                "오늘 또는 내일 '하루 중 최대 강수확률'이 정해진 퍼센트 이상이면 알려주는 "
+                "조건부 알림을 등록합니다(환경설정에 기본 날씨 지역이 설정돼 있어야 동작). "
+                "사용자가 '비 오면 알려줘', '평일 아침 7시에 날씨 확인해서 비 올 것 같으면 "
+                "우산 알려줘', '내일 비 올 확률 60% 넘으면 알려줘' 등을 말할 때 호출하세요. "
+                "'아침 7시'처럼 시각이 있으면 check_hour(그 시각 '이후'부터 계속 확인 — 그 "
+                "시각에 딱 한 번만 확인하는 게 아님), '평일'만이면 weekdays_only=true로 "
+                "채우세요. 같은 날 한 번만 알립니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "threshold_percent": {"type": "number", "description": "이 강수확률(%) 이상이면 알림. 사용자가 '비 오면'처럼 수치를 안 말했으면 50"},
+                    "when": {
+                        "type": "string",
+                        "enum": ["today", "tomorrow"],
+                        "description": "today=오늘 강수확률, tomorrow=내일 강수확률. 기본 today"
+                    },
+                    "check_hour": {"type": "integer", "description": "이 시각(0~23시)부터 그날 계속 확인(선택, 예: 아침 7시면 7). 그 시각에 한 번만 보는 게 아니라 그 시각 이후 확률이 기준 이상이 되는 순간 알림. 말하지 않았으면 생략"},
+                    "weekdays_only": {"type": "boolean", "description": "평일(월~금)에만 확인할지(선택). '평일'이라고 말했을 때만 true"},
+                    "label": {"type": "string", "description": "무엇에 대한 알림인지(예: '우산'). 없으면 생략 가능"},
+                    "iot_device_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 켜거나 끌 IoT 기기 이름(선택). 사용자가 기기 "
+                            "자동 제어까지 명시적으로 요청한 경우에만 채우고, 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "iot_state": {
+                        "type": "string",
+                        "enum": ["on", "off"],
+                        "description": "iot_device_name을 채웠을 때만 함께 지정하세요 — 기기를 켤지(on) 끌지(off)."
+                    },
+                    "todo_text": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
+                            "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
+                            "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "scene_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 실행할 IoT 씬 이름(선택). 사용자가 씬 자동 "
+                            "실행까지 명시적으로 요청한 경우에만 채우고, iot_device_name/todo_text와 "
+                            "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
+                    }
+                },
+                "required": []
             }
         }
     },
@@ -826,6 +1012,15 @@ TOOL_SCHEMAS = {
                             "조건이 충족되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
                             "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
                             "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "scene_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 실행할 IoT 씬 이름(선택, 예: '취침모드'). "
+                            "사용자가 씬 자동 실행까지 명시적으로 요청한 경우에만 채우고, "
+                            "iot_device_name/todo_text와 동시에 채우지 마세요(하나만 선택). 단순 "
+                            "알림만 원하면 비워두세요."
                         )
                     }
                 },
@@ -880,6 +1075,15 @@ TOOL_SCHEMAS = {
                             "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
                             "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
                         )
+                    },
+                    "scene_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 실행할 IoT 씬 이름(선택, 예: '취침모드'). "
+                            "사용자가 씬 자동 실행까지 명시적으로 요청한 경우에만 채우고, "
+                            "iot_device_name/todo_text와 동시에 채우지 마세요(하나만 선택). 단순 "
+                            "알림만 원하면 비워두세요."
+                        )
                     }
                 },
                 "required": ["target"]
@@ -925,6 +1129,15 @@ TOOL_SCHEMAS = {
                             "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
                             "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
                         )
+                    },
+                    "scene_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 실행할 IoT 씬 이름(선택, 예: '취침모드'). "
+                            "사용자가 씬 자동 실행까지 명시적으로 요청한 경우에만 채우고, "
+                            "iot_device_name/todo_text와 동시에 채우지 마세요(하나만 선택). 단순 "
+                            "알림만 원하면 비워두세요."
+                        )
                     }
                 },
                 "required": []
@@ -967,6 +1180,15 @@ TOOL_SCHEMAS = {
                             "조건이 충족되면 자동으로 할 일 목록에 추가할 내용(선택). 사용자가 "
                             "자동 추가까지 명시적으로 요청한 경우에만 채우고, iot_device_name과 "
                             "동시에 채우지 마세요(하나만 선택). 단순 알림만 원하면 비워두세요."
+                        )
+                    },
+                    "scene_name": {
+                        "type": "string",
+                        "description": (
+                            "조건이 충족되면 자동으로 실행할 IoT 씬 이름(선택, 예: '취침모드'). "
+                            "사용자가 씬 자동 실행까지 명시적으로 요청한 경우에만 채우고, "
+                            "iot_device_name/todo_text와 동시에 채우지 마세요(하나만 선택). 단순 "
+                            "알림만 원하면 비워두세요."
                         )
                     }
                 },
@@ -1018,6 +1240,50 @@ TOOL_SCHEMAS = {
                 },
                 "required": []
             }
+        }
+    },
+    "set_quiet_hours": {
+        "type": "function",
+        "function": {
+            "name": "set_quiet_hours",
+            "description": (
+                "매일 정해진 시간대에는 알림 토스트를 띄우지 않는 '묵음 시간대'를 "
+                "설정합니다. 사용자가 '밤 10시부터 아침 7시까지는 알림 묵음으로 해줘', "
+                "'자는 동안엔 알림 띄우지 마' 등을 말할 때 호출하세요. 정기/조건부 알림에 "
+                "등록해둔 IoT 자동 실행 자체는 이 시간대에도 평소대로 계속 동작합니다 — "
+                "묵음은 화면에 뜨는 알림(토스트)만 막습니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_hour": {"type": "integer", "description": "묵음 시작 시각(0~23시)"},
+                    "end_hour": {"type": "integer", "description": "묵음 종료 시각(0~23시). 시작보다 작아도 됩니다(자정을 넘는 범위, 예: 22시~7시)."}
+                },
+                "required": ["start_hour", "end_hour"]
+            }
+        }
+    },
+    "cancel_quiet_hours": {
+        "type": "function",
+        "function": {
+            "name": "cancel_quiet_hours",
+            "description": (
+                "설정해둔 묵음 시간대를 해제합니다. 사용자가 '묵음 시간대 해제해줘', "
+                "'이제 알림 다시 평소대로 보여줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "get_quiet_hours_status": {
+        "type": "function",
+        "function": {
+            "name": "get_quiet_hours_status",
+            "description": (
+                "현재 설정된 묵음 시간대가 있는지, 있다면 몇 시부터 몇 시까지인지 "
+                "확인합니다. 사용자가 '묵음 시간대 뭐로 해놨지', '지금 알림 묵음 "
+                "설정돼 있어?' 등을 물을 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
 }
@@ -1127,7 +1393,7 @@ def _save_routines():
 
 
 def set_daily_reminder(hour: int, minute: int = 0, label: str = "",
-                        iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
+                        iot_device_name: str = "", iot_state: str = "", todo_text: str = "", scene_name: str = "") -> str:
     print(f"\n🔁 [정기 알림] 설정 중: 매일 {hour}시 {minute}분" + (f" ('{label}')" if label else ""))
     try:
         hour = int(hour)
@@ -1137,7 +1403,7 @@ def set_daily_reminder(hour: int, minute: int = 0, label: str = "",
     if not (0 <= hour <= 23) or not (0 <= minute <= 59):
         return "⚠️ 시각은 0~23시, 0~59분 사이로 말씀해주세요."
 
-    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
     if build_error:
         return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
@@ -1291,29 +1557,35 @@ def _save_conditions():
         print(f"[조건부 알림] 저장 오류: {e}")
 
 
-def _register_condition(ctype: str, threshold: float, target: str = "", label: str = "", action=None) -> str:
+def _register_condition(ctype: str, threshold: float, target: str = "", label: str = "", action=None,
+                        extra: dict = None) -> str:
     """4개 set_*_condition이 공유하는 저장 로직 — 검증/친절한 확인 문구는
     조건 타입마다 단위가 달라서(분/원/%) 각 공개 함수에 남겨두고, "조건을
-    딕셔너리로 만들어 저장한다"는 반복되는 부분만 여기로 뺐다."""
+    딕셔너리로 만들어 저장한다"는 반복되는 부분만 여기로 뺐다. extra는
+    특정 타입만 쓰는 선택 필드(rain_forecast의 active_from_hour/weekdays_only)
+    를 그대로 병합한다 — 기본 필드를 덮어쓰지 못하게 기본 필드가 항상
+    우선한다."""
     _ensure_conditions_loaded()
     condition_id = uuid.uuid4().hex[:8]
+    entry = dict(extra or {})
+    entry.update({
+        "type": ctype,
+        "target": target,
+        "threshold": threshold,
+        "label": (label or "").strip(),
+        "last_state": False,
+        "period_key": None,
+        "action": action,
+        "owner": _current_user_id if action else None,
+    })
     with _conditions_lock:
-        _conditions[condition_id] = {
-            "type": ctype,
-            "target": target,
-            "threshold": threshold,
-            "label": (label or "").strip(),
-            "last_state": False,
-            "period_key": None,
-            "action": action,
-            "owner": _current_user_id if action else None,
-        }
+        _conditions[condition_id] = entry
         _save_conditions()
     return condition_id
 
 
 def set_usage_condition(target: str, threshold_minutes: float, label: str = "",
-                         iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
+                         iot_device_name: str = "", iot_state: str = "", todo_text: str = "", scene_name: str = "") -> str:
     print(f"\n🎯🔁 [조건부 알림] 설정 중: '{target}' {threshold_minutes}분 넘으면" + (f" ('{label}')" if label else ""))
     target = (target or "").strip()
     if not target:
@@ -1325,7 +1597,7 @@ def set_usage_condition(target: str, threshold_minutes: float, label: str = "",
     if threshold_minutes <= 0:
         return "⚠️ 기준 시간은 0분보다 커야 해요."
 
-    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
     if build_error:
         return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
@@ -1351,7 +1623,7 @@ def set_usage_condition(target: str, threshold_minutes: float, label: str = "",
 
 
 def set_spending_condition(threshold_amount: float, label: str = "",
-                            iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
+                            iot_device_name: str = "", iot_state: str = "", todo_text: str = "", scene_name: str = "") -> str:
     print(f"\n💰🔁 [조건부 알림] 설정 중: 이번달 지출 {threshold_amount}원 넘으면" + (f" ('{label}')" if label else ""))
     try:
         threshold_amount = float(threshold_amount)
@@ -1360,7 +1632,7 @@ def set_spending_condition(threshold_amount: float, label: str = "",
     if threshold_amount <= 0:
         return "⚠️ 기준 금액은 0원보다 커야 해요."
 
-    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
     if build_error:
         return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
@@ -1381,7 +1653,7 @@ def set_spending_condition(threshold_amount: float, label: str = "",
 
 
 def set_cpu_condition(threshold_percent: float, label: str = "",
-                       iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
+                       iot_device_name: str = "", iot_state: str = "", todo_text: str = "", scene_name: str = "") -> str:
     print(f"\n🖥️🔁 [조건부 알림] 설정 중: CPU {threshold_percent}% 넘으면" + (f" ('{label}')" if label else ""))
     try:
         threshold_percent = float(threshold_percent)
@@ -1390,7 +1662,7 @@ def set_cpu_condition(threshold_percent: float, label: str = "",
     if not (0 < threshold_percent <= 100):
         return "⚠️ 기준 퍼센트는 0보다 크고 100 이하여야 해요."
 
-    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
     if build_error:
         return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
@@ -1418,7 +1690,7 @@ def set_cpu_condition(threshold_percent: float, label: str = "",
 
 
 def set_disk_condition(threshold_percent: float, label: str = "",
-                        iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
+                        iot_device_name: str = "", iot_state: str = "", todo_text: str = "", scene_name: str = "") -> str:
     print(f"\n💾🔁 [조건부 알림] 설정 중: 디스크 여유공간 {threshold_percent}% 미만" + (f" ('{label}')" if label else ""))
     try:
         threshold_percent = float(threshold_percent)
@@ -1427,7 +1699,7 @@ def set_disk_condition(threshold_percent: float, label: str = "",
     if not (0 < threshold_percent <= 100):
         return "⚠️ 기준 퍼센트는 0보다 크고 100 이하여야 해요."
 
-    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
     if build_error:
         return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
@@ -1449,7 +1721,7 @@ def set_disk_condition(threshold_percent: float, label: str = "",
 
 
 def set_trend_condition(target: str, threshold_days: float = 3, label: str = "",
-                         iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
+                         iot_device_name: str = "", iot_state: str = "", todo_text: str = "", scene_name: str = "") -> str:
     """2026-09-30 D9: plugins/system_history.py의 일별 집계 기록을 기반으로
     "CPU/메모리 사용률이 N일 연속 늘고 있다" 또는 "디스크 여유공간이 N일
     연속 줄고 있다"를 조건으로 건다. target은 자유 서술이 아니라 정해진
@@ -1478,7 +1750,7 @@ def set_trend_condition(target: str, threshold_days: float = 3, label: str = "",
         # "죽은 조건" 버그가 생긴다.
         return f"⚠️ 연속 일수는 {_MAX_TREND_THRESHOLD_DAYS}일 이하로 설정해주세요."
 
-    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
     if build_error:
         return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
@@ -1504,7 +1776,7 @@ def set_trend_condition(target: str, threshold_days: float = 3, label: str = "",
 
 
 def set_app_usage_trend_condition(target: str = "", threshold_days: float = 3, label: str = "",
-                                   iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
+                                   iot_device_name: str = "", iot_state: str = "", todo_text: str = "", scene_name: str = "") -> str:
     """2026-09-30 신규 6번: plugins/app_usage.py의 일별 기록을 기반으로
     "OO 사용 시간이 N일 연속 늘고 있다"를 조건으로 건다. target은
     set_trend_condition(cpu_increasing 등 고정 enum)과 달리 get_usage_report/
@@ -1526,7 +1798,7 @@ def set_app_usage_trend_condition(target: str = "", threshold_days: float = 3, l
         # "죽은 조건"이 된다.
         return f"⚠️ 연속 일수는 {_MAX_TREND_THRESHOLD_DAYS}일 이하로 설정해주세요."
 
-    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
     if build_error:
         return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
@@ -1550,7 +1822,7 @@ def set_app_usage_trend_condition(target: str = "", threshold_days: float = 3, l
 
 
 def set_price_condition(query: str, target_price: float, label: str = "",
-                         iot_device_name: str = "", iot_state: str = "", todo_text: str = "") -> str:
+                         iot_device_name: str = "", iot_state: str = "", todo_text: str = "", scene_name: str = "") -> str:
     """2026-09-30 E10: plugins/price_search.py를 통해 다나와 최저가가
     target_price 이하로 떨어지면 알려주는 조건부 알림을 등록한다. query는
     search_product_price와 동일한 검색어 자유 텍스트이고, 매칭/최저가 계산은
@@ -1567,7 +1839,7 @@ def set_price_condition(query: str, target_price: float, label: str = "",
     if target_price <= 0:
         return "⚠️ 목표 가격은 0원보다 커야 해요."
 
-    action, build_error = _build_action(iot_device_name, iot_state, todo_text)
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
     if build_error:
         return build_error
     action_error = _validate_action(action) or _require_login_for_action(action)
@@ -1587,6 +1859,79 @@ def set_price_condition(query: str, target_price: float, label: str = "",
                 f"떨어지면{label_str} {action_desc} {note}")
     return (f"[✅ 조건부 알림 설정 완료]\n'{query}' 최저가가 {int(target_price):,}원 이하로 떨어지면{label_str} "
             f"알려드릴게요. 실제 구매는 자동으로 실행되지 않으니, 알림을 보시면 직접 확인해주세요. {note}")
+
+
+def set_weather_condition(threshold_percent: float = 50, when: str = "today", check_hour=None,
+                          weekdays_only=False, label: str = "",
+                          iot_device_name: str = "", iot_state: str = "", todo_text: str = "",
+                          scene_name: str = "") -> str:
+    """2026-10-01 브레인스토밍 11번 — "평일 아침 7시에 날씨 확인해서 비 오면 우산
+    알려줘"처럼 시각+조건+행동이 섞인 문장을 LLM이 기존 구조(조건 레지스트리 +
+    Trigger→Action)의 인자로 조립해 넘기게 한다. 새로운 실행 메커니즘을 만들지
+    않고 기존 _CONDITION_TYPES/get_due_conditions를 그대로 재사용한다 — 시각/
+    요일은 별도 스케줄러가 아니라 조건 항목의 선택 필드(active_from_hour/
+    weekdays_only)로 두고 조건 평가 앞단에서만 거른다."""
+    print(f"\n🌧️🔁 [조건부 알림] 설정 중: {when} 강수확률 {threshold_percent}% 이상" + (f" ('{label}')" if label else ""))
+    try:
+        threshold_percent = float(threshold_percent if threshold_percent is not None else 50)
+    except (TypeError, ValueError):
+        return "⚠️ 기준 강수확률을 이해하지 못했습니다. 숫자로 다시 말씀해주세요(예: 50)."
+    if not (0 < threshold_percent <= 100):
+        return "⚠️ 기준 강수확률은 0보다 크고 100 이하여야 해요."
+
+    when = (when or "today").strip().lower()
+    if when not in ("today", "tomorrow"):
+        return "⚠️ '오늘' 또는 '내일' 중 어느 날의 강수확률인지 알려주세요."
+
+    if check_hour in (None, ""):
+        check_hour = None
+    else:
+        try:
+            if isinstance(check_hour, bool):
+                raise ValueError
+            check_hour = int(check_hour)
+        except (TypeError, ValueError):
+            return "⚠️ 확인 시작 시각을 이해하지 못했습니다. 0~23시 사이로 다시 말씀해주세요."
+        if not (0 <= check_hour <= 23):
+            return "⚠️ 확인 시작 시각은 0~23시 사이로 말씀해주세요."
+
+    if isinstance(weekdays_only, str):
+        weekdays_only = weekdays_only.strip().lower() in ("true", "1", "yes", "y", "예", "네")
+    weekdays_only = bool(weekdays_only)
+
+    action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
+    if build_error:
+        return build_error
+    action_error = _validate_action(action) or _require_login_for_action(action)
+    if action_error:
+        return action_error
+
+    extra = {}
+    if check_hour is not None:
+        extra["active_from_hour"] = check_hour
+    if weekdays_only:
+        extra["weekdays_only"] = True
+    _register_condition("rain_forecast", threshold_percent, target=when, label=label,
+                        action=action, extra=extra)
+
+    when_kr = "내일" if when == "tomorrow" else "오늘"
+    timing = []
+    if weekdays_only:
+        timing.append("평일")
+    if check_hour is not None:
+        timing.append(f"{check_hour}시 이후")
+    timing_str = (" ".join(timing) + "에 ") if timing else ""
+    label_str = f" ('{label}')" if label else ""
+    action_desc = _describe_action(action)
+    hour_note = (f"{check_hour}시 이후에 계속 확인하다가 " if check_hour is not None else "")
+    note = (f"({hour_note}'하루 중 최대 강수확률'이 기준 이상이 되면 같은 날 한 번만 알려요. "
+            "환경설정 > 날씨에 기본 지역이 설정돼 있어야 확인되고, 날씨는 최대 30분 지연으로 확인해요. "
+            "Team-Build-It이 켜져 있는 동안만 감시돼요)")
+    if action_desc:
+        return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\n{timing_str}{when_kr} 강수확률이 {threshold_percent:.0f}% 이상이면"
+                f"{label_str} {action_desc} {note}")
+    return (f"[✅ 조건부 알림 설정 완료]\n{timing_str}{when_kr} 강수확률이 {threshold_percent:.0f}% 이상이면"
+            f"{label_str} 알려드릴게요. {note}")
 
 
 def list_conditions() -> str:
@@ -1670,6 +2015,13 @@ def get_due_conditions(func_map: dict) -> list:
             if spec is None:
                 continue  # 알 수 없는 타입(예전 버전 데이터 등) — 조용히 건너뜀
 
+            # 선택적 활성 조건(active_from_hour/weekdays_only, rain_forecast
+            # 전용) — getter(네트워크 조회 가능)를 부르기 전에 걸러서, 비활성
+            # 시간대/요일엔 불필요한 조회도 안 한다. 건너뛰는 동안 last_state는
+            # 건드리지 않는다(활성이 된 첫 평가에서 정상적으로 거짓→참 판정).
+            if not _is_condition_active(c, now):
+                continue
+
             getter = func_map.get(spec["getter"])
             if not getter:
                 continue
@@ -1730,3 +2082,96 @@ def get_due_conditions(func_map: dict) -> list:
         item["action_result"] = action_result
         due.append(item)
     return due
+
+
+# ==========================================
+# 🔕 묵음 시간대(공통 알림 정책) — 2026-10-01 "2순위 연결 콤보" 10번
+# ==========================================
+# 지금까지 알림(토스트)이 울리는 경로가 5개(타이머/정기 알림/일정 알림/할 일
+# 마감/조건부 알림)인데 전부 app_main.py의 _show_toast() 한 곳으로 모인다
+# (app_main.py에서 직접 확인) — 그래서 "밤 10시 이후엔 묵음" 같은 전역 정책은
+# 5개 폴링 함수 각각을 고칠 필요 없이 그 한 지점(_show_toast)에서만
+# is_in_quiet_hours()를 확인하면 전부 적용된다. 이 플러그인은 "시간대를
+# 설정/조회하는 것"과 "지금이 그 시간대에 속하는지 판정하는 순수 함수"만
+# 제공하고, 실제로 토스트를 억제하는 동작은 app_main.py가 담당한다(이
+# 플러그인이 QWidget을 직접 다루지 않는다는 기존 관례 유지).
+#
+# 설계 결정 — 자동 실행(IoT 제어 등)은 묵음 시간대에도 계속 동작한다:
+# 사용자 지시("밤 10시 이후엔 묵음")는 "알림이 조용했으면 좋겠다"는 뜻이지
+# "자동화를 멈춰달라"는 뜻이 아니다. 이미 등록 시점에 명시적으로 동의한
+# IoT 자동 실행(reminder.py의 기존 "등록 시 1회 확인 → 이후 무인 실행" 원칙,
+# project_reminder_iot_action_feature 참고)을 묵음 시간대라고 멈추면 오히려
+# "분명히 설정해뒀는데 밤에는 안 켜진다"는 또 다른 혼란을 만든다 — 그래서
+# 묵음은 "화면에 뜨는 토스트/트레이 알림"만 억제하고 action 실행/로그 기록은
+# 전부 평소대로 유지한다.
+def set_quiet_hours(start_hour: int, end_hour: int) -> str:
+    print(f"\n🔕 [묵음 시간대] 설정 중: {start_hour}시~{end_hour}시")
+    try:
+        start_hour = int(start_hour)
+        end_hour = int(end_hour)
+    except (TypeError, ValueError):
+        return "⚠️ 시각을 이해하지 못했습니다. '밤 10시부터 아침 7시까지'처럼 다시 말씀해주세요."
+    if not (0 <= start_hour <= 23) or not (0 <= end_hour <= 23):
+        return "⚠️ 시각은 0~23시 사이로 말씀해주세요."
+    if start_hour == end_hour:
+        return "⚠️ 시작 시각과 끝 시각이 같으면 하루 종일 묵음이 되어버려요 — 다른 시각으로 다시 말씀해주세요."
+
+    # ChatGPT 검수 지적(2026-10-01): app_settings.set()은 호출마다 파일을
+    # 통째로 다시 쓰는 구현이라(settings/app_settings.py 참고) 세 번의
+    # set() 사이에 프로세스가 죽으면 일관성 없는 중간 상태가 디스크에 남을
+    # 수 있다 — 특히 "enabled=True가 먼저 저장되고 start/end가 저장되기
+    # 전에 죽으면" enabled=True인데 start/end는 이전 값(또는 아예 None)인
+    # 상태가 된다. start/end를 먼저 쓰고 enabled를 마지막에 써서, 중간에
+    # 죽어도 "아직 비활성 상태"로만 남지 "활성인데 시간 정보가 불완전한"
+    # 상태로는 절대 안 남게 한다(is_in_quiet_hours의 isinstance 방어와
+    # 이중으로 안전).
+    app_settings.set("quiet_hours_start", start_hour)
+    app_settings.set("quiet_hours_end", end_hour)
+    app_settings.set("quiet_hours_enabled", True)
+    return (f"[✅ 묵음 시간대 설정 완료]\n"
+            f"매일 {start_hour:02d}:00 ~ {end_hour:02d}:00 사이에는 알림 토스트를 띄우지 않을게요.\n"
+            f"※ 정기/조건부 알림에 등록해둔 IoT 자동 실행은 이 시간대에도 평소대로 계속 동작해요 — "
+            f"묵음은 화면에 뜨는 알림만 막아요.")
+
+
+def cancel_quiet_hours() -> str:
+    print("\n🔕 [묵음 시간대] 해제 요청")
+    if not app_settings.get("quiet_hours_enabled"):
+        return "[🔕 묵음 시간대]\n현재 설정된 묵음 시간대가 없어요."
+    app_settings.set("quiet_hours_enabled", False)
+    return "[✅ 묵음 시간대 해제]\n이제부터 알림이 평소대로 떠요."
+
+
+def get_quiet_hours_status() -> str:
+    print("\n🔕 [묵음 시간대] 상태 조회")
+    enabled = app_settings.get("quiet_hours_enabled")
+    start = app_settings.get("quiet_hours_start")
+    end = app_settings.get("quiet_hours_end")
+    if not enabled or start is None or end is None:
+        return ("[🔕 묵음 시간대]\n설정된 묵음 시간대가 없어요. "
+                "'밤 10시부터 아침 7시까지는 알림 묵음으로 해줘'처럼 말씀해주시면 설정해드려요.")
+    return f"[🔕 묵음 시간대]\n매일 {start:02d}:00 ~ {end:02d}:00"
+
+
+def is_in_quiet_hours(now: datetime = None) -> bool:
+    """현재 시각이 묵음 시간대에 속하는지 — app_main.py의 _show_toast()가
+    토스트를 띄우기 전에 이 함수로 판단한다(TOOL_SCHEMAS에 없는 내부 전용
+    함수, get_due_timers() 등과 같은 패턴). 자정을 넘나드는 범위(예: 22시
+    시작, 7시 종료)도 올바르게 처리한다 — start < end면 일반적인 당일
+    범위([start, end)), start >= end면 자정을 넘는 범위(현재 시각이 start
+    이상이거나 end 미만)로 판정한다. 설정이 없거나 손상된 값(0~23 범위
+    밖, start == end)이면 항상 False(묵음 아님 — 안전한 기본값은 "평소대로
+    알림을 보여준다")."""
+    if not app_settings.get("quiet_hours_enabled"):
+        return False
+    start = app_settings.get("quiet_hours_start")
+    end = app_settings.get("quiet_hours_end")
+    if not isinstance(start, int) or not isinstance(end, int):
+        return False
+    if not (0 <= start <= 23) or not (0 <= end <= 23) or start == end:
+        return False
+
+    hour = (now or datetime.now()).hour
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end

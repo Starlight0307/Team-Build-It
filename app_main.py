@@ -1,6 +1,7 @@
 import random
 import re
 import sys
+import traceback
 import uuid
 from datetime import datetime
 
@@ -118,6 +119,13 @@ def _sync_calendar_user(user_id: str):
         # 2026-09-29 메모장 — todo_list와 같은 이유로 로그인한 사용자만.
         from plugins.notes import set_current_user as set_notes_user
         set_notes_user(user_id)
+    except ImportError:
+        pass
+    try:
+        # 2026-10-02 메일 초안(13번) — 계정이 바뀌면 이전 계정의 마지막 초안을 폐기해서
+        # A의 초안이 B 세션의 "메일 앱으로 열어줘"로 열리지 않게 한다.
+        from plugins.text_tools import set_current_user as set_text_tools_user
+        set_text_tools_user(user_id)
     except ImportError:
         pass
     try:
@@ -589,6 +597,8 @@ class AssistantApp(QWidget):
                 detail = f"(현재 {value:.0f}% / 기준 {threshold:.0f}%)"
             elif ctype == 'disk_limit':
                 detail = f"(현재 여유 {value:.0f}% / 기준 {threshold:.0f}%)"
+            elif ctype == 'rain_forecast':
+                detail = f"(예상 강수확률 {value:.0f}% / 기준 {threshold:.0f}%)"
             else:
                 detail = ""
             if label:
@@ -636,7 +646,34 @@ class AssistantApp(QWidget):
         된다(폴링 자체는 죽지 않지만 사용자에게 전혀 전달이 안 됨). 창이
         숨겨진 동안은 대신 트레이 풍선 알림(OS 레벨이라 부모-자식 가시성과
         무관하게 항상 보임)으로 대체한다 — 반환값을 쓰는 유일한 호출부
-        (_show_realtime_alert_toast)는 None을 받을 수 있으므로 방어 처리돼 있다."""
+        (_show_realtime_alert_toast)는 None을 받을 수 있으므로 방어 처리돼 있다.
+
+        2026-10-01 "2순위 연결 콤보" 10번(공통 알림 정책/묵음 시간대) —
+        타이머/정기 알림/일정 알림/할 일 마감/조건부 알림 5개 폴링 경로가
+        전부 이 함수 하나로 모이므로, 여기 한 곳에서만 plugins.reminder.
+        is_in_quiet_hours()를 확인하면 전역 묵음 정책이 모든 경로에 동시에
+        적용된다(각 폴링 함수를 따로 고칠 필요 없음). 묵음 시간대에도
+        토스트/트레이 알림만 억제될 뿐, 각 폴링 함수 자체(IoT 자동 실행,
+        action_log 기록, last_fired_date/last_state 갱신 등)는 평소와
+        동일하게 계속 실행된다 — 이 함수 호출 전에 이미 끝난 일이기
+        때문이다. is_in_quiet_hours가 TOOL_SCHEMAS에 없는 내부 전용
+        함수라 self.installed_tools에서 찾아 호출한다(get_due_daily_
+        reminders 등과 동일한 패턴) — 플러그인이 설치 안 됐거나 조회
+        중 예외가 나면 조용히 평소대로(묵음 아님) 동작한다 — 다만 ChatGPT
+        검수 지적(2026-10-01): 예외를 완전히 삼키면(pass) is_in_quiet_hours
+        내부에 진짜 버그가 생겨도 토스트가 평소대로 뜨는 바람에 "문제
+        없어 보이는" fail-open이 되어 아무도 눈치채지 못한다 — 사용자
+        경험(토스트가 계속 뜸)은 안전하게 유지하되, 콘솔에는 흔적을
+        남긴다(calendar_tool.py의 브리핑 연결 기능들과 동일한 패턴)."""
+        try:
+            is_in_quiet_hours = next(
+                (f for f in self.installed_tools if f.__name__ == 'is_in_quiet_hours'), None)
+            if is_in_quiet_hours and is_in_quiet_hours():
+                return None
+        except Exception as e:
+            print(f"[알림] 묵음 시간대 확인 오류(평소대로 알림 표시): {e}")
+            traceback.print_exc()
+
         if not self.isVisible():
             if self.tray_icon:
                 self.tray_icon.showMessage("LUMI", message, QSystemTrayIcon.MessageIcon.Information, 5000)

@@ -128,6 +128,16 @@ def isolated_iot_scenes(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def isolated_iot_rooms(tmp_path, monkeypatch):
+    """plugins/iot_control.py의 방 저장 파일(ROOMS_FILE)을 테스트용 임시 파일로 바꿔치기한다
+    (씬과 같은 이유 — 로그인과 무관한 전역 저장, 실제 사용자의 방 설정을 건드리지 않도록)."""
+    import plugins.iot_control as iot_control
+    fake_file = tmp_path / "iot_rooms.json"
+    monkeypatch.setattr(iot_control, "ROOMS_FILE", str(fake_file))
+    return fake_file
+
+
+@pytest.fixture
 def isolated_calendar_preference(tmp_path, monkeypatch):
     """calendar_feature/calendar_preference.py의 저장 파일을 테스트용 임시
     파일로 바꿔치기 (실제 사용자의 캘린더 백엔드 설정을 건드리지 않도록)."""

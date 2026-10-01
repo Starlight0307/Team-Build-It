@@ -1,3 +1,5 @@
+import html
+import os
 import re
 import time
 import requests
@@ -60,8 +62,10 @@ def _match_products(parsed_products: list, search_query: str):
     matched_with_price = [p for p in matched if p[1] is not None]
     if not matched_with_price:
         return matched, matched_with_price, None, None
-    cheapest_name, cheapest_price = min(matched_with_price, key=lambda p: p[1])
-    return matched, matched_with_price, cheapest_name, cheapest_price
+    # 튜플 길이에 의존하지 않는다 — 멀티사이트 비교(아래 _build_multi_site_block)는
+    # (이름, 가격, 판매처) 3-튜플을 그대로 넘긴다(2-튜플일 때 동작은 이전과 동일).
+    cheapest = min(matched_with_price, key=lambda p: p[1])
+    return matched, matched_with_price, cheapest[0], cheapest[1]
 
 
 def _build_match_summary(parsed_products: list, search_query: str) -> str:
@@ -174,6 +178,239 @@ def _fetch_cheapest_matched_price(query: str):
     except Exception as e:
         print(f"[가격 조건] '{query}' 최저가 조회 실패: {e}")
         return None
+
+
+# ─────────────────────────────────────────────
+# 🏬 멀티사이트 최저가 비교 (2026-10-02, 브레인스토밍 14번)
+# ─────────────────────────────────────────────
+# 다나와 하나만 보던 검색에 "네이버쇼핑"을 더해 사이트별 최저가와 가장 싼 곳을
+# 비교한다. 규칙:
+#  - 네이버쇼핑은 **공식 Open API**(openapi.naver.com)로만 조회한다 — 임의 쇼핑몰을
+#    스크래핑하지 않는다(약관/차단/구조변경 위험). 키(NAVER_CLIENT_ID /
+#    NAVER_CLIENT_SECRET, .env)가 없으면 이 기능은 통째로 꺼지고 출력은 이전과
+#    완전히 같다(네트워크 호출도 없음).
+#  - 최저가/비교 판정은 LLM이 아니라 코드가 계산한다(위 LAST_SEARCH 주석과 같은 이유)
+#    — 결과 블록에 "이미 계산됨" 마커를 박고 ai_worker의 결정론적 빌더가 그대로 통과시킨다.
+#  - 한 사이트가 실패해도 다른 사이트 결과를 막지 않는다(사이트별 try/except, 이 블록
+#    전체도 search_product_price에서 격리 — 연결 기능이 핵심 기능을 깨면 안 된다).
+#  - 사이트마다 상품명/옵션(용량·색상)이 다를 수 있어 "같은 상품"이라고 단정하지 않고,
+#    각 사이트의 최저가 상품 이름을 그대로 보여준다.
+#  - 쇼핑 API는 액세서리(케이스/필름…)와 중고/단종/판매예정 상품을 섞어서 돌려준다 —
+#    그대로 최저가를 뽑으면 "아이폰 15 케이스 5,000원"이 최저가가 되므로, 새 상품이
+#    아닌 것(productType)과 검색어에 없는 액세서리 단어가 이름에 든 상품은 비교에서 뺀다.
+#  - 계약: 다나와가 "기준", 네이버쇼핑은 "비교 보조"다. 네이버는 다나와 검색이 성공했을 때만
+#    조회·표시한다(다나와가 실패하면 기존 에러 문구 그대로, 네이버는 호출조차 안 함) —
+#    네이버 단독 결과를 보여주려면 ai_worker의 결정론적 카드 파서를 우회하는 새 출력 형식이
+#    필요하고 LLM 폴백 경로로 빠질 위험이 있어 의도적으로 지원하지 않는다(알려진 한계).
+#  - 용량이 다른 상품(128GB vs 256GB)끼리는 가격 우열을 말하지 않는다(_capacities_conflict).
+#  - 키/헤더는 로그·예외 메시지·URL에 남기지 않는다(예외 종류+HTTP 상태만). urllib3 DEBUG 로깅을
+#    켜거나 프록시를 거치는 환경은 이 코드의 통제 밖이다.
+#  - E10 가격 조건부 알림(get_cheapest_matched_price)과 LAST_SEARCH는 다나와 기준 그대로다
+#    (조용히 기준을 바꾸면 이미 등록된 알림의 의미가 달라진다).
+_NAVER_SHOP_URL = "https://openapi.naver.com/v1/search/shop.json"
+_NAVER_DISPLAY = 30   # 상위 10개가 케이스/중고로 차 있어도 본품이 남도록(필터 후 비교)
+_NAVER_NEW_PRODUCT_TYPES = (1, 2, 3)   # 일반상품(가격비교/비매칭/매칭). 4~12는 중고/단종/판매예정
+PRICE_SITE_BLOCK_MARKER = "[🏬 사이트별 최저가 비교 — 이미 계산됨]"
+_ACCESSORY_TERMS = (
+    "케이스", "필름", "보호필름", "보호유리", "강화유리", "액정보호", "충전기", "케이블", "거치대",
+    "파우치", "커버", "스트랩", "젠더", "어댑터", "스티커", "키링",
+    "범퍼", "슬리브", "도킹", "크래들", "폴리오", "카드지갑",
+)
+# 이 목록은 "완벽한 분류기"가 아니라 실용적 안전망이다(미탐/오탐은 계속 있다 — 새 사례가
+# 나오면 여기에 추가하고 테스트도 같이 늘린다). 틀리면 비교에서 빠지거나 끼는 것뿐이고,
+# 사이트별 최저가 상품 "이름"이 항상 같이 출력되므로 사용자가 눈으로 거를 수 있다.
+
+# 검색어 바로 뒤에 붙으면 "다른 등급/모델"인 접미사 — 기존 _match_products는 단순 포함
+# 판정이라 "RTX 4060"이 "RTX 4060 Ti"에, "아이폰 15"가 "아이폰 15 Pro"에 일치한다.
+# 한 사이트 안에서는 감수하던 한계지만 사이트끼리 "누가 더 싼가"를 말할 때는 오판이
+# 커지므로, 비교 블록에서만 검색어에 없는 등급 접미사가 붙은 상품을 뺀다(기존
+# 요약/E10 알림 동작은 그대로).
+_GRADE_SUFFIXES = (
+    "pro", "max", "plus", "ultra", "ti", "super", "fe", "air", "mini", "lite", "se", "xt",
+    "프로", "맥스", "플러스", "울트라", "미니", "에어", "슈퍼", "라이트", "폴드", "플립",
+    "+",   # 갤럭시 S25+ = Plus 모델
+)
+
+
+def _naver_credentials():
+    """(client_id, client_secret) 또는 None — 둘 중 하나라도 비어 있으면 연동 꺼짐."""
+    cid = (os.environ.get("NAVER_CLIENT_ID") or "").strip()
+    secret = (os.environ.get("NAVER_CLIENT_SECRET") or "").strip()
+    return (cid, secret) if cid and secret else None
+
+
+def _clean_naver_title(title: str) -> str:
+    """네이버 응답의 제목은 검색어가 <b>…</b>로 감싸지고 HTML 엔티티가 섞여 있다."""
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", "", title or "")).split())
+
+
+def _parse_naver_item(item):
+    """(이름, 가격:int, 판매처) 또는 None. 새 상품이 아니거나(productType 1~3 아님)
+    가격이 양의 정수가 아니거나 이름이 없으면 None — 조용히 건너뛴다."""
+    if not isinstance(item, dict):
+        return None
+    try:
+        product_type = int(str(item.get("productType", "")).strip())
+        price = int(str(item.get("lprice", "")).strip())
+    except (TypeError, ValueError):
+        return None
+    if product_type not in _NAVER_NEW_PRODUCT_TYPES or price <= 0:
+        return None
+    name = _clean_naver_title(item.get("title"))
+    if not name:
+        return None
+    seller = " ".join(str(item.get("mallName") or "").split()) or "판매처 정보 없음"
+    return (name, price, seller)
+
+
+def _fetch_naver_products(search_query: str, credentials):
+    """네이버쇼핑 Open API 호출 → [(이름, 가격, 판매처)]. 네트워크/HTTP 오류는 예외 그대로
+    (호출부가 사이트 단위로 격리). 응답 형식이 예상과 다르면 ValueError."""
+    response = requests.get(
+        _NAVER_SHOP_URL,
+        params={"query": search_query, "display": _NAVER_DISPLAY, "sort": "sim"},
+        headers={"X-Naver-Client-Id": credentials[0], "X-Naver-Client-Secret": credentials[1]},
+        timeout=10,
+    )
+    response.raise_for_status()
+    data = response.json()
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise ValueError("unexpected naver response shape")
+    return [p for p in (_parse_naver_item(i) for i in items) if p is not None]
+
+
+def _is_accessory(name: str, search_query: str) -> bool:
+    """검색어에 없는 액세서리 단어가 상품명에 있으면 True. 검색어 자체가 "아이폰 충전기"
+    처럼 그 단어를 포함하면 액세서리를 찾는 것이므로 제외하지 않는다."""
+    n = re.sub(r"\s+", "", name).casefold()
+    q = re.sub(r"\s+", "", search_query).casefold()
+    return any(t in n and t not in q for t in _ACCESSORY_TERMS)
+
+
+def _has_unrequested_grade(name: str, search_query: str) -> bool:
+    """검색어 핵심어 바로 뒤에 검색어에 없는 등급 접미사(Pro/Max/Ti/프로…)가 붙어 있으면
+    True. 핵심어가 이름에 없거나(= _match_products가 어차피 거르는 상품) 검색어 자체에 그
+    접미사가 들어 있으면 False."""
+    core = _query_core(search_query).casefold()
+    n = re.sub(r"\s+", "", name).casefold()
+    idx = n.find(core) if core else -1
+    if idx == -1:
+        return False
+    tail = n[idx + len(core):]
+    for g in _GRADE_SUFFIXES:
+        if not tail.startswith(g) or g in core:
+            continue
+        rest = tail[len(g):]
+        # 단어의 일부가 아니라 "등급 토큰"일 때만(공백을 지웠으므로 직접 경계 검사): 끝이거나,
+        # 글자가 아닌 문자(숫자 등)가 오거나, 곧바로 다른 등급이 이어지면("프로맥스") 등급이다.
+        # "SET"→se, "프로모션"→프로, "에어팟"→에어, "Product"→pro 같은 우연한 겹침은 등급이 아니다.
+        if (not rest or not re.match(r"[a-z가-힣]", rest[0])
+                or any(rest.startswith(g2) for g2 in _GRADE_SUFFIXES)):
+            return True
+    return False
+
+
+def _site_cheapest(products, search_query):
+    """한 사이트의 (이름, 가격, 판매처|None) 목록 → (cheapest 튜플 또는 None, 액세서리로
+    제외된 개수). 이름 일치 판정은 기존 _match_products를 쓰되, 비교 블록에서는 액세서리와
+    "검색어에 없는 등급 접미사"가 붙은 상품을 먼저 뺀다."""
+    kept = [p for p in products
+            if not _is_accessory(p[0], search_query) and not _has_unrequested_grade(p[0], search_query)]
+    _, matched_with_price, _, _ = _match_products(kept, search_query)
+    cheapest = min(matched_with_price, key=lambda p: p[1]) if matched_with_price else None
+    return cheapest, len(products) - len(kept)
+
+
+_CAPACITY_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(tb|gb|테라|기가)", re.IGNORECASE)
+
+
+def _capacity_tokens(name: str) -> frozenset:
+    """상품명에 적힌 용량 표기(128GB/1TB/256기가…)를 GB 정수 집합으로. 노트북처럼 램+저장장치가
+    같이 적힌 이름도 전부 모은다. 표기가 없으면 빈 집합."""
+    out = set()
+    for num, unit in _CAPACITY_RE.findall(name or ""):
+        value = float(num) * (1024 if unit.lower() in ("tb", "테라") else 1)
+        out.add(int(value))
+    return frozenset(out)
+
+
+def _capacities_conflict(a: frozenset, b: frozenset) -> bool:
+    """둘 다 용량 표기가 있는데 한쪽이 다른 쪽의 부분집합조차 아니면 서로 다른 용량 상품이다
+    (128GB vs 256GB, 램8+256 vs 램16+512). 한쪽이 용량을 안 적었거나 {256} vs {8,256}처럼
+    한쪽이 다른 쪽을 포함하면 충돌로 보지 않는다."""
+    return bool(a) and bool(b) and not (a <= b or b <= a)
+
+
+def _format_capacity(tokens: frozenset) -> str:
+    return "+".join(f"{t // 1024}TB" if t >= 1024 and t % 1024 == 0 else f"{t}GB" for t in sorted(tokens))
+
+
+def _format_site_comparison(site_results, search_query: str) -> str:
+    """순수 함수(네트워크 없음) — site_results = [{"site", "products", "error"}] (순서가
+    곧 우선순위)를 비교 블록 텍스트로. 사이트가 2곳 미만이면 빈 문자열."""
+    if len(site_results) < 2:
+        return ""
+    lines = [PRICE_SITE_BLOCK_MARKER]
+    priced = []   # (site, cheapest)
+    failed = []
+    for r in site_results:
+        if r.get("error"):
+            failed.append(r["site"])
+            continue
+        cheapest, _ = _site_cheapest(r["products"], search_query)
+        if cheapest is None:
+            lines.append(f"· {r['site']}: 검색어와 이름이 일치하는 상품을 찾지 못했어요")
+            continue
+        seller = cheapest[2] if len(cheapest) > 2 and cheapest[2] else None
+        suffix = f" (판매처: {seller})" if seller else ""
+        lines.append(f"· {r['site']}: {cheapest[0]} — {cheapest[1]:,}원{suffix}")
+        priced.append((r["site"], cheapest))
+    capacity_conflict = False
+    if len(priced) >= 2:
+        caps = [(site, _capacity_tokens(c[0])) for site, c in priced]
+        capacity_conflict = any(_capacities_conflict(caps[i][1], caps[j][1])
+                                for i in range(len(caps)) for j in range(i + 1, len(caps)))
+    if capacity_conflict:
+        # 용량이 다른 상품끼리는 가격 우열을 말하지 않는다(128GB와 256GB를 견주면 "더 싼 곳"이
+        # 의미가 없고 오해만 만든다) — 각 사이트 최저가와 용량은 위에 그대로 있다.
+        detail = " / ".join(f"{site} {_format_capacity(t)}" for site, t in caps if t)
+        lines.append(f"→ 용량이 달라서 사이트 간 가격 우열은 말하지 않아요 ({detail})")
+    elif len(priced) >= 2:
+        best_price = min(c[1] for _, c in priced)
+        winners = [site for site, c in priced if c[1] == best_price]   # 입력 순서 유지
+        if len(winners) == len(priced):
+            lines.append(f"→ 검색된 결과 기준으로 두 곳 가격이 {best_price:,}원으로 같아요")
+        else:
+            others = [(s, c[1]) for s, c in priced if c[1] != best_price]
+            diff_text = ", ".join(f"{s}보다 {p - best_price:,}원 낮음" for s, p in others)
+            # "가장 저렴한 곳"처럼 절대적 최저가로 들리지 않게 — 사이트별 "검색 결과 집합" 기준 비교다.
+            lines.append(f"→ 검색된 결과 기준 더 낮은 가격: {winners[0]} {best_price:,}원 ({diff_text})")
+    if failed:
+        lines.append(f"(⚠️ {', '.join(failed)} 조회에 실패해서 나머지 사이트 결과만 보여드려요)")
+    lines.append("(※ 사이트별 검색 결과 중 이름이 비슷한 상품끼리 비교했어요. 용량·색상·통신방식·구성품이 "
+                 "다를 수 있고, 다나와(가격비교 집계)와 네이버쇼핑(입점몰 목록)은 성격이 다른 서비스예요. "
+                 "구매 전 상품 상세를 확인해주세요. 새 상품이 아닌 것(중고/단종/판매예정), 케이스·필름 같은 "
+                 "액세서리, 모델 등급이 다른 상품(Pro/Max 등)은 비교에서 제외했어요.)")
+    return "\n".join(lines)
+
+
+def _build_multi_site_block(danawa_products, search_query: str) -> str:
+    """다나와(이미 가져온 결과 재사용 — 추가 요청 없음) + 네이버쇼핑 비교 블록.
+    네이버 키가 없으면 네트워크 호출 없이 빈 문자열(이전 동작과 동일)."""
+    credentials = _naver_credentials()
+    if credentials is None:
+        return ""
+    site_results = [{"site": "다나와", "products": [(n, p, None) for n, p in danawa_products], "error": None}]
+    try:
+        naver = _fetch_naver_products(search_query, credentials)
+        site_results.append({"site": "네이버쇼핑", "products": naver, "error": None})
+    except Exception as e:
+        # 키/헤더가 로그에 남지 않게 예외 "종류"(+HTTP 상태)만 기록한다.
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        print(f"[가격 검색] 네이버쇼핑 조회 실패: {type(e).__name__}" + (f" (HTTP {status})" if status else ""))
+        site_results.append({"site": "네이버쇼핑", "products": [], "error": "fetch failed"})
+    return _format_site_comparison(site_results, search_query)
 
 
 # ==========================================
@@ -339,6 +576,14 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
             return f"'{search_query}' 검색 결과를 가져오지 못했습니다."
 
         results.append(_build_match_summary(parsed_products, search_query))
+
+        # 멀티사이트 비교(14번) — 다나와 결과를 절대 깨면 안 되므로 이 블록만 따로 격리한다.
+        try:
+            site_block = _build_multi_site_block(parsed_products, search_query)
+            if site_block:
+                results.append("\n" + site_block)
+        except Exception as e:
+            print(f"[가격 검색] 사이트 비교 블록 생성 실패: {type(e).__name__}")
 
         return "\n".join(results)
 

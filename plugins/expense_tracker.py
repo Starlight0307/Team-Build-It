@@ -10,6 +10,16 @@
 ● item_name/price를 지정하지 않으면 plugins.price_search.LAST_SEARCH(방금
   검색한 상품 중 검색어와 이름이 일치하는 최저가)를 자동으로 사용한다 —
   "이거 샀어" 같은 후속 요청이 자연스럽게 이어지도록.
+
+2026-10-01 "도구 간 연결성" 확장 3번 — 수입(add_income) + 잔액(get_balance)
+추가. 지출(expenses)과 완전히 별도 파일(expense_tracker/{user_id}_income.json)에
+저장한다 — _budget_file과 같은 이유로, expenses 파일은 최상위가 list라 구조를
+바꾸면 기존 사용자 데이터와의 호환성이 깨진다. CRUD(add/list/edit/delete)는
+구매 기록(mark_as_purchased/list_purchases/edit_purchase/delete_purchase)과
+의도적으로 동일한 구조·검증 규칙(_find_purchase ↔ _find_income, float("inf")
+OverflowError 방어, 분류 길이 제한)을 그대로 재사용해서 두 "원장"이 서로
+다르게 동작하는 걸 피한다. get_balance()는 전체 누적 잔액과 이번달 순증감을
+함께 보여준다(get_budget_status가 이미 쓰는 "월초~현재" 날짜 필터링과 동일).
 """
 
 import os
@@ -63,6 +73,27 @@ def _budget_file(user_id: str = None) -> str:
     # 리스트(list) 구조라, 예산 값을 그 안에 같이 넣으려면 기존 파일 구조
     # 자체를 바꿔야 해서 이미 저장된 사용자 데이터와의 호환성 문제가 생긴다.
     return os.path.join(EXPENSES_DIR, f"{_safe_user_id(user_id)}_budget.json")
+
+
+def _income_file(user_id: str = None) -> str:
+    # _budget_file과 같은 이유로 expenses와 별도 파일에 저장한다.
+    return os.path.join(EXPENSES_DIR, f"{_safe_user_id(user_id)}_income.json")
+
+
+def _load_income(user_id: str = None) -> list:
+    try:
+        with open(_income_file(user_id), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_income(income: list, user_id: str = None):
+    try:
+        with open(_income_file(user_id), "w", encoding="utf-8") as f:
+            json.dump(income, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[가계부] 수입 저장 오류: {e}")
 
 
 def _load_budget(user_id: str = None) -> int | None:
@@ -226,6 +257,90 @@ TOOL_SCHEMAS = {
                 },
                 "required": ["item"]
             }
+        }
+    },
+    "add_income": {
+        "type": "function",
+        "function": {
+            "name": "add_income",
+            "description": (
+                "수입(들어온 돈)을 가계부에 기록합니다. 사용자가 '월급 300만원 들어왔어', "
+                "'용돈 5만원 받았어', '알바비 입금됐어 20만원'처럼 말할 때 호출하세요. "
+                "지출(mark_as_purchased)과 반대 방향의 기록입니다 — 혼동하지 마세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "number", "description": "들어온 금액(원)"},
+                    "source": {"type": "string", "description": "수입 출처(예: '월급', '용돈', '알바비'). 사용자가 말하지 않았으면 생략 — 미분류로 저장됩니다."},
+                    "category": {"type": "string", "description": "수입 분류(예: '급여', '부수입'). 사용자가 분류를 말하지 않았으면 생략. 공백 없는 한 단어로 전달하세요."}
+                },
+                "required": ["amount"]
+            }
+        }
+    },
+    "list_income": {
+        "type": "function",
+        "function": {
+            "name": "list_income",
+            "description": (
+                "최근 N일간 수입 기록을 하나씩 나열합니다. "
+                "사용자가 '수입 내역 보여줘', '이번달 뭐 들어왔는지 알려줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"days": {"type": "integer", "description": "조회할 최근 일수. 기본 30"}},
+                "required": []
+            }
+        }
+    },
+    "delete_income": {
+        "type": "function",
+        "function": {
+            "name": "delete_income",
+            "description": (
+                "잘못 기록된 수입 내역을 삭제합니다. 사용자가 '월급 기록 잘못됐어 지워줘'처럼 "
+                "말할 때 호출하세요. item에는 list_income에서 보여준 id 또는 출처명 일부를 전달하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item": {"type": "string", "description": "삭제할 수입 기록의 id 또는 출처명 일부"}
+                },
+                "required": ["item"]
+            }
+        }
+    },
+    "edit_income": {
+        "type": "function",
+        "function": {
+            "name": "edit_income",
+            "description": (
+                "이미 기록된 수입 내역의 출처나 금액을 고칩니다. 사용자가 '아까 그 수입 금액 "
+                "잘못 적었어'처럼 말할 때 호출하세요. item에는 list_income에서 보여준 id 또는 "
+                "출처명 일부를 전달하고, new_source/new_amount 중 바꿀 값만 채우세요(둘 다 생략하면 안 됩니다)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item": {"type": "string", "description": "수정할 수입 기록의 id 또는 출처명 일부"},
+                    "new_source": {"type": "string", "description": "새 출처명. 안 바꾸면 생략"},
+                    "new_amount": {"type": "number", "description": "새 금액(원). 안 바꾸면 생략"}
+                },
+                "required": ["item"]
+            }
+        }
+    },
+    "get_balance": {
+        "type": "function",
+        "function": {
+            "name": "get_balance",
+            "description": (
+                "전체 누적 잔액(총 수입 - 총 지출)과 이번달 수입/지출/순증감을 확인합니다. "
+                "사용자가 '잔액 얼마야', '지금까지 얼마 모았어', '이번달 얼마 남았어'(예산이 아니라 "
+                "순수 수입-지출 기준)처럼 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
 }
@@ -555,6 +670,209 @@ def edit_purchase(item: str, new_item_name: str = "", new_price: float = None) -
 
     return (f"[✅ 구매 기록 수정]\n'{old_item}' ({_format_price(old_price)}) → "
             f"'{found['item']}' ({_format_price(found['price'])})로 고쳤어요.")
+
+
+def add_income(amount: float, source: str = "", category: str = "") -> str:
+    print(f"\n💵 [가계부] 수입 기록 중: {source or '(미분류)'} {amount}")
+    login_error = _require_login()
+    if login_error:
+        return login_error
+
+    category = (category or "").strip()
+    if len(category) > _MAX_CATEGORY_LENGTH:
+        return f"⚠️ 분류 이름이 너무 길어요({len(category)}자, 최대 {_MAX_CATEGORY_LENGTH}자) — 조금 줄여서 다시 말씀해주세요."
+
+    source = (source or "").strip()
+
+    try:
+        # mark_as_purchased와 동일한 이유로 정수로 저장(원화는 소수점 없음,
+        # float("inf") 같은 값은 round()에서 OverflowError가 나므로 방어).
+        amount = int(round(float(amount)))
+    except (TypeError, ValueError, OverflowError):
+        return "⚠️ 금액을 이해하지 못했습니다. '300만원', '5만원', '20,000원'처럼 다시 말씀해주세요."
+    if amount < 0:
+        return "⚠️ 금액은 0 이상이어야 해요."
+
+    try:
+        income = _load_income()
+        now = datetime.now(ZoneInfo(DEFAULT_TIMEZONE))
+        entry = {
+            "id": uuid.uuid4().hex[:8],
+            "source": source or None,
+            "amount": amount,
+            "date": now.strftime("%Y-%m-%d %H:%M"),
+            "category": category or None,
+        }
+        income.append(entry)
+        _save_income(income)
+        source_str = f" ('{source}')" if source else ""
+        cat_str = f" [{category}]" if category else ""
+        return f"[✅ 수입 기록 완료]\n{_format_price(amount)}{source_str}을(를) 수입으로 기록했어요{cat_str}."
+    except Exception as e:
+        print(f"[가계부] 수입 기록 오류: {e}")
+        return "❌ 수입을 기록하지 못했습니다. 잠시 후 다시 시도해주세요."
+
+
+def list_income(days: int = 30) -> str:
+    days = int(days)
+    print(f"\n📋 [가계부] 최근 {days}일 수입 내역 조회 중...")
+    login_error = _require_login()
+    if login_error:
+        return login_error
+
+    try:
+        tz  = ZoneInfo(DEFAULT_TIMEZONE)
+        now = datetime.now(tz)
+        window_start = now - timedelta(days=days)
+
+        income = _load_income()
+        matched = []
+        for e in income:
+            try:
+                d = datetime.strptime(e["date"], "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            except Exception:
+                continue
+            if window_start <= d <= now:
+                matched.append(e)
+        matched.sort(key=lambda e: e["date"])
+
+        if not matched:
+            return f"[💵 수입 내역] (최근 {days}일)\n수입 기록이 없습니다."
+
+        lines = [f"[💵 수입 내역] (최근 {days}일, 총 {len(matched)}건)"]
+        for e in matched:
+            source_str = f"  {e['source']}" if e.get("source") else "  (미분류)"
+            cat_suffix = f"  [{e['category']}]" if e.get("category") else ""
+            lines.append(f"  - {e['date']}{source_str}  {_format_price(e['amount'])}{cat_suffix}  (id: {e['id']})")
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"[가계부] 수입 내역 조회 오류: {e}")
+        return "❌ 수입 내역을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
+
+
+def _find_income(income: list, item: str):
+    """_find_purchase와 완전히 동일한 규칙(id 정확 일치 우선, 그 외 출처명
+    부분 문자열, 모호하면 되묻기)을 수입 기록에 적용한다."""
+    item = (item or "").strip()
+    if not item:
+        return None, "⚠️ 어떤 수입 기록인지 id나 출처명을 알려주세요."
+
+    exact_id = next((e for e in income if e["id"].lower() == item.lower()), None)
+    if exact_id:
+        return exact_id, None
+
+    matches = [e for e in income if item.lower() in (e.get("source") or "").lower()]
+    if not matches:
+        return None, f"⚠️ '{item}'과(와) 일치하는 수입 기록을 찾을 수 없어요."
+    if len(matches) > 1:
+        names = ", ".join(f"{e['date']} '{e.get('source') or '(미분류)'}' (id: {e['id']})" for e in matches)
+        return None, f"⚠️ 여러 개가 일치해요({names}) — id로 다시 말씀해주세요."
+    return matches[0], None
+
+
+def delete_income(item: str) -> str:
+    print(f"\n💵 [가계부] 수입 기록 삭제: {item}")
+    login_error = _require_login()
+    if login_error:
+        return login_error
+
+    income = _load_income()
+    found, error = _find_income(income, item)
+    if error:
+        return error
+    income = [e for e in income if e["id"] != found["id"]]
+    _save_income(income)
+    source_str = found.get("source") or "(미분류)"
+    return f"[✅ 수입 기록 삭제]\n'{source_str}' ({_format_price(found['amount'])}) 기록을 삭제했어요."
+
+
+def edit_income(item: str, new_source: str = "", new_amount: float = None) -> str:
+    print(f"\n💵 [가계부] 수입 기록 수정: {item} → source={new_source!r}, amount={new_amount!r}")
+    login_error = _require_login()
+    if login_error:
+        return login_error
+
+    new_source = (new_source or "").strip()
+    if not new_source and new_amount is None:
+        return "⚠️ 바꿀 출처명이나 금액 중 하나는 알려주세요."
+
+    if new_amount is not None:
+        try:
+            new_amount = int(round(float(new_amount)))
+        except (TypeError, ValueError, OverflowError):
+            return "⚠️ 금액을 이해하지 못했습니다. '300만원', '5만원', '20,000원'처럼 다시 말씀해주세요."
+        if new_amount < 0:
+            return "⚠️ 금액은 0 이상이어야 해요."
+
+    income = _load_income()
+    found, error = _find_income(income, item)
+    if error:
+        return error
+
+    old_source, old_amount = found.get("source") or "(미분류)", found["amount"]
+    if new_source:
+        found["source"] = new_source
+    if new_amount is not None:
+        found["amount"] = new_amount
+    _save_income(income)
+
+    new_source_str = found.get("source") or "(미분류)"
+    return (f"[✅ 수입 기록 수정]\n'{old_source}' ({_format_price(old_amount)}) → "
+            f"'{new_source_str}' ({_format_price(found['amount'])})로 고쳤어요.")
+
+
+def get_balance() -> str:
+    print("\n📊 [가계부] 잔액 조회 중...")
+    login_error = _require_login()
+    if login_error:
+        return login_error
+
+    try:
+        tz  = ZoneInfo(DEFAULT_TIMEZONE)
+        now = datetime.now(tz)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        income = _load_income()
+        expenses = _load_expenses()
+
+        total_income = sum(e["amount"] for e in income)
+        total_expense = sum(e["price"] for e in expenses)
+
+        month_income = 0
+        for e in income:
+            try:
+                d = datetime.strptime(e["date"], "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            except Exception:
+                continue
+            if month_start <= d <= now:
+                month_income += e["amount"]
+
+        month_expense = 0
+        for e in expenses:
+            try:
+                d = datetime.strptime(e["date"], "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            except Exception:
+                continue
+            if month_start <= d <= now:
+                month_expense += e["price"]
+
+        balance = total_income - total_expense
+        month_net = month_income - month_expense
+
+        return (
+            f"[💰 잔액 현황]\n"
+            f"- 전체 누적 수입: {_format_price(total_income)}\n"
+            f"- 전체 누적 지출: {_format_price(total_expense)}\n"
+            f"- 전체 잔액: {_format_price(balance)}\n"
+            f"\n"
+            f"({now.strftime('%Y-%m')} 이번달)\n"
+            f"- 이번달 수입: {_format_price(month_income)}\n"
+            f"- 이번달 지출: {_format_price(month_expense)}\n"
+            f"- 이번달 순증감: {_format_price(month_net)}"
+        )
+    except Exception as e:
+        print(f"[가계부] 잔액 조회 오류: {e}")
+        return "❌ 잔액을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
 def get_month_spending_amount() -> int:

@@ -28,6 +28,8 @@ tokens/
 """
 
 import os
+import re
+import traceback
 import webbrowser
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -278,7 +280,7 @@ TOOL_SCHEMAS = {
         "type": "function",
         "function": {
             "name": "get_daily_briefing",
-            "description": "오늘 또는 내일의 일정을 브리핑 형태로 요약합니다.",
+            "description": "오늘 또는 내일의 일정과 그 날짜에 마감인 할 일을 브리핑 형태로 요약합니다(비/폭염/한파 예보가 있으면 안내나 씬 실행 제안도, 내일 일정이 있으면 준비할 할 일 추가 제안도 함께).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -926,7 +928,136 @@ def get_schedule_summary(days: int = 30, calendar_id: str = "primary") -> str:
 # 🔔 오늘/내일 브리핑
 # ─────────────────────────────────────────────
 
+_BRIEFING_MAX_TODOS = 10  # 브리핑이 할 일로 너무 길어지지 않게 상한
+_BRIEFING_RAIN_THRESHOLD = 50  # 강수확률(%)이 이 이상이면 우산 언급 — 너무 낮으면(예: 20%) 매번 뜨는 잡음이 됨
+# ChatGPT 검수 지적(2026-10-01): 기상청 폭염/한파 특보는 "체감온도 ≥33°C가
+# 2일 이상 지속"처럼 연속 일수 조건까지 포함하는데, 여기는 당일 최고/최저
+# 기온 한 번만 본다 — 공식 특보 기준을 그대로 구현한 게 아니라 33/-12라는
+# 숫자만 참고해 LUMI가 독자적으로 정한 "냉난방 씬 제안 기준"이다.
+_BRIEFING_HOT_THRESHOLD = 33    # 당일 최고기온(°C)이 이 이상이면 냉방 씬 제안(LUMI 자체 기준, 기상청 폭염특보 수치만 참고)
+_BRIEFING_COLD_THRESHOLD = -12  # 당일 최저기온(°C)이 이 이하이면 난방 씬 제안(LUMI 자체 기준, 기상청 한파특보 수치만 참고)
+_HOT_SCENE_KEYWORDS = ("냉방", "에어컨", "쿨", "시원")
+_COLD_SCENE_KEYWORDS = ("난방", "히터", "온열", "온풍", "따뜻")
+# ChatGPT 검수 지적: 키워드가 포함돼도 "안 쓰는"/"끄기"/"해제"처럼 명백히
+# 반대 의미인 씬 이름("에어컨 안 쓰는 날", "냉방 해제")까지 추천되면 안 된다
+# — 최소한의 부정 표현만 걸러낸다(완전한 자연어 이해는 범위 밖).
+_NEGATION_WORDS = ("안 ", "안쓰", "끄기", "꺼", "해제", "중지", "정지", "말고")
+
+
+def _weather_scene_mention(day: dict, label: str) -> str:
+    """2026-10-01 "2순위 연결 콤보" 2번째(weather+IoT 씬). 오늘/내일 기온이
+    극단적이면(폭염/한파 수준) 사용자가 미리 만들어둔 씬 중 이름에 관련
+    키워드가 있는 것을 찾아 "실행해드릴까요?"라고 물어보는 한 줄만
+    덧붙인다 — 절대 자동으로 run_scene을 호출하지 않는다. 이 함수는
+    텍스트만 반환하고, 실제 실행은 사용자가 "응 해줘"라고 답하면 평소처럼
+    LLM이 run_scene 도구를 호출하는 일반 대화 흐름을 그대로 타므로 별도의
+    확인/상태 머신을 새로 만들 필요가 없다.
+
+    우산 언급(비 예보)과 다르게 "질문형"으로 만든 이유: 씬 실행은 물리적
+    기기를 직접 켜고 끄는 행동이라 우산 챙기라는 말보다 결과(블라스트
+    반경)가 크다 — 등록 시점에 미리 동의받은 적 없는 완전히 새로운 자동
+    실행이므로, 이 세션의 원칙상 "확인 없이 바로 실행"은 할 수 없고
+    "물어보기" 또는 "단순 언급" 중 하나여야 하는데, 이 경우는 실행까지
+    이어질 수 있는 제안이라 "물어보기"가 맞다.
+
+    씬을 이름의 키워드로만 찾는 한계: 씬의 devices 안에 실제로 에어컨/
+    히터가 있는지 확인하지 않고 이름만 본다 — 디바이스 종류를 구조적으로
+    식별할 방법이 현재 없어서(control_iot_device/run_scene 둘 다 기기
+    이름 문자열만 다룸) 이름 기반 추정이 최선이다. 일치하는 씬이 없으면
+    그냥 아무 말도 안 한다(억지로 엉뚱한 씬을 추천하지 않음).
+
+    ChatGPT 검수 지적(2026-10-01) 2가지 추가 반영:
+    1) 매칭된 씬이 여러 개면(예: "에어컨 청소", "에어컨 냉방", "에어컨
+       취침" 전부 "에어컨" 포함) 저장 순서상 첫 번째를 임의로 골랐었다 —
+       사용자가 만든 "진짜 적절한" 씬이 있어도 순서 때문에 엉뚱한 게
+       선택될 수 있었다. 이제 0개면 조용히 건너뛰고(기존과 동일), 1개면
+       그 씬을 제안하고, 2개 이상이면 임의로 하나를 고르지 않고(모호함을
+       추측하지 않는다는 이 프로젝트의 공통 원칙) 그냥 건너뛴다 — 부가
+       정보인 브리핑에서 "어느 씬이요?"라고 되묻는 것도 과하다고 이미
+       판단했으므로(우산 언급과 같은 이유), 모호하면 언급 자체를 포기한다.
+    2) 손상된 데이터 방어 — scenes 리스트의 개별 항목이 dict가 아니거나
+       name이 문자열이 아닌 경우(수동 편집 등으로 파일이 손상된 경우)
+       TypeError 없이 건너뛴다."""
+    try:
+        import plugins.iot_control as iot_control
+    except Exception:
+        return ""
+
+    temp_max = day.get("temp_max")
+    temp_min = day.get("temp_min")
+    if temp_max is None or temp_min is None:
+        return ""
+
+    if temp_max >= _BRIEFING_HOT_THRESHOLD:
+        keywords, weather_desc = _HOT_SCENE_KEYWORDS, f"최고기온 {temp_max:.0f}°C로 더울 예정"
+    elif temp_min <= _BRIEFING_COLD_THRESHOLD:
+        keywords, weather_desc = _COLD_SCENE_KEYWORDS, f"최저기온 {temp_min:.0f}°C로 추울 예정"
+    else:
+        return ""
+
+    try:
+        scenes = iot_control._load_scenes()
+    except Exception:
+        return ""
+
+    matches = [
+        s for s in scenes
+        if isinstance(s, dict) and isinstance(s.get("name"), str)
+        and any(k in s["name"] for k in keywords)
+        and not any(neg in s["name"] for neg in _NEGATION_WORDS)
+    ]
+    if len(matches) != 1:
+        return ""  # 0개(일치 없음) 또는 2개 이상(모호함) — 둘 다 조용히 건너뜀
+
+    return f"\n\n🌡️ {label} {weather_desc}이에요 — '{matches[0]['name']}' 씬을 실행해드릴까요?"
+
+
+# get_events_by_date()가 반환하는 "N. {🔁 }{제목}\n   🕐 ..." 형식에서
+# 번호 매겨진 첫 줄의 제목만 뽑아낸다 — get_daily_briefing() 자신이 이미
+# 같은 문자열을 줄 단위로 잘라 쓰고 있으므로(body = header + "\n".join(
+# result.split("\n")[1:])), 이 포맷에 대한 텍스트 의존은 새로운 취약점이
+# 아니라 기존 코드에 이미 있던 의존성을 재사용하는 것이다.
+_EVENT_TITLE_PATTERN = re.compile(r"^\d+\.\s*(?:🔁\s*)?(.+)$", re.MULTILINE)
+
+
+def _calendar_todo_prep_mention(events_result: str) -> str:
+    """2026-10-01 "2순위 연결 콤보" 3번째(calendar+todo D-1 준비). 내일
+    일정이 있으면 가장 가까운(첫 번째) 일정 제목만 콕 집어 할 일 추가를
+    제안한다 — 여러 일정을 전부 나열하면 장황해지므로 하나만, 그리고
+    "오늘 할 일"이 아니라 "내일 일정 준비"라는 맥락이 분명하도록 일정
+    제목을 그대로 인용한다. add_todo를 실제로 호출하지 않고 텍스트만
+    반환한다(함수 docstring 상단 참고) — 모호하면 추측하지 않는다는
+    원칙에 따라, 일정이 없거나 제목을 못 뽑으면 그냥 빈 문자열.
+
+    ChatGPT 검수 지적(2026-10-01): 원래 "일정이 없습니다" in events_result로
+    빈 일정을 먼저 걸러낸 뒤에 정규식을 돌렸는데, 실제 일정 제목이 우연히
+    이 문자열을 포함하면("일정이 없습니다에 대해 논의"라는 제목의 회의)
+    일정이 있는데도 false negative로 건너뛰는 버그였다. 이 substring 검사
+    자체가 불필요했다 — _EVENT_TITLE_PATTERN이 "N. 제목" 형태의 줄에만
+    매칭되므로, 빈 일정 응답("일정이 없습니다."로 끝나는 문장, 숫자로
+    시작하는 줄이 없음)에서는 애초에 매칭이 안 돼 m이 None이 된다.
+    그래서 별도 사전 검사 없이 정규식 매칭 결과(m이 있는지)만으로 빈
+    일정/오류 응답을 전부 올바르게 걸러낼 수 있다."""
+    m = _EVENT_TITLE_PATTERN.search(events_result)
+    if not m:
+        return ""
+    title = m.group(1).strip()
+    if not title:
+        return ""
+    return f"\n\n📝 내일 '{title}' 일정이 있어요 — 준비할 게 있으면 할 일로 추가해드릴까요?"
+
+
 def get_daily_briefing(target: str = "today", calendar_id: str = "primary") -> str:
+    """2026-10-01 "도구 간 연결성" 확장 — 일정뿐 아니라 그 날짜에 마감인
+    할 일도 같이 보여준다(todo_list.get_todos_due_on, 읽기 전용 내부 함수).
+    plugins.todo_list을 함수 안에서 지연 import하는 건 data_backup.py와
+    같은 이유(모듈 로드 순서 비의존) + 이 플러그인 간 직접 참조 패턴을
+    그대로 따른 것이다. 할 일 조회가 실패하거나 로그인이 안 돼 있어도
+    (todo_list은 guest면 빈 리스트를 반환하므로 예외 자체가 안 남) 브리핑의
+    핵심인 일정 정보는 항상 보여줘야 하므로, try/except로 감싸 실패를
+    조용히 건너뛴다 — "연결" 때문에 기존 핵심 기능(일정 브리핑)이 깨지면
+    안 된다는 이 트랙의 원칙과 같다. 메모는 날짜 개념이 없어 "그 날 메모"를
+    가려낼 수 없으므로 포함하지 않는다(억지로 끼워 맞추지 않음)."""
     print(f"\n🔔 [캘린더] {target} 브리핑 준비 중...")
     tz  = ZoneInfo(DEFAULT_TIMEZONE)
     now = datetime.now(tz)
@@ -943,7 +1074,72 @@ def get_daily_briefing(target: str = "today", calendar_id: str = "primary") -> s
         f"현재 시각: {now.strftime('%H:%M')}\n"
         "─────────────────────\n"
     )
-    return header + "\n".join(result.split("\n")[1:])
+    body = header + "\n".join(result.split("\n")[1:])
+
+    try:
+        import plugins.todo_list as todo_list
+        due_todos = todo_list.get_todos_due_on(target_date)
+        if due_todos:
+            lines = [f"\n✅ {label} 마감인 할 일 {len(due_todos)}개:"]
+            lines += [f"  - {t['text']}" for t in due_todos[:_BRIEFING_MAX_TODOS]]
+            if len(due_todos) > _BRIEFING_MAX_TODOS:
+                lines.append(f"  ... 외 {len(due_todos) - _BRIEFING_MAX_TODOS}개")
+            body += "\n" + "\n".join(lines)
+    except Exception as e:
+        # ChatGPT 검수 지적(2026-10-01): 메시지 한 줄(print(f"...: {e}"))만
+        # 남기면, todo_list 쪽에 실제 프로그래밍 버그가 생겨도(예: get_todos_
+        # due_on 내부 KeyError) "연결 기능이 정상적으로 건너뜀"과 구분이 안
+        # 돼서 콘솔 로그만 보고는 원인을 못 찾는다 — traceback까지 남겨서
+        # 사용자 응답은 그대로 유지(연결 기능 실패로 브리핑 전체가 깨지면
+        # 안 된다는 원칙)하되, 개발자가 로그로는 원인을 바로 알 수 있게 한다.
+        print(f"[캘린더] 브리핑용 할 일 조회 오류(건너뜀): {e}")
+        traceback.print_exc()
+
+    # 2026-10-01 "2순위 연결 콤보" 3번째(마지막) — calendar+todo D-1 준비.
+    # 내일(target=="tomorrow") 일정이 있으면 가장 가까운 일정 하나를 콕
+    # 집어 "할 일로 추가해드릴까요?"라고 묻는다. 할 일 "추가"는 add_todo를
+    # 실제로 호출하면 사용자 데이터를 만드는 행동이라(weather_scene_mention
+    # 과 같은 이유로) 등록 시점 사전 동의가 없는 자동 실행을 할 수 없고
+    # "물어보기"만 가능하다 — 실제로는 텍스트만 반환하고 add_todo는 절대
+    # 호출하지 않는다("오늘" 브리핑에서는 "내일 준비"라는 D-1 의미가 안
+    # 맞으므로 호출하지 않음).
+    if label == "내일":
+        try:
+            body += _calendar_todo_prep_mention(result)
+        except Exception as e:
+            print(f"[캘린더] 브리핑용 D-1 준비 언급 오류(건너뜀): {e}")
+            traceback.print_exc()
+
+    # 2026-10-01 "도구 간 연결성" 2순위 — weather+calendar 연결. 사용자의
+    # 명시적 지시("간단한 건 그냥 내일 일정 얘기했을 때 '내일 비가오니
+    # 우산 챙기세요'라고 말하는 식으로 해줘")를 그대로 구현한다 — 아무것도
+    # 자동으로 만들거나 바꾸지 않고(할 일 추가/알림 등록 전부 안 함), 브리핑
+    # 문장 끝에 한 줄 언급만 덧붙인다. 환경설정에 기본 지역이 없으면(날씨
+    # 플러그인이 지역을 물어보는 경우) 브리핑 흐름을 끊지 않도록 조용히
+    # 건너뛴다 — get_current_weather/get_weather_forecast처럼 사용자에게
+    # "어느 지역이냐"고 되묻는 건 명시적으로 날씨를 물었을 때만 맞는
+    # 동작이지, 브리핑에 끼워 넣는 부가 정보에는 과하다.
+    try:
+        import plugins.weather as weather_plugin
+        from core import weather as weather_core
+        lat, lon, name, loc_error = weather_plugin._resolve_location("")
+        if loc_error is None or loc_error == "USE_NAME":
+            coords = (lat, lon) if lat is not None and lon is not None else None
+            days = weather_core.fetch_forecast(name, coords=coords, days=2)
+            idx = 0 if label == "오늘" else 1
+            if idx < len(days):
+                day = days[idx]
+                if day.get("precipitation_probability", 0) >= _BRIEFING_RAIN_THRESHOLD:
+                    body += (
+                        f"\n\n☔ {label} {day['desc']} 예보가 있어요"
+                        f"(강수확률 {day['precipitation_probability']}%) — 우산을 챙기세요."
+                    )
+                body += _weather_scene_mention(day, label)
+    except Exception as e:
+        print(f"[캘린더] 브리핑용 날씨 조회 오류(건너뜀): {e}")
+        traceback.print_exc()
+
+    return body
 
 
 # ─────────────────────────────────────────────

@@ -349,7 +349,7 @@ _DANGEROUS_FUNCS = {
 _ACTION_BEARING_REMINDER_FUNCS = {
     "set_daily_reminder", "set_usage_condition", "set_spending_condition",
     "set_cpu_condition", "set_disk_condition", "set_trend_condition", "set_price_condition",
-    "set_app_usage_trend_condition",
+    "set_app_usage_trend_condition", "set_weather_condition",
 }
 
 
@@ -369,7 +369,14 @@ def _has_automation_action(args: dict) -> bool:
     수 있어(reminder.py의 ALLOWED_ACTIONS 주석과 동일한 기준) 등록마다
     확인창을 띄울 만큼의 되돌리기 어려움이 없다고 판단했다. 즉시 반영해도
     최악의 경우가 "원치 않는 할 일 항목 하나"에 그친다."""
-    return bool(str(args.get('iot_device_name', '') or '').strip())
+    # 2026-10-01 자체 감사로 발견한 누락: 같은 날 앞서 추가한 scene_name(IoT 씬
+    # 자동 실행, plugins/reminder.py의 run_scene 액션)이 이 게이트를 우회하고
+    # 있었다 — 기기 하나(iot_device_name)를 무인 제어하는 등록은 확인받으면서
+    # 여러 기기를 한꺼번에 무인 제어하는 씬 등록은 확인 없이 저장되는 불일치.
+    # 씬은 오히려 영향 범위가 더 크므로(물리 기기 여러 개) iot_device_name과
+    # 같은 기준(무인으로 실행되는 미래 행동)으로 확인 대상에 포함한다.
+    return bool(str(args.get('iot_device_name', '') or '').strip()
+                or str(args.get('scene_name', '') or '').strip())
 
 
 def _describe_reminder_action_registration(func_name: str, args: dict) -> str:
@@ -401,7 +408,15 @@ def _describe_reminder_action_registration(func_name: str, args: dict) -> str:
         'set_app_usage_trend_condition': (
             f"'{args.get('target', '') or '전체'}' 사용 시간이 {args.get('threshold_days', '?')}일 연속 증가"
         ),
+        'set_weather_condition': (
+            f"{'내일' if args.get('when') == 'tomorrow' else '오늘'} 강수확률이 "
+            f"{args.get('threshold_percent', 50)}% 이상"
+        ),
     }.get(func_name, "조건 충족")
+    scene = str(args.get('scene_name', '') or '').strip()
+    if scene and not device:
+        return (f"자동 실행 등록: {trigger_desc}일 때 '{scene}' 씬 자동 실행 "
+                f"(등록 후에는 사용자 확인 없이 무인으로 실행됩니다)")
     return (f"자동 실행 등록: {trigger_desc}일 때 '{device}' 기기 자동 {state_kr} "
             f"(등록 후에는 사용자 확인 없이 무인으로 실행됩니다)")
 
@@ -529,9 +544,13 @@ _TOOL_CATEGORIES = {
     # 걸로는 안 되고 여기도 같이 고쳐야 실제로 호출됨.
     "iot": (
         ("스마트", "iot", "전등", "조명", "플러그", "가전", "기기", "켜줘", "켜",
-         "전원", "보일러", "에어컨", "온도조절", "씬", "모드", "장면"),
+         "전원", "보일러", "에어컨", "온도조절", "씬", "모드", "장면",
+         # 2026-10-02 방(Room) — "방"은 "방화벽" 등에 부분 일치하므로 단독으로 넣지 않고
+         # 방 이름/방 관련 표현만 쓴다.
+         "거실", "침실", "안방", "주방", "서재", "욕실", "현관", "방 목록", "방 전체", "방에 넣", "방으로"),
         ("discover_iot_devices", "control_iot_device",
-         "create_scene", "list_scenes", "run_scene", "delete_scene"),
+         "create_scene", "list_scenes", "run_scene", "delete_scene",
+         "set_device_room", "list_rooms", "control_room", "delete_room"),
     ),
     "pc_optimizer": (
         # 2026-09-22 Agent 평가셋(tests/llm_smoke/)으로 실제 llama3.1을 호출해
@@ -576,20 +595,31 @@ _TOOL_CATEGORIES = {
          # disk_limit 때문에 위에 있지만, 가격 맥락에서만 쓰이는 "밑으로
          # 떨어지면"/"이하되면"/"이하로 떨어지면"을 명시적으로 추가해
          # 가격 관련 표현이 이 카테고리에 확실히 걸리게 한다.
-         "이하되면", "이하로 떨어지면", "가격 알림", "최저가 알림"),
+         "이하되면", "이하로 떨어지면", "가격 알림", "최저가 알림",
+         # 2026-10-01 "2순위 연결 콤보" 10번 — 묵음 시간대(공통 알림 정책).
+         # "조용히"/"조용하게"는 다른 카테고리와 안 겹치는 좁은 표현이지만
+         # 그냥 넣으면 과매칭 위험이 있어 "알림"과 묶은 복합어만 둔다.
+         "묵음", "묵음 시간대", "방해 금지", "무음 모드", "조용히 해줘",
+         # 2026-10-01 브레인스토밍 11번 — 날씨 조건부 알림(set_weather_condition).
+         # "비 오면"류만 둔다("우산"/"날씨"는 weather 카테고리가 이미 처리하고,
+         # 카테고리 매칭은 합집합이라 둘 다 걸려도 무해).
+         "비 오면", "비오면", "비 올 것 같으면", "비 올 때", "강수확률 넘으면"),
         ("set_timer", "list_timers", "cancel_timer",
          "set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder",
          "set_usage_condition", "set_spending_condition", "set_cpu_condition", "set_disk_condition",
          "set_trend_condition", "set_price_condition", "set_app_usage_trend_condition",
-         "list_conditions", "cancel_condition", "list_action_log"),
+         "list_conditions", "cancel_condition", "list_action_log",
+         "set_quiet_hours", "cancel_quiet_hours", "get_quiet_hours_status",
+         "set_weather_condition"),
     ),
     "expense_tracker": (
         ("구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼", "얼마 썼", "구매내역", "구매 내역",
-         "예산",
+         "예산", "수입", "들어왔", "입금", "월급", "용돈", "알바비", "잔액", "모았어",
          # 2026-10-02: "한달에 30만원까지만 쓰고 싶어" 같은 예산 표현이 어디에도 안 걸렸다
          "까지만 쓰", "까지만 써", "만원까지", "만 원까지"),
         ("mark_as_purchased", "get_spending_summary", "list_purchases",
-         "set_monthly_budget", "get_budget_status", "delete_purchase", "edit_purchase"),
+         "set_monthly_budget", "get_budget_status", "delete_purchase", "edit_purchase",
+         "add_income", "list_income", "delete_income", "edit_income", "get_balance"),
     ),
     "file_search": (
         ("받은", "다운로드", "다운받", "pdf", "파일 찾", "파일찾", "문서 찾", "사진 찾", "이미지 찾",
@@ -628,8 +658,16 @@ _TOOL_CATEGORIES = {
     "text_tools": (
         # 2026-09-29 문서/텍스트 요약·번역 — 다른 카테고리 키워드와 안 겹치는
         # 고유 신호("요약"/"번역")만 쓴다.
-        ("요약", "요약해줘", "번역", "번역해줘"),
-        ("summarize_text", "translate_text"),
+        ("요약", "요약해줘", "번역", "번역해줘",
+         # 2026-10-02 클립보드 연결 — "클립보드"/"복사한 걸" 같은 명시적 표현만.
+         # 클립보드는 사용자가 명시적으로 말했을 때만 읽는다(plugins/text_tools.py
+         # 의 클립보드 원칙 1) — 키워드가 없는 요청엔 이 도구가 노출되지 않는다.
+         "클립보드", "복사한", "복사해둔",
+         # 2026-10-02 메일 초안 — "메일/이메일"이 들어간 요청에만 노출(draft_email/
+         # open_email_draft는 아래 dispatch 게이트가 한 번 더 의도를 확인).
+         "메일", "email"),
+        ("summarize_text", "translate_text", "summarize_clipboard", "translate_clipboard",
+         "draft_email", "open_email_draft"),
     ),
     "file_explorer": (
         # 2026-09-29 "이 파일이 있는 폴더를 열어줘" 실사용 재현 공백 — 바로 "열어줘"만
@@ -662,6 +700,15 @@ _TOOL_CATEGORIES = {
         # 다른 카테고리와 겹칠 만한 기능이 없어 단독으로 넣어도 안전하다.
         ("백업", "내보내줘", "내보내기", "데이터 파일로", "데이터 저장해줘"),
         ("export_my_data",),
+    ),
+    "weather": (
+        # 2026-10-01 "도구 간 연결성" 확장 1번 — "날씨"/"비 와"/"눈 와" 등은
+        # 이 프로젝트 다른 카테고리와 겹칠 만한 기능이 없어 단독으로 넣어도 안전하다.
+        # "미세먼지"는 넣지 않는다 — Open-Meteo 현재 날씨/예보 응답에 대기질
+        # 데이터가 없어서, 이 키워드로 라우팅해도 get_current_weather/
+        # get_weather_forecast가 답할 수 있는 질문이 아니다.
+        ("날씨", "기온", "비 와", "비와", "눈 와", "눈와", "우산", "강수확률"),
+        ("get_current_weather", "get_weather_forecast"),
     ),
 }
 
@@ -1755,6 +1802,47 @@ def _build_run_scene_reply(raw_results: str):
     return "\n".join(lines)
 
 
+_ROOM_CONTROL_HEADER = re.compile(r"^\[🏠 방 제어: '(?P<name>.+?)' (?P<verb>켜기|끄기)\]\n(?P<body>.+)$", re.DOTALL)
+_ROOM_TEXT_HEADERS = ("[🏠 방 목록]", "[✅ 방 배정 완료]", "[✅ 방 배정 해제]", "[✅ 방 삭제 완료]")
+
+
+def _build_room_control_reply(raw_results: str):
+    """control_room()의 "헤더 + 기기별 성공/실패 목록 + 개수 요약" 결과 — 씬 실행과 같은 클래스의
+    위험(부분 실패를 "다 꺼졌어요"로 뭉개 사용자가 켜져 있는 기기를 꺼진 줄 앎)이라
+    _build_run_scene_reply와 같은 원칙으로 코드가 직접 문장을 만든다. 형식이 한 줄이라도
+    다르면 None(LLM 경로 폴백). 방 목록/배정/삭제 결과는 이름을 LLM이 바꾸지 못하게 그대로 통과."""
+    stripped = raw_results.strip()
+    if stripped.startswith(_ROOM_TEXT_HEADERS):
+        return stripped
+    m = _ROOM_CONTROL_HEADER.match(stripped)
+    if not m:
+        return None
+    items, summary = [], None
+    for ln in m.group('body').split('\n'):
+        if not ln.strip():
+            continue
+        im = _RUN_SCENE_ITEM.match(ln)
+        if im:
+            items.append((im.group('mark'), im.group('device'), im.group('detail')))
+            continue
+        sm = _RUN_SCENE_SUMMARY.match(ln.strip())
+        if sm:
+            summary = sm
+            continue
+        return None
+    if not items or summary is None:
+        return None
+    lines = [f"확인해봤는데, '{m.group('name')}' 방 전체 {m.group('verb')}를 실행했어요."]
+    for mark, device, detail in items:
+        lines.append(f"- {mark} {device}: {detail}")
+    if summary.group('failed') is not None:
+        lines.append(f"{summary.group('succ')}/{summary.group('total')}개 성공, "
+                     f"{summary.group('failed')}개 실패했어요.")
+    else:
+        lines.append(f"{summary.group('succ')}/{summary.group('total')}개 모두 성공했어요.")
+    return "\n".join(lines)
+
+
 _PORT_SCAN_HEADER = re.compile(r'^\[🔍 포트 스캔 결과\] (?P<target>.+?) \((?P<range>.+?)\)\n(?P<body>.+)$', re.DOTALL)
 _PORT_SCAN_NONE = re.compile(r'^열린 포트가 없습니다\. \(스캔 시간: [\d.]+초\)$')
 _PORT_SCAN_COUNT = re.compile(r'^열린 포트 \d+개 발견 \(스캔 시간: [\d.]+초\):$')
@@ -2423,6 +2511,7 @@ def _build_startup_items_reply(raw_results: str):
 _PRICE_CARD_NAME_LABEL = "📦 상품명:"
 _PRICE_CARD_PRICE_LABEL = "💰 최저가:"
 _PRICE_HEADER = re.compile(r"🛒 '(?P<query>.+)' 최저가 검색 결과")
+_PRICE_SITE_BLOCK_MARKER = "[🏬 사이트별 최저가 비교 — 이미 계산됨]"   # plugins/price_search.py의 PRICE_SITE_BLOCK_MARKER와 동일
 _PRICE_MATCH_SUCCESS = re.compile(
     r'\[💡 검색어와 이름이 일치하는 상품 중 최저가 — 이미 계산됨\]\n'
     r'(?P<name>.+?): (?P<price>[\d,]+원)'
@@ -2501,6 +2590,13 @@ def _build_price_search_reply(raw_results: str):
         lines.append("다만 검색어와 이름이 정확히 일치하는 상품은 없어서 최저가를 딱 집어 말씀드리긴 어려워요 — 위 상품명을 직접 확인해주세요.")
     else:
         return None  # 예상 밖 형식 — 안전하게 LLM 경로로 폴백
+    # 멀티사이트 비교(2026-10-02, 14번): plugins/price_search.py가 코드로 계산해 마커와 함께
+    # 붙인 블록은 한 줄도 바꾸지 않고 그대로 통과시킨다(LLM 재작성/재계산 금지). 없으면
+    # (네이버 키 미설정 등) 이전과 완전히 같은 답변이다.
+    site_idx = raw_results.find(_PRICE_SITE_BLOCK_MARKER)
+    if site_idx != -1:
+        lines.append("")
+        lines.append(raw_results[site_idx:].strip())
     return "\n".join(lines)
 
 
@@ -2961,6 +3057,100 @@ def _build_note_list_reply(raw_results: str):
     return None
 
 
+# 2026-10-02 클립보드 연결(브레인스토밍 12번) — ChatGPT 검수 지적: 클립보드는
+# 비밀번호/토큰이 들어있을 수 있는 민감한 곳인데, "스키마 description + 키워드
+# 라우팅"만으로는 LLM이 "요약해줘"만 듣고 임의로 summarize_clipboard를 고르는
+# 경로를 코드로 막지 못한다(둘 다 방어층일 뿐 보장이 아님). 1차 게이트(키워드
+# 라우팅: 이 도구가 노출되는지)와 별개로, 2차 게이트(실행 직전 이번 사용자
+# 메시지에 클립보드 사용 의도가 실제로 있는지)를 dispatch에서 코드로 강제한다 —
+# open_calendar_website의 "캘린더 얘기가 없으면 실행 안 함" 가드와 같은 패턴.
+_CLIPBOARD_FUNCS = ("summarize_clipboard", "translate_clipboard")
+# 프라이버시 경계라 false negative(못 알아들음=불편)보다 false positive(말 안 했는데
+# 읽음=무단 접근)가 더 위험하다. "복사한"/"copied" 같은 행위 표현 단독은 권한으로 안 치고,
+# 복사된 "대상"(내용/글/거…)까지 같이 말했을 때만 허용한다. "클립보드"/clipboard는 객체
+# 이름 자체라 단독 허용.
+_CLIPBOARD_REFERENT = r"(?:내용|글|텍스트|문장|문단|문서|본문|기사|메일|거|걸|것)"
+_CLIPBOARD_INTENT_PATTERN = re.compile(
+    r"클립\s*보드|clipboard"
+    r"|복사\s*(?:한|된|해\s*둔|해\s*놓은)\s*" + _CLIPBOARD_REFERENT +
+    r"|ctrl\s*\+\s*c\s*(?:로\s*복사\s*)?(?:한|했던)\s*" + _CLIPBOARD_REFERENT +
+    r"|copied\s+(?:text|content|stuff)",
+    re.IGNORECASE,
+)
+
+
+def _clipboard_intent_present(user_text: str) -> bool:
+    return bool(_CLIPBOARD_INTENT_PATTERN.search(user_text or ""))
+
+
+# 메일 초안(2026-10-02, 브레인스토밍 13번) — 라우팅 키워드 "메일"만으로는 "이 메일
+# 요약해줘"에도 draft_email이 노출되므로 dispatch에서 "메일 + 작성 의도"를 코드로
+# 한 번 더 확인한다. open_email_draft는 더 좁게 "메일 앱/프로그램으로 열기"를 명시했을
+# 때만 실행하고, 받는 사람 주소는 사용자 문장에 실제로 적힌 것만 허용한다(LLM이
+# 지어낸 주소가 메일 창에 들어가는 것 방지 — "노출 제한≠실행 권한" 원칙).
+# 방(Room) 제어 게이트(2026-10-02, 15번) — "노출 제한 ≠ 실행 권한": (1) 방 이름은 사용자 문장에
+# 글자 그대로 있어야 하고(LLM이 지어낸 방 이름 금지), (2) control_room은 "다/전부/전체/모두"
+# 같은 전체 표현도 있어야 한다. 방 이름만 보면 "거실 전등 꺼줘"(기기 하나)에도 LLM이
+# control_room을 골라 방 전체를 꺼버릴 수 있다.
+#
+# (2)는 "문장 어딘가에 '다'가 있음"이 아니라 "방 이름 **바로 뒤**에 전체 표현이 옴"이어야 한다
+# (ChatGPT 검수 2026-10-02). "거실 전등 다 꺼줘"는 방이 아니라 '전등'이라는 기기 묶음을 가리키므로
+# 방 이름과 전체 표현 사이에 다른 말이 끼면 방 전체 제어로 보지 않는다("거실 다 꺼줘",
+# "거실 전부 꺼줘", "거실에 있는 거 다 꺼줘", "거실의 모든 기기 꺼줘"만 허용).
+_ROOM_SCOPE_TAIL = (r"\s*(?:에\s*있는\s*(?:거|것|기기|물건)?|안의|안에\s*있는\s*(?:거|것|기기)?|의|에서|에)?\s*"
+                    r"(?:전부|전체|모두|모든(?:\s*(?:기기|거|것))?|싹|몽땅|다(?![가-힣]))")
+
+
+def _room_name_stated_by_user(room_name, user_text: str) -> bool:
+    key = "".join(str(room_name or "").split()).casefold()
+    return bool(key) and key in "".join((user_text or "").split()).casefold()
+
+
+def _room_scope_all_intent(room_name, user_text: str) -> bool:
+    """방 이름 바로 뒤에 방 전체를 뜻하는 표현이 오는가."""
+    name = "".join(str(room_name or "").split())
+    if not name:
+        return False
+    # 방 이름 글자 사이의 공백은 허용("거 실"처럼 띄어 써도 같은 이름) — 이름은 정규식으로 이스케이프.
+    name_pattern = r"\s*".join(re.escape(ch) for ch in name)
+    return bool(re.search(name_pattern + _ROOM_SCOPE_TAIL, user_text or "", re.IGNORECASE))
+
+
+_EMAIL_WORD_PATTERN = re.compile(r"메일|email", re.IGNORECASE)
+# 작성 의도는 "요청형"만 인정한다 — 명사 "작성"/"초안" 단독은 "메일 작성법 알려줘",
+# "이메일 작성 프로그램 추천해줘"까지 통과시킨다(2026-10-02 ChatGPT 지적).
+_EMAIL_DRAFT_INTENT_PATTERN = re.compile(
+    r"써\s*(?:줘|주세요|줄래|줄\s*수|봐|달라)|쓰고\s*싶|써야"
+    r"|작성\s*(?:해|좀|부탁)|초안\s*(?:을|를)?\s*(?:써|작성|만들|좀|부탁)"
+    r"|답장\s*(?:을|좀)?\s*(?:써|작성|해)", re.IGNORECASE)
+# 메일 앱 열기는 "대상(메일 앱/아웃룩/mailto)" + "동작(열어/띄워/켜…)"이 같이 있어야 한다 —
+# "아웃룩이 뭐야?", "mailto가 뭐야?", "메일 프로그램 추천해줘"는 열기 요청이 아니다.
+_EMAIL_OPEN_TARGET_PATTERN = re.compile(
+    r"메일\s*(?:앱|프로그램|클라이언트|작성\s*창)|아웃룩|outlook|mailto", re.IGNORECASE)
+_EMAIL_OPEN_ACTION_PATTERN = re.compile(r"열어|열기|열고|열래|띄워|띄우|켜|실행")
+_EMAIL_OPEN_NEAR_PATTERN = re.compile(r"(?:열어|띄워|열기).{0,10}메일|메일.{0,10}(?:열어|띄워|열기)")
+
+
+def _email_draft_intent_present(user_text: str) -> bool:
+    text = user_text or ""
+    return bool(_EMAIL_WORD_PATTERN.search(text) and _EMAIL_DRAFT_INTENT_PATTERN.search(text))
+
+
+def _email_open_intent_present(user_text: str) -> bool:
+    text = user_text or ""
+    if _EMAIL_OPEN_NEAR_PATTERN.search(text):
+        return True
+    return bool(_EMAIL_OPEN_TARGET_PATTERN.search(text) and _EMAIL_OPEN_ACTION_PATTERN.search(text))
+
+
+def _email_address_stated_by_user(address: str, user_text: str) -> bool:
+    """LLM이 넘긴 받는 사람 주소가 사용자 문장에 글자 그대로 있는가(대소문자 무시)."""
+    address = (address or "").strip()
+    return bool(address) and address.lower() in (user_text or "").lower()
+
+
+_EMAIL_DRAFT_RESULT_HEADER = "[✉️ 메일 초안]\n"
+_EMAIL_OPEN_RESULT_HEADER = "[✉️ 메일 앱 열기]\n"
 _SUMMARY_RESULT_HEADER = "[📄 요약 결과]\n"
 _TRANSLATE_RESULT_HEADER = re.compile(r"^\[📄 번역 결과 \((?P<lang>.+?)\)\]\n(?P<body>.+)$", re.DOTALL)
 
@@ -2981,6 +3171,12 @@ def _build_text_tool_reply(raw_results: str):
     m = _TRANSLATE_RESULT_HEADER.match(stripped)
     if m:
         return m.group('body')
+    # 메일 초안/메일 앱 열기(2026-10-02) — "보내지 않았다"는 문구가 결과에 들어 있어서,
+    # LLM이 다시 쓰다가 "메일을 보냈습니다"로 바꿔 버리는 위험을 막으려고 그대로 통과.
+    # 같은 턴에 초안+열기가 같이 실행되면 결과가 이어 붙어 오므로 두 헤더를 모두 뗀다.
+    if stripped.startswith((_EMAIL_DRAFT_RESULT_HEADER, _EMAIL_OPEN_RESULT_HEADER)):
+        return (stripped.replace(_EMAIL_DRAFT_RESULT_HEADER, "")
+                        .replace(_EMAIL_OPEN_RESULT_HEADER, "")).strip()
     return None
 
 
@@ -3351,6 +3547,7 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_iot_no_devices_reply,
     _build_iot_control_reply,
     _build_run_scene_reply,
+    _build_room_control_reply,
     _build_port_scan_reply,
     _build_dns_check_reply,
     _build_network_connections_reply,
@@ -4243,9 +4440,23 @@ TOOL_STATUS_NAMES = {
     "update_note":                "📝  메모 수정 중",
     "summarize_text":            "📄  텍스트 요약 중",
     "translate_text":            "📄  텍스트 번역 중",
+    "summarize_clipboard":       "📋  클립보드 요약 중",
+    "translate_clipboard":       "📋  클립보드 번역 중",
+    "draft_email":               "✉️  메일 초안 작성 중",
+    "set_device_room":           "🏠  기기를 방에 배정 중",
+    "list_rooms":                "🏠  방 목록 조회 중",
+    "control_room":              "🏠  방 전체 제어 중",
+    "delete_room":               "🏠  방 삭제 중",
+    "open_email_draft":          "✉️  메일 앱 여는 중",
     "open_file_location":        "📂  탐색기에서 여는 중",
     "delete_purchase":           "💰  구매 기록 삭제 중",
     "edit_purchase":             "💰  구매 기록 수정 중",
+    "set_weather_condition":     "🌧️🔁  날씨 조건 알림 설정 중",
+    "add_income":                "💵  수입 기록 중",
+    "list_income":               "💵  수입 내역 조회 중",
+    "delete_income":             "💵  수입 기록 삭제 중",
+    "edit_income":               "💵  수입 기록 수정 중",
+    "get_balance":               "📊  잔액 조회 중",
     "get_top_cpu_processes":     "📊  CPU 프로세스 조회 중",
     "kill_process":              "⚡  프로세스 종료 중",
     "search_product_price":      "🛒  최저가 검색 중",
@@ -6116,6 +6327,45 @@ class AIWorker(QThread):
                                 'description': description,
                             })
                             continue
+
+                        # 클립보드 2차 게이트(위 _CLIPBOARD_INTENT_PATTERN 설명 참고) —
+                        # 이번 사용자 메시지에 클립보드 언급이 없으면 읽지 않고 거부한다.
+                        if func_name in _CLIPBOARD_FUNCS and not _clipboard_intent_present(self.user_text):
+                            tool_results.append(
+                                "⚠️ 클립보드는 '클립보드 요약해줘'처럼 직접 말씀해주실 때만 읽어요. "
+                                "요약/번역할 글을 붙여넣어 주시거나 클립보드라고 말씀해주세요."
+                            )
+                            continue
+
+                        # 방(Room) 게이트(위 _ROOM_ALL_PATTERN 설명 참고).
+                        if func_name in ('control_room', 'delete_room') or (
+                                func_name == 'set_device_room' and str(args.get('room_name', '') or '').strip()):
+                            if not _room_name_stated_by_user(args.get('room_name'), self.user_text):
+                                tool_results.append(
+                                    "⚠️ 방 이름은 직접 말씀해주신 이름으로만 사용해요. "
+                                    "'거실 다 꺼줘'처럼 방 이름을 말씀해주세요.")
+                                continue
+                        if func_name == 'control_room' and not _room_scope_all_intent(
+                                args.get('room_name'), self.user_text):
+                            tool_results.append(
+                                "⚠️ 방 전체를 켜고 끌 때는 '거실 다 꺼줘', '안방 전부 켜줘'처럼 방 이름 바로 뒤에 "
+                                "'다/전부/전체/모두'를 붙여 말씀해주세요. 기기 하나만 제어하려면 기기 이름을 말씀해주세요.")
+                            continue
+
+                        # 메일 초안 게이트(위 _EMAIL_DRAFT_INTENT_PATTERN 설명 참고).
+                        if func_name == 'draft_email' and not _email_draft_intent_present(self.user_text):
+                            tool_results.append(
+                                "⚠️ 메일 초안은 '교수님께 결석 사유 메일 써줘'처럼 메일을 써달라고 "
+                                "말씀해주실 때만 만들어요.")
+                            continue
+                        if func_name == 'open_email_draft':
+                            if not _email_open_intent_present(self.user_text):
+                                tool_results.append(
+                                    "⚠️ 메일 앱은 '메일 앱으로 열어줘'처럼 직접 말씀해주실 때만 열어요.")
+                                continue
+                            # 받는 사람은 사용자가 문장에 직접 쓴 주소만 — 지어낸 주소는 비운다.
+                            if not _email_address_stated_by_user(args.get('to', ''), self.user_text):
+                                args = {**args, 'to': ''}
 
                         # 웹사이트를 여는 도구가 이것 하나뿐이라, "크롬 열고 네이버 접속해줘"
                         # 같은 요청에 LLM이 이걸 골라 구글 캘린더를 열어버린 적이 있다

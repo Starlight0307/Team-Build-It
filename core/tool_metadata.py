@@ -63,6 +63,10 @@ class ToolMetadata:
 
 
 TOOL_METADATA: dict = {
+    "add_income": ToolMetadata(
+        name="add_income", module="expense_tracker", category="expense_tracker",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
     "analyze_startup_impact": ToolMetadata(
         name="analyze_startup_impact", module="pc_optimizer", category="pc_optimizer",
         risk_level="safe", read_only=True, llm_exposed=True,
@@ -73,6 +77,10 @@ TOOL_METADATA: dict = {
     ),
     "cancel_condition": ToolMetadata(
         name="cancel_condition", module="reminder", category="reminder",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "cancel_quiet_hours": ToolMetadata(
+        name="cancel_quiet_hours", module="reminder", category="reminder",
         risk_level="safe", read_only=False, llm_exposed=True,
     ),
     "cancel_daily_reminder": ToolMetadata(
@@ -151,12 +159,32 @@ TOOL_METADATA: dict = {
         name="delete_scene", module="iot_control", category="iot",
         risk_level="safe", read_only=False, llm_exposed=True,
     ),
+    "set_device_room": ToolMetadata(
+        name="set_device_room", module="iot_control", category="iot",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "list_rooms": ToolMetadata(
+        name="list_rooms", module="iot_control", category="iot",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "control_room": ToolMetadata(
+        name="control_room", module="iot_control", category="iot",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "delete_room": ToolMetadata(
+        name="delete_room", module="iot_control", category="iot",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
     "find_duplicate_files": ToolMetadata(
         name="find_duplicate_files", module="pc_optimizer", category="pc_optimizer",
         risk_level="safe", read_only=True, llm_exposed=True,
     ),
     "find_large_files": ToolMetadata(
         name="find_large_files", module="pc_optimizer", category="pc_optimizer",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "get_balance": ToolMetadata(
+        name="get_balance", module="expense_tracker", category="expense_tracker",
         risk_level="safe", read_only=True, llm_exposed=True,
     ),
     "get_budget_status": ToolMetadata(
@@ -186,6 +214,14 @@ TOOL_METADATA: dict = {
     "get_due_daily_reminders": ToolMetadata(
         name="get_due_daily_reminders", module="reminder", category="reminder",
         risk_level="safe", read_only=False, llm_exposed=False,
+    ),
+    "get_quiet_hours_status": ToolMetadata(
+        name="get_quiet_hours_status", module="reminder", category="reminder",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "is_in_quiet_hours": ToolMetadata(
+        name="is_in_quiet_hours", module="reminder", category="reminder",
+        risk_level="safe", read_only=True, llm_exposed=False,
     ),
     "get_due_timers": ToolMetadata(
         name="get_due_timers", module="reminder", category="reminder",
@@ -355,16 +391,40 @@ TOOL_METADATA: dict = {
         name="summarize_text", module="text_tools", category="text_tools",
         risk_level="safe", read_only=True, llm_exposed=True,
     ),
+    "summarize_clipboard": ToolMetadata(
+        name="summarize_clipboard", module="text_tools", category="text_tools",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "translate_clipboard": ToolMetadata(
+        name="translate_clipboard", module="text_tools", category="text_tools",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
     "translate_text": ToolMetadata(
         name="translate_text", module="text_tools", category="text_tools",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "draft_email": ToolMetadata(
+        name="draft_email", module="text_tools", category="text_tools",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "open_email_draft": ToolMetadata(
+        name="open_email_draft", module="text_tools", category="text_tools",
         risk_level="safe", read_only=True, llm_exposed=True,
     ),
     "open_file_location": ToolMetadata(
         name="open_file_location", module="file_explorer", category="file_explorer",
         risk_level="safe", read_only=True, llm_exposed=True,
     ),
+    "delete_income": ToolMetadata(
+        name="delete_income", module="expense_tracker", category="expense_tracker",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
     "delete_purchase": ToolMetadata(
         name="delete_purchase", module="expense_tracker", category="expense_tracker",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "edit_income": ToolMetadata(
+        name="edit_income", module="expense_tracker", category="expense_tracker",
         risk_level="safe", read_only=False, llm_exposed=True,
     ),
     "edit_purchase": ToolMetadata(
@@ -387,6 +447,10 @@ TOOL_METADATA: dict = {
         name="list_installed_programs", module="pc_optimizer", category="pc_optimizer",
         risk_level="safe", read_only=True, llm_exposed=True,
     ),
+    "list_income": ToolMetadata(
+        name="list_income", module="expense_tracker", category="expense_tracker",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
     "list_purchases": ToolMetadata(
         name="list_purchases", module="expense_tracker", category="expense_tracker",
         risk_level="safe", read_only=True, llm_exposed=True,
@@ -400,6 +464,14 @@ TOOL_METADATA: dict = {
         # 백업 파일을 생성하는 부수효과가 있다(create_scene/add_todo와 같은 분류).
         name="export_my_data", module="data_backup", category="data_backup",
         risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "get_current_weather": ToolMetadata(
+        name="get_current_weather", module="weather", category="weather",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "get_weather_forecast": ToolMetadata(
+        name="get_weather_forecast", module="weather", category="weather",
+        risk_level="safe", read_only=True, llm_exposed=True,
     ),
     "list_timers": ToolMetadata(
         name="list_timers", module="reminder", category="reminder",
@@ -563,6 +635,18 @@ TOOL_METADATA: dict = {
     ),
     "set_price_condition": ToolMetadata(
         name="set_price_condition", module="reminder", category="reminder",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "set_weather_condition": ToolMetadata(
+        name="set_weather_condition", module="reminder", category="reminder",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "get_rain_probability": ToolMetadata(
+        name="get_rain_probability", module="weather", category="weather",
+        risk_level="safe", read_only=True, llm_exposed=False,
+    ),
+    "set_quiet_hours": ToolMetadata(
+        name="set_quiet_hours", module="reminder", category="reminder",
         risk_level="safe", read_only=False, llm_exposed=True,
     ),
     "get_cheapest_matched_price": ToolMetadata(

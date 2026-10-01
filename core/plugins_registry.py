@@ -143,11 +143,11 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "다나와 검색",
-        "desc": "최저가 스크래핑",
+        "desc": "최저가 스크래핑(네이버쇼핑 API 키를 .env에 넣으면 다나와+네이버 사이트별 비교)",
         "func_names": ["search_product_price", "get_cheapest_matched_price"],
         "module_name": "price_search",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/price_search.py",
-        "sha256": "d781cb6c04f65e6e6ad3a7e505865cf9cac52e83f70127ddd3a6649e8b51329b",
+        "sha256": "fd4b0bdaa4852448b9a5653767b900b30a098fbbbd6452955810c8f6d1e55b6b",
         "dependencies": ["requests", "beautifulsoup4"]
     },
     {
@@ -259,10 +259,12 @@ AVAILABLE_PLUGINS = [
             "set_app_usage_trend_condition",
             "list_conditions", "cancel_condition",
             "get_due_conditions", "list_action_log",
+            "set_quiet_hours", "cancel_quiet_hours", "get_quiet_hours_status", "is_in_quiet_hours",
+            "set_weather_condition",
         ],
         "module_name": "reminder",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/reminder.py",
-        "sha256": "d68d076b505e9d58f824a6938ff938ac8e55a1b3c68dde5a9f75cfed930f3836",
+        "sha256": "8e744ee3c5970f647b9d144923225afd3352f846f3e0d3c4d5d806ddad965a8e",
         "dependencies": []
     },
     {
@@ -272,10 +274,11 @@ AVAILABLE_PLUGINS = [
             "mark_as_purchased", "get_spending_summary", "list_purchases",
             "set_monthly_budget", "get_budget_status", "get_month_spending_amount",
             "delete_purchase", "edit_purchase",
+            "add_income", "list_income", "delete_income", "edit_income", "get_balance",
         ],
         "module_name": "expense_tracker",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/expense_tracker.py",
-        "sha256": "0403bb7eaae1a958413d0255f96bbfa9105a407fef46c2c82bccc5ba8b3a437f",
+        "sha256": "099903ae815cf04ad35da818b94d674cd476ac28ff643d6498e00d766ec9c061",
         "dependencies": []
     },
     {
@@ -303,12 +306,13 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "IoT 스마트 기기 제어",
-        "desc": "TP-Link Kasa 스마트 플러그 등 로컬 네트워크의 IoT 기기 검색 및 전원 제어",
+        "desc": "TP-Link Kasa 스마트 플러그 등 로컬 네트워크의 IoT 기기 검색·전원 제어, 씬, 방(거실 등) 단위 제어",
         "func_names": ["discover_iot_devices", "control_iot_device",
-                       "create_scene", "list_scenes", "run_scene", "delete_scene"],
+                       "create_scene", "list_scenes", "run_scene", "delete_scene",
+                       "set_device_room", "list_rooms", "control_room", "delete_room"],
         "module_name": "iot_control",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/iot_control.py",
-        "sha256": "8251762e8fb18d839203628ea492675e731171c6f20766793b1eca9ffde46307",
+        "sha256": "cde6aa5fbf8071aa9cb75376048c239c600ca2e04b5af4dbfce55ee404c76bb5",
         "dependencies": ["python-kasa"]
     },
     {
@@ -349,13 +353,14 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "텍스트 요약/번역",
-        "desc": "붙여넣은 글을 짧게 요약하거나 다른 언어로 번역(로그인 불필요, 최대 4,000자)",
-        "func_names": ["summarize_text", "translate_text"],
+        "desc": "붙여넣은 글을 짧게 요약하거나 다른 언어로 번역, 메일 초안 작성(보내지는 않음, 로그인 불필요, 최대 4,000자)",
+        "func_names": ["summarize_text", "translate_text", "summarize_clipboard", "translate_clipboard",
+                       "draft_email", "open_email_draft"],
         "module_name": "text_tools",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/text_tools.py",
         # 2026-09-29 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
-        "sha256": "ad8005c2bb237c773bbec79da3982114bb7be22963b945f4269e1480b62d711b",
+        "sha256": "faa4656fb055fd467caa7da864300535392d9007a0971c186b7740185d1eb762",
         "dependencies": []
     },
     {
@@ -391,6 +396,18 @@ AVAILABLE_PLUGINS = [
         # 2026-09-30 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
         "sha256": "9bb166fa240a339030aeeb55e91d4406637553d634462279a523f5df1f035190",
+        "dependencies": []
+    },
+    {
+        "name": "날씨",
+        "desc": "현재 날씨와 예보(오늘/내일/모레/이번 주말/일주일)를 챗봇으로 물어볼 수 있습니다 "
+                "(로그인 불필요, core/weather.py의 Open-Meteo 연동을 재사용)",
+        "func_names": ["get_current_weather", "get_weather_forecast", "get_rain_probability"],
+        "module_name": "weather",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/weather.py",
+        # 2026-10-01 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
+        # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
+        "sha256": "4763c0055a3be5b0b6b56812ea66a3454e8ffb5359524fa43db081cfb835549d",
         "dependencies": []
     },
 ]

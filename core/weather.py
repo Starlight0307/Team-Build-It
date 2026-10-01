@@ -223,3 +223,50 @@ def _icon_name(day_icon: str, night_icon: str, is_day) -> str:
     # "구름 조금" 밤은 이모지가 ☁️이지만 그림은 달+구름이 더 맞다
     name = _ICON_NAME.get(day_icon, "cloud")
     return _NIGHT_ICON_NAME.get(name) or _ICON_NAME.get(night_icon, "cloud")
+
+
+def fetch_forecast(city: str, coords: tuple = None, days: int = 7) -> list:
+    """오늘부터 days일치(최대 7) 일별 예보 — [{"date": "YYYY-MM-DD", "desc", "icon",
+    "temp_max", "temp_min", "precipitation_probability"}, ...], 인덱스 0=오늘.
+    2026-10-01 신규(plugins/weather.py) — fetch_weather(현재 날씨)와 같은 지오코딩/
+    에러 처리 규약을 공유한다. 낮/밤 구분이 없는 일별 예보라 아이콘은 항상 낮
+    아이콘을 쓴다(fetch_weather의 is_day 분기와 다른 점)."""
+    # ChatGPT 검수 지적(2026-10-01): 원래 daily→result 변환 루프가 이 try
+    # 밖에 있었다 — API가 평소엔 정상 응답을 줘서 안 터지지만, 응답 구조가
+    # 깨지면(필드 누락/None/배열 길이 불일치) 이 함수가 보장해야 할
+    # WeatherError 계약을 깨고 raw KeyError/TypeError/IndexError가 그대로
+    # 호출부까지 올라간다. 파싱·검증까지 전부 같은 예외 경계 안으로 옮겼다.
+    try:
+        lat, lon, name = (coords[0], coords[1], city) if coords else locate(city)
+        resp = requests.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": lat, "longitude": lon, "timezone": "auto",
+            "forecast_days": max(1, min(days, 7)),
+            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+        }, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        daily = resp.json()["daily"]
+
+        times = daily["time"]
+        codes = daily["weather_code"]
+        maxes = daily["temperature_2m_max"]
+        mins = daily["temperature_2m_min"]
+        probs = daily["precipitation_probability_max"]
+        if not all(len(arr) == len(times) for arr in (codes, maxes, mins, probs)):
+            raise WeatherError("날씨 예보 응답 형식이 올바르지 않아요.")
+
+        result = []
+        for i, date in enumerate(times):
+            desc, icon, _ = _WMO.get(int(codes[i]), ("알 수 없음", "🌡️", "🌡️"))
+            result.append({
+                "date": date,
+                "desc": desc,
+                "icon": icon,
+                "temp_max": maxes[i],
+                "temp_min": mins[i],
+                "precipitation_probability": probs[i],
+            })
+        return result
+    except WeatherError:
+        raise
+    except Exception as e:
+        raise WeatherError("날씨 예보를 가져오지 못했어요. 인터넷 연결을 확인해 주세요.") from e

@@ -54,7 +54,7 @@ def test_action_bearing_funcs_matches_expected_set():
     assert _ACTION_BEARING_REMINDER_FUNCS == {
         "set_daily_reminder", "set_usage_condition", "set_spending_condition",
         "set_cpu_condition", "set_disk_condition", "set_trend_condition", "set_price_condition",
-        "set_app_usage_trend_condition",
+        "set_app_usage_trend_condition", "set_weather_condition",
     }
 
 
@@ -117,3 +117,41 @@ def test_describe_registration_handles_unknown_state_gracefully():
         {"hour": 9, "minute": 0, "iot_device_name": "거실 전등", "iot_state": "weird"},
     )
     assert "거실 전등" in desc
+
+
+# ── scene_name(IoT 씬 무인 실행)도 등록 확인 게이트 대상 ──────────────
+# 2026-10-01 자체 감사로 발견: 씬 자동 실행이 iot_device_name과 달리 이
+# 게이트를 우회하고 있었다(기기 하나는 확인, 여러 기기를 한꺼번에 제어하는
+# 씬은 확인 없이 등록되는 불일치).
+
+def test_has_automation_action_true_when_scene_name_present():
+    assert _has_automation_action({"scene_name": "취침모드"}) is True
+
+
+def test_has_automation_action_false_when_scene_name_blank():
+    assert _has_automation_action({"scene_name": "   "}) is False
+
+
+def test_describe_registration_scene_mentions_scene_name_and_unattended():
+    desc = _describe_reminder_action_registration(
+        "set_daily_reminder", {"hour": 23, "minute": 0, "scene_name": "취침모드"},
+    )
+    assert "23:00" in desc
+    assert "취침모드" in desc
+    assert "씬" in desc
+    assert "무인" in desc
+
+
+def test_describe_registration_weather_condition_mentions_trigger_and_scene():
+    desc = _describe_reminder_action_registration(
+        "set_weather_condition",
+        {"threshold_percent": 60, "when": "tomorrow", "scene_name": "제습모드"},
+    )
+    assert "내일" in desc and "60" in desc and "제습모드" in desc
+
+
+def test_describe_registration_weather_condition_defaults_to_today():
+    desc = _describe_reminder_action_registration(
+        "set_weather_condition", {"iot_device_name": "제습기", "iot_state": "on"},
+    )
+    assert "오늘" in desc and "제습기" in desc
