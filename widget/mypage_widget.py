@@ -503,6 +503,7 @@ class MyPageWidget(QWidget):
         confirm = QMessageBox.warning(
             self, "회원 탈퇴",
             "정말 탈퇴하시겠어요? 이 계정으로는 다시 로그인할 수 없게 됩니다.\n"
+            "이 컴퓨터에 저장된 대화기록, 설정, 기억도 함께 삭제돼요.\n"
             "계속하려면 비밀번호를 입력해주세요.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -524,7 +525,10 @@ class MyPageWidget(QWidget):
 
         if success:
             QMessageBox.information(self, "완료", "탈퇴가 완료되었습니다. 이용해주셔서 감사했습니다.")
-            self.logout_requested.emit()
+            withdrawn_user = self._username
+            self.logout_requested.emit()   # 로그아웃(저장소를 guest로 되돌림)이 끝난 뒤에 지운다
+            from data.local_data import purge_user_data
+            purge_user_data(withdrawn_user)
         else:
             QMessageBox.warning(self, "오류", "비밀번호가 올바르지 않습니다.")
 

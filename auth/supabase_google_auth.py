@@ -67,7 +67,7 @@ class LoginCancelled(RuntimeError):
     """사용자가 앱에서 구글 로그인을 취소했을 때."""
 
 
-GOOGLE_LOGIN_TIMEOUT = 30  # 초 — 이 시간 안에 브라우저에서 인증을 끝내야 한다
+GOOGLE_LOGIN_TIMEOUT = 60  # 초 — 이 시간 안에 브라우저에서 인증을 끝내야 한다
 
 
 def _wait_for_redirect(port: int, timeout: int = GOOGLE_LOGIN_TIMEOUT, cancel_event=None) -> str:

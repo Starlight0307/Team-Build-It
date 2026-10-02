@@ -2050,6 +2050,7 @@ class AssistantApp(QWidget):
             self.apply_theme()
         self.weather_city_input.setText(app_settings.get("weather_city") or "")
         self.weather_location_desc.setText(self._weather_location_text())
+        self.voice_words_input.setText(app_settings.get("voice_words") or "")
         self._apply_widget_layout()
         self._sync_voice_model_buttons()
         self.weather_panel.reload()   # 지역이 없으면 refresh가 알아서 현재 위치를 찾는다
