@@ -162,8 +162,8 @@ def type_unicode(text: str, windows: bool = False) -> bool:
     """글자를 '키'가 아니라 '문자'로 보낸다 — 한글 입력기 상태여도 "jangan.ac.kr"이 그대로 들어간다
     (2026-10-02 실측 8/8. 입력기를 바꾸고 키로 치는 방법은 상대 앱이 전환을 늦게 알아채서 7/8).
     클립보드도 건드리지 않는다. 실패하면 False.
-    windows=True면 Windows에서도 쓴다 (SendInput 유니코드) — 한글이 섞인 글용. Windows의 영어는
-    입력기를 영문으로 바꿔 키로 치는 쪽이 실제 Windows(한국어 IME 한글 모드)에서 확인됐다."""
+    windows=True면 Windows에서도 쓴다 (SendInput 유니코드). 실제 Windows(한국어 IME 한글 모드)에서
+    "아이유 iu", "오늘 할 일: 장보기"가 그대로 들어가는 것을 확인했다 (2026-10-02 CI)."""
     if not text:
         return False
     if IS_WIN:

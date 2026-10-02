@@ -669,9 +669,10 @@ class InputController:
         들어가 사이트 대신 검색이 됐다. 그래서
         - 영어(주소/영어 단어): 입력기를 확인해서 한글이면 영문으로 바꾸고, 다 친 뒤 원래대로 되돌린다
           (core/input_source.py).
-        - 치는 방법: macOS는 글자를 '문자'로 보낸다 (입력기 상태와 상관없이 정확, 클립보드 안 씀).
-          Windows의 영어는 영문으로 바꾼 뒤 키로 치고(실제 Windows에서 확인), 한글이 섞인 글은 '문자'로
-          보낸다. 다 안 되면 클립보드 붙여넣기."""
+        - 치는 방법: 글자를 '키'가 아니라 '문자'로 보낸다 (macOS CGEvent / Windows SendInput 유니코드) —
+          입력기 상태와 상관없이 정확하고 클립보드도 안 쓴다. 영문으로 바꾼 뒤 키로 치는 방법은 상대 앱이
+          전환을 늦게 알아채 가끔 섞였다 (맥 7/8, Windows 3.11에서 "naver.com"→"ㅁㅍㄷ채nㄱ.ㅡ").
+          문자로 못 보내는 환경에서만 영문 전환 + 키, 그것도 안 되면 클립보드 붙여넣기."""
         from core import input_source
         lines = (text or "").split("\n")
         for i, line in enumerate(lines):
@@ -682,7 +683,7 @@ class InputController:
                 continue
             if input_source.wants_english(line):
                 with input_source.english_input() as ok:
-                    if input_source.type_unicode(line):
+                    if input_source.type_unicode(line, windows=True):
                         time.sleep(0.15)   # 상대 앱이 다 처리한 뒤에 입력기를 되돌린다
                         continue
                     if ok:

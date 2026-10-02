@@ -284,7 +284,7 @@ def _ime_typing():
     user32 = ctypes.windll.user32
     user32.AllowSetForegroundWindow(-1)   # 자식 창이 맨 앞으로 올 수 있게
     out = os.path.join(tempfile.mkdtemp(), "ime.txt")
-    proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--ime-target", "60", out],
+    proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--ime-target", "120", out],
                             stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
     try:
         ready = proc.stdout.readline().strip()
@@ -316,13 +316,15 @@ def _ime_typing():
         raw, _ = typed(lambda: (c.kb.type("naver"), c._tap(c._kb_mod.Key.enter)))
         ime_active = any("\u3130" <= ch <= "\ud7a3" for ch in raw)
         rows, bad = [], []
-        for case in ["naver.com", "https://www.youtube.com", "Hello World 123", "아이유 iu", "오늘 할 일: 장보기"]:
+        # 가끔만 섞이는 문제(타이밍)를 잡으려고 세 번 반복한다
+        for case in ["naver.com", "https://www.youtube.com", "Hello World 123", "아이유 iu", "오늘 할 일: 장보기"] * 3:
             got, mode_after = typed(lambda case=case: c.type_text(case + "\n"))
             restored = mode_after is None or bool(int(mode_after) & 1)
             rows.append(f"{case!r}→{got!r}{'' if restored else ' (한글 모드로 안 돌아옴)'}")
             if got != case or not restored:
                 bad.append(case)
-        detail = (f"{ready} · 대조(그냥 키) 'naver'→{raw!r} · " + " / ".join(rows))
+        detail = (f"{ready} · 대조(그냥 키) 'naver'→{raw!r} · {len(rows) - len(bad)}/{len(rows)} 정확 · "
+                  + " / ".join(r for r in rows if any(b in r for b in bad) or rows.index(r) < 5))
         if bad:
             return "FAIL", detail
         if not ime_active:
