@@ -39,5 +39,15 @@ jobs:
         continue-on-error: true
         run: python -m pytest -m slow -q
 
+      # 한/영 입력기 자동 전환 점검용 — 러너에는 한국어 입력기가 없어서 추가한다
+      - name: 한국어 입력기 추가
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $l = Get-WinUserLanguageList
+          $l.Add("ko-KR")
+          Set-WinUserLanguageList $l -Force
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
+
       - name: Windows 자가 점검 (음성 구성요소 포함)
         run: python scripts/windows_selftest.py --voice

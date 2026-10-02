@@ -17,7 +17,8 @@ screen_agent.py  ─  화면을 보고 스스로 작업하는 에이전트 (컴�
   모델이 스스로 dangerous=true로 표시한 경우 + 키워드/단축키 규칙 둘 다 본다.
 - 즉시 중지: Esc 키, 또는 마우스를 화면 왼쪽 위 모서리로 밀기 (pyautogui 방식),
   또는 트레이 메뉴 "화면 작업 중지".
-- 최대 단계 수(SCREEN_AGENT_MAX_STEPS)를 넘으면 멈춘다.
+- 단계 수는 요청에 맞춰 정한다 (estimate_step_budget + 모델의 남은 단계 예상) — 진행 중이면
+  최대 SCREEN_AGENT_MAX_STEPS까지 늘리고, 화면이 3단계 연속 그대로면 바로 멈춘다.
 - 비밀번호/결제 정보 입력은 모델에게 하지 말라고 지시한다.
 
 좌표
@@ -55,6 +56,10 @@ SETTLE_MAX     = 1.5         # 클릭/입력 후 최대 대기
 SETTLE_MAX_APP = 5.0         # 앱/웹 열기 후 최대 대기 (화면이 바뀐 다음 멈출 때까지)
 BATCH_GAP      = 0.25        # 한 번에 받은 동작들 사이 간격 (클릭 → 입력칸 포커스)
 MAX_BATCH      = 4           # 화면 한 번 보고 할 수 있는 동작 수
+# 단계 예산 — 고정 20단계 대신 요청마다 정한다 (2026-10-02 실측: 헤매는 작업이 20단계(~5분)를 다 썼다)
+MIN_STEPS      = 3           # 아무리 간단해도 이만큼은 (보기 → 하기 → 확인)
+START_MAX      = 12          # 요청 글만 보고 정하는 처음 예산의 최대
+STALL_LIMIT    = 3           # 화면이 이만큼 연속으로 그대로면 멈춘다
 CORNER_PX      = 3           # 마우스를 이 안쪽(왼쪽 위 모서리)으로 밀면 중지
 
 IS_MAC = sys.platform == "darwin"
@@ -86,6 +91,8 @@ ACTION_SCHEMA = {
         # 위 동작들로 목표가 확실히 끝나면 true (화면을 다시 확인하는 단계를 건너뛴다)
         "finish":  {"type": "boolean"},
         "summary": {"type": "string"},
+        # 목표까지 이번 단계를 포함해 화면을 몇 번 더 봐야 할지 예상 (단계 예산을 늘릴지 정할 때 쓴다)
+        "steps_left": {"type": "integer"},
     },
     "required": ["thought", "actions"],
 }
@@ -104,7 +111,8 @@ SYSTEM_PROMPT = f"""당신은 사용자의 컴퓨터 화면을 보고 마우스�
 - key: keys — 키 또는 단축키 배열. 예: ["enter"], ["{_MOD_KEY}", "l"], ["tab"]
 - scroll: x, y, direction(up/down), amount(1~10)
 - open_app: text — 실행할 앱 이름 (예: {'"Safari", "Finder", "메모"' if IS_MAC else '"notepad", "calc", "msedge", "explorer"'})
-- open_url: text — 열 웹 주소 (http 또는 https)
+- open_url: text — 열 웹 주소 (http 또는 https). 사용자의 기본 브라우저로 열린다.
+  웹사이트를 열 때는 브라우저를 open_app 하고 주소를 입력하는 대신 open_url을 쓰세요 (빠르고 정확).
 - wait: 화면이 바뀌기를 기다림 (로딩 중일 때)
 - done: 목표를 이뤘을 때. summary에 사용자에게 할 보고를 한국어로 (화면에서 찾은 정보가 있으면 포함)
 - fail: 할 수 없을 때
@@ -120,11 +128,16 @@ actions 배열 (1~4개):
 
 규칙:
 - thought는 20자 이내로 아주 짧게 쓰세요 (예: "검색창에 입력").
+- steps_left에는 목표까지 화면을 몇 번 더 봐야 할지(이번 포함) 정수로 예상해 쓰세요.
 - 되돌리기 어려운 동작(삭제, 전송, 결제, 구매, 제출, 프로그램 종료, 설정 변경)이면 dangerous를 true로 하세요.
 - 비밀번호, 카드 번호 같은 민감 정보는 절대 입력하지 말고 fail 하세요.
 - 앞 동작이 효과가 없었다면 같은 동작을 반복하지 말고 다른 방법을 쓰세요.
 - 목표를 이미 이뤘으면 바로 done 하세요.
-- 화면 구석에 보이는 "루미가 작업 중" 안내 상자는 루미 자신의 표시이니 무시하세요."""
+- 화면 구석에 보이는 "루미가 작업 중" 안내 상자는 루미 자신의 표시이니 무시하세요.
+- key/type은 화면에 보이는 앱이 아니라 "키보드 입력을 받는 맨 앞 앱"으로 갑니다. 그 앱이 목표 앱이 아니면 먼저 목표 창을 click 하거나 open_app 하세요.
+- wait 했는데 화면이 그대로라면 더 기다리지 말고 다른 방법(클릭, 다시 입력, 앱 열기)을 쓰세요.
+- 맨 앞 앱이 이미 목표 앱이면(한국어 이름 포함: 텍스트 편집기=TextEdit, 메모=Notes, 계산기=Calculator 등) 다시 open_app 하지 마세요.
+- 앱을 열었더니 파일 열기 창(창 제목 "열기"/"Open")이 보이면 "새로운 문서"(New Document) 버튼을 click 하세요."""
 
 # 되돌리기 어려운 동작 — 모델이 dangerous를 빠뜨려도 여기서 한 번 더 잡는다
 _DANGER_WORDS = (
@@ -189,6 +202,85 @@ def _esc_pressed() -> bool:
     except Exception:
         pass
     return False
+
+
+# ─────────────────────────────────────────────
+# 🎯 키보드 입력이 들어가는 창 (맨 앞 앱)
+# ─────────────────────────────────────────────
+# 2026-10-02 실측: VS Code가 맨 앞이고 크롬은 뒤에 보이는 상태에서 "유튜브에서 아이유 검색해줘" →
+# 모델이 화면만 보고 크롬이 대상인 줄 알고 cmd+t, 입력, Enter → 전부 VS Code로 들어갔다.
+# 스크린샷만으로는 어느 창이 키보드를 받는지 알 수 없어서, 매 단계 맨 앞 앱 이름을 알려준다.
+def _mac_window_title(pid: int):
+    """맨 앞 앱의 맨 위 창 제목 (예: "아이유 - Google 검색") — '화면 기록' 권한이 있어야 보인다."""
+    try:
+        import Quartz
+        wins = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID) or []
+        for w in wins:   # 앞에 있는 창부터 나온다
+            if int(w.get("kCGWindowOwnerPID", -1)) == pid and int(w.get("kCGWindowLayer", 1)) == 0:
+                title = str(w.get("kCGWindowName") or "").strip()
+                if title:
+                    return title
+    except Exception:
+        pass
+    return None
+
+
+def active_window() -> tuple:
+    """(맨 앞 앱 이름 + 창 제목, 루미 자신인지). 알 수 없으면 (None, False).
+    창 제목까지 알려주는 이유 (2026-10-02 실측): 모델이 구글 검색 결과 화면을 유튜브로 착각해서
+    엉뚱한 곳을 계속 눌렀다 — 제목("아이유 - Google 검색")이 있으면 지금 어느 페이지인지 헷갈리지 않는다."""
+    import os
+    try:
+        if IS_MAC:
+            from AppKit import NSWorkspace
+            app = NSWorkspace.sharedWorkspace().frontmostApplication()
+            pid = int(app.processIdentifier())
+            name = str(app.localizedName())
+            title = _mac_window_title(pid)
+            return (f"{name} — 창 제목 \"{title}\"" if title else name), pid == os.getpid()
+        if IS_WIN:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(hwnd, buf, 256)
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            return (f"창 제목 \"{buf.value}\"" if buf.value else None), pid.value == os.getpid()
+    except Exception:
+        pass
+    return None, False
+
+
+def focus_note() -> str:
+    """모델에게 줄 '지금 키보드가 어디로 가는지' 안내 한 줄."""
+    name, is_self = active_window()
+    if is_self:
+        return ("지금 키보드 입력을 받는 창: 없음 (루미 자신). key/type 전에 작업할 창을 먼저 click 하거나 "
+                "open_app 하세요.")
+    if name:
+        return (f"지금 키보드 입력을 받는 맨 앞 앱: {name}. 지금 어느 페이지인지는 이 창 제목을 믿으세요. "
+                "다른 앱에 입력하려면 key/type 전에 그 창을 먼저 click 하거나 open_app 하세요.")
+    return ""
+
+
+def yield_focus():
+    """루미 창을 숨긴 뒤 바로 전에 쓰던 앱에 키보드를 돌려준다 (macOS — 창만 숨기면 루미가 계속
+    맨 앞 앱으로 남아서 단축키/입력이 아무 데도 안 간다). Windows는 창을 숨기면 알아서 넘어간다."""
+    if not IS_MAC:
+        return
+    try:
+        from AppKit import NSApplication
+        app = NSApplication.sharedApplication()
+        app.hide_(None)                     # 루미가 물러나면 macOS가 바로 전 앱을 맨 앞으로
+        # 작업 중 안내 창은 다시 보이게 (키보드는 가져오지 않음) — 숨기기가 끝난 뒤에 해야 먹힌다
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(300, app.unhideWithoutActivation)
+    except Exception:
+        pass
 
 
 def exclude_from_capture(widget):
@@ -407,13 +499,45 @@ def parse_action(raw: str) -> dict:
             raise ValueError("동작 없음")
         first = act["actions"][0]
         act = {**first, "thought": act.get("thought", ""), "then": act["actions"][1:],
-               "finish": act.get("finish"), "summary": first.get("summary") or act.get("summary", "")}
+               "finish": act.get("finish"), "summary": first.get("summary") or act.get("summary", ""),
+               "steps_left": act.get("steps_left")}
     if not isinstance(act, dict) or act.get("action") not in ACTIONS:
         raise ValueError(f"알 수 없는 동작: {act.get('action') if isinstance(act, dict) else act}")
     if act["action"] in ("click", "double_click", "right_click", "scroll") and (
             not isinstance(act.get("x"), (int, float)) or not isinstance(act.get("y"), (int, float))):
         raise ValueError("좌표 없음")
     return act
+
+
+# 요청 안의 "하위 작업" 경계 — "메모장 열고, 제목 쓰고, 저장해줘" → 3개
+_SUBTASK_SPLIT = re.compile(r"(?:하고|해서|하고서|한\s?다음|한\s?뒤|한\s?후|그리고|그다음|그\s?다음에|다음에|"
+                            r"열고|열어서|켜고|켜서|들어가서|누르고|눌러서|쓰고|써서|입력하고|입력해서|"
+                            r"찾아서|찾고|복사해서|복사하고|붙여넣고|저장하고|[,，]|\bthen\b|\band\b)")
+_MANY_ITEMS = re.compile(r"모두|전부|전체|각각|하나씩|여러|목록|비교|all|each", re.IGNORECASE)
+
+
+def estimate_step_budget(task: str) -> int:
+    """요청 글만 보고 정하는 처음 단계 예산.
+    - 기본 3단계 (화면 보기 → 동작 → 확인)
+    - 하위 작업("열고/입력하고/저장해줘" 등)마다 +2
+    - 여러 항목을 다루는 요청("모두/각각/비교")은 +3, 긴 글을 입력하는 요청은 +1
+    진행이 잘 되면 실행 중에 모델의 예상(steps_left)을 보고 SCREEN_AGENT_MAX_STEPS까지 늘린다."""
+    t = task or ""
+    parts = 1 + len(_SUBTASK_SPLIT.findall(t))
+    budget = MIN_STEPS + 2 * (parts - 1)
+    if _MANY_ITEMS.search(t):
+        budget += 3
+    if re.search(r"[\"'“‘「].{15,}[\"'”’」]", t) or len(t) > 60:
+        budget += 1
+    return max(MIN_STEPS, min(START_MAX, budget))
+
+
+def next_budget(budget: int, step: int, steps_left, progressing: bool) -> int:
+    """단계 예산 갱신 — 화면이 바뀌며 진행 중일 때만, 모델이 '아직 n단계 남았다'고 하면 늘린다.
+    줄이지는 않는다 (끝나면 모델이 done 한다). 헤매는 중이면 늘리지 않는다."""
+    if not progressing or not isinstance(steps_left, int) or steps_left <= 0:
+        return budget
+    return max(budget, min(SCREEN_AGENT_MAX_STEPS, step + min(steps_left, 8)))
 
 
 def _valid(act) -> bool:
@@ -539,6 +663,70 @@ class InputController:
     def position(self):
         return self.mouse.position
 
+    def type_text(self, text: str):
+        """글자 입력 (줄바꿈은 Enter).
+        2026-10-02 실측: 한글 입력기 상태에서 키를 하나씩 누르면 "youtube.com"이 "ㅛㅐㅕ셔ㅠㄷ.채ㅡ"로
+        들어가 사이트 대신 검색이 됐다. 그래서
+        - 영어(주소/영어 단어): 입력기를 확인해서 한글이면 영문으로 바꾸고, 다 친 뒤 원래대로 되돌린다
+          (core/input_source.py).
+        - 치는 방법: macOS는 글자를 '문자'로 보낸다 (입력기 상태와 상관없이 정확, 클립보드 안 씀).
+          그게 안 되는 환경(Windows)은 영문으로 바꾼 뒤 키로 치고, 그것도 안 되면 클립보드 붙여넣기."""
+        from core import input_source
+        lines = (text or "").split("\n")
+        for i, line in enumerate(lines):
+            if i:
+                self._tap(self._kb_mod.Key.enter)
+                time.sleep(0.05)
+            if not line:
+                continue
+            if input_source.wants_english(line):
+                with input_source.english_input() as ok:
+                    if input_source.type_unicode(line):
+                        time.sleep(0.15)   # 상대 앱이 다 처리한 뒤에 입력기를 되돌린다
+                        continue
+                    if ok:
+                        # 입력기 전환이 상대 앱에 반영될 틈 + 아무 글자도 안 치는 키로 반영을 재촉
+                        time.sleep(input_source.SWITCH_SETTLE)
+                        self._tap(self._kb_mod.Key.shift)
+                        time.sleep(input_source.SWITCH_SETTLE)
+                        self.kb.type(line)
+                        # 보낸 키는 상대 앱이 조금 뒤에 처리한다 — 바로 한글로 되돌리면 아직 처리 안 된
+                        # 글자가 한글로 들어갔다 ("https://ㅈㅈㅈ.ㅛㅐㅕ…", 실측)
+                        time.sleep(input_source.SWITCH_SETTLE + 0.02 * len(line))
+                        continue
+            elif input_source.type_unicode(line):
+                continue
+            if not self._paste(line):
+                self.kb.type(line)
+
+    def _tap(self, key):
+        self.kb.press(key)
+        self.kb.release(key)
+
+    def _paste(self, text: str) -> bool:
+        try:
+            from PyQt6.QtCore import QMimeData, QTimer
+            from PyQt6.QtWidgets import QApplication
+            cb = QApplication.clipboard()
+            if cb is None:
+                return False
+            saved = QMimeData()
+            old = cb.mimeData()
+            for fmt in (old.formats() if old else []):
+                saved.setData(fmt, old.data(fmt))
+            cb.setText(text)
+            QApplication.processEvents()
+            mod = self._kb_mod.Key.cmd if IS_MAC else self._kb_mod.Key.ctrl
+            self.kb.press(mod)
+            self._tap(self._kb_mod.KeyCode.from_vk(9) if IS_MAC else self._kb_mod.KeyCode.from_char("v"))
+            self.kb.release(mod)
+            time.sleep(0.15)
+            # 상대 앱이 붙여넣기를 마칠 시간을 준 뒤 원래 클립보드로 되돌린다
+            QTimer.singleShot(800, lambda: cb.setMimeData(saved) if cb.text() == text else None)
+            return True
+        except Exception:
+            return False
+
     def _key(self, name: str):
         K = self._kb_mod.Key
         special = {
@@ -569,7 +757,7 @@ class InputController:
                 amount = min(max(int(act.get("amount") or 3), 1), 10)
                 self.mouse.scroll(0, amount if act.get("direction") == "up" else -amount)
             elif kind == "type":
-                self.kb.type(act.get("text", ""))
+                self.type_text(act.get("text", ""))
             elif kind == "key":
                 keys = [self._key(k) for k in normalize_keys(act.get("keys"))]
                 for k in keys:
@@ -676,7 +864,13 @@ class ScreenAgentWorker(QThread):
                 raise RuntimeError("마우스/키보드 제어를 준비하지 못했어요.")
             self._start_esc_watch()
             repeat, last_sig = 0, None
-            for step in range(1, SCREEN_AGENT_MAX_STEPS + 1):
+            self._notes = []        # 다음 질문에 덧붙일 주의 사항 (기다려도 화면이 그대로 등)
+            stale_waits = 0
+            self.max_steps = estimate_step_budget(self.task)   # 진행에 따라 늘어난다 (next_budget)
+            stalls = 0
+            step = 0
+            while step < self.max_steps:
+                step += 1
                 if self._stopped_by_user():
                     return self.finished_task.emit(False, "사용자 요청으로 작업을 멈췄어요.", history)
 
@@ -686,6 +880,7 @@ class ScreenAgentWorker(QThread):
                     return self.finished_task.emit(False, "사용자 요청으로 작업을 멈췄어요.", history)
 
                 act = self._ask_next_action(image, history, step, repeat)
+                step_before = self._signature(mon)
                 if act["action"] in ("done", "fail"):
                     self.step_started.emit(step, describe_action(act))
                     summary = act.get("summary") or act.get("thought") or ""
@@ -705,7 +900,22 @@ class ScreenAgentWorker(QThread):
                     if a["action"] == "wait":
                         if self._stop.wait(2.0):
                             return self.finished_task.emit(False, "사용자 요청으로 작업을 멈췄어요.", history)
+                        # 기다려도 화면이 그대로면 모델에게 알린다 — 실측에서 결과가 오지 않는 화면을
+                        # 보며 wait만 8번(~2분) 반복했다
+                        after = self._signature(mon)
+                        if before is not None and after is not None and not _changed(before, after):
+                            stale_waits += 1
+                            desc += " (화면 변화 없음)"
+                            if stale_waits >= 3:
+                                return self.finished_task.emit(
+                                    False, "기다려도 화면이 바뀌지 않아서 작업을 멈췄어요. "
+                                           "원하는 창을 앞에 띄운 뒤 다시 요청해 주세요.", history)
+                            self._notes.append("주의: 기다렸지만 화면이 전혀 바뀌지 않았습니다. 앞선 입력이 다른 창으로 "
+                                               "갔을 수 있습니다. 다시 wait 하지 말고 목표 창을 click 하거나 다른 방법을 쓰세요.")
+                        else:
+                            stale_waits = 0
                     else:
+                        stale_waits = 0
                         self._perform(a, mon)
                     history.append(desc + (f" — {a['thought']}" if a.get("thought") and i == 0 else ""))
                     last = i == len(plan) - 1
@@ -724,7 +934,22 @@ class ScreenAgentWorker(QThread):
                 repeat = repeat + 1 if sig == last_sig else 0
                 last_sig = sig
 
-            self.finished_task.emit(False, f"{SCREEN_AGENT_MAX_STEPS}단계 안에 끝내지 못해서 멈췄어요. "
+                # 진행 판단: 이번 단계로 화면이 바뀌었고 같은 동작 반복이 아니면 진행 중
+                step_after = self._signature(mon)
+                changed = step_before is None or step_after is None or _changed(step_before, step_after)
+                progressing = changed and repeat == 0
+                stalls = 0 if progressing else stalls + 1
+                if not changed:
+                    # 2026-10-02 실측: 텍스트 편집기를 연 뒤 파일 선택 창을 못 알아보고 open_app만 반복했다
+                    self._notes.append(f"주의: 직전 동작({describe_action(act)}) 뒤 화면이 바뀌지 않았습니다. 같은 동작을 "
+                                       "반복하지 말고, 지금 화면에 보이는 창(대화상자, 버튼)을 보고 다른 동작을 하세요.")
+                if stalls >= STALL_LIMIT:
+                    return self.finished_task.emit(
+                        False, f"{STALL_LIMIT}단계 동안 화면이 바뀌지 않아서 멈췄어요. "
+                               "원하는 창을 앞에 띄우거나 요청을 더 구체적으로 해 주세요.", history)
+                self.max_steps = next_budget(self.max_steps, step, act.get("steps_left"), progressing)
+
+            self.finished_task.emit(False, f"{self.max_steps}단계 안에 끝내지 못해서 멈췄어요. "
                                            "목표를 더 작게 나눠서 다시 요청해 주세요.", history)
         except Exception as e:
             self.finished_task.emit(False, _friendly_error(e), history)
@@ -823,9 +1048,17 @@ class ScreenAgentWorker(QThread):
         done_text = "\n".join(f"{i}. {h}" for i, h in enumerate(history[-8:], start=max(1, len(history) - 7)))
         prompt = (f"목표: {self.task}\n\n"
                   f"지금까지 한 동작:\n{done_text or '(아직 없음)'}\n\n"
-                  f"이번이 {step}번째 단계입니다 (최대 {SCREEN_AGENT_MAX_STEPS}).")
+                  f"이번이 {step}번째 단계입니다 (지금 예정 {getattr(self, 'max_steps', SCREEN_AGENT_MAX_STEPS)}단계, "
+                  f"꼭 필요하면 최대 {SCREEN_AGENT_MAX_STEPS}단계까지).")
         if repeat >= 2:
             prompt += "\n주의: 같은 동작을 여러 번 반복했지만 진행되지 않았습니다. 다른 방법을 쓰거나 fail 하세요."
+        for note in getattr(self, "_notes", [])[-1:]:
+            prompt += "\n" + note
+        if hasattr(self, "_notes"):
+            self._notes.clear()
+        focus = focus_note()
+        if focus:
+            prompt += "\n" + focus
         prompt += "\n현재 화면을 보고 다음 동작들을 JSON으로 답하세요."
         messages = [{"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt, "images": [image]}]

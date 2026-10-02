@@ -214,6 +214,124 @@ def _console():
     return "PASS", f"혼자 쓰는 콘솔인가 = {bootstrap._owns_console_alone()}"
 
 
+@check("기본 브라우저 확인 (레지스트리)")
+def _default_browser():
+    if not IS_WIN:
+        return "SKIP", "Windows 아님"
+    from core import web_launcher
+    app, name = web_launcher._default_browser_app(), web_launcher.default_browser_name()
+    if not app:
+        return "INFO", "기본 브라우저가 정해져 있지 않음 (이 경우 루미는 '기본 브라우저'라고만 말하고 그대로 연다)"
+    return "PASS", f"{name} ← {app}"
+
+
+# ── 한글 입력기 상태에서 영어 입력 (core/input_source.py) ──
+# 입력 받을 창은 실제 상황(크롬 등 다른 앱)처럼 별도 프로세스로 띄운다. 그 창이 한국어 입력기를
+# 한글 모드로 켜고, 받은 글을 파일에 계속 적는다. 점검 쪽은 루미의 InputController로 글을 친다.
+def _ime_target(seconds: float, out_path: str):
+    """자식 프로세스: 한국어 IME(한글 모드)를 켠 입력 창."""
+    import ctypes
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QApplication, QTextEdit
+    app = QApplication(sys.argv)
+    e = QTextEdit()
+    e.setWindowTitle("LUMI IME test")
+    e.resize(500, 300)
+    e.show()
+    e.raise_()
+    e.activateWindow()
+    user32, imm32 = ctypes.windll.user32, ctypes.windll.imm32
+    hwnd = int(e.winId())
+    user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
+    e.setFocus()
+    hkl = user32.LoadKeyboardLayoutW("00000412", 0x1 | 0x100)   # 한국어, KLF_ACTIVATE | KLF_SETFORPROCESS
+    user32.ActivateKeyboardLayout(ctypes.c_void_p(hkl), 0)
+
+    def hangul_on():
+        imm32.ImmGetContext.restype = ctypes.c_void_p
+        himc = imm32.ImmGetContext(ctypes.c_void_p(hwnd))
+        if himc:
+            conv, sent = ctypes.c_uint(), ctypes.c_uint()
+            imm32.ImmSetOpenStatus(ctypes.c_void_p(himc), True)
+            imm32.ImmGetConversionStatus(ctypes.c_void_p(himc), ctypes.byref(conv), ctypes.byref(sent))
+            imm32.ImmSetConversionStatus(ctypes.c_void_p(himc), conv.value | 1, sent.value)
+            imm32.ImmReleaseContext(ctypes.c_void_p(hwnd), ctypes.c_void_p(himc))
+        return himc
+
+    def dump():
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(e.toPlainText())
+
+    QTimer.singleShot(300, lambda: print(f"READY layout={user32.GetKeyboardLayout(0) & 0xFFFF:04x} "
+                                         f"ime={bool(hangul_on())}", flush=True))
+    t = QTimer()
+    t.timeout.connect(dump)
+    t.start(150)
+    QTimer.singleShot(int(seconds * 1000), lambda: (dump(), os._exit(0)))
+    app.exec()
+
+
+@check("한글 입력기 상태에서 영어 주소 입력 (입력기 자동 전환)")
+def _ime_typing():
+    if not IS_WIN:
+        return "SKIP", "Windows 아님"
+    import ctypes
+    import tempfile
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication(sys.argv)   # 한글 섞인 글은 클립보드로 붙여넣는다
+    from core import input_source as ins
+    from core.screen_agent import InputController
+    user32 = ctypes.windll.user32
+    user32.AllowSetForegroundWindow(-1)   # 자식 창이 맨 앞으로 올 수 있게
+    out = os.path.join(tempfile.mkdtemp(), "ime.txt")
+    proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--ime-target", "60", out],
+                            stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    try:
+        ready = proc.stdout.readline().strip()
+        time.sleep(0.8)
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(pid))
+        if pid.value != proc.pid:
+            return "SKIP", f"입력 창을 맨 앞으로 띄우지 못함 (CI 데스크톱 제약) · {ready}"
+
+        def text():
+            try:
+                with open(out, encoding="utf-8") as f:
+                    return f.read()
+            except OSError:
+                return ""
+
+        def typed(fn):
+            before = text()
+            mode = ins._win_mode()
+            if mode is not None:
+                ins._win_set_mode(mode | 1)   # 매번 한글 모드에서 시작
+            time.sleep(0.3)
+            fn()
+            time.sleep(1.0)
+            return text()[len(before):].rstrip("\n"), ins.current()
+
+        c = InputController()
+        # 대조: 입력기 신경 안 쓰고 그냥 키로 치면 한글로 들어가는지 (이게 한글이어야 점검이 의미 있다)
+        raw, _ = typed(lambda: (c.kb.type("naver"), c._tap(c._kb_mod.Key.enter)))
+        ime_active = any("\u3130" <= ch <= "\ud7a3" for ch in raw)
+        rows, bad = [], []
+        for case in ["naver.com", "https://www.youtube.com", "Hello World 123", "아이유 iu"]:
+            got, mode_after = typed(lambda case=case: c.type_text(case + "\n"))
+            restored = mode_after is None or bool(int(mode_after) & 1)
+            rows.append(f"{case!r}→{got!r}{'' if restored else ' (한글 모드로 안 돌아옴)'}")
+            if got != case or not restored:
+                bad.append(case)
+        detail = (f"{ready} · 대조(그냥 키) 'naver'→{raw!r} · " + " / ".join(rows))
+        if bad:
+            return "FAIL", detail
+        if not ime_active:
+            return "INFO", "한글 모드가 켜지지 않아(대조가 영문) 전환은 검증 못 함 · " + detail
+        return "PASS", detail
+    finally:
+        proc.kill()
+
+
 @check("Ollama 연결")
 def _ollama():
     import requests
@@ -263,6 +381,9 @@ def main():
         _voice_checks()
     if "--only" in sys.argv:
         return _run_one(int(sys.argv[sys.argv.index("--only") + 1]))
+    if "--ime-target" in sys.argv:
+        i = sys.argv.index("--ime-target")
+        return _ime_target(float(sys.argv[i + 1]), sys.argv[i + 2])
 
     print(f"루미 Windows 자가 점검 — {sys.platform}, Python {sys.version.split()[0]}\n", flush=True)
     for i in range(len(CHECKS)):
@@ -291,6 +412,7 @@ def main():
         "🎤 마이크로 말해서 받아쓰기 (설정 > 개인 정보 > 마이크 > 데스크톱 앱 허용)",
         "🔊 답변 읽어주기 소리가 나는지 (한국어 음성 설치 필요)",
         "🖥️ 화면 조작: '메모장 열고 안녕이라고 써줘' (한글 입력이 제대로 되는지)",
+        "⌨️ 한/영 키를 '한'으로 둔 채 '크롬에서 주소창에 naver.com 입력해줘' (영문으로 바뀌어 입력되는지)",
         "🧭 창 X → 트레이로 숨김 → 트레이 메뉴 '종료'",
         "🖱️ 더블클릭 실행 시 검은 콘솔 창이 안 뜨는지",
         "🌐 '크롬에서 장안대학교 홈페이지 접속해줘'",
