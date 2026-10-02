@@ -259,8 +259,13 @@ def _ime_target(seconds: float, out_path: str):
         return himc
 
     def dump():
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write(e.toPlainText())
+        # 임시 파일에 쓰고 바꿔치기 — 그냥 "w"로 쓰면 비운 순간에 읽혀서 빈 글로 보였다 (CI 15번 중 1번)
+        try:
+            with open(out_path + ".tmp", "w", encoding="utf-8") as f:
+                f.write(e.toPlainText())
+            os.replace(out_path + ".tmp", out_path)
+        except OSError:
+            pass   # 점검 쪽이 읽는 중이면 다음 차례에
 
     QTimer.singleShot(300, lambda: print(f"READY layout={user32.GetKeyboardLayout(0) & 0xFFFF:04x} "
                                          f"ime={bool(hangul_on())}", flush=True))
@@ -295,11 +300,13 @@ def _ime_typing():
             return "SKIP", f"입력 창을 맨 앞으로 띄우지 못함 (CI 데스크톱 제약) · {ready}"
 
         def text():
-            try:
-                with open(out, encoding="utf-8") as f:
-                    return f.read()
-            except OSError:
-                return ""
+            for _ in range(10):   # 바꿔치기 중이면 잠깐 뒤 다시
+                try:
+                    with open(out, encoding="utf-8") as f:
+                        return f.read()
+                except OSError:
+                    time.sleep(0.05)
+            return ""
 
         def typed(fn):
             before = text()
