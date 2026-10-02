@@ -106,6 +106,12 @@ def export_my_data() -> str:
     # 넣어 사실상 겹치지 않게 한다.
     filename = f"LUMI_백업_{now.strftime('%Y%m%d_%H%M%S_%f')}.json"
     path = os.path.join(_export_dir(), filename)
+    # 2026-10-02 Windows 점검(Python 3.11): Windows 시계는 약 15ms마다 바뀌어서 연달아 부르면
+    # 마이크로초까지 같은 이름이 나와 앞 파일을 덮어썼다 — 이미 있으면 _2, _3…을 붙인다.
+    base, n = path[:-len(".json")], 2
+    while os.path.exists(path):
+        path = f"{base}_{n}.json"
+        n += 1
 
     # ChatGPT 검수 지적: "백업"의 핵심 목적이 데이터 보존인데 쓰는 도중
     # (디스크 공간 부족/권한 문제 등) 실패하면 손상된 JSON 파일이 남아있는
