@@ -200,9 +200,17 @@ def _spy(real_func, call_log):
     AIWorker.run()의 func_map = {f.__name__: f for f in installed_tools}와
     inspect.signature(func_map[name]) 둘 다 원본 함수 기준으로 정상 동작한다
     (실제로 이 두 가지가 깨지지 않는지 미리 확인함)."""
+    # AI에게 노출되지 않는 내부 함수(예: log_activity — AIWorker가 도구 실행 뒤 스스로 부르는
+    # 활동 기록)는 "AI가 고른 도구"가 아니므로 기록하지 않는다. 2026-10-02 전체 점검에서 이
+    # 내부 호출이 actual 목록에 섞여 "AI가 log_activity를 골랐다"로 잘못 읽혔다.
+    from core.tool_metadata import TOOL_METADATA
+    meta = TOOL_METADATA.get(real_func.__name__)
+    internal = meta is not None and not meta.llm_exposed
+
     @functools.wraps(real_func)
     def wrapper(*args, **kwargs):
-        call_log.append({"name": real_func.__name__, "args": args, "kwargs": kwargs})
+        if not internal:
+            call_log.append({"name": real_func.__name__, "args": args, "kwargs": kwargs})
         return f"[에이전트 평가용 더미 결과] {real_func.__name__}가 호출됐습니다."
     return wrapper
 

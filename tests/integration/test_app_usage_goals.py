@@ -49,6 +49,14 @@ def test_invalid_minutes_rejected(isolated_app_usage_goals):
     assert "이해하지 못했습니다" in result
 
 
+def test_infinite_minutes_rejected(isolated_app_usage_goals):
+    """ChatGPT 검수 지적(2026-09-30, expense_tracker와 동일한 클래스):
+    float("inf")는 TypeError/ValueError 없이 통과했다가 round()에서
+    OverflowError를 던져서 이 함수 전체가 죽었던 회귀."""
+    result = au.set_usage_goal("게임", float("inf"))
+    assert "이해하지 못했습니다" in result
+
+
 def test_zero_or_negative_minutes_rejected(isolated_app_usage_goals):
     result = au.set_usage_goal("게임", 0)
     assert "0분보다" in result

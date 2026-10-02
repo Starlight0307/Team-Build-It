@@ -63,7 +63,7 @@ def test_widget_search_filters_and_highlights(qapp, isolated_chat_logs):
     w.search_input.setText("cpu")
     w._on_sessions_loaded(db.search_sessions("u1", "cpu"), w._list_seq, "cpu")
     assert [s.session_id for s in w.session_items] == ["s1"]
-    assert "🔍 1건" in w.session_items[0].meta_lbl.text()
+    assert "검색 결과 1건" in w.session_items[0].meta_lbl.text()
 
     w._on_messages_loaded(db.load_messages("u1", "s1"))
     assert [b.is_match for b in w.bubbles] == [False, True]

@@ -9,6 +9,7 @@ from PyQt6.QtCore import (pyqtSignal, pyqtProperty, Qt, QPropertyAnimation, QEas
 from PyQt6.QtGui import QFontMetrics, QFont, QPainter, QColor, QLinearGradient
 
 from settings.theme import get_palette
+from widget import icons
 
 
 # ==========================================
@@ -267,7 +268,9 @@ class CommandCard(QFrame):
         layout = QVBoxLayout(self)
         self._layout = layout
 
-        self.icon_lbl  = QLabel(icon_str)
+        # 이모지로 넘어온 아이콘은 같은 뜻의 PNG 아이콘으로 바꿔 그린다 (모르는 이모지는 글자 그대로)
+        self._icon_name, _ = icons.split_emoji(icon_str)
+        self.icon_lbl  = QLabel("" if self._icon_name else icon_str)
         self.title_lbl = QLabel(title)
         self.title_lbl.setWordWrap(True)
         self.desc_lbl  = QLabel(desc)
@@ -293,6 +296,8 @@ class CommandCard(QFrame):
         self.icon_lbl.setStyleSheet(
             f"font-size: {round(26*s)}px; padding-bottom: 5px; border: none; background: transparent;"
         )
+        if self._icon_name:
+            self.icon_lbl.setPixmap(icons.pixmap(self._icon_name, round(30*s)))
         self.title_lbl.setStyleSheet(
             f"font-weight: bold; font-size: {round(16*s)}px; color: {tc}; background: transparent; border: none;"
         )
@@ -530,7 +535,7 @@ class MessageBubble(QFrame):
 
         if not is_user:
             # 루미 답변 위에 작은 발신자 표시
-            self.sender_label = QLabel("✨ LUMI")
+            self.sender_label = QLabel(icons.label_html("sparkles", "LUMI", 13))
             bl.addWidget(self.sender_label)
         self.message_label = QLabel(bubble_html(plain))
         self.message_label.setTextFormat(Qt.TextFormat.RichText)
@@ -681,9 +686,19 @@ class NotificationToast(QFrame):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+        # 앞의 이모지는 아이콘으로 (어두운 바탕이라 연보라로 칠한다)
+        icon_name, rest = icons.split_emoji(text, icons.TOAST_ICON)
+        if icon_name:
+            self.icon_lbl = QLabel()
+            self.icon_lbl.setPixmap(icons.tinted(icon_name, "#C9BCFF").pixmap(18, 18))
+            self.icon_lbl.setStyleSheet("background: transparent; border: none;")
+            self.icon_lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
+            layout.addWidget(self.icon_lbl)
+            text = rest
         self.label = QLabel(text)
         self.label.setWordWrap(True)
-        layout.addWidget(self.label)
+        layout.addWidget(self.label, 1)
 
         self.setStyleSheet(
             "background-color: #2E2A4F; border: 1px solid #B69CF6; border-radius: 18px;"

@@ -23,7 +23,13 @@ plugins/realtime_monitor.py 통합 테스트.
 """
 from unittest.mock import MagicMock, patch
 
+import sys
+
 import pytest
+
+# Windows에만 있는 레지스트리(winreg)를 써야 하는 테스트 — 맥/리눅스에서는 기능 자체가
+# "Windows 전용입니다"를 돌려주므로 건너뛴다 (Windows에서는 GitHub Actions에서 돈다).
+WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Windows 전용 기능 (winreg)")
 
 import plugins.realtime_monitor as rtm
 from plugins.realtime_monitor import (
@@ -73,17 +79,20 @@ def test_status_before_start_is_not_running():
     assert "실행 중이 아닙니다" in result
 
 
+@WINDOWS_ONLY
 def test_start_reports_intervals():
     result = start_realtime_monitor(startup_interval_seconds=10, process_interval_seconds=60)
     assert "10초마다" in result
 
 
+@WINDOWS_ONLY
 def test_status_after_start_is_running():
     start_realtime_monitor(startup_interval_seconds=10, process_interval_seconds=60)
     result = get_realtime_monitor_status()
     assert "✅ 실행 중" in result
 
 
+@WINDOWS_ONLY
 def test_starting_twice_does_not_restart(monkeypatch):
     """이미 실행 중이면 새로 또 시작하지 않고 안내만 해야 한다 — 스레드가
     중복으로 여러 개 생기면 안 됨."""
@@ -101,6 +110,7 @@ def test_stop_when_not_running_reports_honestly():
     assert "실행 중이 아닙니다" in result
 
 
+@WINDOWS_ONLY
 def test_stop_after_start_actually_stops():
     start_realtime_monitor(startup_interval_seconds=10, process_interval_seconds=60)
     result = stop_realtime_monitor()
@@ -109,6 +119,7 @@ def test_stop_after_start_actually_stops():
     assert "실행 중이 아닙니다" in get_realtime_monitor_status()
 
 
+@WINDOWS_ONLY
 def test_interval_below_minimum_is_clamped():
     """startup_interval_seconds는 최소 10초로 보정돼야 한다(너무 잦은 점검
     방지)."""
@@ -116,6 +127,7 @@ def test_interval_below_minimum_is_clamped():
     assert "10초마다" in result  # _MIN_STARTUP_INTERVAL = 10
 
 
+@WINDOWS_ONLY
 def test_interval_above_maximum_is_clamped():
     result = start_realtime_monitor(startup_interval_seconds=99999, process_interval_seconds=99999)
     assert "300초마다" in result  # _MAX_STARTUP_INTERVAL = 300
@@ -266,3 +278,70 @@ def test_tick_snapshot_error_does_not_crash_or_lose_alerts():
     # 예외가 나면 last_snapshot을 갱신하지 못하므로 기존 값을 그대로 유지해야 함
     assert result == old_snapshot
     assert get_realtime_alert_count() == 0
+
+
+# ── get_realtime_alerts(clear=...) — 2026-09-29 신규(이전엔 함수 인자로는
+# 있었지만 LLM에 노출된 적이 없던 파라미터) ──────────────────────────────
+
+def test_get_alerts_without_clear_keeps_alerts():
+    with rtm._alerts_lock:
+        rtm._alerts.append("[테스트] 알림1")
+    first = get_realtime_alerts()
+    second = get_realtime_alerts()
+    assert "알림1" in first and "알림1" in second  # clear 없으면 계속 남아있어야 함
+
+
+def test_get_alerts_with_clear_true_empties_after_returning():
+    with rtm._alerts_lock:
+        rtm._alerts.append("[테스트] 알림1")
+    first = get_realtime_alerts(clear=True)
+    assert "알림1" in first  # 이번 조회 결과에는 여전히 포함
+    second = get_realtime_alerts()
+    assert "누적된 알림이 없습니다" in second  # 그 다음부터는 비워짐
+
+
+def test_get_alerts_clear_as_string_true_is_coerced(monkeypatch):
+    """2026-09-29 검수 대비: LLM이 순수 bool이 아니라 문자열 "true"를 보낼
+    수도 있다 — 이 프로젝트 최초의 LLM 노출 boolean 인자라 전례가 없어서
+    방어적으로 문자열도 처리하는지 확인."""
+    with rtm._alerts_lock:
+        rtm._alerts.append("[테스트] 알림1")
+    get_realtime_alerts(clear="true")
+    assert "누적된 알림이 없습니다" in get_realtime_alerts()
+
+
+def test_get_alerts_clear_as_string_false_does_not_clear():
+    """가장 중요한 회귀 방지 포인트: 문자열 "false"는 비어있지 않은
+    문자열이라 `if clear:`로 그냥 판정하면 참으로 오판해서 지워버리는
+    실수가 생긴다 — 반드시 실제로 "false"/"False" 의미로 처리해야 한다."""
+    with rtm._alerts_lock:
+        rtm._alerts.append("[테스트] 알림1")
+    get_realtime_alerts(clear="false")
+    assert "알림1" in get_realtime_alerts()  # 지워지지 않았어야 함
+
+
+def test_get_alerts_clear_when_already_empty_does_not_error():
+    result = get_realtime_alerts(clear=True)
+    assert "누적된 알림이 없습니다" in result
+
+
+# ── ChatGPT 검수 지적(2026-09-30): 화이트리스트 확장 ────────────────────
+
+def test_get_alerts_clear_as_string_common_korean_affirmatives_coerced():
+    """"예"/"응" 외에 자연스러운 긍정 표현("네", "그래", "맞아", "지워",
+    "삭제")도 추가로 인식해야 한다."""
+    for word in ("네", "그래", "맞아", "지워", "삭제"):
+        with rtm._alerts_lock:
+            rtm._alerts.clear()
+            rtm._alerts.append("[테스트] 알림1")
+        get_realtime_alerts(clear=word)
+        assert "누적된 알림이 없습니다" in get_realtime_alerts(), f"'{word}'가 True로 인식되지 않음"
+
+
+def test_get_alerts_clear_unrecognized_string_fails_closed():
+    """화이트리스트에 없는 값은 여전히 안전하게 False(안 지움)로 처리돼야
+    한다 — 데이터를 지우는 동작이라 모르는 입력을 "지운다"로 추측하지 않음."""
+    with rtm._alerts_lock:
+        rtm._alerts.append("[테스트] 알림1")
+    get_realtime_alerts(clear="글쎄요")
+    assert "알림1" in get_realtime_alerts()

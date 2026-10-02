@@ -35,9 +35,10 @@ OS_NAME = "macOS" if sys.platform == "darwin" else ("Windows" if IS_WIN else "Li
 
 # 루미 기본 기능 — 자동 선택 때 이런 요청은 스킬로 가로채지 않는다
 _BUILTIN_FEATURES = (
-    "일정/캘린더, 할 일 목록, 메모장, 타이머/알림, PC 상태·CPU·메모리 확인, PC 최적화/임시 파일 정리, "
-    "보안 점검(네트워크/악성코드/시스템), 파일 찾기, 최저가 검색, 지출/가계부, 앱 사용 시간, "
-    "스마트 기기(IoT) 제어, 텍스트 요약/번역, 웹사이트 열기, 화면 보고 조작하기"
+    "일정/캘린더, 할 일 목록(마감일), 루미 메모장(메모 저장·태그·검색), 타이머/알림/정기 알림, "
+    "PC 상태·CPU·메모리 확인과 추세, PC 최적화/임시 파일 정리, 보안 점검(네트워크/악성코드/시스템), "
+    "파일 찾기/탐색, 최저가 검색, 지출/가계부(카테고리), 앱 사용 시간, 스마트 기기(IoT) 제어와 씬, "
+    "텍스트 요약/번역, 데이터 백업, 활동 기록, 웹사이트 열기, 화면 보고 조작하기"
 )
 
 TOOLS = [
@@ -171,7 +172,7 @@ class SkillAgentWorker(QThread):
             if self._stop.is_set():
                 return self.finished_skill.emit(False, skill.name, "스킬 실행을 멈췄어요.", log)
             resp = ollama.chat(model=OLLAMA_MODEL, messages=messages, tools=TOOLS,
-                               options={"temperature": 0.2, "num_ctx": 8192})
+                               options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 1024})
             msg = resp["message"]
             calls = list(msg.get("tool_calls") or []) or _faked_tool_calls(msg.get("content") or "")
             if not calls:

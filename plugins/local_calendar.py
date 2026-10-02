@@ -320,6 +320,10 @@ def local_create_event(
             "description": description,
             "location": location,
             "reminder_minutes": reminder_minutes,
+            # 2026-09-29 — 이 필드가 없어서 "알림: N분 전"이라고 확인 문구에는
+            # 적어놓고 실제로는 아무 데도 알림이 안 뜨던 공백을 메운다
+            # (get_due_event_reminders 모듈 docstring 참고).
+            "reminder_fired": False,
         }
         events.append(event)
         _save_events(events)
@@ -559,6 +563,10 @@ def local_update_event(
             event["start"] = new_start
             if not end_datetime:
                 event["end"] = (datetime.fromisoformat(new_start) + duration).isoformat()
+            # 2026-09-29 — 시작 시각이 바뀌면 "N분 전" 알림도 그 새 시각 기준으로
+            # 다시 떠야 한다. 이미 지난 시각으로 옮겨서 reminder_fired가 True로
+            # 남으면 새 시각에 대한 알림이 영원히 안 뜨는 버그가 되므로 초기화한다.
+            event["reminder_fired"] = False
         if end_datetime:
             event["end"] = _parse_datetime(end_datetime, timezone)
 
@@ -708,6 +716,7 @@ def local_create_recurring_event(
                 "location": location,
                 "reminder_minutes": 30,
                 "recurrence_group": group_id,
+                "reminder_fired": False,
             })
         _save_events(events)
 
@@ -835,3 +844,75 @@ def _format_datetime(dt_str: str) -> str:
         return dt.strftime(f"%Y-%m-%d({'월화수목금토일'[dt.weekday()]}) %H:%M")
     except Exception:
         return dt_str
+
+
+# ─────────────────────────────────────────────
+# ⏰ 일정 알림(2026-09-29 신규) — "N분 전" 알림을 실제로 띄운다
+# ─────────────────────────────────────────────
+# 실사용 감사에서 발견한 실제 결함: local_create_event()가 "- 알림: 30분 전"
+# 이라고 등록 확인 문구에 적어놓고 reminder_minutes를 이벤트에 저장까지
+# 해두지만, 이 값을 실제로 확인해서 알림을 띄우는 코드가 이 프로젝트 어디에도
+# 없었다 — 기능이 아직 없는 정도가 아니라, 사용자에게 "알려드릴게요"라고
+# 확인해놓고 실제로는 절대 안 알려주는 상태였다. 이 함수가 그 실행부를 채운다.
+#
+# get_due_timers()/get_due_daily_reminders()와 같은 내부 전용 폴링 패턴 —
+# TOOL_SCHEMAS에 없으므로 AI 도구 호출로는 절대 불릴 수 없다. app_main.py가
+# 주기적으로 호출한다.
+def get_due_event_reminders() -> list:
+    """[{"title":, "start":, "reminder_minutes":}, ...] 형태로, 지금 알림을
+    띄워야 할 일정을 찾아 반환하고 reminder_fired를 True로 표시해 저장한다.
+
+    발동 조건: reminder_minutes > 0(0 이하는 "알림 없음"으로 취급) 이고,
+    아직 안 띄웠고(reminder_fired가 False), 지금 시각이
+    [시작시각 - reminder_minutes분, 시작시각) 구간 안에 있을 때.
+
+    이미 시작 시각이 지난 일정은(앱이 꺼져있던 동안 알림 구간을 통째로
+    놓친 경우 포함) 뒤늦게 "곧 시작합니다"라고 알리면 의미가 없으므로
+    조용히 reminder_fired만 True로 표시하고 알리지 않는다 — 이 프로젝트가
+    이미 받아들인 "폴링 사이의 변화는 놓칠 수 있다"는 한계(reminder.py의
+    cpu_limit/disk_limit와 동일한 종류)와 같은 선상에 있다."""
+    if _current_user_id == "guest":
+        return []
+    events = _load_events()
+    now = datetime.now(ZoneInfo(DEFAULT_TIMEZONE))
+    due = []
+    changed = False
+    for e in events:
+        if e.get("reminder_fired"):
+            continue
+        # ChatGPT 검수 지적(2026-09-30): 이 함수는 persisted JSON을 직접
+        # 읽으므로(수동 편집/구버전 데이터로 오염될 수 있음), reminder_minutes가
+        # 숫자가 아닌 값이면 비교 자체가 TypeError를 던져 이 폴링 루프
+        # 전체가 죽는다 — 한 이벤트의 손상된 데이터가 다른 모든 이벤트의
+        # 알림까지 막으면 안 되므로 그 이벤트만 조용히 건너뛴다.
+        reminder_minutes = e.get("reminder_minutes", 0)
+        if not isinstance(reminder_minutes, (int, float)) or reminder_minutes <= 0:
+            continue
+        try:
+            start = datetime.fromisoformat(e["start"])
+        except Exception:
+            continue
+        # ChatGPT 검수 지적(2026-09-30): fromisoformat() 파싱 자체는
+        # 성공하더라도 timezone 없는(naive) 문자열이면 아래 now(aware)와의
+        # 비교에서 TypeError가 난다 — _parse_datetime()이 항상 aware 값을
+        # 만드는 정상 경로에서는 발생하지 않지만, 이 함수는 그 계약을
+        # 우회해서 저장될 수 있는 persisted data를 직접 읽으므로 방어한다.
+        if start.tzinfo is None or start.utcoffset() is None:
+            continue
+        if now >= start:
+            # 이미 시작(또는 종료)된 일정 — 뒤늦은 "곧 시작" 알림은 의미가
+            # 없으므로 알리지 않고 조용히 완료 처리만 한다.
+            e["reminder_fired"] = True
+            changed = True
+            continue
+        remind_at = start - timedelta(minutes=reminder_minutes)
+        if now >= remind_at:
+            due.append({
+                "id": e["id"], "title": e["title"], "start": e["start"],
+                "reminder_minutes": reminder_minutes,
+            })
+            e["reminder_fired"] = True
+            changed = True
+    if changed:
+        _save_events(events)
+    return due

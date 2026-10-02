@@ -23,6 +23,9 @@ class _Resp:
     def json(self):
         return self._data
 
+    def raise_for_status(self):
+        pass
+
 
 def test_unknown_city_picks_most_populated_result(monkeypatch):
     weather._geo_cache.clear()
@@ -47,6 +50,18 @@ def test_fetch_weather_converts_response(monkeypatch):
     data = weather.fetch_weather("서울")
     assert data["city"] == "서울" and data["temp"] == 23.8
     assert data["desc"] == "약한 비" and data["icon"] == "🌧️"   # 밤 아이콘
+    assert data["icon_name"] == "cloud-rain"
+
+
+def test_every_weather_code_has_an_icon_png():
+    import os
+    from widget import icons
+    for code, (_, day, night) in weather._WMO.items():
+        for is_day in (1, 0):
+            name = weather._icon_name(day, night, is_day)
+            assert os.path.exists(icons.path(name)), (code, is_day, name)
+    assert weather._icon_name("⛅", "☁️", 0) == "cloud-moon"   # 구름 조금 밤
+    assert weather._icon_name("☀️", "🌙", 0) == "moon"
 
 
 def test_network_failure_becomes_friendly_error(monkeypatch):
@@ -55,6 +70,97 @@ def test_network_failure_becomes_friendly_error(monkeypatch):
     monkeypatch.setattr(weather.requests, "get", boom)
     with pytest.raises(weather.WeatherError, match="인터넷 연결"):
         weather.fetch_weather("서울")
+
+
+# ── fetch_forecast (2026-10-01, plugins/weather.py가 쓰는 일별 예보) ────
+
+def _forecast_resp(n=7):
+    return _Resp({"daily": {
+        "time": [f"2026-10-{i+1:02d}" for i in range(n)],
+        "weather_code": [61] * n,
+        "temperature_2m_max": [20.0 + i for i in range(n)],
+        "temperature_2m_min": [10.0 + i for i in range(n)],
+        "precipitation_probability_max": [30 + i for i in range(n)],
+    }})
+
+
+def test_fetch_forecast_converts_response(monkeypatch):
+    monkeypatch.setattr(weather.requests, "get", lambda *a, **k: _forecast_resp(3))
+    days = weather.fetch_forecast("서울")
+    assert len(days) == 3
+    assert days[0]["date"] == "2026-10-01"
+    assert days[0]["desc"] == "약한 비" and days[0]["temp_max"] == 20.0
+    assert days[0]["precipitation_probability"] == 30
+
+
+def test_fetch_forecast_caps_days_at_seven(monkeypatch):
+    captured = {}
+
+    def fake_get(*a, **kw):
+        captured["forecast_days"] = kw["params"]["forecast_days"]
+        return _forecast_resp(7)
+    monkeypatch.setattr(weather.requests, "get", fake_get)
+    weather.fetch_forecast("서울", days=100)
+    assert captured["forecast_days"] == 7
+
+
+def test_fetch_forecast_network_failure_becomes_friendly_error(monkeypatch):
+    def boom(*a, **k):
+        raise weather.requests.ConnectionError("offline")
+    monkeypatch.setattr(weather.requests, "get", boom)
+    with pytest.raises(weather.WeatherError, match="예보"):
+        weather.fetch_forecast("서울")
+
+
+def test_fetch_forecast_with_coords_skips_lookup(monkeypatch):
+    monkeypatch.setattr(weather.requests, "get",
+                        lambda *a, **k: pytest.fail("좌표가 있으면 지오코딩하면 안 됨")
+                        if a and "geocoding" in a[0] else _forecast_resp(1))
+    days = weather.fetch_forecast("동네", coords=(37.1, 127.1))
+    assert len(days) == 1
+
+
+# ── ChatGPT 검수 지적(2026-10-01): daily→result 변환이 원래 try 밖에 있어서
+# API 응답 구조가 깨지면 WeatherError 대신 raw 예외가 그대로 터졌다. ──────
+
+def test_fetch_forecast_missing_field_becomes_friendly_error(monkeypatch):
+    monkeypatch.setattr(weather.requests, "get", lambda *a, **k: _Resp({"daily": {
+        "time": ["2026-10-01"],
+        # weather_code 필드 자체가 없음(API 응답 구조가 깨진 경우를 흉내)
+        "temperature_2m_max": [20.0], "temperature_2m_min": [10.0],
+        "precipitation_probability_max": [30],
+    }}))
+    with pytest.raises(weather.WeatherError, match="예보"):
+        weather.fetch_forecast("서울")
+
+
+def test_fetch_forecast_null_weather_code_becomes_friendly_error(monkeypatch):
+    monkeypatch.setattr(weather.requests, "get", lambda *a, **k: _Resp({"daily": {
+        "time": ["2026-10-01"], "weather_code": [None],
+        "temperature_2m_max": [20.0], "temperature_2m_min": [10.0],
+        "precipitation_probability_max": [30],
+    }}))
+    with pytest.raises(weather.WeatherError, match="예보"):
+        weather.fetch_forecast("서울")
+
+
+def test_fetch_forecast_mismatched_array_lengths_becomes_friendly_error(monkeypatch):
+    monkeypatch.setattr(weather.requests, "get", lambda *a, **k: _Resp({"daily": {
+        "time": ["2026-10-01", "2026-10-02"], "weather_code": [61],  # 길이 불일치
+        "temperature_2m_max": [20.0, 21.0], "temperature_2m_min": [10.0, 11.0],
+        "precipitation_probability_max": [30, 40],
+    }}))
+    with pytest.raises(weather.WeatherError, match="예보"):
+        weather.fetch_forecast("서울")
+
+
+def test_fetch_forecast_http_error_status_becomes_friendly_error(monkeypatch):
+    class _ErrResp(_Resp):
+        def raise_for_status(self):
+            raise weather.requests.HTTPError("400 Bad Request")
+    monkeypatch.setattr(weather.requests, "get", lambda *a, **k: _ErrResp({"error": True, "reason": "bad params"}))
+    with pytest.raises(weather.WeatherError, match="예보"):
+        weather.fetch_forecast("서울")
 
 
 @pytest.mark.parametrize("lat, lon, expected", [

@@ -58,6 +58,12 @@ PLUGIN_PILLS = {
     "text_tools": [
         ("📄 텍스트 요약/번역", "[요약해줘: ]"),
     ],
+    "file_explorer": [
+        ("📂 파일 위치 열기", "이 파일이 있는 폴더 열어줘"),
+    ],
+    "activity_log": [
+        ("🧾 최근 활동 이력", "아까 나한테 뭐 해줬어?"),
+    ],
 }
 
 # 대화창 중앙에 뜨는 커맨드 카드 후보 (아이콘, 제목, 설명, 전송할 명령어)
@@ -116,6 +122,12 @@ PLUGIN_CARDS = {
     "text_tools": [
         ("📄", "텍스트 요약/번역", "붙여넣은 글을 요약하거나 다른 언어로 번역합니다.", "[요약해줘: ]"),
     ],
+    "file_explorer": [
+        ("📂", "파일 위치 열기", "언급된 파일/폴더의 위치를 탐색기 창으로 엽니다.", "이 파일이 있는 폴더 열어줘"),
+    ],
+    "activity_log": [
+        ("🧾", "최근 활동 이력", "에이전트가 실제로 실행한 작업 이력을 보여줍니다(로그인 필요).", "아까 나한테 뭐 해줬어?"),
+    ],
 }
 
 AVAILABLE_PLUGINS = [
@@ -131,11 +143,11 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "다나와 검색",
-        "desc": "최저가 스크래핑",
-        "func_names": ["search_product_price"],
+        "desc": "최저가 스크래핑(네이버쇼핑 API 키를 .env에 넣으면 다나와+네이버 사이트별 비교)",
+        "func_names": ["search_product_price", "get_cheapest_matched_price"],
         "module_name": "price_search",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/price_search.py",
-        "sha256": "d781cb6c04f65e6e6ad3a7e505865cf9cac52e83f70127ddd3a6649e8b51329b",
+        "sha256": "fd4b0bdaa4852448b9a5653767b900b30a098fbbbd6452955810c8f6d1e55b6b",
         "dependencies": ["requests", "beautifulsoup4"]
     },
     {
@@ -215,6 +227,7 @@ AVAILABLE_PLUGINS = [
             "local_search_events", "local_update_event", "local_delete_event",
             "local_create_recurring_event", "local_get_schedule_summary", "local_get_daily_briefing",
             "local_delete_recurring_series", "local_get_upcoming_events_titles",
+            "get_due_event_reminders",
         ],
         "module_name": "local_calendar",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/local_calendar.py",
@@ -242,12 +255,16 @@ AVAILABLE_PLUGINS = [
             "set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder",
             "get_due_daily_reminders",
             "set_usage_condition", "set_spending_condition", "set_cpu_condition",
-            "set_disk_condition", "list_conditions", "cancel_condition", "get_due_conditions",
-            "list_action_log",
+            "set_disk_condition", "set_trend_condition", "set_price_condition",
+            "set_app_usage_trend_condition",
+            "list_conditions", "cancel_condition",
+            "get_due_conditions", "list_action_log",
+            "set_quiet_hours", "cancel_quiet_hours", "get_quiet_hours_status", "is_in_quiet_hours",
+            "set_weather_condition",
         ],
         "module_name": "reminder",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/reminder.py",
-        "sha256": "d68d076b505e9d58f824a6938ff938ac8e55a1b3c68dde5a9f75cfed930f3836",
+        "sha256": "8e744ee3c5970f647b9d144923225afd3352f846f3e0d3c4d5d806ddad965a8e",
         "dependencies": []
     },
     {
@@ -256,10 +273,12 @@ AVAILABLE_PLUGINS = [
         "func_names": [
             "mark_as_purchased", "get_spending_summary", "list_purchases",
             "set_monthly_budget", "get_budget_status", "get_month_spending_amount",
+            "delete_purchase", "edit_purchase",
+            "add_income", "list_income", "delete_income", "edit_income", "get_balance",
         ],
         "module_name": "expense_tracker",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/expense_tracker.py",
-        "sha256": "0403bb7eaae1a958413d0255f96bbfa9105a407fef46c2c82bccc5ba8b3a437f",
+        "sha256": "099903ae815cf04ad35da818b94d674cd476ac28ff643d6498e00d766ec9c061",
         "dependencies": []
     },
     {
@@ -269,6 +288,7 @@ AVAILABLE_PLUGINS = [
             "start_usage_tracking", "stop_usage_tracking", "get_usage_status", "get_usage_report",
             "resume_usage_tracking_if_enabled", "set_usage_goal", "get_goal_status",
             "get_today_usage_minutes", "get_usage_trend",
+            "get_app_usage_increase_streak_days",
         ],
         "module_name": "app_usage",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/app_usage.py",
@@ -286,18 +306,20 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "IoT 스마트 기기 제어",
-        "desc": "TP-Link Kasa 스마트 플러그 등 로컬 네트워크의 IoT 기기 검색 및 전원 제어",
-        "func_names": ["discover_iot_devices", "control_iot_device"],
+        "desc": "TP-Link Kasa 스마트 플러그 등 로컬 네트워크의 IoT 기기 검색·전원 제어, 씬, 방(거실 등) 단위 제어",
+        "func_names": ["discover_iot_devices", "control_iot_device",
+                       "create_scene", "list_scenes", "run_scene", "delete_scene",
+                       "set_device_room", "list_rooms", "control_room", "delete_room"],
         "module_name": "iot_control",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/iot_control.py",
-        "sha256": "8251762e8fb18d839203628ea492675e731171c6f20766793b1eca9ffde46307",
+        "sha256": "cde6aa5fbf8071aa9cb75376048c239c600ca2e04b5af4dbfce55ee404c76bb5",
         "dependencies": ["python-kasa"]
     },
     {
         "name": "PC 상태 이력/변화 감지",
         "desc": "CPU/메모리/디스크 여유공간을 1분마다 자동 기록하고, '어제보다 느려졌어?' 같은 "
                 "변화를 비교(시스템 진단 플러그인이 설치돼 있어야 기록이 쌓임)",
-        "func_names": ["get_system_trend", "record_system_snapshot"],
+        "func_names": ["get_system_trend", "record_system_snapshot", "get_metric_increase_streak_days"],
         "module_name": "system_history",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_history.py",
         # 2026-09-29 로컬 신규 추가 — 아직 GitHub에 push되지 않아 이 해시는
@@ -309,7 +331,8 @@ AVAILABLE_PLUGINS = [
     {
         "name": "할 일 목록",
         "desc": "날짜/시간 없이 그냥 체크만 하는 단순 할 일 목록 — 추가/조회/완료/삭제(로그인 필요)",
-        "func_names": ["add_todo", "list_todos", "complete_todo", "delete_todo"],
+        "func_names": ["add_todo", "list_todos", "complete_todo", "delete_todo", "reopen_todo",
+                       "get_due_todo_reminders"],
         "module_name": "todo_list",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/todo_list.py",
         # 2026-09-29 로컬 신규 추가 — system_history와 동일하게 아직 GitHub에
@@ -320,7 +343,7 @@ AVAILABLE_PLUGINS = [
     {
         "name": "메모장",
         "desc": "짧은 메모를 저장/검색/삭제 — 나중에 '그때 메모한 거 뭐였지'로 찾아봄(로그인 필요)",
-        "func_names": ["add_note", "list_notes", "search_note", "delete_note"],
+        "func_names": ["add_note", "list_notes", "search_note", "delete_note", "update_note"],
         "module_name": "notes",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/notes.py",
         # 2026-09-29 로컬 신규 추가 — 아직 GitHub에 push 전이라 로컬 파일
@@ -330,13 +353,61 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "텍스트 요약/번역",
-        "desc": "붙여넣은 글을 짧게 요약하거나 다른 언어로 번역(로그인 불필요, 최대 4,000자)",
-        "func_names": ["summarize_text", "translate_text"],
+        "desc": "붙여넣은 글을 짧게 요약하거나 다른 언어로 번역, 메일 초안 작성(보내지는 않음, 로그인 불필요, 최대 4,000자)",
+        "func_names": ["summarize_text", "translate_text", "summarize_clipboard", "translate_clipboard",
+                       "draft_email", "open_email_draft"],
         "module_name": "text_tools",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/text_tools.py",
         # 2026-09-29 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
-        "sha256": "ad8005c2bb237c773bbec79da3982114bb7be22963b945f4269e1480b62d711b",
+        "sha256": "faa4656fb055fd467caa7da864300535392d9007a0971c186b7740185d1eb762",
+        "dependencies": []
+    },
+    {
+        "name": "파일 위치 열기",
+        "desc": "'이 파일이 있는 폴더 열어줘'처럼 언급된 파일/폴더를 실제로 탐색기 창으로 엽니다",
+        "func_names": ["open_file_location"],
+        "module_name": "file_explorer",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/file_explorer.py",
+        # 2026-09-29 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
+        # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
+        "sha256": "245875ab8095dbe9226f1acb3dd4afe9a1be9e303c38bdafb31204aa6d70be6d",
+        "dependencies": []
+    },
+    {
+        "name": "Agent 활동 이력",
+        "desc": "에이전트가 실제로 실행한 도구 호출 이력을 기록하고 조회합니다 — "
+                "'아까 나한테 뭐 해줬어?'(로그인 필요, 정규식 단축 경로는 기록되지 않을 수 있음)",
+        "func_names": ["list_recent_activity", "log_activity"],
+        "module_name": "activity_log",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/activity_log.py",
+        # 2026-09-30 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
+        # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
+        "sha256": "c49b4da607cea86ced2dc718a68068c951184b706e63deefcbda394235285fe5",
+        "dependencies": []
+    },
+    {
+        "name": "데이터 백업/내보내기",
+        "desc": "할 일/메모/가계부 데이터를 하나의 JSON 백업 파일로 내보냅니다(로그인 필요, "
+                "복원 기능은 없음 — 내보내기 전용)",
+        "func_names": ["export_my_data"],
+        "module_name": "data_backup",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/data_backup.py",
+        # 2026-09-30 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
+        # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
+        "sha256": "9bb166fa240a339030aeeb55e91d4406637553d634462279a523f5df1f035190",
+        "dependencies": []
+    },
+    {
+        "name": "날씨",
+        "desc": "현재 날씨와 예보(오늘/내일/모레/이번 주말/일주일)를 챗봇으로 물어볼 수 있습니다 "
+                "(로그인 불필요, core/weather.py의 Open-Meteo 연동을 재사용)",
+        "func_names": ["get_current_weather", "get_weather_forecast", "get_rain_probability"],
+        "module_name": "weather",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/weather.py",
+        # 2026-10-01 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
+        # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
+        "sha256": "4763c0055a3be5b0b6b56812ea66a3454e8ffb5359524fa43db081cfb835549d",
         "dependencies": []
     },
 ]

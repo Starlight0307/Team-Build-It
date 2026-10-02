@@ -334,6 +334,69 @@ def _diff_marker(current: float, previous: float, unit: str = "%p") -> str:
     return f"{arrow} {sign}{diff}{unit} ({previous:.1f}{unit} → {current:.1f}{unit})"
 
 
+_TREND_STREAK_METRICS = {
+    # target: (일별 합계 필드, 악화 방향이 "증가"인가)
+    "cpu_increasing": ("cpu_sum", True),
+    "ram_increasing": ("ram_sum", True),
+    "disk_free_decreasing": ("disk_free_pct_sum", False),
+}
+
+
+def get_metric_increase_streak_days(target: str = ""):
+    """[내부 전용] plugins/reminder.py의 조건부 알림(D9, 2026-09-30) 중
+    trend_streak 타입이 쓰는 getter — TOOL_SCHEMAS에 없어 LLM이 직접 호출할
+    수 없다(record_system_snapshot/get_due_conditions와 같은 패턴).
+
+    target(cpu_increasing/ram_increasing/disk_free_decreasing)의 "완료된
+    날짜" 기준 연속 악화 일수를 반환한다. 오늘은 아직 하루가 끝나지 않아
+    표본이 적을 수 있으므로(get_system_trend의 'today' 처리와 동일한 이유)
+    제외하고 어제부터 거슬러 올라간다 — "오늘 아직 몇 시간 안 지나서
+    평균이 낮다"는 착시로 streak이 실제와 다르게 끊기는 걸 피한다.
+
+    기록에 하루라도 빈 날이 있으면(그 이전 기록이 있어도) 그 지점에서
+    멈춘다 — 빈 날을 건너뛰고 이어붙이면 "그날은 값이 어땠는지 모르는데
+    연속이라고 단정"하는 게 되어 이 프로젝트가 다른 곳(get_system_trend의
+    '비교 불가' 처리)에서 지켜온 "모르면 지어내지 않는다" 원칙에 어긋난다.
+    이력이 아직 이틀 미만이면(비교할 전날 자체가 없음) 0을 반환한다.
+
+    반환값의 의미(ChatGPT 검수로 명시, 2026-09-30): streak=N은 "전날보다
+    더 나빠진 날이 연속 N일 있었다"는 뜻이다 — 즉 인접한 두 날짜 쌍을
+    N번 비교해서 전부 악화 방향이었다는 것이고, 필요한 원본 날짜 수는
+    N+1개다(예: streak=3이려면 어제/그제/3일전/4일전, 총 4일치 기록이
+    필요). "3일 연속 증가"라는 사용자 표현을 "최근 3일 각각이 그 전날보다
+    늘었다"로 해석한 것 — set_trend_condition()의 threshold_days와 이
+    정의가 반드시 일치해야 한다(다르게 정의하면 등록 문구와 실제 판정
+    기준이 어긋난다)."""
+    spec = _TREND_STREAK_METRICS.get((target or "").strip().lower())
+    if spec is None:
+        return None
+    metric_key, want_increase = spec
+
+    _ensure_loaded()
+    day = datetime.now().date() - timedelta(days=1)
+    averages = []
+    with _lock:
+        while True:
+            key = day.strftime("%Y-%m-%d")
+            rec = _history.get(key)
+            if not rec or rec.get("samples", 0) == 0:
+                break
+            averages.append(rec[metric_key] / rec["samples"])
+            day -= timedelta(days=1)
+            if len(averages) >= _MAX_RETAINED_DAYS:
+                break  # 안전장치 — 보관 기간(_MAX_RETAINED_DAYS일)을 넘는 연속 기록은 있을 수 없음
+
+    # averages[0]=어제, averages[1]=그저께, ... 인접한 날짜끼리 비교한다.
+    streak = 0
+    for i in range(len(averages) - 1):
+        newer, older = averages[i], averages[i + 1]
+        got_worse = (newer > older) if want_increase else (newer < older)
+        if not got_worse:
+            break
+        streak += 1
+    return streak
+
+
 def get_system_trend(period: str = "week") -> str:
     """이번 기간 PC 상태(CPU/RAM/디스크 여유율) 평균을 그 직전 같은 길이의
     기간과 비교한다. Context/State Level 2(파생 상태) — get_usage_trend와

@@ -75,7 +75,9 @@ def get_system_info() -> str:
     
     ram = psutil.virtual_memory()
     ram_total = round(ram.total / (1024**3), 1)
-    ram_used = round(ram.used / (1024**3), 1)
+    # ram.used는 맥에서 압축 메모리를 빼고 세서 get_ram_percent()(ram.percent)와 엇갈렸다 —
+    # 같은 기준(전체 − 곧바로 쓸 수 있는 메모리)으로 맞춘다 (2026-10-02, 대시보드와 동일)
+    ram_used = round((ram.total - ram.available) / (1024**3), 1)
     
     disk = psutil.disk_usage('/')
     disk_total = round(disk.total / (1024**3), 1)

@@ -8,12 +8,14 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
 from widget.auth_style import DIALOG_QSS
+from widget import icons
+
 from data.db import (count_sessions, get_user_profile, update_profile,
                      change_password, delete_account)
 
 _NAMESPACE_LABELS = {
-    "kill_confirm": "🛑 프로세스 종료 확인 이력",
-    "price_search_history": "🔍 가격 검색 이력",
+    "kill_confirm": ("shield-check", "프로세스 종료 확인 이력"),
+    "price_search_history": ("search", "가격 검색 이력"),
 }
 
 
@@ -76,7 +78,8 @@ class MemoryDialog(QDialog):
         self.empty_lbl.setVisible(not data)
 
         for namespace, entries in data.items():
-            header = QLabel(_NAMESPACE_LABELS.get(namespace, namespace))
+            header = QLabel(icons.label_html(*_NAMESPACE_LABELS[namespace], 16)
+                            if namespace in _NAMESPACE_LABELS else namespace)
             header.setStyleSheet("font-weight: 700; font-size: 12px; margin-top: 6px;")
             self.list_layout.insertWidget(self.list_layout.count() - 1, header)
 
@@ -197,9 +200,10 @@ class MyPageWidget(QWidget):
         L.setContentsMargins(30, 30, 30, 30); L.setSpacing(0)
 
         # 아바타 아이콘
-        avatar = QLabel("👤")
+        avatar = QLabel()
+        avatar.setPixmap(icons.pixmap("user", 60))
         avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        avatar.setStyleSheet("font-size: 52px; background: transparent; border: none;")
+        avatar.setStyleSheet("background: transparent; border: none;")
         L.addWidget(avatar)
         L.addSpacing(14)
 
@@ -265,7 +269,8 @@ class MyPageWidget(QWidget):
         L.addWidget(self.btn_save_profile)
         L.addSpacing(14)
 
-        self.btn_memory = QPushButton("🧠 루미가 기억하는 것")
+        self.btn_memory = QPushButton(" 루미가 기억하는 것")
+        self.btn_memory.setIcon(icons.icon("brain"))
         self.btn_memory.setObjectName("MPSave")
         self.btn_memory.setMinimumHeight(36)
         self.btn_memory.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -333,7 +338,8 @@ class MyPageWidget(QWidget):
         L.addWidget(self.pw_section)
 
         # 로그아웃 버튼
-        self.btn_logout = QPushButton("🚪  로그아웃")
+        self.btn_logout = QPushButton(" 로그아웃")
+        self.btn_logout.setIcon(icons.icon("log-out"))
         self.btn_logout.setObjectName("MPLogout")
         self.btn_logout.setMinimumHeight(42)
         self.btn_logout.setCursor(Qt.CursorShape.PointingHandCursor)

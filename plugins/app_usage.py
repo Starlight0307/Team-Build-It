@@ -550,6 +550,54 @@ def get_usage_trend(target: str = "", period: str = "week") -> str:
     )
 
 
+_MAX_STREAK_LOOKBACK_DAYS = 400  # system_history._MAX_RETAINED_DAYS와 동일한 안전장치용 상한
+
+
+def get_app_usage_increase_streak_days(target: str = ""):
+    """[내부 전용] plugins/reminder.py의 조건부 알림(신규 6번, 2026-09-30)
+    중 app_usage_trend 타입이 쓰는 getter — TOOL_SCHEMAS에 없어 LLM이 직접
+    호출할 수 없다. system_history.get_metric_increase_streak_days(D9)와
+    같은 알고리즘/반환값 의미를 앱 사용 시간에 적용한다: target(프로그램
+    이름 또는 분류, get_usage_report/set_usage_goal과 동일한 _matches_target
+    매칭) 사용 시간이 전날보다 늘어난 날이 연속 며칠인지 반환한다. 오늘은
+    아직 하루가 끝나지 않았으므로 제외하고 어제부터 거슬러 올라간다.
+
+    system_history 버전과 유일하게 다른 지점: system_history는 폴링이
+    항상 켜져 있어 "그 날짜 기록이 없음"이 곧 "그날 값을 모름"이지만,
+    app_usage는 사용자가 명시적으로 start_usage_tracking을 켜야만
+    기록되므로 "그날 기록 자체가 없음"(추적이 꺼져 있었을 수 있음)과
+    "그날 target 사용 시간이 0이었음"(추적은 켜져 있었고 실제로 안 씀)을
+    구분해야 한다 — 전자는 모르는 값이라 스트릭을 끊고(추측하지 않음),
+    후자는 정당한 0으로 비교에 포함한다.
+
+    반환값 의미는 system_history와 동일: streak=N은 "전날보다 더 늘어난
+    날이 연속 N일"이고, 필요한 원본 날짜 수는 N+1개다(set_app_usage_trend_
+    condition의 threshold_days와 이 정의가 반드시 일치해야 한다)."""
+    target = (target or "").strip()
+    _ensure_loaded()
+
+    day = datetime.now().date() - timedelta(days=1)
+    totals = []
+    with _lock:
+        while True:
+            key = day.strftime("%Y-%m-%d")
+            if key not in _usage:
+                break
+            day_apps = _usage[key]
+            totals.append(sum(secs for name, secs in day_apps.items() if _matches_target(name, target)))
+            day -= timedelta(days=1)
+            if len(totals) >= _MAX_STREAK_LOOKBACK_DAYS:
+                break
+
+    streak = 0
+    for i in range(len(totals) - 1):
+        newer, older = totals[i], totals[i + 1]
+        if not (newer > older):
+            break
+        streak += 1
+    return streak
+
+
 def get_today_usage_minutes(target: str = "") -> float:
     """오늘 target(분류/프로그램 이름, 비우면 전체) 사용 시간을 '분' 단위
     숫자로 반환한다 — plugins/reminder.py의 조건부 알림(예: "게임 하루 4시간
@@ -610,8 +658,11 @@ def set_usage_goal(target: str = "", daily_minutes: int = None) -> str:
     if not target:
         return "⚠️ 목표를 설정할 프로그램 이름이나 분류를 알려주세요."
     try:
+        # ChatGPT 검수 지적(2026-09-30, expense_tracker의 동일 패턴과 같은
+        # 클래스): float("inf")는 TypeError/ValueError 없이 통과했다가
+        # round()에서 OverflowError를 던진다.
         daily_minutes = int(round(float(daily_minutes)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return "⚠️ 목표 시간을 이해하지 못했습니다. 분 단위 숫자로 다시 말씀해주세요(예: 2시간 → 120)."
     if daily_minutes <= 0:
         return "⚠️ 목표 시간은 0분보다 커야 해요."

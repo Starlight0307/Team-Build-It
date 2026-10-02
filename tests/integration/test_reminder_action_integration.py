@@ -495,3 +495,183 @@ def test_due_condition_handles_pre_feature_data_without_action_key(isolated_remi
 
     assert len(due) == 1
     assert due[0]["action_result"]["executed"] is False
+
+
+# ── C7 확장(2026-09-30): add_todo 액션 ──────────────────────────────
+
+def _fake_todo_func_map():
+    added = []
+
+    def fake_add_todo(text):
+        added.append(text)
+        return f"[✅ 할 일 추가]\n'{text}'을(를) 할 일 목록에 추가했어요. (번호: {len(added)})"
+
+    return {"add_todo": fake_add_todo}, added
+
+
+def test_set_daily_reminder_with_todo_text_stores_add_todo_action(isolated_reminder):
+    result = rm.set_daily_reminder(9, 0, "아침 루틴", todo_text="스트레칭하기")
+    assert "자동" in result
+    routine = list(rm._routines.values())[0]
+    assert routine["action"] == {"type": "add_todo", "text": "스트레칭하기"}
+
+
+def test_set_daily_reminder_rejects_both_iot_and_todo_together(isolated_reminder):
+    result = rm.set_daily_reminder(9, 0, iot_device_name="거실 전등", iot_state="on", todo_text="스트레칭하기")
+    assert "하나만" in result
+    assert rm._routines == {}
+
+
+def test_set_cpu_condition_with_todo_text_stores_action(isolated_reminder):
+    result = rm.set_cpu_condition(90, todo_text="원인 프로세스 확인하기")
+    assert "자동" in result
+    cond = list(rm._conditions.values())[0]
+    assert cond["action"] == {"type": "add_todo", "text": "원인 프로세스 확인하기"}
+
+
+def test_due_daily_reminder_executes_add_todo_action(isolated_reminder):
+    past = datetime.now() - timedelta(minutes=1)
+    rm.set_daily_reminder(past.hour, past.minute, "아침 루틴", todo_text="스트레칭하기")
+
+    func_map, added = _fake_todo_func_map()
+    due = rm.get_due_daily_reminders(func_map)
+
+    assert len(due) == 1
+    result = due[0]["action_result"]
+    assert result["executed"] is True
+    assert result["success"] is True
+    assert added == ["스트레칭하기"]
+
+
+def test_due_condition_executes_add_todo_action_on_edge_trigger(isolated_reminder):
+    rm.set_disk_condition(10, todo_text="디스크 정리하기")
+    func_map = {"get_disk_free_percent": lambda: 5.0}
+    todo_map, added = _fake_todo_func_map()
+    func_map.update(todo_map)
+
+    due = rm.get_due_conditions(func_map)
+
+    assert len(due) == 1
+    assert due[0]["action_result"]["success"] is True
+    assert added == ["디스크 정리하기"]
+
+
+def test_add_todo_action_requires_login_same_as_iot(isolated_reminder, monkeypatch):
+    """add_todo도 iot_control과 마찬가지로 owner를 특정할 수 없는 게스트
+    등록은 막아야 한다(_require_login_for_action은 action 종류를 가리지
+    않고 "action이 있으면" 전부 적용되는 공통 게이트)."""
+    monkeypatch.setattr(rm, "_current_user_id", "guest")
+    result = rm.set_daily_reminder(9, 0, todo_text="스트레칭하기")
+    assert "로그인" in result
+    assert rm._routines == {}
+
+
+def test_action_log_records_add_todo_execution(isolated_reminder):
+    past = datetime.now() - timedelta(minutes=1)
+    rm.set_daily_reminder(past.hour, past.minute, "아침 루틴", todo_text="스트레칭하기")
+    func_map, _ = _fake_todo_func_map()
+    rm.get_due_daily_reminders(func_map)
+
+    log = rm.list_action_log()
+    assert "스트레칭하기" in log
+    assert "✅" in log
+
+
+# ── run_scene(IoT 씬 자동 실행, 2026-10-01 "도구 간 연결성" 확장) ───────
+# add_todo 섹션과 완전히 동일한 구조로, run_scene만의 차이점(성공 마커가
+# "✅" 접두사가 아니라 "모두 성공했어요")만 추가로 확인한다.
+
+def _fake_scene_func_map(behavior=None):
+    """behavior: scene_name -> str, 기본은 1개 기기 모두 성공 처리."""
+    def default_behavior(scene_name):
+        return f"[🏠 씬 실행: '{scene_name}']\n  ✅ 거실 전등: 켬\n\n1/1개 모두 성공했어요."
+    run_scene = behavior or default_behavior
+    return {"run_scene": lambda scene_name: run_scene(scene_name)}
+
+
+def test_set_daily_reminder_with_scene_name_stores_run_scene_action(isolated_reminder):
+    result = rm.set_daily_reminder(23, 0, "취침", scene_name="취침모드")
+    assert "자동" in result
+    routine = list(rm._routines.values())[0]
+    assert routine["action"] == {"type": "run_scene", "scene_name": "취침모드"}
+
+
+def test_set_daily_reminder_rejects_iot_and_scene_together(isolated_reminder):
+    result = rm.set_daily_reminder(9, 0, iot_device_name="거실 전등", iot_state="on", scene_name="취침모드")
+    assert "하나만" in result
+    assert rm._routines == {}
+
+
+def test_set_cpu_condition_with_scene_name_stores_action(isolated_reminder):
+    result = rm.set_cpu_condition(90, scene_name="냉방모드")
+    assert "자동" in result
+    cond = list(rm._conditions.values())[0]
+    assert cond["action"] == {"type": "run_scene", "scene_name": "냉방모드"}
+
+
+def test_due_daily_reminder_executes_run_scene_action(isolated_reminder):
+    past = datetime.now() - timedelta(minutes=1)
+    rm.set_daily_reminder(past.hour, past.minute, "취침", scene_name="취침모드")
+
+    due = rm.get_due_daily_reminders(_fake_scene_func_map())
+
+    assert len(due) == 1
+    result = due[0]["action_result"]
+    assert result["executed"] is True
+    assert result["success"] is True
+    assert "취침모드" in result["detail"]
+
+
+def test_due_condition_executes_run_scene_action_on_edge_trigger(isolated_reminder):
+    rm.set_cpu_condition(90, scene_name="냉방모드")
+    func_map = {"get_current_cpu_percent": lambda: 95.0}
+    func_map.update(_fake_scene_func_map())
+
+    due = rm.get_due_conditions(func_map)
+
+    assert len(due) == 1
+    assert due[0]["action_result"]["success"] is True
+
+
+def test_run_scene_action_requires_login_same_as_iot(isolated_reminder, monkeypatch):
+    monkeypatch.setattr(rm, "_current_user_id", "guest")
+    result = rm.set_daily_reminder(9, 0, scene_name="취침모드")
+    assert "로그인" in result
+    assert rm._routines == {}
+
+
+def test_due_daily_reminder_run_scene_failure_when_plugin_not_installed(isolated_reminder):
+    past = datetime.now() - timedelta(minutes=1)
+    rm.set_daily_reminder(past.hour, past.minute, scene_name="취침모드")
+
+    due = rm.get_due_daily_reminders({})  # run_scene이 없는 func_map
+
+    result = due[0]["action_result"]
+    assert result["executed"] is True
+    assert result["success"] is False
+
+
+def test_due_daily_reminder_run_scene_partial_failure_is_not_success(isolated_reminder):
+    """씬 안의 기기 하나라도 실패하면(부분 성공) 전체를 실패로 기록해야
+    한다 — "모두 성공했어요"가 아닌 문자열은 성공으로 치지 않는다."""
+    past = datetime.now() - timedelta(minutes=1)
+    rm.set_daily_reminder(past.hour, past.minute, scene_name="취침모드")
+
+    partial = lambda scene_name: (
+        f"[🏠 씬 실행: '{scene_name}']\n  ✅ 거실 전등: 켬\n  ❌ 에어컨: 실패\n\n1/2개 성공, 1개 실패했어요."
+    )
+    due = rm.get_due_daily_reminders(_fake_scene_func_map(partial))
+
+    result = due[0]["action_result"]
+    assert result["executed"] is True
+    assert result["success"] is False
+
+
+def test_action_log_records_run_scene_execution(isolated_reminder):
+    past = datetime.now() - timedelta(minutes=1)
+    rm.set_daily_reminder(past.hour, past.minute, "취침", scene_name="취침모드")
+    rm.get_due_daily_reminders(_fake_scene_func_map())
+
+    log = rm.list_action_log()
+    assert "취침모드" in log
+    assert "✅" in log

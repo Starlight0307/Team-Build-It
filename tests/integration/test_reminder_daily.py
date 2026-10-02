@@ -8,6 +8,7 @@ get_due_daily_reminders().
 (앱 재시작 후에도 유지) 실제 파일 I/O로 검증한다. ROUTINES_DIR/ROUTINES_FILE을
 테스트용 임시 경로로 바꿔치기해서 실제 사용자 데이터를 건드리지 않는다.
 """
+import sys
 from datetime import datetime, timedelta
 
 import pytest
@@ -24,6 +25,37 @@ def isolated_routines(tmp_path, monkeypatch):
     monkeypatch.setattr(rm, "_routines", {})
     monkeypatch.setattr(rm, "_routines_loaded", False)
     return fake_dir
+
+
+@pytest.fixture(autouse=True)
+def _frozen_noon(monkeypatch):
+    """2026-09-29 실제 재현된 flaky 버그 수정: get_due_daily_reminders()는
+    "오늘 날짜 + 등록된 hour:minute"으로 목표 시각을 계산하는데(코드 자체는
+    맞음 — 매일 알림이니까 오늘 그 시각이 이미 지났으면 당연히 울려야 함),
+    이 파일의 여러 테스트가 `datetime.now() ± timedelta(...)`로 "미래"/"과거"
+    시각을 만들면서 자정 근처(예: 23시대에 +1시간 → 다음날 00시대, 자정
+    직후에 -1분 → 전날 23시대)에는 hour:minute만 남기고 날짜가 사라지는
+    과정에서 "미래"가 "오늘 이미 지난 시각"으로, "과거"가 "오늘 아직 안 된
+    시각"으로 뒤집혀버린다 — 테스트 설계가 자정 넘어가는 경우를 고려 안
+    한 것이지 get_due_daily_reminders() 자체의 버그가 아니다. 이 파일의
+    모든 테스트에서 시계를 정오로 고정해서(자정과 최대한 멀리 떨어뜨려)
+    이 클래스의 실제 시각 의존 flakiness를 근본적으로 없앤다
+    (tests/integration/test_reminder_condition_cpu_disk.py의 _FrozenDatetime
+    패턴과 동일)."""
+    real_datetime = datetime
+
+    class _FrozenDatetime(real_datetime):
+        _now = real_datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls._now
+
+    # rm.py 내부(get_due_daily_reminders 등)와 이 테스트 파일 자신의 datetime.now()
+    # 호출이 서로 다른 시계를 보면 얼려둔 의미가 없다 — 둘 다 같은 프레임으로 맞춘다.
+    monkeypatch.setattr(rm, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(sys.modules[__name__], "datetime", _FrozenDatetime)
+    return _FrozenDatetime
 
 
 def test_no_routines_message(isolated_routines):

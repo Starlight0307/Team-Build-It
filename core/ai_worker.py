@@ -4,11 +4,18 @@ import time
 import inspect
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
 import ollama
 import httpx  # ollama 패키지가 이미 의존하는 라이브러리 — 오류 종류 구분에만 사용
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from settings.config import TOOL_SCHEMAS, MOCK_USER, OLLAMA_MODEL
+
+# 응답 길이 상한 — 2026-10-02 전체 기능 점검 중, 길이 제한이 없던 요청 하나에서 llama3.1이
+# 같은 말을 반복하는 상태에 빠져 24,000토큰 넘게(19분) 끝없이 생성한 것을 확인했다. Ollama는
+# 한 번에 요청 하나만 처리해서 그동안 루미 전체가 "생각 중..."에서 멈춘다. 채팅 답변은 이
+# 길이(약 50초 분량)면 충분하다. 요약은 위 _SUMMARY_OPTIONS(700)를 그대로 쓴다.
+_MAX_REPLY_TOKENS = 1024
 from calendar_feature import calendar_preference
 from core.preference_memory import get_pref, save_pref
 
@@ -341,7 +348,8 @@ _DANGEROUS_FUNCS = {
 # 판단에는 안 맞아서 별도로 둔다(아래 dispatch 지점에서 두 목록을 함께 확인).
 _ACTION_BEARING_REMINDER_FUNCS = {
     "set_daily_reminder", "set_usage_condition", "set_spending_condition",
-    "set_cpu_condition", "set_disk_condition",
+    "set_cpu_condition", "set_disk_condition", "set_trend_condition", "set_price_condition",
+    "set_app_usage_trend_condition", "set_weather_condition",
 }
 
 
@@ -351,8 +359,24 @@ def _has_automation_action(args: dict) -> bool:
     유효한지(iot_state가 on/off인지)는 실제 함수(plugins/reminder.py의
     _validate_action)가 실행 시점에 검사하므로 여기서는 "시도했는지"만
     판단해도 충분하다(확인창 문구가 약간 어색해질 수는 있어도, 실행
-    자체는 항상 안전하게 검증된다)."""
-    return bool(str(args.get('iot_device_name', '') or '').strip())
+    자체는 항상 안전하게 검증된다).
+
+    2026-09-30 add_todo 액션(todo_text)은 의도적으로 이 확인 게이트에
+    포함하지 않는다 — iot_control을 여기 넣은 이유는 "위험해서"가 아니라
+    "무인으로 실행되는 미래 행동이라 사용자가 등록 시점에 그 사실을
+    분명히 인지해야 해서"였는데, add_todo는 실행 결과가 할 일 목록에
+    항목 하나가 추가되는 것뿐이고 사용자가 언제든 지우거나 완료 취소할
+    수 있어(reminder.py의 ALLOWED_ACTIONS 주석과 동일한 기준) 등록마다
+    확인창을 띄울 만큼의 되돌리기 어려움이 없다고 판단했다. 즉시 반영해도
+    최악의 경우가 "원치 않는 할 일 항목 하나"에 그친다."""
+    # 2026-10-01 자체 감사로 발견한 누락: 같은 날 앞서 추가한 scene_name(IoT 씬
+    # 자동 실행, plugins/reminder.py의 run_scene 액션)이 이 게이트를 우회하고
+    # 있었다 — 기기 하나(iot_device_name)를 무인 제어하는 등록은 확인받으면서
+    # 여러 기기를 한꺼번에 무인 제어하는 씬 등록은 확인 없이 저장되는 불일치.
+    # 씬은 오히려 영향 범위가 더 크므로(물리 기기 여러 개) iot_device_name과
+    # 같은 기준(무인으로 실행되는 미래 행동)으로 확인 대상에 포함한다.
+    return bool(str(args.get('iot_device_name', '') or '').strip()
+                or str(args.get('scene_name', '') or '').strip())
 
 
 def _describe_reminder_action_registration(func_name: str, args: dict) -> str:
@@ -363,13 +387,36 @@ def _describe_reminder_action_registration(func_name: str, args: dict) -> str:
     device = str(args.get('iot_device_name', '') or '').strip()
     state = str(args.get('iot_state', '') or '').strip().lower()
     state_kr = {"on": "켜기", "off": "끄기"}.get(state, f"'{state}'(알 수 없는 상태)")
+    # plugins/reminder.py의 _TREND_TARGET_LABELS와 같은 매핑을 여기 다시 둔다
+    # (플러그인 간 직접 import 금지 관례 — 모듈 docstring 참고) — 확인창
+    # 문구 하나를 위해 reminder.py를 직접 import하지 않는다.
+    trend_target_labels = {
+        "cpu_increasing": "CPU 사용률 증가", "ram_increasing": "메모리 사용률 증가",
+        "disk_free_decreasing": "디스크 여유공간 감소",
+    }
     trigger_desc = {
         'set_daily_reminder': f"매일 {int(args.get('hour', 0) or 0):02d}:{int(args.get('minute', 0) or 0):02d}",
         'set_usage_condition': f"'{args.get('target', '')}' 사용 시간이 {args.get('threshold_minutes', '?')}분 초과",
         'set_spending_condition': f"이번달 지출이 {args.get('threshold_amount', '?')}원 초과",
         'set_cpu_condition': f"CPU 사용률이 {args.get('threshold_percent', '?')}% 초과",
         'set_disk_condition': f"디스크 여유공간이 {args.get('threshold_percent', '?')}% 미만",
+        'set_trend_condition': (
+            f"{trend_target_labels.get(args.get('target', ''), args.get('target', ''))}가 "
+            f"{args.get('threshold_days', '?')}일 연속"
+        ),
+        'set_price_condition': f"'{args.get('query', '')}' 최저가가 {args.get('target_price', '?')}원 이하",
+        'set_app_usage_trend_condition': (
+            f"'{args.get('target', '') or '전체'}' 사용 시간이 {args.get('threshold_days', '?')}일 연속 증가"
+        ),
+        'set_weather_condition': (
+            f"{'내일' if args.get('when') == 'tomorrow' else '오늘'} 강수확률이 "
+            f"{args.get('threshold_percent', 50)}% 이상"
+        ),
     }.get(func_name, "조건 충족")
+    scene = str(args.get('scene_name', '') or '').strip()
+    if scene and not device:
+        return (f"자동 실행 등록: {trigger_desc}일 때 '{scene}' 씬 자동 실행 "
+                f"(등록 후에는 사용자 확인 없이 무인으로 실행됩니다)")
     return (f"자동 실행 등록: {trigger_desc}일 때 '{device}' 기기 자동 {state_kr} "
             f"(등록 후에는 사용자 확인 없이 무인으로 실행됩니다)")
 
@@ -497,8 +544,13 @@ _TOOL_CATEGORIES = {
     # 걸로는 안 되고 여기도 같이 고쳐야 실제로 호출됨.
     "iot": (
         ("스마트", "iot", "전등", "조명", "플러그", "가전", "기기", "켜줘", "켜",
-         "전원", "보일러", "에어컨", "온도조절"),
-        ("discover_iot_devices", "control_iot_device"),
+         "전원", "보일러", "에어컨", "온도조절", "씬", "모드", "장면",
+         # 2026-10-02 방(Room) — "방"은 "방화벽" 등에 부분 일치하므로 단독으로 넣지 않고
+         # 방 이름/방 관련 표현만 쓴다.
+         "거실", "침실", "안방", "주방", "서재", "욕실", "현관", "방 목록", "방 전체", "방에 넣", "방으로"),
+        ("discover_iot_devices", "control_iot_device",
+         "create_scene", "list_scenes", "run_scene", "delete_scene",
+         "set_device_room", "list_rooms", "control_room", "delete_room"),
     ),
     "pc_optimizer": (
         # 2026-09-22 Agent 평가셋(tests/llm_smoke/)으로 실제 llama3.1을 호출해
@@ -531,17 +583,43 @@ _TOOL_CATEGORIES = {
          # 2026-09-28 IoT 자동 실행 이력 조회 — 다른 카테고리와 안 겹치는
          # 좁은 표현("실행"만 단독으로 넣으면 앱 실행 등과 충돌할 수 있어
          # "자동 실행"/"실행 이력"처럼 붙여서만 매치).
-         "자동 실행 기록", "자동실행 기록", "실행 이력", "자동실행 이력"),
+         "자동 실행 기록", "자동실행 기록", "실행 이력", "자동실행 이력",
+         # 2026-09-30 D9 추세 조건(set_trend_condition) — "연속"/"며칠째"는
+         # 이 프로젝트에 음악 재생 등 겹칠 만한 기능이 없어 단독으로 넣어도
+         # 안전하다. "계속 늘어나면"/"계속 줄어들면"은 app_usage의 "늘어"/
+         # "줄어"와 겹칠 수 있지만(둘 다 매칭돼도 무해 — 카테고리 매칭은
+         # 합집합이라 도구가 더 노출될 뿐 오작동하지 않음), 조건 등록
+         # 의도를 더 분명히 드러내는 표현이라 함께 둔다.
+         "연속", "며칠째", "계속 늘어나면", "계속 줄어들면", "추세 알림",
+         # 2026-09-30 E10 가격 조건(set_price_condition) — "떨어지면"은 이미
+         # disk_limit 때문에 위에 있지만, 가격 맥락에서만 쓰이는 "밑으로
+         # 떨어지면"/"이하되면"/"이하로 떨어지면"을 명시적으로 추가해
+         # 가격 관련 표현이 이 카테고리에 확실히 걸리게 한다.
+         "이하되면", "이하로 떨어지면", "가격 알림", "최저가 알림",
+         # 2026-10-01 "2순위 연결 콤보" 10번 — 묵음 시간대(공통 알림 정책).
+         # "조용히"/"조용하게"는 다른 카테고리와 안 겹치는 좁은 표현이지만
+         # 그냥 넣으면 과매칭 위험이 있어 "알림"과 묶은 복합어만 둔다.
+         "묵음", "묵음 시간대", "방해 금지", "무음 모드", "조용히 해줘",
+         # 2026-10-01 브레인스토밍 11번 — 날씨 조건부 알림(set_weather_condition).
+         # "비 오면"류만 둔다("우산"/"날씨"는 weather 카테고리가 이미 처리하고,
+         # 카테고리 매칭은 합집합이라 둘 다 걸려도 무해).
+         "비 오면", "비오면", "비 올 것 같으면", "비 올 때", "강수확률 넘으면"),
         ("set_timer", "list_timers", "cancel_timer",
          "set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder",
          "set_usage_condition", "set_spending_condition", "set_cpu_condition", "set_disk_condition",
-         "list_conditions", "cancel_condition", "list_action_log"),
+         "set_trend_condition", "set_price_condition", "set_app_usage_trend_condition",
+         "list_conditions", "cancel_condition", "list_action_log",
+         "set_quiet_hours", "cancel_quiet_hours", "get_quiet_hours_status",
+         "set_weather_condition"),
     ),
     "expense_tracker": (
         ("구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼", "얼마 썼", "구매내역", "구매 내역",
-         "예산"),
+         "예산", "수입", "들어왔", "입금", "월급", "용돈", "알바비", "잔액", "모았어",
+         # 2026-10-02: "한달에 30만원까지만 쓰고 싶어" 같은 예산 표현이 어디에도 안 걸렸다
+         "까지만 쓰", "까지만 써", "만원까지", "만 원까지"),
         ("mark_as_purchased", "get_spending_summary", "list_purchases",
-         "set_monthly_budget", "get_budget_status"),
+         "set_monthly_budget", "get_budget_status", "delete_purchase", "edit_purchase",
+         "add_income", "list_income", "delete_income", "edit_income", "get_balance"),
     ),
     "file_search": (
         ("받은", "다운로드", "다운받", "pdf", "파일 찾", "파일찾", "문서 찾", "사진 찾", "이미지 찾",
@@ -566,7 +644,7 @@ _TOOL_CATEGORIES = {
         # 매칭으로 해결할 수 없는 영역이라 의도적으로 포기하고 안전장치(전체 노출)
         # 에 맡긴다.
         ("할일", "할 일", "todo", "투두", "체크리스트", "적어줘", "적어놔", "목록에 넣어", "목록에 추가"),
-        ("add_todo", "list_todos", "complete_todo", "delete_todo"),
+        ("add_todo", "list_todos", "complete_todo", "delete_todo", "reopen_todo"),
     ),
     "notes": (
         # 2026-09-29 메모장 — todo와 겹치지 않는 고유 신호("메모"/"노트")만
@@ -575,13 +653,28 @@ _TOOL_CATEGORIES = {
         # 있다(todo 카테고리에는 이 단어들을 넣지 않았음 — 겹치면 "메모해줘"
         # 요청에 todo 함수까지 섞여 노출된다).
         ("메모", "메모장", "노트", "기억해둬", "기록해둬"),
-        ("add_note", "list_notes", "search_note", "delete_note"),
+        ("add_note", "list_notes", "search_note", "delete_note", "update_note"),
     ),
     "text_tools": (
         # 2026-09-29 문서/텍스트 요약·번역 — 다른 카테고리 키워드와 안 겹치는
         # 고유 신호("요약"/"번역")만 쓴다.
-        ("요약", "요약해줘", "번역", "번역해줘"),
-        ("summarize_text", "translate_text"),
+        ("요약", "요약해줘", "번역", "번역해줘",
+         # 2026-10-02 클립보드 연결 — "클립보드"/"복사한 걸" 같은 명시적 표현만.
+         # 클립보드는 사용자가 명시적으로 말했을 때만 읽는다(plugins/text_tools.py
+         # 의 클립보드 원칙 1) — 키워드가 없는 요청엔 이 도구가 노출되지 않는다.
+         "클립보드", "복사한", "복사해둔",
+         # 2026-10-02 메일 초안 — "메일/이메일"이 들어간 요청에만 노출(draft_email/
+         # open_email_draft는 아래 dispatch 게이트가 한 번 더 의도를 확인).
+         "메일", "email"),
+        ("summarize_text", "translate_text", "summarize_clipboard", "translate_clipboard",
+         "draft_email", "open_email_draft"),
+    ),
+    "file_explorer": (
+        # 2026-09-29 "이 파일이 있는 폴더를 열어줘" 실사용 재현 공백 — 바로 "열어줘"만
+        # 넣으면 "캘린더 열어줘"(open_calendar_website) 등과 겹쳐서 너무 넓다.
+        # "폴더"/"탐색기"/"위치"가 같이 들어간 표현만 좁게 잡는다.
+        ("폴더 열어", "폴더를 열어", "탐색기로", "탐색기에서", "위치 열어"),
+        ("open_file_location",),
     ),
     "app_usage": (
         ("사용 시간", "사용시간", "화면 시간", "화면시간", "앱 사용", "앱사용", "몇 시간", "몇시간",
@@ -594,6 +687,28 @@ _TOOL_CATEGORIES = {
          "늘었", "줄었", "늘어", "줄어", "추이", "지난주보다", "지난달보다"),
         ("start_usage_tracking", "stop_usage_tracking", "get_usage_status", "get_usage_report",
          "set_usage_goal", "get_goal_status", "get_usage_trend"),
+    ),
+    "activity_log": (
+        # 2026-09-30 Agent 활동 이력(C8) — "뭐 해줬어"/"뭐 실행했어" 류
+        # 표현만 좁게 잡는다. "뭐 했어"만 넣으면 너무 범용적이라(다른
+        # 카테고리와 겹칠 위험) "해줬"/"실행"과 결합된 표현만 쓴다.
+        ("뭐 해줬", "뭐해줬", "무슨 작업 했", "뭐 실행했", "활동 이력", "활동이력"),
+        ("list_recent_activity",),
+    ),
+    "data_backup": (
+        # 2026-09-30 신규 7번(마지막) — "백업"/"내보내기"는 이 프로젝트
+        # 다른 카테고리와 겹칠 만한 기능이 없어 단독으로 넣어도 안전하다.
+        ("백업", "내보내줘", "내보내기", "데이터 파일로", "데이터 저장해줘"),
+        ("export_my_data",),
+    ),
+    "weather": (
+        # 2026-10-01 "도구 간 연결성" 확장 1번 — "날씨"/"비 와"/"눈 와" 등은
+        # 이 프로젝트 다른 카테고리와 겹칠 만한 기능이 없어 단독으로 넣어도 안전하다.
+        # "미세먼지"는 넣지 않는다 — Open-Meteo 현재 날씨/예보 응답에 대기질
+        # 데이터가 없어서, 이 키워드로 라우팅해도 get_current_weather/
+        # get_weather_forecast가 답할 수 있는 질문이 아니다.
+        ("날씨", "기온", "비 와", "비와", "눈 와", "눈와", "우산", "강수확률"),
+        ("get_current_weather", "get_weather_forecast"),
     ),
 }
 
@@ -650,6 +765,161 @@ for _cat_name, (_kws, _funcs) in _TOOL_CATEGORIES.items():
 _CALENDAR_WEAK_KEYWORDS = frozenset((
     "오늘", "내일", "모레", "글피", "어제", "이번주", "다음주", "이번달", "다음달", "언제",
 ))
+_CALENDAR_EXPLICIT_WORDS = ("일정", "약속", "회의", "캘린더", "미팅", "예약", "schedule", "calendar")
+
+
+# ── 도구 인자 정리 (2026-10-02 인자 정확도 평가에서 발견) ──
+def _coerce_arg_types(func_name: str, args):
+    """도구 설명에서 숫자(integer/number)로 정한 칸에 "240" 같은 글자가 오면 숫자로 바꾼다 —
+    llama3.1이 "게임 하루 4시간 넘으면"에 threshold_minutes="240"(글자)을 넘긴 사례."""
+    if not isinstance(args, dict):
+        return args
+    schema = (TOOL_SCHEMAS.get(func_name) or {}).get("function", {}).get("parameters", {}).get("properties", {})
+    fixed = dict(args)
+    for key, value in args.items():
+        kind = (schema.get(key) or {}).get("type")
+        if kind in ("integer", "number") and isinstance(value, str):
+            v = value.strip().replace(",", "")
+            try:
+                num = float(v)
+            except ValueError:
+                continue
+            fixed[key] = int(num) if (kind == "integer" or num.is_integer()) else num
+    return fixed
+
+
+# 모델이 도구 호출을 글자로 흉내 내면서 내부 전용/없는 이름을 쓴 경우의 대응표 — "메모리 사용량
+# 확인해줘"에 {"name": "get_ram_percent"}(조건 알림 내부 함수)를 쓴 사례(2026-10-02). 전부 같은 일을
+# 하는 읽기 전용 조회 도구로만 바꾼다(상태를 바꾸는 도구로는 절대 바꾸지 않는다).
+_FAKED_NAME_ALIASES = {
+    "get_ram_percent": "get_system_info", "get_cpu_percent": "get_system_info",
+    "get_memory_usage": "get_system_info", "get_ram_usage": "get_system_info",
+    "get_memory_info": "get_system_info", "get_cpu_usage": "get_system_info",
+    "get_disk_usage": "get_system_info", "get_disk_free_percent": "get_system_info",
+}
+
+_LABELED_REMINDER_FUNCS = frozenset(("set_timer", "set_daily_reminder"))
+_LABEL_PHRASE = re.compile(r"(?:^|\s)([^\s].*?)\s*(?:하라고|라고|하라는|하는\s*거)\s*(?:알려|알림|말해)")
+_LABEL_NOISE = re.compile(
+    r"매일|평일|주말마다|아침마다|저녁마다|날마다|오전|오후|아침|저녁|밤|새벽|"
+    r"\d+\s*(시|분|초|시간)(\s*\d+\s*분)?\s*(뒤|후|반)?\s*(에|에는)?|정각에?")
+
+
+def _ground_reminder_label(args, user_text: str):
+    """알림 이름(label)이 사용자 문장과 전혀 관계없으면 문장에서 직접 뽑는다 — 작은 모델이
+    "매일 오전 7시에 물 마시라고 알려줘"에 label="가백 주소"를 지어낸 사례. 일정 제목을
+    정규식으로 뽑는 것(아래 "일정 등록: title은 LLM 대신 정규식으로")과 같은 이유."""
+    if not isinstance(args, dict):
+        return args
+    label = str(args.get("label") or "").strip()
+    text = user_text or ""
+    squash = lambda x: re.sub(r"\s+", "", x)
+    grams = {squash(label)[i:i + 2] for i in range(max(0, len(squash(label)) - 1))}
+    if label and any(g in squash(text) for g in grams):
+        return args                      # 문장에 근거가 있는 이름 — 그대로
+    m = _LABEL_PHRASE.search(text)
+    if not m:
+        return {k: v for k, v in args.items() if k != "label"} if label else args
+    phrase = _LABEL_NOISE.sub(" ", m.group(1))
+    phrase = re.sub(r"\s+", " ", phrase).strip(" ,.")
+    if not phrase:
+        return {k: v for k, v in args.items() if k != "label"} if label else args
+    # "물 마시라고" → "물 마시" → "물 마시기" (동사 줄기로 끝나면 명사형으로)
+    if m.group(0).rstrip().split()[-2:] and not re.search(r"하라고|하라는", m.group(0)) \
+            and re.search(r"[가-힣]$", phrase) and not phrase.endswith(("기", "것")):
+        phrase += "기"
+    return dict(args, label=phrase)
+
+# 키워드가 다른 단어의 일부로 우연히 들어 있는 경우 — "메모리"의 "메모"가 notes 카테고리에,
+# "사용량"의 "용량"이 저장공간(pc_optimizer/system) 카테고리에 걸려서 "메모리 사용량 확인해줘"에
+# 메모장 도구까지 노출됐다(2026-10-02). 이런 키워드는 겹치는 단어를 뺀 위치에서만 인정한다.
+_KEYWORD_FALSE_FRIENDS = {
+    "메모": re.compile(r"메모(?!리)"),
+    "용량": re.compile(r"(?<!사)용량"),
+}
+
+
+def _any_keyword_in(keywords, text: str) -> bool:
+    for kw in keywords:
+        if kw in text and (kw not in _KEYWORD_FALSE_FRIENDS or _KEYWORD_FALSE_FRIENDS[kw].search(text)):
+            return True
+    return False
+
+
+# ── 알림 카테고리 안에서 한 번 더 좁히기 (2026-10-02) ──
+# reminder 카테고리는 "알려줘"/"넘으면" 하나로 16개 도구(타이머 3, 정기 알림 3, 조건 알림 7종,
+# 조회/취소)를 통째로 노출한다. 조건 알림이 7종으로 늘면서(추세/가격/앱 추세 추가) llama3.1이
+# "10분 뒤에 알려줘"에 set_trend_condition을 고르는 등 인자 정확도가 4/12(33%)까지 떨어진 것을
+# 전체 기능 점검에서 확인했다. 문장에 분명한 신호가 있을 때만 그 하위 묶음으로 좁히고,
+# 애매하면 지금처럼 전부 노출한다(좁히기 실패 시 기존 동작 그대로).
+_TIMER_FUNCS = frozenset(("set_timer", "list_timers", "cancel_timer"))
+_DAILY_FUNCS = frozenset(("set_daily_reminder", "list_daily_reminders", "cancel_daily_reminder"))
+_CONDITION_COMMON_FUNCS = frozenset(("list_conditions", "cancel_condition", "list_action_log"))
+_CONDITION_SETTERS = frozenset(("set_usage_condition", "set_spending_condition", "set_cpu_condition",
+                                "set_disk_condition", "set_trend_condition", "set_price_condition",
+                                "set_app_usage_trend_condition"))
+_REMINDER_FUNCS = _TIMER_FUNCS | _DAILY_FUNCS | _CONDITION_COMMON_FUNCS | _CONDITION_SETTERS
+
+_TIMER_PATTERN = re.compile(r"\d+\s*(초|분|시간)\s*(뒤|후|있다가)|타이머")
+_DAILY_PATTERN = re.compile(r"매일|평일|주말마다|아침마다|저녁마다|밤마다|날마다|정기\s*알림")
+_CONDITION_PATTERN = re.compile(r"넘으면|넘게|넘을\s*때|초과하면|이상이면|떨어지면|아래로|밑으로|부족해지면|이하되면|이하로")
+_TREND_CONDITION_PATTERN = re.compile(r"연속|며칠째|계속\s*(늘|줄)|추세\s*알림")
+_CONDITION_TARGETS = (
+    (re.compile(r"cpu|씨피유|시피유", re.IGNORECASE), "set_cpu_condition"),
+    (re.compile(r"디스크|저장\s*공간|여유\s*공간|용량"), "set_disk_condition"),
+    (re.compile(r"가격|최저가|값이"), "set_price_condition"),
+    (re.compile(r"지출|예산|소비|돈|원\s*(넘|이상|초과)|만\s*원"), "set_spending_condition"),
+    (re.compile(r"게임|유튜브|앱|프로그램|사용\s*시간|\d+\s*시간\s*(넘|이상|초과)"), "set_usage_condition"),
+)
+
+
+def _narrow_reminder_funcs(allowed: set, text: str) -> set:
+    if not (allowed & _REMINDER_FUNCS):
+        return allowed
+    t = (text or "").lower()
+    subset = None
+    if _TIMER_PATTERN.search(t) and not _CONDITION_PATTERN.search(t):
+        subset = _TIMER_FUNCS
+    elif _TREND_CONDITION_PATTERN.search(t):
+        subset = frozenset(("set_trend_condition", "set_app_usage_trend_condition")) | _CONDITION_COMMON_FUNCS
+    elif _CONDITION_PATTERN.search(t):
+        setters = {fn for pat, fn in _CONDITION_TARGETS if pat.search(t)}
+        if "set_price_condition" in setters:
+            setters.discard("set_spending_condition")   # "가격 20만원 밑으로" — 금액이 있어도 가격 조건
+        subset = (setters or _CONDITION_SETTERS) | _CONDITION_COMMON_FUNCS
+        if "알려" in t or "알림" in t:
+            # "이번달 지출 50만원 넘으면 알려줘"에 지출 조회 도구까지 섞이자 아무 도구도
+            # 안 고른 사례 — 조건 등록 의도가 분명하면 조건 도구만 보여준다
+            return subset & allowed or allowed
+    elif _DAILY_PATTERN.search(t):
+        subset = _DAILY_FUNCS
+    if subset is None:
+        return allowed
+    return (allowed - _REMINDER_FUNCS) | (subset & allowed)
+
+
+# "메모리 사용량 확인해줘"처럼 특정 자원의 지금 상태만 묻는데 get_system_trend(이력/변화)까지
+# 노출돼서 그쪽을 고르는 오답이 있었다. 추세 표현이 없고 자원을 콕 집은 요청에서만 뺀다 —
+# "내 컴퓨터 상태 어때?"처럼 넓은 질문은 그대로 둘 다 노출(tests/unit/test_system_trend_routing.py).
+_SYSTEM_RESOURCE_WORDS = re.compile(r"cpu|메모리|ram|램|디스크", re.IGNORECASE)
+_SYSTEM_TREND_WORDS = re.compile(
+    r"어제|지난|예전|최근|며칠|이번\s*주|추세|추이|변화|늘었|줄었|졌어|졌나|느려|빨라|평소|비교|이력|기록")
+
+
+_APP_USAGE_WORDS = re.compile(r"앱|게임|프로그램|유튜브|사용\s*시간|몇\s*시간|얼마나\s*(했|봤|썼)")
+
+
+def _narrow_system_trend(allowed: set, text: str) -> set:
+    t = text or ""
+    if not (_SYSTEM_RESOURCE_WORDS.search(t) and "get_system_info" in allowed):
+        return allowed
+    if "get_system_trend" in allowed and not _SYSTEM_TREND_WORDS.search(t):
+        allowed = allowed - {"get_system_trend"}
+    # "메모리 사용량"의 "사용량"이 앱 사용 시간 카테고리에 걸려 그쪽 도구가 섞이자 아무 도구도
+    # 안 고른 사례(2026-10-02 도구 선택 평가) — 앱/게임/사용 시간 이야기가 없으면 뺀다
+    if not _APP_USAGE_WORDS.search(t) and "app_usage" in _TOOL_CATEGORIES:
+        allowed = allowed - set(_TOOL_CATEGORIES["app_usage"][1])
+    return allowed
 
 
 # 2026-09-14 system_security 2차 재검증에서 발견한 버그: _build_score_report_reply가
@@ -1478,6 +1748,101 @@ def _build_iot_control_reply(raw_results: str):
     return None
 
 
+_RUN_SCENE_HEADER = re.compile(r"^\[🏠 씬 실행: '(?P<name>.+?)'\]\n(?P<body>.+)$", re.DOTALL)
+_RUN_SCENE_ITEM = re.compile(r"^  (?P<mark>✅|❌) (?P<device>.+?): (?P<detail>.+)$")
+_RUN_SCENE_SUMMARY = re.compile(
+    r"^(?P<succ>\d+)/(?P<total>\d+)개 (?:모두 성공했어요\.|성공, (?P<failed>\d+)개 실패했어요\.)$"
+)
+
+
+def _build_run_scene_reply(raw_results: str):
+    """run_scene()의 "헤더 + 기기별 성공/실패 목록(+요약 줄)" 결과를 LLM
+    자연어 요약에 맡기면 _build_iot_control_reply가 이미 문서화한 것과
+    완전히 같은 클래스의 위험이 있다 — discover_iot_devices/
+    control_iot_device 결과를 llama3.1이 "발견 없음"을 "발견됨"으로
+    뒤집어 지어낸 전례가 있는데, 씬은 여러 기기를 한 번에 건드리므로
+    부분 실패("2/3개 성공, 1개 실패")를 "모두 성공적으로 완료했습니다"로
+    뭉개면 사용자가 실제로 꺼지지 않은 기기를 꺼졌다고 믿을 위험이 더
+    크다(물리 기기 상태에 대한 오신뢰). 형식이 정확히 일치할 때만
+    LLM을 거치지 않고 원본의 성공/실패 개수를 그대로 보존해서 답하고,
+    한 줄이라도 예상과 다르면 안전하게 LLM 경로로 폴백한다."""
+    stripped = raw_results.strip()
+    m = _RUN_SCENE_HEADER.match(stripped)
+    if not m:
+        return None
+
+    scene_name = m.group('name')
+    items = []
+    summary = None
+    for ln in m.group('body').split('\n'):
+        if not ln.strip():
+            continue
+        im = _RUN_SCENE_ITEM.match(ln)
+        if im:
+            items.append((im.group('mark'), im.group('device'), im.group('detail')))
+            continue
+        sm = _RUN_SCENE_SUMMARY.match(ln.strip())
+        if sm:
+            summary = sm
+            continue
+        return None  # 예상 밖 줄 — 안전하게 LLM 경로로 폴백
+
+    if not items or summary is None:
+        return None
+
+    lines = [f"확인해봤는데, '{scene_name}' 씬을 실행했어요."]
+    for mark, device, detail in items:
+        lines.append(f"- {mark} {device}: {detail}")
+
+    if summary.group('failed') is not None:
+        lines.append(f"{summary.group('succ')}/{summary.group('total')}개 성공, "
+                      f"{summary.group('failed')}개 실패했어요.")
+    else:
+        lines.append(f"{summary.group('succ')}/{summary.group('total')}개 모두 성공했어요.")
+    return "\n".join(lines)
+
+
+_ROOM_CONTROL_HEADER = re.compile(r"^\[🏠 방 제어: '(?P<name>.+?)' (?P<verb>켜기|끄기)\]\n(?P<body>.+)$", re.DOTALL)
+_ROOM_TEXT_HEADERS = ("[🏠 방 목록]", "[✅ 방 배정 완료]", "[✅ 방 배정 해제]", "[✅ 방 삭제 완료]")
+
+
+def _build_room_control_reply(raw_results: str):
+    """control_room()의 "헤더 + 기기별 성공/실패 목록 + 개수 요약" 결과 — 씬 실행과 같은 클래스의
+    위험(부분 실패를 "다 꺼졌어요"로 뭉개 사용자가 켜져 있는 기기를 꺼진 줄 앎)이라
+    _build_run_scene_reply와 같은 원칙으로 코드가 직접 문장을 만든다. 형식이 한 줄이라도
+    다르면 None(LLM 경로 폴백). 방 목록/배정/삭제 결과는 이름을 LLM이 바꾸지 못하게 그대로 통과."""
+    stripped = raw_results.strip()
+    if stripped.startswith(_ROOM_TEXT_HEADERS):
+        return stripped
+    m = _ROOM_CONTROL_HEADER.match(stripped)
+    if not m:
+        return None
+    items, summary = [], None
+    for ln in m.group('body').split('\n'):
+        if not ln.strip():
+            continue
+        im = _RUN_SCENE_ITEM.match(ln)
+        if im:
+            items.append((im.group('mark'), im.group('device'), im.group('detail')))
+            continue
+        sm = _RUN_SCENE_SUMMARY.match(ln.strip())
+        if sm:
+            summary = sm
+            continue
+        return None
+    if not items or summary is None:
+        return None
+    lines = [f"확인해봤는데, '{m.group('name')}' 방 전체 {m.group('verb')}를 실행했어요."]
+    for mark, device, detail in items:
+        lines.append(f"- {mark} {device}: {detail}")
+    if summary.group('failed') is not None:
+        lines.append(f"{summary.group('succ')}/{summary.group('total')}개 성공, "
+                     f"{summary.group('failed')}개 실패했어요.")
+    else:
+        lines.append(f"{summary.group('succ')}/{summary.group('total')}개 모두 성공했어요.")
+    return "\n".join(lines)
+
+
 _PORT_SCAN_HEADER = re.compile(r'^\[🔍 포트 스캔 결과\] (?P<target>.+?) \((?P<range>.+?)\)\n(?P<body>.+)$', re.DOTALL)
 _PORT_SCAN_NONE = re.compile(r'^열린 포트가 없습니다\. \(스캔 시간: [\d.]+초\)$')
 _PORT_SCAN_COUNT = re.compile(r'^열린 포트 \d+개 발견 \(스캔 시간: [\d.]+초\):$')
@@ -2146,6 +2511,7 @@ def _build_startup_items_reply(raw_results: str):
 _PRICE_CARD_NAME_LABEL = "📦 상품명:"
 _PRICE_CARD_PRICE_LABEL = "💰 최저가:"
 _PRICE_HEADER = re.compile(r"🛒 '(?P<query>.+)' 최저가 검색 결과")
+_PRICE_SITE_BLOCK_MARKER = "[🏬 사이트별 최저가 비교 — 이미 계산됨]"   # plugins/price_search.py의 PRICE_SITE_BLOCK_MARKER와 동일
 _PRICE_MATCH_SUCCESS = re.compile(
     r'\[💡 검색어와 이름이 일치하는 상품 중 최저가 — 이미 계산됨\]\n'
     r'(?P<name>.+?): (?P<price>[\d,]+원)'
@@ -2224,6 +2590,13 @@ def _build_price_search_reply(raw_results: str):
         lines.append("다만 검색어와 이름이 정확히 일치하는 상품은 없어서 최저가를 딱 집어 말씀드리긴 어려워요 — 위 상품명을 직접 확인해주세요.")
     else:
         return None  # 예상 밖 형식 — 안전하게 LLM 경로로 폴백
+    # 멀티사이트 비교(2026-10-02, 14번): plugins/price_search.py가 코드로 계산해 마커와 함께
+    # 붙인 블록은 한 줄도 바꾸지 않고 그대로 통과시킨다(LLM 재작성/재계산 금지). 없으면
+    # (네이버 키 미설정 등) 이전과 완전히 같은 답변이다.
+    site_idx = raw_results.find(_PRICE_SITE_BLOCK_MARKER)
+    if site_idx != -1:
+        lines.append("")
+        lines.append(raw_results[site_idx:].strip())
     return "\n".join(lines)
 
 
@@ -2684,6 +3057,100 @@ def _build_note_list_reply(raw_results: str):
     return None
 
 
+# 2026-10-02 클립보드 연결(브레인스토밍 12번) — ChatGPT 검수 지적: 클립보드는
+# 비밀번호/토큰이 들어있을 수 있는 민감한 곳인데, "스키마 description + 키워드
+# 라우팅"만으로는 LLM이 "요약해줘"만 듣고 임의로 summarize_clipboard를 고르는
+# 경로를 코드로 막지 못한다(둘 다 방어층일 뿐 보장이 아님). 1차 게이트(키워드
+# 라우팅: 이 도구가 노출되는지)와 별개로, 2차 게이트(실행 직전 이번 사용자
+# 메시지에 클립보드 사용 의도가 실제로 있는지)를 dispatch에서 코드로 강제한다 —
+# open_calendar_website의 "캘린더 얘기가 없으면 실행 안 함" 가드와 같은 패턴.
+_CLIPBOARD_FUNCS = ("summarize_clipboard", "translate_clipboard")
+# 프라이버시 경계라 false negative(못 알아들음=불편)보다 false positive(말 안 했는데
+# 읽음=무단 접근)가 더 위험하다. "복사한"/"copied" 같은 행위 표현 단독은 권한으로 안 치고,
+# 복사된 "대상"(내용/글/거…)까지 같이 말했을 때만 허용한다. "클립보드"/clipboard는 객체
+# 이름 자체라 단독 허용.
+_CLIPBOARD_REFERENT = r"(?:내용|글|텍스트|문장|문단|문서|본문|기사|메일|거|걸|것)"
+_CLIPBOARD_INTENT_PATTERN = re.compile(
+    r"클립\s*보드|clipboard"
+    r"|복사\s*(?:한|된|해\s*둔|해\s*놓은)\s*" + _CLIPBOARD_REFERENT +
+    r"|ctrl\s*\+\s*c\s*(?:로\s*복사\s*)?(?:한|했던)\s*" + _CLIPBOARD_REFERENT +
+    r"|copied\s+(?:text|content|stuff)",
+    re.IGNORECASE,
+)
+
+
+def _clipboard_intent_present(user_text: str) -> bool:
+    return bool(_CLIPBOARD_INTENT_PATTERN.search(user_text or ""))
+
+
+# 메일 초안(2026-10-02, 브레인스토밍 13번) — 라우팅 키워드 "메일"만으로는 "이 메일
+# 요약해줘"에도 draft_email이 노출되므로 dispatch에서 "메일 + 작성 의도"를 코드로
+# 한 번 더 확인한다. open_email_draft는 더 좁게 "메일 앱/프로그램으로 열기"를 명시했을
+# 때만 실행하고, 받는 사람 주소는 사용자 문장에 실제로 적힌 것만 허용한다(LLM이
+# 지어낸 주소가 메일 창에 들어가는 것 방지 — "노출 제한≠실행 권한" 원칙).
+# 방(Room) 제어 게이트(2026-10-02, 15번) — "노출 제한 ≠ 실행 권한": (1) 방 이름은 사용자 문장에
+# 글자 그대로 있어야 하고(LLM이 지어낸 방 이름 금지), (2) control_room은 "다/전부/전체/모두"
+# 같은 전체 표현도 있어야 한다. 방 이름만 보면 "거실 전등 꺼줘"(기기 하나)에도 LLM이
+# control_room을 골라 방 전체를 꺼버릴 수 있다.
+#
+# (2)는 "문장 어딘가에 '다'가 있음"이 아니라 "방 이름 **바로 뒤**에 전체 표현이 옴"이어야 한다
+# (ChatGPT 검수 2026-10-02). "거실 전등 다 꺼줘"는 방이 아니라 '전등'이라는 기기 묶음을 가리키므로
+# 방 이름과 전체 표현 사이에 다른 말이 끼면 방 전체 제어로 보지 않는다("거실 다 꺼줘",
+# "거실 전부 꺼줘", "거실에 있는 거 다 꺼줘", "거실의 모든 기기 꺼줘"만 허용).
+_ROOM_SCOPE_TAIL = (r"\s*(?:에\s*있는\s*(?:거|것|기기|물건)?|안의|안에\s*있는\s*(?:거|것|기기)?|의|에서|에)?\s*"
+                    r"(?:전부|전체|모두|모든(?:\s*(?:기기|거|것))?|싹|몽땅|다(?![가-힣]))")
+
+
+def _room_name_stated_by_user(room_name, user_text: str) -> bool:
+    key = "".join(str(room_name or "").split()).casefold()
+    return bool(key) and key in "".join((user_text or "").split()).casefold()
+
+
+def _room_scope_all_intent(room_name, user_text: str) -> bool:
+    """방 이름 바로 뒤에 방 전체를 뜻하는 표현이 오는가."""
+    name = "".join(str(room_name or "").split())
+    if not name:
+        return False
+    # 방 이름 글자 사이의 공백은 허용("거 실"처럼 띄어 써도 같은 이름) — 이름은 정규식으로 이스케이프.
+    name_pattern = r"\s*".join(re.escape(ch) for ch in name)
+    return bool(re.search(name_pattern + _ROOM_SCOPE_TAIL, user_text or "", re.IGNORECASE))
+
+
+_EMAIL_WORD_PATTERN = re.compile(r"메일|email", re.IGNORECASE)
+# 작성 의도는 "요청형"만 인정한다 — 명사 "작성"/"초안" 단독은 "메일 작성법 알려줘",
+# "이메일 작성 프로그램 추천해줘"까지 통과시킨다(2026-10-02 ChatGPT 지적).
+_EMAIL_DRAFT_INTENT_PATTERN = re.compile(
+    r"써\s*(?:줘|주세요|줄래|줄\s*수|봐|달라)|쓰고\s*싶|써야"
+    r"|작성\s*(?:해|좀|부탁)|초안\s*(?:을|를)?\s*(?:써|작성|만들|좀|부탁)"
+    r"|답장\s*(?:을|좀)?\s*(?:써|작성|해)", re.IGNORECASE)
+# 메일 앱 열기는 "대상(메일 앱/아웃룩/mailto)" + "동작(열어/띄워/켜…)"이 같이 있어야 한다 —
+# "아웃룩이 뭐야?", "mailto가 뭐야?", "메일 프로그램 추천해줘"는 열기 요청이 아니다.
+_EMAIL_OPEN_TARGET_PATTERN = re.compile(
+    r"메일\s*(?:앱|프로그램|클라이언트|작성\s*창)|아웃룩|outlook|mailto", re.IGNORECASE)
+_EMAIL_OPEN_ACTION_PATTERN = re.compile(r"열어|열기|열고|열래|띄워|띄우|켜|실행")
+_EMAIL_OPEN_NEAR_PATTERN = re.compile(r"(?:열어|띄워|열기).{0,10}메일|메일.{0,10}(?:열어|띄워|열기)")
+
+
+def _email_draft_intent_present(user_text: str) -> bool:
+    text = user_text or ""
+    return bool(_EMAIL_WORD_PATTERN.search(text) and _EMAIL_DRAFT_INTENT_PATTERN.search(text))
+
+
+def _email_open_intent_present(user_text: str) -> bool:
+    text = user_text or ""
+    if _EMAIL_OPEN_NEAR_PATTERN.search(text):
+        return True
+    return bool(_EMAIL_OPEN_TARGET_PATTERN.search(text) and _EMAIL_OPEN_ACTION_PATTERN.search(text))
+
+
+def _email_address_stated_by_user(address: str, user_text: str) -> bool:
+    """LLM이 넘긴 받는 사람 주소가 사용자 문장에 글자 그대로 있는가(대소문자 무시)."""
+    address = (address or "").strip()
+    return bool(address) and address.lower() in (user_text or "").lower()
+
+
+_EMAIL_DRAFT_RESULT_HEADER = "[✉️ 메일 초안]\n"
+_EMAIL_OPEN_RESULT_HEADER = "[✉️ 메일 앱 열기]\n"
 _SUMMARY_RESULT_HEADER = "[📄 요약 결과]\n"
 _TRANSLATE_RESULT_HEADER = re.compile(r"^\[📄 번역 결과 \((?P<lang>.+?)\)\]\n(?P<body>.+)$", re.DOTALL)
 
@@ -2704,6 +3171,12 @@ def _build_text_tool_reply(raw_results: str):
     m = _TRANSLATE_RESULT_HEADER.match(stripped)
     if m:
         return m.group('body')
+    # 메일 초안/메일 앱 열기(2026-10-02) — "보내지 않았다"는 문구가 결과에 들어 있어서,
+    # LLM이 다시 쓰다가 "메일을 보냈습니다"로 바꿔 버리는 위험을 막으려고 그대로 통과.
+    # 같은 턴에 초안+열기가 같이 실행되면 결과가 이어 붙어 오므로 두 헤더를 모두 뗀다.
+    if stripped.startswith((_EMAIL_DRAFT_RESULT_HEADER, _EMAIL_OPEN_RESULT_HEADER)):
+        return (stripped.replace(_EMAIL_DRAFT_RESULT_HEADER, "")
+                        .replace(_EMAIL_OPEN_RESULT_HEADER, "")).strip()
     return None
 
 
@@ -2798,7 +3271,7 @@ _PURCHASE_LIST_HEADER = re.compile(
     r"^\[💰 구매 내역\] \(최근 (?P<days>\d+)일, 총 (?P<count>\d+)건\)\n(?P<body>.+)$", re.DOTALL
 )
 _PURCHASE_LIST_ITEM = re.compile(
-    r"^  - (?P<date>\d{4}-\d{2}-\d{2} \d{2}:\d{2})  (?P<item>.+?)  (?P<price>[\d,]+원)$"
+    r"^  - (?P<date>\d{4}-\d{2}-\d{2} \d{2}:\d{2})  (?P<item>.+?)  (?P<price>[\d,]+원)  \(id: (?P<id>\S+)\)$"
 )
 
 
@@ -3073,6 +3546,8 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_text_tool_reply,
     _build_iot_no_devices_reply,
     _build_iot_control_reply,
+    _build_run_scene_reply,
+    _build_room_control_reply,
     _build_port_scan_reply,
     _build_dns_check_reply,
     _build_network_connections_reply,
@@ -3957,12 +4432,31 @@ TOOL_STATUS_NAMES = {
     "list_todos":                "✅  할 일 목록 조회 중",
     "complete_todo":              "✅  할 일 완료 처리 중",
     "delete_todo":                "✅  할 일 삭제 중",
+    "reopen_todo":                "✅  할 일 완료 취소 중",
     "add_note":                  "📝  메모 저장 중",
     "list_notes":                "📝  메모 목록 조회 중",
     "search_note":                "📝  메모 검색 중",
     "delete_note":                "📝  메모 삭제 중",
+    "update_note":                "📝  메모 수정 중",
     "summarize_text":            "📄  텍스트 요약 중",
     "translate_text":            "📄  텍스트 번역 중",
+    "summarize_clipboard":       "📋  클립보드 요약 중",
+    "translate_clipboard":       "📋  클립보드 번역 중",
+    "draft_email":               "✉️  메일 초안 작성 중",
+    "set_device_room":           "🏠  기기를 방에 배정 중",
+    "list_rooms":                "🏠  방 목록 조회 중",
+    "control_room":              "🏠  방 전체 제어 중",
+    "delete_room":               "🏠  방 삭제 중",
+    "open_email_draft":          "✉️  메일 앱 여는 중",
+    "open_file_location":        "📂  탐색기에서 여는 중",
+    "delete_purchase":           "💰  구매 기록 삭제 중",
+    "edit_purchase":             "💰  구매 기록 수정 중",
+    "set_weather_condition":     "🌧️🔁  날씨 조건 알림 설정 중",
+    "add_income":                "💵  수입 기록 중",
+    "list_income":               "💵  수입 내역 조회 중",
+    "delete_income":             "💵  수입 기록 삭제 중",
+    "edit_income":               "💵  수입 기록 수정 중",
+    "get_balance":               "📊  잔액 조회 중",
     "get_top_cpu_processes":     "📊  CPU 프로세스 조회 중",
     "kill_process":              "⚡  프로세스 종료 중",
     "search_product_price":      "🛒  최저가 검색 중",
@@ -4027,6 +4521,9 @@ TOOL_STATUS_NAMES = {
     "cancel_daily_reminder":           "🔁  정기 알림 취소 중",
     "set_usage_condition":             "🎯🔁  조건부 알림 설정 중",
     "set_spending_condition":          "🎯🔁  조건부 알림 설정 중",
+    "set_trend_condition":             "📈🔁  추세 조건 설정 중",
+    "set_app_usage_trend_condition":   "📈⏳  앱 사용 추세 조건 설정 중",
+    "set_price_condition":             "💸🔁  가격 조건 설정 중",
     "list_conditions":                 "🎯🔁  조건부 알림 목록 조회 중",
     "cancel_condition":                "🎯🔁  조건부 알림 취소 중",
     "mark_as_purchased":               "💰  구매 기록 중",
@@ -4347,6 +4844,77 @@ class AIWorker(QThread):
                     return True
             return False
         return " ".join(t for t in (keyword or "").split() if not _is_condition_word(t))
+
+    # 2026-09-29 실사용 재현 버그: "바탕화면의 Team-BuildIt 폴더에서 100mb
+    # 이상의 파일을 찾아줘"에서 folder/directory가 조용히 사라지고 기본
+    # 스캔 폴더(다운로드 등)로 새는 걸 확인했다 — 원인은 "LLM 값이 사용자
+    # 문장의 리터럴 substring일 때만 인정"이라는 기존 방어(LLM이 지어낸
+    # 경로 차단용)가 너무 엄격했던 것. LLM은 "바탕화면의 Team-BuildIt"을
+    # 올바르게 "C:\Users\...\Desktop\Team-BuildIt"로 해석해줬는데, 이 절대
+    # 경로 문자열 자체가 사용자의 한국어 문장에는 당연히 그대로 없어서
+    # 안전장치가 정상적인 경로까지 전부 걸러냈다.
+    _FOLDER_BASE_ALIASES = (
+        ("바탕화면", "Desktop"), ("desktop", "Desktop"),
+        ("다운로드", "Downloads"), ("download", "Downloads"),
+        ("내문서", "Documents"), ("문서", "Documents"), ("document", "Documents"),
+        ("사진", "Pictures"), ("picture", "Pictures"),
+        ("동영상", "Videos"), ("비디오", "Videos"), ("video", "Videos"),
+    )
+
+    def _resolve_folder_path(self, text: str, llm_value: str = ""):
+        """LLM이 준 경로 전체를 신뢰하는 대신, (1) 사용자 문장에 나오는 잘 알려진
+        기준 폴더 키워드(바탕화면/다운로드/문서/사진/동영상)의 실제 절대경로를
+        Path.home() 기준으로 코드가 직접 계산하고, (2) 그 안의 하위 폴더
+        이름은 LLM이 제안한 값의 마지막 경로 조각을 재사용하되 그 이름이
+        사용자 문장에 실제로 그대로 등장할 때만 인정한다(기존 "LLM이 지어낸
+        경로 차단" 원칙은 유지 — 전체 경로가 아니라 하위 폴더 이름 하나만
+        검증 대상으로 좁혔을 뿐). 기준 폴더 키워드 자체가 없으면 None을
+        반환해 호출부가 기존 방식(LLM 값이 문장의 리터럴 substring일 때만
+        인정)으로 폴백하게 한다."""
+        compact = text.replace(" ", "")
+        base = None
+        for alias, folder_name in self._FOLDER_BASE_ALIASES:
+            if alias in compact:
+                candidate = Path.home() / folder_name
+                if candidate.is_dir():
+                    base = candidate
+                    break
+        if base is None:
+            return None
+
+        sub_name = ""
+        if llm_value:
+            tail = llm_value.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].strip()
+            known_base_names = {name for _, name in self._FOLDER_BASE_ALIASES}
+            if tail and tail not in known_base_names and tail in text:
+                sub_name = tail
+        if not sub_name:
+            # LLM이 folder/directory 인자를 아예 안 줬어도(스키마상 생략 가능) 사용자
+            # 문장만으로 하위 폴더 이름을 뽑는다 — alias 바로 뒤(연결어는 건너뜀)부터
+            # "폴더"라는 말이 나오기 직전까지를 하위 폴더 이름으로 본다.
+            idx = compact.find(alias)
+            rest = compact[idx + len(alias):]
+            m = re.match(r'^(?:의|에서|에|안의|안에|에있는|안에있는)?([^폴더]{1,50}?)폴더', rest)
+            if m and m.group(1):
+                sub_name = m.group(1)
+
+        result = (base / sub_name) if sub_name else base
+        # ChatGPT 검수 지적(2026-09-30): sub_name이 ".."류 상위 디렉터리 참조가
+        # 되면(예: 사용자 문장에 우연히 ".."이 들어간 경우) base(바탕화면 등)
+        # 경계를 벗어나 홈 디렉터리 전체를 스캔 대상으로 넘길 수 있었다 —
+        # 삭제가 아니라 조회/스캔용이라도 "바탕화면 안에서만 찾는다"는 이
+        # 함수의 불변조건이 깨지는 건 맞으므로, resolve() 기준으로 base
+        # 내부에 있는지 검증한다.
+        try:
+            resolved = result.resolve()
+            base_resolved = base.resolve()
+        except OSError:
+            return str(base) if base.is_dir() else None
+        if resolved != base_resolved and base_resolved not in resolved.parents:
+            return str(base) if base.is_dir() else None
+        if resolved.is_dir():
+            return str(resolved)
+        return str(base) if base.is_dir() else None
 
     def _resolve_event_date(self, text: str):
         """일정 등록 문장에 "내일"/"모레"/"월요일"/"N월 N일"/"YYYY-MM-DD"
@@ -4760,8 +5328,22 @@ class AIWorker(QThread):
                 last_categories.update(_FUNC_TO_CATEGORY.get(fn, ()))
 
         allowed = set()
+        matched_categories = [cat for cat, (kws, _f) in _TOOL_CATEGORIES.items() if _any_keyword_in(kws, text)]
         for cat_name, (keywords, funcs) in _TOOL_CATEGORIES.items():
-            if not any(kw in text for kw in keywords):
+            if not _any_keyword_in(keywords, text):
+                continue
+            # 2026-10-02 전체 기능 점검(인자 정확도 4/12)에서 확장: 위 규칙은 직전 턴이 있을
+            # 때만 적용돼서, 첫 질문 "이번달 지출 50만원 넘으면 알려줘"는 "이번달" 하나로
+            # 캘린더 도구 30여 개가 함께 노출됐다(총 47개). 날짜 표현만으로 걸린 캘린더는
+            # 다른 카테고리가 같이 걸렸으면 넣지 않는다 — "내일 뭐 있어?"처럼 캘린더만
+            # 걸린 경우는 그대로 노출된다.
+            if (cat_name == "calendar" and len(matched_categories) > 1
+                    and all(kw in _CALENDAR_WEAK_KEYWORDS for kw in keywords if kw in text)):
+                continue
+            # "이번달 예산 50만원으로 잡아줘" — "잡아"가 캘린더 키워드라 예산 요청에 일정
+            # 도구가 섞였다. 일정/약속 같은 명시적 신호가 없으면 예산 쪽으로 본다.
+            if (cat_name == "calendar" and "예산" in text
+                    and not any(w in text for w in _CALENDAR_EXPLICIT_WORDS)):
                 continue
             # ChatGPT 2차 검수 실험(2026-09-24, "의도 충돌 감지"): calendar가
             # 순수 날짜 표현(_CALENDAR_WEAK_KEYWORDS)만으로 매칭됐고("일정"/
@@ -4777,6 +5359,9 @@ class AIWorker(QThread):
         for cat_name in last_categories:
             allowed.update(_TOOL_CATEGORIES[cat_name][1])
 
+        if allowed:
+            allowed = _narrow_reminder_funcs(allowed, text)
+            allowed = _narrow_system_trend(allowed, text)
         return allowed if allowed else None
 
     # 계정/로그인 상태 확인 의도 — LLM 판단에 맡기지 않고 직접 함수 호출로 처리
@@ -4931,7 +5516,7 @@ class AIWorker(QThread):
                         final_response = ollama.chat(
                             model=OLLAMA_MODEL,
                             messages=summary_messages,
-                            options={'temperature': 0.3}
+                            options={'temperature': 0.3, 'num_predict': _MAX_REPLY_TOKENS}
                         )
                         clean_reply = final_response['message']['content'].strip()
                         self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
@@ -5084,7 +5669,7 @@ class AIWorker(QThread):
                         final_response = ollama.chat(
                             model=OLLAMA_MODEL,
                             messages=summary_messages,
-                            options={'temperature': 0.3}
+                            options={'temperature': 0.3, 'num_predict': _MAX_REPLY_TOKENS}
                         )
                         clean_reply = final_response['message']['content'].strip()
                         self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
@@ -5432,7 +6017,8 @@ class AIWorker(QThread):
                 model=OLLAMA_MODEL,
                 messages=self.chat_history,
                 tools=ollama_tools if use_tools else None,
-                options={'temperature': 0.1} if use_tools else {'temperature': 0.7}
+                options=({'temperature': 0.1} if use_tools else {'temperature': 0.7})
+                        | {'num_predict': _MAX_REPLY_TOKENS}
             )
 
             sys.stderr.write(f"   - tool_calls: {response.get('message', {}).get('tool_calls')}\n")
@@ -5488,6 +6074,9 @@ class AIWorker(QThread):
                 for tool in response['message']['tool_calls']:
                     func_name = tool['function']['name']
                     args      = tool['function']['arguments']
+                    args      = _coerce_arg_types(func_name, args)
+                    if func_name in _LABELED_REMINDER_FUNCS:
+                        args = _ground_reminder_label(args, self.user_text)
 
                     # ── 파일 조건 라우팅 계약을 실행 단계에서도 강제 (2026-09-28 ChatGPT 2라운드) ──
                     # 노출 함수 제한(_allowed_category_funcs)만으로는 LLM이 노출 안 된 함수를 지어내
@@ -5551,6 +6140,27 @@ class AIWorker(QThread):
                             for _dt_key in ('start_datetime', 'end_datetime'):
                                 if args.get(_dt_key):
                                     args[_dt_key] = self._apply_resolved_date(args[_dt_key], resolved_date)
+
+                    # ── 할 일 마감일(due_date, 2026-09-30) — create_event와
+                    # 다르게, LLM이 due_date를 이미 채웠을 때만 그 "값"을
+                    # 결정론적으로 재계산한다("금요일" → 엉뚱한 연도가 아니라
+                    # 실제 이번 주 금요일). ChatGPT 검수 지적: create_event는
+                    # 메시지 전체가 사실상 하나의 일정 의도라 원문 전체에서
+                    # 날짜를 뽑아도 안전하지만, add_todo는 한 메시지에 "할 일
+                    # 추가"와 무관한 다른 날짜 언급이 섞일 수 있다(예: "금요일에
+                    # 회의 있으니까 발표자료 준비 할일 추가해줘"에서 "금요일"이
+                    # 회의 날짜이지 반드시 할 일의 마감일은 아님) — 원문 전체를
+                    # 무조건 다시 스캔하면 "이 날짜가 할 일에 관한 것인지"라는
+                    # 귀속(attribution) 판단을 코드가 LLM 대신 잘못 내릴 위험이
+                    # 있다. 그래서 "이 요청에 마감일이 있는가/어느 구절이
+                    # 마감일인가"라는 귀속 판단은 LLM에게 맡기고(이건 LLM이
+                    # 비교적 잘하는 독해 작업), LLM이 이미 due_date를 채운
+                    # 경우에만 그 "계산"(날짜 산술, LLM이 못하는 부분)만
+                    # 코드로 교정한다.
+                    if func_name == 'add_todo' and args.get('due_date'):
+                        resolved_date = self._resolve_event_date(self.user_text)
+                        if resolved_date:
+                            args['due_date'] = resolved_date
 
                     # ── 반복 일정: recurrence_count에 상한 clamp ──
                     # 2026-09-14 calendar_tool 재검증에서 발견한 버그: 사용자가 반복
@@ -5629,8 +6239,13 @@ class AIWorker(QThread):
                             args.pop(_k, None)  # 숫자 조건은 사용자 문장에서 뽑힌 값만 인정
                         args.update(self._resolve_file_search_conditions(self.user_text))
                         args['keyword'] = self._sanitize_file_keyword(args.get('keyword', ''))
-                        # 폴더는 사용자가 문장에 직접 적은 경로일 때만 인정(LLM이 지어낸 경로 차단)
-                        if args.get('folder') and args['folder'] not in self.user_text:
+                        # 폴더: "바탕화면의 X 폴더"류는 코드가 직접 절대경로로 계산(_resolve_folder_path
+                        # 참고 — 2026-09-29 실사용 재현 버그). 못 찾으면 기존 방식대로 LLM 값이
+                        # 사용자 문장의 리터럴 substring일 때만 인정(LLM이 지어낸 경로 차단).
+                        _resolved_folder = self._resolve_folder_path(self.user_text, args.get('folder', ''))
+                        if _resolved_folder:
+                            args['folder'] = _resolved_folder
+                        elif args.get('folder') and args['folder'] not in self.user_text:
                             args.pop('folder', None)
 
                     # ── 대용량 파일 탐색: 크기 기준도 사용자 문장에서 뽑힌 값만 인정 ──
@@ -5639,8 +6254,23 @@ class AIWorker(QThread):
                         args.pop('min_size_mb', None)
                         if 'min_size_mb' in _cond:
                             args['min_size_mb'] = _cond['min_size_mb']
-                        # 폴더는 사용자가 문장에 직접 적은 경로일 때만 인정(LLM이 지어낸 경로 차단)
-                        if args.get('directory') and args['directory'] not in self.user_text:
+                        # 폴더: search_files와 동일한 이유로 _resolve_folder_path를 먼저 시도.
+                        _resolved_dir = self._resolve_folder_path(self.user_text, args.get('directory', ''))
+                        if _resolved_dir:
+                            args['directory'] = _resolved_dir
+                        elif args.get('directory') and args['directory'] not in self.user_text:
+                            args.pop('directory', None)
+
+                    # ── 중복 파일 탐색: find_large_files와 동일한 이유로 폴더를 해석 ──
+                    # 2026-09-29 실사용 감사에서 발견: find_duplicate_files도 directory
+                    # 인자를 받는데 여태 아무 검증/해석도 안 거쳤다 — LLM 값을 무조건
+                    # 그대로 믿는 상태였음(반대로 위 두 함수는 한동안 너무 엄격해서 정상
+                    # 값까지 걸러내는 반대 방향 버그가 있었다 — 둘 다 같은 헬퍼로 통일).
+                    if func_name == 'find_duplicate_files':
+                        _resolved_dir = self._resolve_folder_path(self.user_text, args.get('directory', ''))
+                        if _resolved_dir:
+                            args['directory'] = _resolved_dir
+                        elif args.get('directory') and args['directory'] not in self.user_text:
                             args.pop('directory', None)
 
                     # ── 앱 사용 통계: 기간은 LLM 대신 키워드로 결정론적 선택 ──
@@ -5698,6 +6328,45 @@ class AIWorker(QThread):
                             })
                             continue
 
+                        # 클립보드 2차 게이트(위 _CLIPBOARD_INTENT_PATTERN 설명 참고) —
+                        # 이번 사용자 메시지에 클립보드 언급이 없으면 읽지 않고 거부한다.
+                        if func_name in _CLIPBOARD_FUNCS and not _clipboard_intent_present(self.user_text):
+                            tool_results.append(
+                                "⚠️ 클립보드는 '클립보드 요약해줘'처럼 직접 말씀해주실 때만 읽어요. "
+                                "요약/번역할 글을 붙여넣어 주시거나 클립보드라고 말씀해주세요."
+                            )
+                            continue
+
+                        # 방(Room) 게이트(위 _ROOM_ALL_PATTERN 설명 참고).
+                        if func_name in ('control_room', 'delete_room') or (
+                                func_name == 'set_device_room' and str(args.get('room_name', '') or '').strip()):
+                            if not _room_name_stated_by_user(args.get('room_name'), self.user_text):
+                                tool_results.append(
+                                    "⚠️ 방 이름은 직접 말씀해주신 이름으로만 사용해요. "
+                                    "'거실 다 꺼줘'처럼 방 이름을 말씀해주세요.")
+                                continue
+                        if func_name == 'control_room' and not _room_scope_all_intent(
+                                args.get('room_name'), self.user_text):
+                            tool_results.append(
+                                "⚠️ 방 전체를 켜고 끌 때는 '거실 다 꺼줘', '안방 전부 켜줘'처럼 방 이름 바로 뒤에 "
+                                "'다/전부/전체/모두'를 붙여 말씀해주세요. 기기 하나만 제어하려면 기기 이름을 말씀해주세요.")
+                            continue
+
+                        # 메일 초안 게이트(위 _EMAIL_DRAFT_INTENT_PATTERN 설명 참고).
+                        if func_name == 'draft_email' and not _email_draft_intent_present(self.user_text):
+                            tool_results.append(
+                                "⚠️ 메일 초안은 '교수님께 결석 사유 메일 써줘'처럼 메일을 써달라고 "
+                                "말씀해주실 때만 만들어요.")
+                            continue
+                        if func_name == 'open_email_draft':
+                            if not _email_open_intent_present(self.user_text):
+                                tool_results.append(
+                                    "⚠️ 메일 앱은 '메일 앱으로 열어줘'처럼 직접 말씀해주실 때만 열어요.")
+                                continue
+                            # 받는 사람은 사용자가 문장에 직접 쓴 주소만 — 지어낸 주소는 비운다.
+                            if not _email_address_stated_by_user(args.get('to', ''), self.user_text):
+                                args = {**args, 'to': ''}
+
                         # 웹사이트를 여는 도구가 이것 하나뿐이라, "크롬 열고 네이버 접속해줘"
                         # 같은 요청에 LLM이 이걸 골라 구글 캘린더를 열어버린 적이 있다
                         # (2026-09-30). 캘린더 얘기가 없으면 실행하지 않는다 — 일반
@@ -5728,6 +6397,21 @@ class AIWorker(QThread):
                         tool_result_for_llm = _truncate_tool_result(tool_result_clean)
                         tool_results.append(tool_result_for_llm)
                         self.chat_history.append({'role': 'tool', 'content': tool_result_for_llm})
+
+                        # 2026-09-30 Agent 활동 이력(C8) — plugins/activity_log.py의
+                        # 모듈 docstring 참고("기록 범위" 절): 이 메인 LLM
+                        # tool-calling 디스패치 루프 한 곳에서만 기록한다.
+                        # func_map 주입 패턴(reminder.py 등과 동일)이라
+                        # activity_log 플러그인이 설치 안 돼 있으면 조용히
+                        # 스킵되고, 기록 자체가 실패해도(예: 디스크 오류)
+                        # 실제 도구 실행 결과에는 영향을 주면 안 되므로 예외를
+                        # 삼킨다.
+                        log_activity_func = func_map.get('log_activity')
+                        if log_activity_func:
+                            try:
+                                log_activity_func(func_name, args, tool_result_clean)
+                            except Exception:
+                                pass
                     else:
                         print(f"[AI 워커] 알 수 없는 함수 호출 시도: {func_name}")
                         tool_results.append("❌ 이 기능을 사용하려면 관련 플러그인이 설치되어 있는지 확인해주세요.")
@@ -5798,6 +6482,7 @@ class AIWorker(QThread):
                 } if use_tools else set()
 
                 faked_func_name = _extract_faked_tool_call(clean_reply)
+                faked_func_name = _FAKED_NAME_ALIASES.get(faked_func_name, faked_func_name)
                 executed = False
                 can_auto_execute = (
                     use_tools
@@ -5851,7 +6536,8 @@ class AIWorker(QThread):
                             'role': 'user',
                             'content': "JSON이나 코드 형식 말고, 한국어 문장으로만 답변해줘. 함수를 실행한 결과를 자연스럽게 설명해줘."
                         }]
-                        retry_response = ollama.chat(model=OLLAMA_MODEL, messages=retry_messages)
+                        retry_response = ollama.chat(model=OLLAMA_MODEL, messages=retry_messages,
+                                                     options={'num_predict': _MAX_REPLY_TOKENS})
                         clean_reply = retry_response['message']['content'].strip()
 
             clean_reply = clean_reply.strip()

@@ -242,6 +242,29 @@ def test_summarize_failure_message_still_uses_single_verdict_builder(monkeypatch
     assert "요약에 실패했어요" in result
 
 
+# ── list_purchases 결과(2026-09-29 — delete_purchase/edit_purchase 추가하며
+# id를 표시하도록 형식이 바뀜) — id가 자연어 요약에 안 새는지 확인 ────────
+
+def test_purchase_list_never_calls_llm_and_hides_id_from_summary(monkeypatch):
+    calls = _spy_ollama_chat(monkeypatch)
+    raw = ("[💰 구매 내역] (최근 30일, 총 2건)\n"
+           "  - 2026-09-01 10:00  이어폰  50,000원  (id: a1b2c3d4)\n"
+           "  - 2026-09-15 11:00  키보드  80,000원  (id: e5f6a7b8)")
+    result = ai_worker._summarize_tool_results([], raw)
+    assert calls == []
+    assert "이어폰" in result and "키보드" in result
+    assert "a1b2c3d4" not in result  # id는 timer 목록과 동일하게 자연어 요약엔 안 나옴
+
+
+def test_purchase_list_count_mismatch_falls_back_to_llm(monkeypatch):
+    calls = _spy_ollama_chat(monkeypatch)
+    raw = ("[💰 구매 내역] (최근 30일, 총 3건)\n"
+           "  - 2026-09-01 10:00  이어폰  50,000원  (id: a1b2c3d4)\n"
+           "  - 2026-09-15 11:00  키보드  80,000원  (id: e5f6a7b8)")
+    result = ai_worker._summarize_tool_results([], raw)
+    assert len(calls) == 1
+
+
 def test_system_trend_malformed_body_falls_back_to_llm(monkeypatch):
     """헤더는 맞는데 본문 형식이 예상과 다르면(파싱 실패) 섣불리 잘못된
     문장을 만들지 않고 자유형 요약으로 안전하게 폴백해야 한다."""

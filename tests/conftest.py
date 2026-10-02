@@ -102,6 +102,42 @@ def isolated_notes(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def isolated_activity_log(tmp_path, monkeypatch):
+    """plugins/activity_log.py의 저장 폴더(DATA_DIR)를 테스트용 임시 폴더로
+    바꿔치기하고 로그인 사용자를 테스트 계정으로 설정한다 — todo_list.py/
+    notes.py와 동일한 이유(로그인 필요, 사용자별 파일)."""
+    import plugins.activity_log as activity_log
+    fake_dir = tmp_path / "activity_log"
+    fake_dir.mkdir()
+    monkeypatch.setattr(activity_log, "DATA_DIR", str(fake_dir))
+    activity_log.set_current_user("testuser")
+    yield fake_dir
+    activity_log.set_current_user(None)
+
+
+@pytest.fixture
+def isolated_iot_scenes(tmp_path, monkeypatch):
+    """plugins/iot_control.py의 씬 저장 파일(SCENES_FILE)을 테스트용 임시
+    파일로 바꿔치기한다. discover_iot_devices/control_iot_device와 마찬가지로
+    씬도 로그인 여부와 무관한 전역 저장이라(집 안의 공유 기기 개념) 로그인
+    사용자 설정은 필요 없다."""
+    import plugins.iot_control as iot_control
+    fake_file = tmp_path / "iot_scenes.json"
+    monkeypatch.setattr(iot_control, "SCENES_FILE", str(fake_file))
+    return fake_file
+
+
+@pytest.fixture
+def isolated_iot_rooms(tmp_path, monkeypatch):
+    """plugins/iot_control.py의 방 저장 파일(ROOMS_FILE)을 테스트용 임시 파일로 바꿔치기한다
+    (씬과 같은 이유 — 로그인과 무관한 전역 저장, 실제 사용자의 방 설정을 건드리지 않도록)."""
+    import plugins.iot_control as iot_control
+    fake_file = tmp_path / "iot_rooms.json"
+    monkeypatch.setattr(iot_control, "ROOMS_FILE", str(fake_file))
+    return fake_file
+
+
+@pytest.fixture
 def isolated_calendar_preference(tmp_path, monkeypatch):
     """calendar_feature/calendar_preference.py의 저장 파일을 테스트용 임시
     파일로 바꿔치기 (실제 사용자의 캘린더 백엔드 설정을 건드리지 않도록)."""

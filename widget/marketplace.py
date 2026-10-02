@@ -3,6 +3,8 @@ from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QSizePolicy)
 from PyQt6.QtCore import pyqtSignal, Qt, QEvent
 
+from widget import icons
+
 from core.plugins_registry import AVAILABLE_PLUGINS
 from widget.widgets import PluginCard
 
@@ -24,7 +26,7 @@ class PluginMarketplaceWidget(QFrame):
 
         # 헤더 (타이틀 + 검색창) — 검색창은 최소 120 ~ 최대 250px로 반응형
         header_layout = QHBoxLayout()
-        self.title_label = QLabel("🧩 플러그인 마켓플레이스")
+        self.title_label = QLabel(icons.label_html("puzzle", "플러그인 마켓플레이스", 22))
         self.title_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         header_layout.addWidget(self.title_label)
         header_layout.addStretch()

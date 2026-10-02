@@ -7,11 +7,31 @@
 그런데 일반 사용자가 제일 자주 쓰는 형태는 "우유 사기", "세탁소 들르기"처럼
 시간과 무관하게 그냥 체크만 하면 되는 단순 목록이다 — 이 공백을 채운다.
 
-의도적으로 날짜/시간을 받지 않는다: "내일 3시에 회의"처럼 시간이 있는
-요청은 calendar_tool/local_calendar나 reminder(set_timer/set_daily_reminder)
-영역이지 이 플러그인 영역이 아니다(TOOL_SCHEMAS 설명에도 명시) — file_search가
-"크기만으로는 검색 안 함(find_large_files 영역)"이라고 역할을 나눈 것과 같은
-원칙: 한 함수가 여러 플러그인의 책임을 가로채지 않는다.
+시간이 있는 요청("내일 3시에 회의")은 여전히 calendar_tool/local_calendar나
+reminder(set_timer/set_daily_reminder) 영역이다 — 이 원칙은 그대로 유지한다.
+다만 2026-09-30(일반인 접근성 트랙 확장)부터 "마감일"(날짜만, 시각 없음)은
+예외로 이 플러그인이 직접 받는다 — "우유 사기"와 "금요일까지 과제 내기"는
+둘 다 사용자 입장에서 "체크리스트에 넣고 싶은 것"이라는 같은 심리 모델이라,
+전자는 되고 후자는 캘린더로 가라고 하면 오히려 일반 사용자에게 더 헷갈린다.
+경계는 명확히 유지한다: 이 플러그인이 받는 건 "YYYY-MM-DD" 날짜 하나뿐이고
+시각(시:분)은 여전히 안 받는다 — 시각까지 있으면 여전히 캘린더/리마인더
+영역이다. add_todo(due_date=...)는 core/ai_worker.py가 local_calendar의
+_resolve_event_date와 동일한 정규식 기반 결정론적 날짜 계산을 거쳐서 넘긴다
+(LLM이 "내일"을 스스로 계산하다 엉뚱한 연도를 만들어내는 문제를 막기 위함,
+그 함수의 docstring 참고).
+
+2026-10-01 "도구 간 연결성" 확장 2번 — 반복 할 일(repeat_rule) 추가. 이
+프로젝트에 이미 있는 calendar_tool.py의 반복 일정(create_recurring_event)과
+의도적으로 다른 모델을 쓴다: 캘린더는 RRULE로 N회차를 한 번에 전부
+만들지만, 할 일 "체크리스트"에서 미완료 상태로 미래 회차 10개가 동시에
+쌓여 있으면 오히려 혼란스럽다(오늘 할 일만 보고 싶은데 다음 달 회차까지
+섞여 보임). 그래서 반복 할 일은 항상 "현재 활성 회차 1개"만 존재하고,
+그 회차를 complete_todo로 완료하는 순간 다음 회차가 자동 생성된다 — 이미
+add_todo(repeat_rule=...)로 등록할 때 사용자가 동의한 반복 규칙의 당연한
+결과이므로 회차가 생길 때마다 다시 확인받지 않는다(reminder.py의 조건부
+알림이 등록 시점에만 확인받고 이후 무인 실행되는 것과 같은 원칙). 완료가
+아니라 delete_todo로 현재 회차를 지우면 그걸로 반복이 끝난다(다음 회차를
+만들 "완료" 이벤트 자체가 없으므로) — 별도의 "반복 중단" 명령은 두지 않는다.
 
 소유자 분리: plugins/expense_tracker.py와 동일한 이유로 로그인한 사용자만
 사용할 수 있게 한다(비로그인 "guest" 상태로 기록되면 다른 비로그인
@@ -29,7 +49,8 @@ LAST_TOP_PROCESSES가 세션 안에서만 유효한 것과 달리, 할 일 목�
 import os
 import json
 import uuid
-from datetime import datetime
+from calendar import monthrange
+from datetime import datetime, timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TODO_DIR = os.path.join(BASE_DIR, "todo_list")
@@ -100,16 +121,39 @@ TOOL_SCHEMAS = {
         "function": {
             "name": "add_todo",
             "description": (
-                "시간이나 날짜가 없는 단순 할 일을 목록에 추가합니다. 사용자가 '할일 추가해줘', "
-                "'~해야 하는데 목록에 넣어줘', '체크리스트에 적어줘'처럼 말할 때 호출하세요. "
-                "'내일 3시에 회의 잡아줘'처럼 구체적인 날짜/시간이 있으면 이 함수 대신 캘린더나 "
-                "리마인더(set_daily_reminder/set_timer)를 호출하세요 — 이 함수는 날짜/시간 개념이 "
-                "전혀 없는 순수 체크리스트 전용입니다."
+                "할 일을 목록에 추가합니다. 사용자가 '할일 추가해줘', '~해야 하는데 목록에 "
+                "넣어줘', '체크리스트에 적어줘'처럼 말할 때 호출하세요. '금요일까지', "
+                "'내일까지'처럼 날짜(마감일)만 있으면 due_date에 채우세요. '내일 3시에 회의 "
+                "잡아줘'처럼 시각(시:분)까지 구체적으로 있으면 이 함수 대신 캘린더나 "
+                "리마인더(set_daily_reminder/set_timer)를 호출하세요 — 이 함수는 시각 개념이 "
+                "없는 체크리스트 전용입니다(날짜만 있는 마감일은 예외적으로 받습니다). "
+                "'매주 월요일 운동하기', '매일 영어 공부', '매달 25일 관리비 확인'처럼 반복 "
+                "표현이 있으면 repeat_rule도 함께 채우세요."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "할 일 내용. 예: '우유 사기', '세탁소 들르기'"}
+                    "text": {"type": "string", "description": "할 일 내용. 예: '우유 사기', '세탁소 들르기'"},
+                    "due_date": {
+                        "type": "string",
+                        "description": (
+                            "마감일(선택, 시각 없이 날짜만). '내일', '금요일', '이번주 금요일', "
+                            "'10월 5일'처럼 사용자가 날짜 표현을 말한 경우에만 채우세요 — 정확한 "
+                            "값은 코드가 다시 계산하므로 대략적인 값을 넣어도 됩니다. 날짜 언급이 "
+                            "없으면 반드시 비워두세요. repeat_rule을 채울 때는 이 항목도 '처음 "
+                            "시작하는 날'로 반드시 함께 채워야 합니다(예: '매주 월요일'이면 가장 "
+                            "가까운 월요일 날짜)."
+                        )
+                    },
+                    "repeat_rule": {
+                        "type": "string",
+                        "enum": ["daily", "weekly", "monthly"],
+                        "description": (
+                            "반복 주기(선택). daily=매일, weekly=매주(due_date와 같은 요일마다), "
+                            "monthly=매달(due_date와 같은 날짜마다). 사용자가 반복을 명시적으로 "
+                            "말했을 때만 채우고, due_date와 함께 채워야 합니다. 반복이 아니면 비워두세요."
+                        )
+                    }
                 },
                 "required": ["text"]
             }
@@ -143,7 +187,8 @@ TOOL_SCHEMAS = {
             "description": (
                 "할 일을 완료 처리합니다. 사용자가 '우유 사기 끝냈어', '1번 완료했어', "
                 "'3번 할일 다 했어' 등을 말할 때 호출하세요. item에는 list_todos에서 보여준 "
-                "번호(예: '3') 또는 할 일 내용의 일부(예: '우유')를 그대로 전달하세요."
+                "번호(예: '3') 또는 할 일 내용의 일부(예: '우유')를 그대로 전달하세요. 반복 "
+                "할 일(repeat_rule 있음)을 완료하면 다음 회차가 자동으로 새로 생성됩니다."
             ),
             "parameters": {
                 "type": "object",
@@ -161,7 +206,8 @@ TOOL_SCHEMAS = {
             "description": (
                 "할 일을 목록에서 완전히 지웁니다(완료 처리가 아니라 삭제). 사용자가 "
                 "'2번 지워줘', '우유 사기 목록에서 빼줘' 등을 말할 때 호출하세요. item에는 "
-                "번호 또는 내용 일부를 그대로 전달하세요."
+                "번호 또는 내용 일부를 그대로 전달하세요. 반복 할 일을 삭제하면 그 반복은 "
+                "거기서 끝납니다(완료가 아니라 삭제이므로 다음 회차가 생기지 않음)."
             ),
             "parameters": {
                 "type": "object",
@@ -172,11 +218,65 @@ TOOL_SCHEMAS = {
             }
         }
     },
+    "reopen_todo": {
+        "type": "function",
+        "function": {
+            "name": "reopen_todo",
+            "description": (
+                "완료 처리했던 할 일을 다시 미완료로 되돌립니다. 사용자가 '3번 완료 취소해줘', "
+                "'아까 그거 아직 안 끝났어', '실수로 완료 눌렀어'처럼 말할 때 호출하세요. item에는 "
+                "번호 또는 내용 일부를 그대로 전달하세요(완료된 항목 중에서만 찾습니다)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item": {"type": "string", "description": "되돌릴 할 일의 번호 또는 내용 일부"}
+                },
+                "required": ["item"]
+            }
+        }
+    },
 }
 
 
-def add_todo(text: str) -> str:
-    print(f"\n✅ [할 일 목록] 추가: {text}")
+_REPEAT_LABELS = {"daily": "매일", "weekly": "매주", "monthly": "매달"}
+
+
+def _advance_date(d, repeat_rule: str, anchor_day: int = None):
+    """repeat_rule에 따라 다음 회차의 날짜를 계산한다(datetime.date 반환).
+
+    monthly의 anchor_day(ChatGPT 검수 지적, 2026-10-01 — P1): 월말 날짜(예:
+    1/31)를 다음 달로 그대로 옮길 수 없는 달이 있어(2월 31일 등 존재하지
+    않음) 그 달의 마지막 날로 자르는데, 자른 값(2/28)을 다음 계산의 입력
+    d로 그대로 쓰면 "원래 31일에 반복"이라는 의도 자체가 사라져서
+    1/31→2/28→3/28→4/28처럼 날짜가 매달 28일로 고정돼버린다(drift). 대신
+    "이 반복이 원래 며칠에 고정된 것인지"를 anchor_day로 별도로 받아서
+    매번 거기서부터 그 달의 실제 일수로 자른다 — 그러면
+    1/31→2/28→3/31→4/30→5/31처럼 "31일, 단 없는 달만 말일로"라는 원래
+    의도가 유지된다. anchor_day를 안 주면(과거 데이터 호환) d.day를 그대로
+    쓴다(기존 동작과 동일).
+
+    잘못된 repeat_rule(ChatGPT 검수 지적 — P1): 예전에는 알 수 없는 값이면
+    조용히 d를 그대로 반환했는데, 저장 데이터가 손상돼 있으면(예: 미래
+    버전에서 생겼다가 구버전이 읽는 경우) "다음 회차 날짜 = 이번 회차
+    날짜"인 조용한 오반복이 생긴다 — 호출부(complete_todo)가 이 예외를
+    잡아서 "반복 생성 실패"로 사용자에게 명시적으로 알리게 한다."""
+    if repeat_rule == "daily":
+        return d + timedelta(days=1)
+    if repeat_rule == "weekly":
+        return d + timedelta(days=7)
+    if repeat_rule == "monthly":
+        target_day = anchor_day if anchor_day else d.day
+        month = d.month + 1
+        year = d.year + (month - 1) // 12
+        month = (month - 1) % 12 + 1
+        last_day = monthrange(year, month)[1]
+        return d.replace(year=year, month=month, day=min(target_day, last_day))
+    raise ValueError(f"알 수 없는 반복 주기: {repeat_rule!r}")
+
+
+def add_todo(text: str, due_date: str = "", repeat_rule: str = "") -> str:
+    print(f"\n✅ [할 일 목록] 추가: {text} (마감: {due_date or '없음'}, 반복: {repeat_rule or '없음'})")
     login_error = _require_login()
     if login_error:
         return login_error
@@ -192,15 +292,49 @@ def add_todo(text: str) -> str:
     if len(text) > _MAX_TEXT_LENGTH:
         return f"⚠️ 할 일 내용이 너무 길어요({len(text)}자, 최대 {_MAX_TEXT_LENGTH}자) — 조금 줄여서 다시 말씀해주세요."
 
+    due_date = (due_date or "").strip()
+    if due_date:
+        try:
+            datetime.strptime(due_date, "%Y-%m-%d")
+        except ValueError:
+            # ChatGPT 검수 지적(2026-09-30): strptime이 형식 오류("10월 5일")와
+            # 실존하지 않는 날짜("2026-02-30")를 똑같이 ValueError로 묶어서
+            # 던지므로 이 둘을 코드로 구분해서 다른 문구를 주는 건 과함 — 대신
+            # 문구 자체를 "형식"이 아니라 "실제 날짜"까지 포괄하도록 넓혔다.
+            return "⚠️ 마감일이 올바르지 않습니다. 'YYYY-MM-DD' 형식의 실제 날짜를 입력해주세요(보통은 코드가 자동으로 맞춰줍니다)."
+    else:
+        due_date = None
+
+    repeat_rule = (repeat_rule or "").strip().lower()
+    if repeat_rule and repeat_rule not in _REPEAT_LABELS:
+        return "⚠️ 반복 주기를 이해하지 못했습니다. '매일'/'매주'/'매달' 중 하나로 다시 말씀해주세요."
+    if repeat_rule and not due_date:
+        # repeat_rule은 "due_date로부터 얼마나 간격을 두고 다음 회차를 만들지"를
+        # 계산하는 기준점이 반드시 필요하다 — 기준점 없이 "매일 반복"만 받으면
+        # 다음 회차를 언제로 잡아야 할지 코드가 추측해야 하는데, 이 프로젝트는
+        # 추측 대신 거부하고 다시 말해달라고 하는 쪽을 일관되게 택해왔다.
+        return "⚠️ 반복 할 일은 언제부터 시작할지(마감일)도 함께 알려주세요."
+    repeat_rule = repeat_rule or None
+    # ChatGPT 검수 지적(2026-10-01, P1): monthly 반복은 "원래 며칠에
+    # 고정된 반복인지"를 별도로 기억해둬야 월말 자르기가 누적되지 않는다
+    # (_advance_date 문서 참고) — 처음 등록한 due_date의 day를 anchor로
+    # 고정해서, 이후 회차가 짧은 달을 거쳐도 "31일, 없으면 말일"이라는
+    # 원래 의도가 유지되게 한다.
+    repeat_anchor_day = int(due_date.split("-")[2]) if (repeat_rule == "monthly" and due_date) else None
+
     data = _load()
     seq = data["next_seq"]
     data["items"].append({
         "seq": seq, "text": text, "done": False,
         "created_at": datetime.now().isoformat(timespec="seconds"), "completed_at": None,
+        "due_date": due_date, "due_reminder_fired": False, "repeat_rule": repeat_rule,
+        "repeat_anchor_day": repeat_anchor_day,
     })
     data["next_seq"] = seq + 1
     _save(data)
-    return f"[✅ 할 일 추가]\n'{text}'을(를) 할 일 목록에 추가했어요. (번호: {seq})"
+    due_str = f" (마감: {due_date})" if due_date else ""
+    repeat_str = f" [{_REPEAT_LABELS[repeat_rule]} 반복]" if repeat_rule else ""
+    return f"[✅ 할 일 추가]\n'{text}'을(를) 할 일 목록에 추가했어요{due_str}{repeat_str}. (번호: {seq})"
 
 
 def list_todos(status: str = "pending") -> str:
@@ -220,12 +354,22 @@ def list_todos(status: str = "pending") -> str:
         status = "pending"
 
     items = _load()["items"]
+
+    def _due_suffix(t: dict) -> str:
+        due = t.get("due_date")
+        repeat = t.get("repeat_rule")
+        if due and repeat:
+            return f" (마감: {due}, {_REPEAT_LABELS.get(repeat, repeat)} 반복)"
+        if due:
+            return f" (마감: {due})"
+        return ""
+
     if status == "pending":
         shown = [t for t in items if not t["done"]]
         if not shown:
             return "[✅ 할 일 목록]\n등록된 할 일이 없습니다."
         lines = [f"[✅ 할 일 목록] (미완료 {len(shown)}개)"]
-        lines += [f"  {t['seq']}. {t['text']}" for t in shown[:_MAX_DISPLAYED_ITEMS]]
+        lines += [f"  {t['seq']}. {t['text']}{_due_suffix(t)}" for t in shown[:_MAX_DISPLAYED_ITEMS]]
         if len(shown) > _MAX_DISPLAYED_ITEMS:
             lines.append(f"  ... 외 {len(shown) - _MAX_DISPLAYED_ITEMS}개")
         return "\n".join(lines)
@@ -235,7 +379,7 @@ def list_todos(status: str = "pending") -> str:
         if not shown:
             return "[✅ 할 일 목록]\n완료한 할 일이 없습니다."
         lines = [f"[✅ 할 일 목록] (완료 {len(shown)}개)"]
-        lines += [f"  {t['seq']}. {t['text']}" for t in shown[:_MAX_DISPLAYED_ITEMS]]
+        lines += [f"  {t['seq']}. {t['text']}{_due_suffix(t)}" for t in shown[:_MAX_DISPLAYED_ITEMS]]
         if len(shown) > _MAX_DISPLAYED_ITEMS:
             lines.append(f"  ... 외 {len(shown) - _MAX_DISPLAYED_ITEMS}개")
         return "\n".join(lines)
@@ -246,16 +390,20 @@ def list_todos(status: str = "pending") -> str:
     pending_n = sum(1 for t in items if not t["done"])
     done_n = len(items) - pending_n
     lines = [f"[✅ 할 일 목록] (전체 {len(items)}개, 미완료 {pending_n}개 완료 {done_n}개)"]
-    lines += [f"  [{'x' if t['done'] else ' '}] {t['seq']}. {t['text']}" for t in items[:_MAX_DISPLAYED_ITEMS]]
+    lines += [f"  [{'x' if t['done'] else ' '}] {t['seq']}. {t['text']}{_due_suffix(t)}" for t in items[:_MAX_DISPLAYED_ITEMS]]
     if len(items) > _MAX_DISPLAYED_ITEMS:
         lines.append(f"  ... 외 {len(items) - _MAX_DISPLAYED_ITEMS}개")
     return "\n".join(lines)
 
 
-def _find_todo(items: list, item: str, among_pending_only: bool):
+def _find_todo(items: list, item: str, filter_done: bool | None = False):
     """번호(seq) 또는 내용 일부로 항목 하나를 찾는다. 못 찾거나 여러 개 걸리면
     (item, 에러메시지) 중 에러메시지만 채워 반환 — 추측해서 하나를 고르지
     않는다(file_search/reminder와 동일한 "모호하면 되묻는다" 원칙).
+
+    filter_done: None=전체에서 찾음(delete_todo), False=미완료만(complete_todo),
+    True=완료된 것만(reopen_todo, 2026-09-29 추가) — 세 함수가 "어느 상태의
+    항목을 대상으로 찾을지"만 다르고 나머지 매칭 로직은 완전히 같아서 공유한다.
 
     정책 1(2026-09-29 ChatGPT 검수 지적 — 명시): item이 숫자로만 되어 있으면
     "무조건" 번호(seq)로 해석한다 — 할 일 내용이 우연히 "3"처럼 숫자로만
@@ -274,17 +422,21 @@ def _find_todo(items: list, item: str, among_pending_only: bool):
     if not item:
         return None, "⚠️ 어떤 할 일인지 번호나 내용을 알려주세요."
 
-    pool = [t for t in items if (not t["done"]) == among_pending_only] if among_pending_only else items
+    pool = items if filter_done is None else [t for t in items if t["done"] == filter_done]
 
     if item.isdigit():
         seq = int(item)
         match = next((t for t in pool if t["seq"] == seq), None)
         if match:
             return match, None
-        # 완료 전용 검색에서 이미 완료된 항목 번호를 줬다면 더 친절한 안내
+        # 대상 상태와 반대인 항목 번호를 줬다면(예: complete_todo에 이미 완료된
+        # 번호, reopen_todo에 아직 미완료인 번호) 더 친절한 안내로 이유를 알려준다.
         already = next((t for t in items if t["seq"] == seq), None)
-        if already and among_pending_only and already["done"]:
-            return None, f"⚠️ {seq}번은 이미 완료 처리된 할 일이에요."
+        if already is not None and filter_done is not None and already["done"] != filter_done:
+            if filter_done is False and already["done"]:
+                return None, f"⚠️ {seq}번은 이미 완료 처리된 할 일이에요."
+            if filter_done is True and not already["done"]:
+                return None, f"⚠️ {seq}번은 아직 완료되지 않은 할 일이에요."
         return None, f"⚠️ {seq}번 할 일을 찾을 수 없어요. list_todos로 먼저 확인해주세요."
 
     matches = [t for t in pool if item.lower() in t["text"].lower()]
@@ -303,13 +455,80 @@ def complete_todo(item: str) -> str:
         return login_error
 
     data = _load()
-    found, error = _find_todo(data["items"], item, among_pending_only=True)
+    found, error = _find_todo(data["items"], item, filter_done=False)
     if error:
         return error
     found["done"] = True
     found["completed_at"] = datetime.now().isoformat(timespec="seconds")
+
+    # 2026-10-01 반복 할 일: 완료된 회차에 repeat_rule이 있으면 다음 회차를
+    # 바로 새 항목으로 만든다(모듈 docstring 참고 — 등록 시점에 이미 동의한
+    # 반복 규칙의 당연한 결과라 다시 확인받지 않음).
+    next_note = ""
+    if found.get("repeat_rule"):
+        try:
+            if found["repeat_rule"] not in _REPEAT_LABELS:
+                # ChatGPT 검수 지적(P1): _advance_date가 모르는 repeat_rule에
+                # ValueError를 던지도록 바꿨으므로 여기서도 잡히긴 하지만,
+                # "어떤 repeat_rule이 저장돼 있었는지"를 알고 있는 이 지점에서
+                # 먼저 걸러야 에러 메시지가 더 정확하다.
+                raise ValueError(f"알 수 없는 반복 주기: {found['repeat_rule']!r}")
+            if not found.get("due_date"):
+                raise ValueError("반복 할 일인데 마감일이 없음")
+
+            current_due = datetime.strptime(found["due_date"], "%Y-%m-%d").date()
+            anchor_day = found.get("repeat_anchor_day")
+            next_due = _advance_date(current_due, found["repeat_rule"], anchor_day=anchor_day)
+
+            # ChatGPT 검수 지적(P1, "catch-up"): 오래 미뤄둔 반복 할 일을
+            # 뒤늦게 완료하면(예: 마감 9/1인 daily를 10/1에 완료) 원래
+            # 스케줄대로 9/2를 다음 회차로 만들면 이미 지나간 날짜가
+            # 또 밀려있는 할 일로 쌓인다 — "완료한 시점" 기준으로 아직
+            # 지나지 않은 미래 회차 하나로 건너뛴다.
+            today = datetime.now().date()
+            while next_due < today:
+                next_due = _advance_date(next_due, found["repeat_rule"], anchor_day=anchor_day)
+
+            next_seq = data["next_seq"]
+            data["items"].append({
+                "seq": next_seq, "text": found["text"], "done": False,
+                "created_at": datetime.now().isoformat(timespec="seconds"), "completed_at": None,
+                "due_date": next_due.strftime("%Y-%m-%d"), "due_reminder_fired": False,
+                "repeat_rule": found["repeat_rule"], "repeat_anchor_day": anchor_day,
+            })
+            data["next_seq"] = next_seq + 1
+            label = _REPEAT_LABELS.get(found["repeat_rule"], found["repeat_rule"])
+            next_note = (f"\n🔁 {label} 반복이라 다음 회차를 만들어뒀어요: "
+                         f"'{found['text']}' (마감: {next_due.strftime('%Y-%m-%d')}, 번호: {next_seq})")
+        except (ValueError, TypeError):
+            # ChatGPT 검수 지적(P1): 예전에는 여기서 조용히 넘어가서 "완료는
+            # 됐는데 반복이 끊긴 사실"을 사용자가 알 길이 없었다 — 완료
+            # 처리 자체는 그대로 유지하되(사용자가 한 일을 취소할 이유는
+            # 없음), 반복 생성 실패는 명시적으로 알린다.
+            next_note = "\n⚠️ 반복 다음 회차를 만들지 못했어요(저장된 날짜/반복 정보가 손상됐어요)."
+
     _save(data)
-    return f"[✅ 할 일 완료]\n'{found['text']}'을(를) 완료 처리했어요."
+    return f"[✅ 할 일 완료]\n'{found['text']}'을(를) 완료 처리했어요.{next_note}"
+
+
+def reopen_todo(item: str) -> str:
+    """2026-09-29 — 1라운드 검수 당시 "이번 범위를 늘리지 않는 게 낫다"고
+    의도적으로 미룬 undo 기능. complete_todo와 정확히 대칭이다: 완료된
+    항목만 찾아서(filter_done=True) done을 다시 False로 되돌리고
+    completed_at을 지운다."""
+    print(f"\n✅ [할 일 목록] 완료 취소: {item}")
+    login_error = _require_login()
+    if login_error:
+        return login_error
+
+    data = _load()
+    found, error = _find_todo(data["items"], item, filter_done=True)
+    if error:
+        return error
+    found["done"] = False
+    found["completed_at"] = None
+    _save(data)
+    return f"[✅ 할 일 완료 취소]\n'{found['text']}'을(를) 다시 미완료로 되돌렸어요."
 
 
 def delete_todo(item: str) -> str:
@@ -319,9 +538,84 @@ def delete_todo(item: str) -> str:
         return login_error
 
     data = _load()
-    found, error = _find_todo(data["items"], item, among_pending_only=False)
+    found, error = _find_todo(data["items"], item, filter_done=None)
     if error:
         return error
     data["items"] = [t for t in data["items"] if t["seq"] != found["seq"]]
     _save(data)
     return f"[✅ 할 일 삭제]\n'{found['text']}'을(를) 목록에서 삭제했어요."
+
+
+# get_due_timers()/get_due_daily_reminders()/get_due_event_reminders()와
+# 같은 내부 전용 폴링 패턴(2026-09-30, 마감일 알림) — TOOL_SCHEMAS에 없으므로
+# AI 도구 호출로는 절대 불릴 수 없다. app_main.py가 주기적으로 호출한다.
+def get_due_todo_reminders() -> list:
+    """[{"seq":, "text":, "due_date":}, ...] 형태로, 오늘까지 마감(또는 이미
+    지남)인데 아직 안 끝난 할 일을 찾아 반환하고 due_reminder_fired를 True로
+    표시해 저장한다.
+
+    local_calendar.get_due_event_reminders()와 의도적으로 다른 정책: 그
+    함수는 "이미 시작된 일정"을 조용히 넘기지만(뒤늦은 "곧 시작합니다"는
+    의미 없음), 이 함수는 마감일이 지난 할 일도 그대로 알린다 — "마감일이
+    지났는데 아직 안 하셨어요"는 늦게라도 알리는 게 여전히 유용한 정보라서
+    다르게 판단했다. done=True거나 due_date가 없는 항목은 대상이 아니다.
+
+    due_reminder_fired의 정확한 의미(ChatGPT 검수로 명시, 2026-09-30):
+    "토스트가 화면에 성공적으로 표시됐다"가 아니라 "이 함수가 이 항목을
+    알림 대상으로 반환했다(=app_main.py에 소비하라고 넘겼다)"는 뜻이다.
+    get_due_event_reminders/get_due_daily_reminders와 동일한 전제 —
+    app_main.py의 토스트 표시 자체가 실패해도(예: 표시 직전 앱 강제 종료)
+    이 함수 쪽에서는 "이미 전달함"으로 확정되고 재시도하지 않는다. 이
+    프로젝트가 이미 다른 곳(cpu_limit/disk_limit의 "폴링 사이 변화는
+    놓칠 수 있다")에서 받아들인 것과 같은 종류의 한계로 남겨둔다.
+
+    동시 접근(ChatGPT 검수 확인, 2026-09-30): 이 함수는 app_main.py의
+    QTimer(GUI 스레드)가 주기적으로 호출하고, add_todo 등은 AIWorker
+    QThread에서 호출된다 — _load()/_save() 사이에 명시적 락이 없어
+    이론적으로 두 스레드가 동시에 파일을 건드리면 한쪽 변경이 유실될 수
+    있다. 이건 이 함수만의 새 문제가 아니라 local_calendar.py(같은
+    QTimer+AIWorker 조합, 역시 락 없음)를 포함해 이 프로젝트의 파일 기반
+    플러그인 대부분이 이미 갖고 있는 알려진 한계라, 이 기능 하나만 락을
+    추가하는 건 일관성이 없다고 판단해 범위 밖으로 남겨둔다(전체 파일
+    저장소에 락을 도입하는 건 별도 작업)."""
+    if _current_user_id == "guest":
+        return []
+    data = _load()
+    today = datetime.now().date()
+    due = []
+    changed = False
+    for t in data["items"]:
+        if t.get("done") or t.get("due_reminder_fired") or not t.get("due_date"):
+            continue
+        try:
+            due_date = datetime.strptime(t["due_date"], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue  # 손상된 날짜 데이터 — 이 항목만 건너뜀(전체 폴링을 막지 않음)
+        if today >= due_date:
+            due.append({"seq": t["seq"], "text": t["text"], "due_date": t["due_date"]})
+            t["due_reminder_fired"] = True
+            changed = True
+    if changed:
+        _save(data)
+    return due
+
+
+def get_todos_due_on(date_str: str) -> list:
+    """[{"seq":, "text":}, ...] date_str("YYYY-MM-DD")에 마감인 미완료 할
+    일만 반환한다 — 2026-10-01 "도구 간 연결성" 확장, calendar_tool.
+    get_daily_briefing()이 오늘/내일 브리핑에 포함시키려고 호출하는 읽기
+    전용 내부 함수(TOOL_SCHEMAS에 없음, AI가 직접 호출 불가).
+    get_due_todo_reminders()와 의도적으로 다르다 — 그 함수는 "오늘 이전까지
+    포함한 전체 밀린 일"을 찾아 due_reminder_fired를 True로 바꾸는 부수
+    효과가 있는 알림용 폴링 함수지만, 이 함수는 상태를 전혀 바꾸지 않고
+    "그 날짜에 정확히 마감인 것"만 본다 — 브리핑은 몇 번을 다시 요청해도
+    같은 날짜엔 같은 결과를 보여줘야 하고(멱등), 밀린 전체 목록이 아니라
+    "오늘/내일 할 일"이라는 좁은 의미를 지켜야 하기 때문이다."""
+    if _current_user_id == "guest":
+        return []
+    data = _load()
+    return [
+        {"seq": t["seq"], "text": t["text"]}
+        for t in data["items"]
+        if not t["done"] and t.get("due_date") == date_str
+    ]

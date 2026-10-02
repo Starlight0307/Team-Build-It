@@ -35,6 +35,14 @@ def test_negative_budget_rejected(isolated_expense_tracker):
     assert "0 이상" in result
 
 
+def test_infinite_budget_amount_rejected(isolated_expense_tracker):
+    """ChatGPT 검수 지적(2026-09-30): float("inf")는 TypeError/ValueError
+    없이 통과했다가 round()에서 OverflowError를 던져서 이 함수 전체가
+    죽었던 회귀 — 정상적으로 안내 메시지로 처리돼야 한다."""
+    result = set_monthly_budget(float("inf"))
+    assert "이해하지 못했습니다" in result
+
+
 def test_budget_status_requires_login():
     et.set_current_user(None)  # guest 상태로 되돌림
     result = get_budget_status()
