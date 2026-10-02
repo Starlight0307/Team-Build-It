@@ -43,3 +43,41 @@ def purge_user_data(user_id: str, root: str = PROJECT_ROOT) -> int:
         except OSError as e:
             print(f"[탈퇴 데이터 삭제 오류] {path}: {e}")
     return removed
+
+
+def _guest_sources(root: str, uid: str):
+    """(비로그인 때 쓰던 공용 파일, 이 계정의 새 파일) 쌍 목록."""
+    j = os.path.join
+    return [
+        (j(root, "settings", "app_settings.json"), j(root, "settings", "users", f"{uid}.json")),
+        (j(root, "core", "preference_memory.json"), j(root, "core", "preference_memory", f"{uid}.json")),
+        (j(root, "plugins", "reminder", "routines.json"), j(root, "plugins", "reminder", "users", f"{uid}_routines.json")),
+        (j(root, "plugins", "reminder", "conditions.json"), j(root, "plugins", "reminder", "users", f"{uid}_conditions.json")),
+        (j(root, "plugins", "app_usage", "usage.json"), j(root, "plugins", "app_usage", "users", f"{uid}_usage.json")),
+        (j(root, "plugins", "app_usage", "goals.json"), j(root, "plugins", "app_usage", "users", f"{uid}_goals.json")),
+    ]
+
+
+def guest_data_exists(root: str = PROJECT_ROOT) -> bool:
+    """비로그인 때 쓰던 설정/기억/알림/사용 기록이 하나라도 있는지."""
+    return any(os.path.isfile(src) for src, _ in _guest_sources(root, "x"))
+
+
+def import_guest_data(user_id: str, root: str = PROJECT_ROOT) -> int:
+    """비로그인 때 쓰던 데이터를 이 계정 것으로 복사한다(원본은 그대로 둠, 같은 항목은 덮어씀).
+    복사한 파일 수를 반환. 반드시 저장소가 guest로 돌아가 있는 상태(= 이 계정의 메모리 상태가
+    파일로 저장된 뒤)에서 불러야 방금 복사한 파일이 다시 덮어써지지 않는다."""
+    if not user_id or safe_uid(user_id) == "guest":
+        return 0
+    uid = safe_uid(user_id)
+    copied = 0
+    for src, dst in _guest_sources(root, uid):
+        if not os.path.isfile(src):
+            continue
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(src, dst)
+            copied += 1
+        except OSError as e:
+            print(f"[기존 데이터 가져오기 오류] {src}: {e}")
+    return copied

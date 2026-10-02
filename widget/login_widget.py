@@ -3,7 +3,7 @@ import sys
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLineEdit, QPushButton, QLabel, QCheckBox,
                              QSizePolicy, QGraphicsDropShadowEffect)
-from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
+from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen, QPainterPath
 
 from data.db import verify_login
@@ -176,6 +176,10 @@ def get_stylesheet(is_dark: bool) -> str:
     """
 
 
+MAX_LOGIN_FAILS = 5      # 이 횟수만큼 연속으로 틀리면
+LOGIN_LOCK_SECONDS = 30  # 이 시간 동안 로그인 시도를 막는다 (무작위 대입 방지)
+
+
 class LoginWidget(QWidget):
     login_success = pyqtSignal(str)
     go_signup     = pyqtSignal()
@@ -186,6 +190,10 @@ class LoginWidget(QWidget):
         super().__init__(parent)
         self._google_worker = None
         self._login_worker = None
+        self._fail_count = 0
+        self._lock_left = 0
+        self._lock_timer = QTimer(self); self._lock_timer.setInterval(1000)
+        self._lock_timer.timeout.connect(self._tick_lock)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
         self.update_theme(True)
@@ -304,7 +312,28 @@ class LoginWidget(QWidget):
             w.setEnabled(not busy)
         self.btn_login.setText("로그인 중..." if busy else "로그인")
 
+    def _lock_message(self):
+        return f"로그인 시도가 너무 많아요. {self._lock_left}초 뒤에 다시 시도해주세요."
+
+    def _tick_lock(self):
+        self._lock_left -= 1
+        if self._lock_left <= 0:
+            self._lock_timer.stop()
+            self._fail_count = 0
+            self.btn_login.setEnabled(True)
+            self._clear_error()
+        else:
+            self._show_error(self._lock_message())
+
+    def _start_lock(self):
+        self._lock_left = LOGIN_LOCK_SECONDS
+        self.btn_login.setEnabled(False)
+        self._show_error(self._lock_message())
+        self._lock_timer.start()
+
     def _handle_login(self):
+        if self._lock_left > 0:
+            self._show_error(self._lock_message()); return
         if self._login_worker is not None and self._login_worker.isRunning():
             return
         uid = self.input_id.text().strip()
@@ -319,10 +348,15 @@ class LoginWidget(QWidget):
     def _on_login_done(self, ok, err, uid):
         self._set_busy(False)
         if ok:
+            self._fail_count = 0
             self.login_success.emit(uid)
         else:
             self._show_error(err)
             self.input_pw.selectAll(); self.input_pw.setFocus()
+            if err.startswith("아이디 또는 비밀번호"):   # 네트워크 오류 등은 횟수에 넣지 않는다
+                self._fail_count += 1
+                if self._fail_count >= MAX_LOGIN_FAILS:
+                    self._start_lock()
 
     def _handle_google_login(self):
         # 이미 인증 대기 중이면 같은 버튼이 "취소" 역할을 한다

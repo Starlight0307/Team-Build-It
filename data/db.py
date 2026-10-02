@@ -249,6 +249,8 @@ def try_auto_login():
             raise ValueError(f"세션 만료 ({resp.status_code})")
 
         data = resp.json()
+        if _is_withdrawn(data.get("access_token")):
+            raise ValueError("탈퇴한 계정")
         set_session(data.get("access_token"), username, data.get("refresh_token"), method="자동 로그인")
         return username
     except Exception as e:
@@ -711,6 +713,43 @@ def delete_account(username: str, password: str) -> bool:
 # 처리했음(신규면 auth.users insert 시점에 자동 생성됨).
 # ==========================================
 
+def _is_withdrawn(access_token: str) -> bool:
+    """이 토큰의 계정이 이미 탈퇴 처리된 계정인지(user_metadata.withdrawn) 확인한다.
+    네트워크 오류 등으로 확인하지 못하면 False(로그인을 막지 않음)."""
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return False
+        return bool((resp.json().get("user_metadata") or {}).get("withdrawn"))
+    except Exception:
+        return False
+
+
+def delete_google_account() -> bool:
+    """구글로 가입한 계정의 탈퇴 — 비밀번호가 없으므로 지금 로그인된 세션으로 처리한다
+    (화면에서 "탈퇴"를 직접 입력해 확인받음). 계정에 withdrawn 표시를 남기고, 이후
+    구글 로그인/자동 로그인 때 이 표시를 확인해 들어오지 못하게 막는다
+    (Supabase 공개 키로는 계정 자체를 지울 수 없어서 delete_account와 같은 방식의 '비활성화')."""
+    try:
+        resp = requests.put(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers=_session_headers(),
+            json={"data": {"withdrawn": True}},
+            timeout=10,
+        )
+        ok = resp.status_code < 400
+        if ok:
+            clear_session()
+        return ok
+    except Exception as e:
+        print(f"[구글 계정 탈퇴 오류] {e}")
+        return False
+
+
 def complete_google_login(access_token: str, refresh_token: str = None, remember: bool = True) -> str:
     """구글 로그인 후 세션을 등록하고, 내 아이디(username)를 반환한다."""
     resp = requests.get(
@@ -727,6 +766,8 @@ def complete_google_login(access_token: str, refresh_token: str = None, remember
     if not rows:
         raise RuntimeError("프로필 정보를 찾을 수 없습니다.")
     username = rows[0]["username"]
+    if _is_withdrawn(access_token):
+        raise RuntimeError("탈퇴한 계정이에요.")
     set_session(access_token, username, refresh_token, remember=remember, method="Google")
     return username
 

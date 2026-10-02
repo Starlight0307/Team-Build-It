@@ -8,6 +8,26 @@
 
 CARD_WIDTH = 390
 
+
+def add_eye_toggle(line_edit):
+    """비밀번호 입력칸 오른쪽 안에 "보기/숨김" 버튼을 붙인다 (로그인 화면과 같은 모양)."""
+    from PyQt6.QtWidgets import QHBoxLayout, QPushButton
+    from PyQt6.QtCore import Qt
+    btn = QPushButton("보기"); btn.setObjectName("Eye")
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setCheckable(True)
+    btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def toggle(on):
+        from PyQt6.QtWidgets import QLineEdit
+        line_edit.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
+        btn.setText("숨김" if on else "보기")
+
+    btn.toggled.connect(toggle)
+    lay = QHBoxLayout(line_edit)
+    lay.setContentsMargins(0, 0, 8, 0); lay.addStretch(); lay.addWidget(btn)
+    return btn
+
 # 확인창/입력창/팝업용 스타일. Windows가 다크 모드면 팝업 배경이 검정이 되는데, 글씨 색은
 # 화면 쪽 스타일(QLabel 규칙)을 상속받아 어두워서 안 보인다 — 배경/글씨/버튼을 직접 지정해
 # OS 설정과 무관하게 항상 읽히게 한다. 이 팝업을 만드는 화면의 스타일시트마다 붙여 쓴다.
@@ -68,4 +88,8 @@ def overrides(is_dark: bool) -> str:
         QPushButton#L {{ color: {acc}; font-weight: 700; }}
         QPushButton#L:hover {{ color: {hv}; }}
         QComboBox {{ border-radius: 14px; min-height: 40px; }}
+        QPushButton#Eye {{
+            background: transparent; border: none; color: {sub};
+            font-size: 11px; font-weight: 700; padding: 0 4px; min-height: 20px; }}
+        QPushButton#Eye:hover {{ color: {acc}; }}
     """ + DIALOG_QSS

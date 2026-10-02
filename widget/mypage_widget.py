@@ -152,6 +152,7 @@ def _validate_password(pw: str):
 
 class MyPageWidget(QWidget):
     logout_requested = pyqtSignal()
+    import_guest_requested = pyqtSignal()   # 비로그인 때 쓰던 데이터 가져오기 (app_main이 처리)
     go_home           = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -293,6 +294,13 @@ class MyPageWidget(QWidget):
             b.setObjectName("MPSave"); b.setMinimumHeight(36)
             b.setCursor(Qt.CursorShape.PointingHandCursor); b.clicked.connect(fn); br.addWidget(b)
         L.addLayout(br)
+        L.addSpacing(8)
+
+        self.btn_import_guest = QPushButton("📂 로그인 전에 쓰던 설정·기억 가져오기")
+        self.btn_import_guest.setObjectName("MPSave"); self.btn_import_guest.setMinimumHeight(36)
+        self.btn_import_guest.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_import_guest.clicked.connect(self._import_guest)
+        L.addWidget(self.btn_import_guest)
         L.addSpacing(6)
         enc = QLabel("🔒 대화기록은 이 컴퓨터에서 암호화되어 저장돼요.")
         enc.setWordWrap(True); enc.setStyleSheet("color: #888; font-size: 11px;")
@@ -395,6 +403,18 @@ class MyPageWidget(QWidget):
             or "아직 로그인 기록이 없어요."
         QMessageBox.information(self, "최근 로그인 기록", text)
 
+    def _import_guest(self):
+        from data.local_data import guest_data_exists
+        if not guest_data_exists():
+            QMessageBox.information(self, "가져오기", "로그인 전에 쓰던 설정이나 기억이 없어요.")
+            return
+        r = QMessageBox.question(
+            self, "가져오기",
+            "로그인하기 전에 이 컴퓨터에서 쓰던 설정, 루미 기억, 알림, 앱 사용 기록을\n"
+            "이 계정으로 가져올까요? 같은 항목은 가져온 내용으로 덮어써져요.")
+        if r == QMessageBox.StandardButton.Yes:
+            self.import_guest_requested.emit()
+
     def _backup(self):
         from PyQt6.QtWidgets import QFileDialog
         from data.backup import create_backup, default_backup_name
@@ -493,11 +513,7 @@ class MyPageWidget(QWidget):
         if not self._username:
             return
         if self._is_google:
-            QMessageBox.information(
-                self, "안내",
-                "구글 계정으로 가입하셔서 이 화면에서는 탈퇴할 수 없어요.\n"
-                "팀 관리자에게 문의해주세요."
-            )
+            self._withdraw_google()
             return
 
         confirm = QMessageBox.warning(
@@ -531,6 +547,29 @@ class MyPageWidget(QWidget):
             purge_user_data(withdrawn_user)
         else:
             QMessageBox.warning(self, "오류", "비밀번호가 올바르지 않습니다.")
+
+    def _withdraw_google(self):
+        """구글 가입 계정은 비밀번호가 없어서, 안내를 읽고 "탈퇴"를 직접 입력하면 처리한다."""
+        text, ok = QInputDialog.getText(
+            self, "회원 탈퇴",
+            "정말 탈퇴하시겠어요? 이 구글 계정으로는 다시 로그인할 수 없게 되고,\n"
+            "이 컴퓨터에 저장된 대화기록, 설정, 기억도 함께 삭제돼요.\n\n"
+            "계속하려면 '탈퇴'라고 입력해주세요.",
+        )
+        if not ok:
+            return
+        if text.strip() != "탈퇴":
+            QMessageBox.information(self, "회원 탈퇴", "'탈퇴'를 정확히 입력하지 않아 취소했어요.")
+            return
+        from data.db import delete_google_account
+        if not delete_google_account():
+            QMessageBox.warning(self, "오류", "탈퇴 처리에 실패했습니다. 잠시 후 다시 시도해주세요.")
+            return
+        QMessageBox.information(self, "완료", "탈퇴가 완료되었습니다. 이용해주셔서 감사했습니다.")
+        withdrawn_user = self._username
+        self.logout_requested.emit()
+        from data.local_data import purge_user_data
+        purge_user_data(withdrawn_user)
 
     def update_theme(self, is_dark: bool):
         if is_dark:

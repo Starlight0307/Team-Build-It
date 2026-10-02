@@ -1203,6 +1203,7 @@ class AssistantApp(QWidget):
 
         self.mypage = MyPageWidget(self)                                        # index 5
         self.mypage.logout_requested.connect(self._handle_logout)
+        self.mypage.import_guest_requested.connect(self._import_guest_data)
         self.mypage.go_home.connect(self._go_home)
         self.stacked_widget.addWidget(self.mypage)
 
@@ -2056,7 +2057,21 @@ class AssistantApp(QWidget):
         self.weather_panel.reload()   # 지역이 없으면 refresh가 알아서 현재 위치를 찾는다
         if hasattr(self, "skills_page"):
             self.skills_page.refresh()
+        self._refresh_info_panels()   # 오늘 일정/할 일 패널에 이전 계정 내용이 남지 않게 다시 읽는다
         self._resume_usage_tracking()
+
+    def _import_guest_data(self):
+        """마이페이지 "로그인 전에 쓰던 설정·기억 가져오기" — 현재 계정 상태를 먼저 저장하고(guest로
+        전환), 공용 파일을 이 계정 파일로 복사한 뒤, 다시 이 계정으로 불러온다."""
+        uid = MOCK_USER.get("name")
+        if not uid:
+            return
+        from data.local_data import import_guest_data
+        _sync_calendar_user("guest")      # 현재 계정의 메모리 상태를 파일에 저장하고 비움
+        copied = import_guest_data(uid)
+        _sync_calendar_user(uid)          # 복사된 파일을 다시 읽는다
+        self._apply_user_settings()
+        self._show_toast(f"가져왔어요 ({copied}개 항목)." if copied else "가져올 항목이 없었어요.")
 
     def on_login_success(self, uid):
         MOCK_USER["logged_in"] = True
