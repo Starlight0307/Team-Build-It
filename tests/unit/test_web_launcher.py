@@ -148,3 +148,56 @@ def test_open_request_without_url_opens_search_page(monkeypatch):
     monkeypatch.setattr(web_launcher.webbrowser, "open", lambda url, new=0: opened.append(url))
     web_launcher.open_request({"browser": None, "site": None, "url": None, "query": None, "target": "없는학교"})
     assert opened and opened[0].startswith("https://search.naver.com/")
+
+
+def test_find_verb_searches_when_a_site_is_named():
+    req = parse_open_request("구글에 파이썬 강의 찾아줘")
+    assert req["query"] == "파이썬 강의" and "google.com/search?q=" in req["url"]
+    req = parse_open_request("유튜브에서 아이유 노래 찾아줘")
+    assert req["query"] == "아이유 노래" and "search_query=" in req["url"]
+
+
+
+# ── 기본 브라우저 ──
+@pytest.mark.parametrize("text, site, query, target", [
+    ("인터넷 열어줘", None, None, None),
+    ("브라우저 열어줘", None, None, None),
+    ("웹 브라우저 켜줘", None, None, None),
+    ("기본 브라우저로 유튜브 열어줘", "유튜브", None, None),
+    ("브라우저에서 날씨 검색해줘", "구글", "날씨", None),
+    ("인터넷에서 장안대학교 홈페이지 들어가줘", None, None, "장안대학교"),
+])
+def test_generic_browser_words_mean_default_browser(text, site, query, target):
+    req = parse_open_request(text)
+    assert req is not None and req["browser"] is None
+    assert (req["site"], req["query"], req["target"]) == (site, query, target)
+
+
+@pytest.mark.parametrize("text", ["인터넷 속도 확인해줘", "인터넷 연결 안돼", "인터넷 강의 찾아줘",
+                                  "브라우저 기록 지워줘", "인터넷 사용량 보여줘"])
+def test_internet_words_for_other_features_are_not_hijacked(text):
+    assert parse_open_request(text) is None
+
+
+def test_open_request_uses_default_browser_and_names_it(monkeypatch):
+    opened, launched = [], []
+    monkeypatch.setattr(web_launcher.webbrowser, "open", lambda url, new=0: opened.append(url))
+    monkeypatch.setattr(web_launcher, "open_default_browser", lambda: launched.append(True))
+    monkeypatch.setattr(web_launcher, "default_browser_name", lambda: "크롬")
+    msg = web_launcher.open_request(parse_open_request("네이버 열어줘"))
+    assert opened == ["https://www.naver.com"] and msg == "기본 브라우저(크롬)에서 네이버를 열었어요."
+    msg = web_launcher.open_request(parse_open_request("인터넷 열어줘"))
+    assert launched and msg == "기본 브라우저(크롬)를 열었어요."
+    monkeypatch.setattr(web_launcher, "default_browser_name", lambda: None)
+    assert web_launcher.open_request(parse_open_request("네이버 열어줘")) == "기본 브라우저에서 네이버를 열었어요."
+
+
+@pytest.mark.parametrize("path, name", [
+    ("/Applications/Google Chrome.app", "크롬"), ("/Applications/Safari.app", "사파리"),
+    (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "엣지"),
+    (r"C:\Program Files\Naver\Naver Whale\Application\whale.exe", "웨일"),
+    ("/Applications/Brave Browser.app", "브레이브"), (None, None),
+])
+def test_default_browser_name_from_app_path(monkeypatch, path, name):
+    monkeypatch.setattr(web_launcher, "_default_browser_app", lambda: path)
+    assert web_launcher.default_browser_name() == name

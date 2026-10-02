@@ -186,3 +186,20 @@ def test_export_file_is_valid_json_readable_by_a_fresh_process(isolated_data_bac
     with open(export_file, encoding="utf-8") as f:
         payload = json.load(f)  # 예외 없이 파싱되면 성공
     assert isinstance(payload, dict)
+
+
+def test_export_filename_unique_even_with_coarse_clock(isolated_data_backup, monkeypatch):
+    """2026-10-02 Windows(Python 3.11) 점검에서 실패: Windows 시계는 약 15ms 단위라 연달아 부르면
+    마이크로초까지 같은 시각이 나와 두 번째 파일이 첫 번째를 덮어썼다 — 시계를 멈춰서 재현."""
+    from datetime import datetime as real_datetime
+
+    class FrozenClock(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime(2026, 10, 2, 10, 30, 0, 123000)
+
+    monkeypatch.setattr(data_backup, "datetime", FrozenClock)
+    for _ in range(3):
+        data_backup.export_my_data()
+    files = sorted(p.name for p in isolated_data_backup.glob("LUMI_백업_*.json"))
+    assert len(files) == 3

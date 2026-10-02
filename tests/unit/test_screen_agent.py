@@ -212,3 +212,79 @@ def test_wait_for_screen_waits_for_app_to_appear(monkeypatch):
     t = time.time()
     assert w._wait_for_screen("open_app", old, {})
     assert 0.5 <= time.time() - t < 1.5
+
+
+# ── 키보드가 어느 창으로 가는지 / 기다려도 안 바뀌는 화면 ──
+def test_focus_note_tells_model_where_keys_go(monkeypatch):
+    monkeypatch.setattr(screen_agent, "active_window", lambda: ("Code", False))
+    assert "Code" in screen_agent.focus_note()
+    monkeypatch.setattr(screen_agent, "active_window", lambda: ("python", True))
+    assert "루미 자신" in screen_agent.focus_note()
+    monkeypatch.setattr(screen_agent, "active_window", lambda: (None, False))
+    assert screen_agent.focus_note() == ""
+
+
+def _run_worker(monkeypatch, answers, frames):
+    """모델 답(answers)과 화면 표본(frames)을 정해두고 작업 루프를 실제로 돌린다 (마우스/키보드는 가짜)."""
+    import threading
+    w = screen_agent.ScreenAgentWorker("유튜브에서 아이유 검색해줘", controller=object())
+    asked = []
+    seq = iter(answers)
+
+    def ask(self, image, history, step, repeat):
+        asked.append(list(getattr(self, "_notes", [])))
+        return parse_action(next(seq))
+    monkeypatch.setattr(screen_agent.ScreenAgentWorker, "_ask_next_action", ask)
+    monkeypatch.setattr(screen_agent.ScreenAgentWorker, "_capture", lambda self: ("img", {}))
+    monkeypatch.setattr(screen_agent.ScreenAgentWorker, "_start_esc_watch", lambda self: None)
+    monkeypatch.setattr(screen_agent.ScreenAgentWorker, "_stopped_by_user", lambda self: False)
+    it = iter(frames)
+    monkeypatch.setattr(screen_agent.ScreenAgentWorker, "_signature", staticmethod(lambda mon: next(it, frames[-1])))
+    monkeypatch.setattr(screen_agent.ScreenAgentWorker, "_stop", threading.Event(), raising=False)
+    w._stop.wait = lambda t=None: False          # 기다리지 않고 바로 진행
+    result = []
+    w.finished_task.connect(lambda ok, msg, hist: result.append((ok, msg, hist)))
+    w.run()
+    return result[0], asked
+
+
+def test_waiting_on_a_frozen_screen_warns_then_stops(monkeypatch):
+    wait = '{"thought": "", "actions": [{"action": "wait"}]}'
+    (ok, msg, hist), asked = _run_worker(monkeypatch, [wait] * 5, [bytes(100)])
+    assert not ok and "화면이 바뀌지 않아서" in msg
+    assert len(hist) == 2 and all("화면 변화 없음" in h for h in hist)   # 3번째에서 멈춤
+    assert any("화면이 전혀 바뀌지 않았습니다" in n for notes in asked for n in notes)
+
+
+# ── 단계 수를 요청에 맞춰 정하기 ──
+def test_step_budget_grows_with_request_size():
+    e = screen_agent.estimate_step_budget
+    simple, two_part = e("화면에서 확인 버튼 눌러줘"), e("설정 열어서 다크 모드 켜줘")
+    multi = e('메모장 열고 "오늘 할 일: 장보기"라고 쓰고 저장해줘')
+    assert simple == screen_agent.MIN_STEPS
+    assert simple < two_part < multi <= screen_agent.START_MAX
+    assert e("받은 메일 전부 읽음 처리해줘") > simple                  # 여러 항목
+    assert e("열고 " * 30) == screen_agent.START_MAX                 # 처음 예산은 상한까지만
+
+
+def test_next_budget_only_extends_while_progressing():
+    nb, cap = screen_agent.next_budget, screen_agent.SCREEN_AGENT_MAX_STEPS
+    assert nb(3, 3, 4, True) == 7                # 진행 중 + "4단계 남음" → 늘림
+    assert nb(3, 3, 4, False) == 3               # 헤매는 중이면 그대로
+    assert nb(8, 2, 1, True) == 8                # 줄이지는 않는다
+    assert nb(5, 18, 8, True) == cap             # 상한을 넘지 않는다
+    assert nb(5, 2, None, True) == 5 and nb(5, 2, "3", True) == 5
+
+
+def test_worker_extends_budget_and_stops_when_screen_is_stuck(monkeypatch):
+    click = '{"thought": "", "actions": [{"action": "click", "x": %d, "y": 1}], "steps_left": 5}'
+    monkeypatch.setattr(screen_agent.ScreenAgentWorker, "_perform", lambda self, a, mon: None)
+    monkeypatch.setattr(screen_agent.ScreenAgentWorker, "_wait_for_screen", lambda self, k, b, m: True)
+    # 화면이 매번 바뀜 → 처음 예산(3)을 넘어 계속 진행하다가 6단계째 done
+    frames = [bytes([i]) * 100 for i in range(40)]
+    answers = [click % i for i in range(5)] + ['{"thought": "", "actions": [{"action": "done"}], "summary": "끝"}']
+    (ok, msg, hist), _ = _run_worker(monkeypatch, answers, frames)
+    assert ok and msg == "끝" and len(hist) == 5
+    # 화면이 전혀 안 바뀜 → STALL_LIMIT 단계에서 멈춘다
+    (ok, msg, hist), _ = _run_worker(monkeypatch, [click % i for i in range(9)], [bytes(100)])
+    assert not ok and "화면이 바뀌지 않아서" in msg and len(hist) == screen_agent.STALL_LIMIT

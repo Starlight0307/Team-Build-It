@@ -16,6 +16,11 @@ LLM을 거치지 않고 바로 처리한다.
 - "메모장 열어줘"(루미 자체 메모장 플러그인)처럼 브라우저/사이트가 아닌 앱은
   다루지 않는다.
 
+기본 브라우저
+- 브라우저 이름을 말하지 않거나 "인터넷/브라우저/기본 브라우저"라고만 하면 사용자가 OS에
+  기본으로 정해둔 브라우저로 연다 ("인터넷 열어줘", "브라우저에서 날씨 검색해줘").
+  답할 때 어느 브라우저인지 알려준다 — default_browser_name().
+
 목록에 없는 사이트 ("크롬에서 장안대학교 홈페이지 접속해줘")
 - 이름으로 공식 홈페이지 주소를 찾는다: Bing 검색 첫 결과(위키/블로그 제외) →
   실패하면 네이버 검색 결과에서 가장 많이 나온 사이트 → 그래도 없으면 네이버
@@ -104,6 +109,12 @@ _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit
                           "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
             "Accept-Language": "ko-KR,ko;q=0.9"}
 
+# 특정 브라우저가 아닌 "기본 브라우저"를 뜻하는 말 — "인터넷 속도/연결"처럼 다른 기능 요청은 빼고
+_GENERIC_BROWSER = re.compile(
+    r"(?:기본\s*)?(?:인터넷|웹)\s*브라우저|기본\s*브라우저|브라우저|"
+    r"인터넷(?!\s*(?:속도|연결|요금|사용량|기록|설정|강의|쇼핑|뱅킹|끊|안\s?돼|느려))")
+_GENERIC_PARTICLE = r"\s*(?:창|앱)?\s*(?:에서|으로|로|을|를|에|이랑|하고)?"
+
 # 다른 기능이 맡아야 하는 요청
 _OTHER_FEATURES = re.compile(r"일정|캘린더|달력|최저가|가격|얼마")
 # 사이트를 연 뒤 화면에서 더 해야 하는 일 → 화면 조작 에이전트로
@@ -135,6 +146,13 @@ def parse_open_request(text: str):
         return None
 
     browser = next((k for k in sorted(BROWSERS, key=len, reverse=True) if k in low), None)
+    # "인터넷/브라우저"만 말했으면 기본 브라우저 (특정 브라우저를 말했으면 그쪽이 우선)
+    generic = not browser and _GENERIC_BROWSER.search(t) is not None
+    if generic:
+        # "인터넷에서 장안대학교…"의 "인터넷에서"는 사이트 이름/검색어가 아니니 지운다
+        t = re.sub("(?:" + _GENERIC_BROWSER.pattern + ")" + _GENERIC_PARTICLE, " ", t, count=1)
+        t = re.sub(r"\s+", " ", t).strip()
+        low = t.lower()
     site = next((k for k in sorted(SITES, key=len, reverse=True) if _site_mentioned(k, low)), None)
     m = _URL.search(t)
     explicit_url = None
@@ -143,21 +161,25 @@ def parse_open_request(text: str):
         if not explicit_url.lower().startswith("http"):
             explicit_url = "https://" + explicit_url
     target = None
-    if not site and not explicit_url and _wants_unlisted_site(t, browser):
+    if not site and not explicit_url and _wants_unlisted_site(t, browser or generic):
         target = _extract_target(t, browser)
-    if not (browser or site or explicit_url or target):
+    if not (browser or generic or site or explicit_url or target):
         return None
 
     needs_agent = bool(_NEEDS_AGENT.search(t))
     query = None
-    if "검색" in t and not needs_agent:
-        query = _extract_query(t, browser, site)
+    # "찾아줘"도 검색 — 단, 검색 주소가 있는 사이트를 말했을 때만 ("구글에 파이썬 강의 찾아줘").
+    # 사이트 없이 "장안대학교 홈페이지 찾아줘"는 예전처럼 홈페이지 열기다.
+    search_word = "검색" if "검색" in t else (
+        "찾아" if site and SITES[site][2] and "찾아" in t else None)
+    if search_word and not needs_agent:
+        query = _extract_query(t, browser, site, search_word)
 
     url = explicit_url
     if site:
         _, home, search = SITES[site]
         url = search.format(q=quote_plus(query)) if (query and search) else home
-    elif query:   # 사이트 없이 "크롬에서 날씨 검색해줘" → 구글 검색
+    elif query:   # 사이트 없이 "크롬에서 날씨 검색해줘" / "인터넷에서 날씨 검색해줘" → 구글 검색
         url = "https://www.google.com/search?q=" + quote_plus(query)
         site = "구글"
     if target and not query:
@@ -314,15 +336,66 @@ class WebOpenWorker(QThread):
         self.finished_open.emit(message)
 
 
-def _extract_query(text: str, browser, site) -> str:
+def _extract_query(text: str, browser, site, word: str = "검색") -> str:
     """"크롬 열고 네이버에서 오늘 날씨 검색해줘" → "오늘 날씨" """
-    before = text.split("검색", 1)[0]
+    before = text.split(word, 1)[0]
     # 사이트/브라우저 이름과 그 뒤 조사, "열고/켜고/접속해서" 같은 연결 표현을 지운다
     for name in filter(None, (site, browser)):
         before = re.sub(re.escape(name) + r"\s*(?:에서|으로|로|을|를|에|앱)?", " ", before, flags=re.IGNORECASE)
     before = re.sub(r"(?:열고|열어서|켜고|켜서|접속해서|접속하고|들어가서|실행하고|실행해서)", " ", before)
     before = re.sub(r"\s*(?:을|를)\s*$", "", before.strip())
     return re.sub(r"\s+", " ", before).strip(" ,.") or None
+
+
+def default_browser_name():
+    """OS에 기본으로 정해진 브라우저의 표시 이름 ("크롬", "사파리", "엣지" …). 모르면 None."""
+    path = _default_browser_app()
+    if not path:
+        return None
+    base = re.split(r"[\\/]", path.rstrip("/\\"))[-1]   # 맥(/)과 윈도우(\) 경로 둘 다
+    base = re.sub(r"\.(app|exe)$", "", base, flags=re.IGNORECASE).lower()
+    for label, mac_app, win_exe in BROWSERS.values():
+        if base in (mac_app.lower(), (win_exe or "").lower().removesuffix(".exe")):
+            return label
+    return {"brave browser": "브레이브", "brave": "브레이브", "opera": "오페라", "arc": "아크",
+            "launcher": "오페라"}.get(base, base or None)
+
+
+def _default_browser_app():
+    """기본 브라우저 앱 경로 (macOS: …/Google Chrome.app, Windows: …\\chrome.exe). 모르면 None."""
+    try:
+        if IS_MAC:
+            from AppKit import NSURL, NSWorkspace
+            app = NSWorkspace.sharedWorkspace().URLForApplicationToOpenURL_(
+                NSURL.URLWithString_("https://www.example.com"))
+            return str(app.path()) if app else None
+        if IS_WIN:
+            import winreg
+            key = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+                prog_id = winreg.QueryValueEx(k, "ProgId")[0]
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog_id + r"\shell\open\command") as k:
+                cmd = winreg.QueryValueEx(k, "")[0]
+            m = re.match(r'\s*"([^"]+)"|\s*(\S+)', cmd)
+            return (m.group(1) or m.group(2)) if m else None
+    except Exception:
+        pass
+    return None
+
+
+def open_default_browser() -> None:
+    """주소 없이 기본 브라우저만 실행 ("인터넷 열어줘"). 앱을 못 찾으면 구글 첫 화면을 연다."""
+    app = _default_browser_app()
+    try:
+        if app and IS_MAC:
+            if subprocess.run(["open", "-a", app], capture_output=True, timeout=15).returncode == 0:
+                return
+        elif app and IS_WIN:
+            os.startfile(app)
+            return
+    except Exception:
+        pass
+    webbrowser.open("https://www.google.com", new=2)
 
 
 def open_request(req: dict, label: str = None) -> str:
@@ -346,8 +419,14 @@ def open_request(req: dict, label: str = None) -> str:
             webbrowser.open(url, new=2)
             return f"{label}를 찾지 못해서 기본 브라우저로 {what}를 열었어요."
 
+    # 브라우저를 정하지 않았으면 사용자가 OS에 정해둔 기본 브라우저로
+    name = default_browser_name()
+    where = f"기본 브라우저({name})" if name else "기본 브라우저"
+    if not url:
+        open_default_browser()
+        return f"{where}를 열었어요."
     webbrowser.open(url, new=2)
-    return f"{what}를 열었어요."
+    return f"{where}에서 {what}를 열었어요."
 
 
 def _launch_browser(browser: str, url):

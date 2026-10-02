@@ -32,12 +32,35 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --only-binary=:all: -r requirements.txt pytest
 
+      # 실패하면 실패한 테스트와 이유를 알림(annotation)으로 남긴다 — 작업 로그는 로그인해야 보이지만
+      # 알림은 로그인 없이 API로 읽을 수 있다 (공개 저장소)
       - name: 단위/통합/기본 테스트
-        run: python -m pytest -q
+        shell: bash
+        run: |
+          set +e   # GitHub의 bash는 실패하면 바로 멈춰서(-e, pipefail) 아래 알림 줄까지 못 갔다
+          python -m pytest -q -rfE --tb=line -p no:cacheprovider 2>&1 | tee pytest.txt
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            tail -n 60 pytest.txt | python -c "import sys; print('::error title=pytest failures::' + '%0A'.join(l.rstrip().replace('%', '%25').replace(chr(13), '') for l in sys.stdin))"
+          fi
+          exit $status
 
       - name: 실제 OS 테스트 (slow 표시된 것)
+        if: always()
         continue-on-error: true
         run: python -m pytest -m slow -q
 
+      # 한/영 입력기 자동 전환 점검용 — 러너에는 한국어 입력기가 없어서 추가한다
+      - name: 한국어 입력기 추가
+        if: always()
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $l = Get-WinUserLanguageList
+          $l.Add("ko-KR")
+          Set-WinUserLanguageList $l -Force
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
+
       - name: Windows 자가 점검 (음성 구성요소 포함)
+        if: always()
         run: python scripts/windows_selftest.py --voice

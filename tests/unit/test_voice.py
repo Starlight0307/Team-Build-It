@@ -38,12 +38,18 @@ def test_long_speech_text_is_cut_with_screen_notice():
 
 
 # ── 음성 인식 정확도 개선 (2026-10-02) ──
-import numpy as np
-
 from core import voice as voice_mod
 
 
-def test_resample_removes_aliasing():
+@pytest.fixture
+def np():
+    # numpy는 음성 구성요소(requirements-voice.txt)와 함께 설치된다 — 없는 환경(Windows CI의 기본
+    # 테스트 단계)에서는 이 테스트만 건너뛴다. 맨 위에서 import하면 파일 전체 수집이 실패해서
+    # 나머지 테스트까지 한 번에 멈췄다.
+    return pytest.importorskip("numpy")
+
+
+def test_resample_removes_aliasing(np):
     """48kHz → 16kHz: 12kHz 성분이 말소리 대역(4kHz)으로 접혀 들어오면 안 된다
     (예전 np.interp 방식은 52% 크기로 섞였다)."""
     t = np.arange(48000) / 48000
@@ -55,7 +61,7 @@ def test_resample_removes_aliasing():
     assert spec[np.argmin(abs(freqs - 1000))] / spec.max() > 0.9
 
 
-def test_resample_handles_44k_and_noop():
+def test_resample_handles_44k_and_noop(np):
     x = np.ones(44100, dtype=np.float32)
     assert len(voice_mod.resample_to_16k(x, 44100, np)) == 16000
     z = np.ones(16000, dtype=np.float32)

@@ -2987,6 +2987,7 @@ class AssistantApp(QWidget):
         if mode == "act":
             self._screen_hid_window = self.isVisible()
             self.hide()
+            screen_agent.yield_focus()   # 키보드를 바로 전에 쓰던 앱으로 돌려준다 (macOS)
             self._screen_overlay = AgentOverlay()
             self._screen_overlay.place()
             self._screen_overlay.show()
@@ -3040,7 +3041,9 @@ class AssistantApp(QWidget):
         self._on_status_update(desc)
         self._refresh_orb()
         if self._screen_overlay is not None:
-            self._screen_overlay.set_step(n, screen_agent.SCREEN_AGENT_MAX_STEPS, desc)
+            worker = self._screen_worker
+            total = getattr(worker, "max_steps", None) or screen_agent.SCREEN_AGENT_MAX_STEPS
+            self._screen_overlay.set_step(n, total, desc)
 
     def _on_screen_confirm(self, desc: str):
         from PyQt6.QtWidgets import QMessageBox
