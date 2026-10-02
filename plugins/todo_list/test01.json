@@ -1,0 +1,12 @@
+{
+  "next_seq": 2,
+  "items": [
+    {
+      "seq": 1,
+      "text": "프라모델 조립",
+      "done": false,
+      "created_at": "2026-10-02T11:40:23",
+      "completed_at": null
+    }
+  ]
+}

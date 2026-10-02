@@ -2,6 +2,8 @@ import json
 import os
 from datetime import datetime
 
+from core.user_context import safe_uid, is_guest
+
 # calendar_feature/event_duration_memory.py와 동일한 패턴(JSON 파일 dict)을
 # 일반화한 버전 — 특정 도메인(일정 소요시간)에 묶이지 않고 namespace로 구분해서
 # 여러 종류의 "사용 이력"을 같은 방식으로 기억한다.
@@ -11,7 +13,20 @@ from datetime import datetime
 # 만료(max_age_days)와 삭제(clear_preferences)를 이 모듈 안에서 기본 제공한다.
 # 값은 항상 {"value": ..., "saved_at": ISO 시각}으로 감싸서 저장하므로,
 # 호출하는 쪽에서 타임스탬프를 따로 챙길 필요가 없다.
-_FILE = os.path.join(os.path.dirname(__file__), "preference_memory.json")
+_DIR = os.path.dirname(__file__)
+_GUEST_FILE = os.path.join(_DIR, "preference_memory.json")
+_FILE = _GUEST_FILE
+
+
+def set_current_user(user_id) -> None:
+    """회원마다 기억 파일을 따로 쓴다 (비로그인은 예전 전역 파일 그대로)."""
+    global _FILE
+    if is_guest(user_id):
+        _FILE = _GUEST_FILE
+    else:
+        user_dir = os.path.join(_DIR, "preference_memory")
+        os.makedirs(user_dir, exist_ok=True)
+        _FILE = os.path.join(user_dir, f"{safe_uid(user_id)}.json")
 
 
 def get_pref(namespace: str, key: str, max_age_days: float = None):

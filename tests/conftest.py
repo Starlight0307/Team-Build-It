@@ -132,3 +132,15 @@ def qapp():
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication(sys.argv)
     yield app
+
+
+@pytest.fixture(autouse=True)
+def _isolate_login_state(tmp_path, monkeypatch):
+    """모든 테스트에서 실제 자동 로그인 파일/로그인 기록을 쓰지 않게 임시 폴더로 바꾼다.
+
+    메인 창을 만드는 테스트는 시작할 때 자동 로그인을 시도하는데, 이 fixture가 없으면
+    실제 사용자의 저장된 로그인으로 로그인하고 로그인 기록(data/login_history)에 쌓였다.
+    """
+    from data import db
+    monkeypatch.setattr(db, "SESSION_FILE", str(tmp_path / "no_session.json"))
+    monkeypatch.setattr(db, "LOGIN_HISTORY_DIR", str(tmp_path / "login_history"))

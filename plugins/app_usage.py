@@ -29,6 +29,7 @@ BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 USAGE_DIR  = os.path.join(BASE_DIR, "app_usage")
 os.makedirs(USAGE_DIR, exist_ok=True)
 USAGE_FILE = os.path.join(USAGE_DIR, "usage.json")
+_GUEST_USAGE_FILE = USAGE_FILE
 
 _SAMPLE_INTERVAL_SECONDS = 5
 _IDLE_LIMIT_SECONDS      = 5 * 60
@@ -301,6 +302,36 @@ def _start_thread():
     return True
 
 
+def set_current_user(user_id) -> bool:
+    """회원마다 사용 기록/목표/기록 동의(켜짐 여부)를 따로 쓴다 (비로그인은 예전 전역 파일).
+    계정이 바뀌면 이전 계정의 기록을 저장하고 추적을 멈춘 뒤 새 계정 파일로 갈아탄다.
+    새 계정이 기록을 켜 둔 적이 있으면 resume_usage_tracking_if_enabled()가 이어서 켠다
+    (app_main이 이어서 부름). 같은 계정이면 아무것도 안 한다."""
+    global USAGE_FILE, GOALS_FILE, _usage, _loaded, _goals, _goals_loaded
+    from core.user_context import safe_uid, is_guest
+    if is_guest(user_id):
+        usage_file, goals_file = _GUEST_USAGE_FILE, _GUEST_GOALS_FILE
+    else:
+        user_dir = os.path.join(USAGE_DIR, "users")
+        os.makedirs(user_dir, exist_ok=True)
+        uid = safe_uid(user_id)
+        usage_file = os.path.join(user_dir, f"{uid}_usage.json")
+        goals_file = os.path.join(user_dir, f"{uid}_goals.json")
+    if usage_file == USAGE_FILE:
+        return False
+    if _loaded:
+        _stop_event.set()
+        if _thread is not None:
+            _thread.join(timeout=3)
+        _flush(force=True)
+    with _lock:
+        USAGE_FILE, GOALS_FILE = usage_file, goals_file
+        _usage, _loaded = {}, False
+        _goals, _goals_loaded = {}, False
+        _state["enabled"] = False
+    return True
+
+
 # ─────────────────────────────────────────────
 # ▶️ 시작/중지
 # ─────────────────────────────────────────────
@@ -547,6 +578,7 @@ def get_today_usage_minutes(target: str = "") -> float:
 # 이 컴퓨터 전체에서 하나의 기록만 쓰기 때문에 사용자 식별자 자체가 없다.
 
 GOALS_FILE = os.path.join(USAGE_DIR, "goals.json")
+_GUEST_GOALS_FILE = GOALS_FILE
 _goals: dict = {}          # {target(소문자): 하루 목표(분)}
 _goals_loaded = False
 

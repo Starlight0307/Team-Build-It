@@ -119,6 +119,18 @@ def _sync_calendar_user(user_id: str):
         set_notes_user(user_id)
     except ImportError:
         pass
+    # 회원별 개인화 저장소 — 환경설정 / 루미가 기억하는 것 / 앱 사용 기록
+    app_settings.set_current_user(user_id)
+    try:
+        from core.preference_memory import set_current_user as set_memory_user
+        set_memory_user(user_id)
+    except ImportError:
+        pass
+    try:
+        from plugins.app_usage import set_current_user as set_usage_user
+        set_usage_user(user_id)
+    except ImportError:
+        pass
 
 
 # ==========================================
@@ -823,6 +835,15 @@ class AssistantApp(QWidget):
         self.setStyleSheet(f"""
             QLabel {{ color: {p['tc']}; background: transparent; border: none; }}
             QMessageBox QLabel {{ color: #000000; background: transparent; border: none; }}
+            /* Windows 다크 모드에서는 확인창/팝업 배경이 검정이 되어 위의 검정 글씨가 안 보였다 —
+               배경을 흰색으로 직접 지정해 OS 설정과 무관하게 항상 읽히게 한다 */
+            QMessageBox, QInputDialog, QDialog {{ background-color: #FFFFFF; }}
+            QDialog QLabel {{ color: #222222; }}
+            QMessageBox QPushButton, QInputDialog QPushButton, QDialog QPushButton {{
+                background-color: #F3F4F6; color: #111111; border: 1px solid #C9CCD3;
+                border-radius: 6px; padding: 5px 16px; min-width: 64px; }}
+            QMessageBox QPushButton:hover, QInputDialog QPushButton:hover, QDialog QPushButton:hover {{ background-color: #E5E7EB; }}
+            QPushButton {{ outline: none; }}
             QScrollArea {{ background-color: transparent; border: none; }}
             QScrollBar:vertical {{ border: none; background: transparent; width: 8px; border-radius: 4px; }}
             QScrollBar::handle:vertical {{ background: {p['gc']}; border-radius: 4px; }}
@@ -1195,6 +1216,8 @@ class AssistantApp(QWidget):
             w.setCursor(Qt.CursorShape.PointingHandCursor)
             header.addWidget(w)
         header.addSpacing(6)
+        self.chat_panel.add_header_button("✏️ 새 채팅", "새 대화 시작 (Ctrl+N) — 지금 대화는 기록에 그대로 남아요", self._new_chat)
+        QShortcut(QKeySequence("Ctrl+N"), self, activated=self._new_chat)
         self.chat_panel.add_header_button("🗑 지우기", "대화 내용을 지우고 새로 시작", self._clear_conversation)
         self.chat_panel.add_header_button("⬇ 내보내기", "대화 내용을 텍스트 파일로 저장", self._export_conversation)
 
@@ -1304,6 +1327,25 @@ class AssistantApp(QWidget):
         if hasattr(self, 'today_panel'):
             self.today_panel.refresh()
             self.todo_panel.refresh()
+
+    def _new_chat(self):
+        """새 채팅 — 화면과 대화 맥락을 비우고 새 세션으로 시작한다. 이전 대화는 대화 기록에 남는다."""
+        worker = getattr(self, "worker", None)
+        if worker is not None and worker.isRunning():
+            self._show_toast("답변을 만드는 중이에요. 끝난 뒤에 새 채팅을 시작해 주세요.")
+            return
+        if not self.chat_bubbles and not self.chat_history:
+            self.input_field.setFocus()   # 이미 빈 새 채팅
+            return
+        self.stacked_widget.setCurrentIndex(0)
+        for b in self.nav_info: b.setChecked(False)
+        self.btn_chat.setChecked(True)
+        self.btn_profile.setChecked(False)
+        self.bottom_input_wrapper.show()
+        self._clear_conversation()
+        self.input_field.clear()
+        self.input_field.setFocus()
+        self._show_toast("새 채팅을 시작했어요.")
 
     def _clear_conversation(self):
         """대화 패널을 비우고 새 대화로 시작 (저장된 대화 기록은 그대로)."""
@@ -1825,12 +1867,41 @@ class AssistantApp(QWidget):
         if uid:
             self.on_login_success(uid)
 
+    def _apply_user_settings(self):
+        """계정이 바뀐 직후, 그 계정의 환경설정을 화면에 다시 반영한다
+        (테마 / 음성 답변 / 날씨 지역 / 홈 위젯 배치 / 스킬 목록 / 앱 사용 기록 이어가기).
+        화면에 남은 이전 계정의 대화 내용도 함께 비운다(다른 계정에게 보이면 안 되므로)."""
+        self._clear_conversation()
+        dark = bool(app_settings.get("dark_mode"))
+        for sw, val in ((self.switch_dark, dark),
+                        (self.switch_voice_reply, bool(app_settings.get("voice_reply")))):
+            sw.blockSignals(True)
+            sw.setChecked(val)
+            sw.blockSignals(False)
+        if dark != self.is_dark_mode:
+            self.is_dark_mode = dark
+            self.apply_theme()
+        self.weather_city_input.setText(app_settings.get("weather_city") or "")
+        self.weather_location_desc.setText(self._weather_location_text())
+        self._apply_widget_layout()
+        self._sync_voice_model_buttons()
+        self.weather_panel.reload()   # 지역이 없으면 refresh가 알아서 현재 위치를 찾는다
+        if hasattr(self, "skills_page"):
+            self.skills_page.refresh()
+        self._resume_usage_tracking()
+
     def on_login_success(self, uid):
         MOCK_USER["logged_in"] = True
         MOCK_USER["name"]      = uid
         self.current_session_id    = None
         self.current_session_title = None
         _sync_calendar_user(uid)
+        self._apply_user_settings()
+        try:
+            from data.db import encrypt_existing_chats
+            encrypt_existing_chats(uid)   # 예전 평문 대화기록을 암호화 형태로 전환
+        except Exception as e:
+            print(f"[대화기록 암호화 전환 오류] {e}")
         for b in self.nav_info: b.setChecked(False)
         self.btn_chat.setChecked(True)
         self.btn_profile.setChecked(False)
@@ -1855,6 +1926,7 @@ class AssistantApp(QWidget):
         self.current_session_id    = None
         self.current_session_title = None
         _sync_calendar_user("guest")
+        self._apply_user_settings()
         self.update_sidebar_ui()
 
     def _handle_logout(self):
@@ -1863,6 +1935,7 @@ class AssistantApp(QWidget):
         self.current_session_id    = None
         self.current_session_title = None
         _sync_calendar_user("guest")
+        self._apply_user_settings()
         self.auth_page.logout()
         for b in self.nav_info: b.setChecked(False)
         self.btn_chat.setChecked(True)

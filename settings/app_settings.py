@@ -8,7 +8,9 @@ settings/app_settings.json에 저장한다. 사람/기기마다 다른 값이라
 import json
 import os
 
-_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_settings.json")
+_DIR = os.path.dirname(os.path.abspath(__file__))
+_GUEST_PATH = os.path.join(_DIR, "app_settings.json")
+_PATH = _GUEST_PATH
 
 DEFAULTS = {
     "dark_mode":   False,  # 화면 테마 (파스텔 테마는 밝은 모드가 기본)
@@ -24,6 +26,20 @@ DEFAULTS = {
 }
 
 _cache = None
+
+
+def set_current_user(user_id) -> None:
+    """회원마다 환경설정을 따로 쓴다 (비로그인은 예전 전역 파일 그대로).
+    저장 위치를 바꾸고 캐시를 비워 다음 get()에서 새로 읽게 한다."""
+    global _PATH, _cache
+    from core.user_context import safe_uid, is_guest
+    if is_guest(user_id):
+        _PATH = _GUEST_PATH
+    else:
+        user_dir = os.path.join(_DIR, "users")
+        os.makedirs(user_dir, exist_ok=True)
+        _PATH = os.path.join(user_dir, f"{safe_uid(user_id)}.json")
+    _cache = None
 
 
 def _load() -> dict:

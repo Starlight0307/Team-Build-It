@@ -63,6 +63,7 @@ class Panel(QFrame):
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setToolTip(tooltip)
         btn.clicked.connect(on_click)
+        btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)   # 좁아도 글자가 잘리지 않게
         self._header_layout.addWidget(btn)
         self._header_buttons.append(btn)
         return btn
@@ -78,7 +79,7 @@ class Panel(QFrame):
         for btn in self._header_buttons:
             btn.setStyleSheet(
                 f"QPushButton {{ background-color: {p['pb']}; color: {p['tc2']}; border: 1px solid {p['pbrd']}; "
-                f"border-radius: 11px; padding: 4px 11px; font-size: 12px; }}"
+                f"border-radius: 11px; padding: 4px 8px; font-size: 12px; }}"
                 f"QPushButton:hover {{ color: {p['tc']}; border-color: {p['accent']}; }}"
             )
 
@@ -233,6 +234,7 @@ class WeatherPanel(Panel):
         self.body.addLayout(row)
         self._result.connect(self._apply_result)
         self._loading = False
+        self._gen = 0   # 계정이 바뀌면 올려서, 이전 계정 기준으로 시작된 조회 결과는 버린다
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._timer.start(30 * 60 * 1000)
@@ -243,10 +245,17 @@ class WeatherPanel(Panel):
         self._force_detect = True
         self.refresh()
 
+    def reload(self):
+        """계정이 바뀐 직후 — 진행 중이던 조회를 무시하고 새 계정의 지역으로 다시 가져온다."""
+        self._gen += 1
+        self._loading = False
+        self.refresh()
+
     def refresh(self):
         if self._loading:
             return
         self._loading = True
+        gen = self._gen
         city, coords = self._get_location()
         detect, self._force_detect = (self._force_detect or not city), False
 
@@ -256,13 +265,19 @@ class WeatherPanel(Panel):
                 nonlocal city, coords
                 if detect:
                     loc = detect_location()
+                    if gen != self._gen:
+                        return   # 그 사이 계정이 바뀜 — 이전 계정 설정에 위치를 저장하지 않는다
                     self.location_detected.emit(loc)
                     city, coords = loc["name"], (loc["lat"], loc["lon"])
-                self._result.emit(fetch_weather(city, coords))
+                data = fetch_weather(city, coords)
+                if gen == self._gen:
+                    self._result.emit(data)
             except WeatherError as e:
-                self._result.emit(str(e))
+                if gen == self._gen:
+                    self._result.emit(str(e))
             except Exception:
-                self._result.emit("날씨 정보를 가져오지 못했어요.")
+                if gen == self._gen:
+                    self._result.emit("날씨 정보를 가져오지 못했어요.")
 
         threading.Thread(target=work, daemon=True).start()
 

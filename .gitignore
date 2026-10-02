@@ -46,3 +46,10 @@ settings/app_settings.json
 
 # 🪄 스킬 화면에서 설치한 OpenClaw 스킬 (사람마다 다름 — core/skills.py)
 skills/
+
+# 회원별 개인화 저장소
+core/preference_memory/
+settings/users/
+plugins/reminder/users/
+data/.chat_key
+data/login_history/

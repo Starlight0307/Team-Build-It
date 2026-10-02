@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
+from widget.auth_style import DIALOG_QSS
 from data.db import (count_sessions, get_user_profile, update_profile,
                      change_password, delete_account)
 
@@ -18,8 +19,7 @@ _NAMESPACE_LABELS = {
 
 class MemoryDialog(QDialog):
     """"루미가 기억하는 것" — core/preference_memory.py에 저장된 항목을
-    보여주고 지울 수 있는 팝업. 지금은 이 PC의 모든 계정이 함께 보는
-    기억이라(계정별 분리는 별도 작업 필요), 그 사실을 화면에 안내한다."""
+    보여주고 지울 수 있는 팝업. 기억은 계정별로 따로 저장된다."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -32,8 +32,7 @@ class MemoryDialog(QDialog):
         L = QVBoxLayout(self)
 
         notice = QLabel(
-            "⚠️ 지금은 이 컴퓨터를 쓰는 모든 계정이 함께 보는 기억이에요\n"
-            "(계정별로 나누는 작업은 진행 중입니다)."
+            "🔒 내 계정에만 저장된 기억이에요. 다른 계정에서는 보이지 않아요."
         )
         notice.setWordWrap(True)
         notice.setStyleSheet("color: #888; font-size: 11px;")
@@ -272,6 +271,27 @@ class MyPageWidget(QWidget):
         self.btn_memory.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_memory.clicked.connect(self._open_memory_dialog)
         L.addWidget(self.btn_memory)
+        L.addSpacing(8)
+
+        self.btn_history = QPushButton("🕘 최근 로그인 기록")
+        self.btn_history.setObjectName("MPSave")
+        self.btn_history.setMinimumHeight(36)
+        self.btn_history.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_history.clicked.connect(self._show_login_history)
+        L.addWidget(self.btn_history)
+        L.addSpacing(8)
+
+        br = QHBoxLayout(); br.setSpacing(8)
+        self.btn_backup = QPushButton("💾 내 데이터 백업")
+        self.btn_restore = QPushButton("📥 백업에서 복원")
+        for b, fn in ((self.btn_backup, self._backup), (self.btn_restore, self._restore)):
+            b.setObjectName("MPSave"); b.setMinimumHeight(36)
+            b.setCursor(Qt.CursorShape.PointingHandCursor); b.clicked.connect(fn); br.addWidget(b)
+        L.addLayout(br)
+        L.addSpacing(6)
+        enc = QLabel("🔒 대화기록은 이 컴퓨터에서 암호화되어 저장돼요.")
+        enc.setWordWrap(True); enc.setStyleSheet("color: #888; font-size: 11px;")
+        L.addWidget(enc)
         L.addSpacing(20)
 
         # 비밀번호 변경 (구글 전용 계정은 비밀번호가 없어서 이 섹션 자체를 숨김)
@@ -361,6 +381,40 @@ class MyPageWidget(QWidget):
         formatted = _format_birthday(digits)
         self.input_birthday.setText(formatted)
         self.input_birthday.setCursorPosition(len(formatted))
+
+    def _show_login_history(self):
+        from data.db import get_login_history
+        rows = get_login_history((self._username or ""), limit=15)
+        text = "\n".join(f"{r.get('time', '')}   {r.get('method', '')}" for r in rows) \
+            or "아직 로그인 기록이 없어요."
+        QMessageBox.information(self, "최근 로그인 기록", text)
+
+    def _backup(self):
+        from PyQt6.QtWidgets import QFileDialog
+        from data.backup import create_backup, default_backup_name
+        user = (self._username or "")
+        path, _ = QFileDialog.getSaveFileName(self, "백업 저장", default_backup_name(user), "백업 파일 (*.zip)")
+        if not path: return
+        try:
+            info = create_backup(user, path)
+            QMessageBox.information(self, "백업", f"대화 {info['chats']}개와 설정을 저장했어요.\n"
+                                    "백업 파일은 암호가 풀린 상태이니 안전한 곳에 보관하세요.")
+        except Exception as e:
+            QMessageBox.warning(self, "백업", f"백업하지 못했어요.\n{e}")
+
+    def _restore(self):
+        from PyQt6.QtWidgets import QFileDialog
+        from data.backup import restore_backup
+        path, _ = QFileDialog.getOpenFileName(self, "백업 불러오기", "", "백업 파일 (*.zip)")
+        if not path: return
+        r = QMessageBox.question(self, "복원", "같은 이름의 대화와 설정은 백업 내용으로 덮어써져요. 계속할까요?")
+        if r != QMessageBox.StandardButton.Yes: return
+        try:
+            info = restore_backup((self._username or ""), path)
+            QMessageBox.information(self, "복원", f"대화 {info['chats']}개를 복원했어요.\n"
+                                    "설정은 다음 로그인부터 적용돼요.")
+        except Exception as e:
+            QMessageBox.warning(self, "복원", f"복원하지 못했어요.\n{e}")
 
     def _open_memory_dialog(self):
         MemoryDialog(self).exec()
@@ -578,4 +632,4 @@ class MyPageWidget(QWidget):
             QPushButton#MPWithdraw:hover {{
                 color: {logout_bg};
             }}
-        """)
+        """ + DIALOG_QSS)

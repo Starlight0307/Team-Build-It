@@ -1,9 +1,9 @@
-# 앱 실행 시 core/bootstrap.py가 빠진 패키지를 자동 설치한다.
-# - 보안: 버전을 == 로 고정한다. 새로 올라온(혹시 악성일 수 있는) 버전이
-#   사용자 몰래 자동 설치되지 않게 하기 위함. 버전을 올릴 때는 직접 확인 후 수정.
-# - 자동 설치는 "이름==버전" 같은 단순한 줄만 허용한다 (URL, -r/--index-url 같은
-#   옵션 줄은 거부). 전부 Windows/macOS(Intel·Apple Silicon), Python 3.11~3.14용
-#   wheel이 있는 버전이다 (설치 시 소스 빌드 코드를 실행하지 않도록 wheel만 받음).
+# Missing packages are auto-installed by core/bootstrap.py at startup.
+# - Versions are pinned with == so a newly published (possibly malicious)
+#   version is never installed silently. Review before bumping a version.
+# - Only plain name==version lines are allowed (no URLs or -r/--index-url).
+# - All pins have wheels for Windows/macOS, Python 3.11-3.14, so no source
+#   build code runs at install time.
 PyQt6==6.11.0
 requests==2.34.2
 ollama==0.6.2
@@ -18,3 +18,4 @@ beautifulsoup4==4.15.0
 mss==10.2.0
 pynput==1.8.2
 PyYAML==6.0.3
+cryptography==48.0.0

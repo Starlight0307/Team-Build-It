@@ -152,8 +152,32 @@ _current_user_id: str = "guest"
 
 
 def set_current_user(user_id: str):
-    global _current_user_id
-    _current_user_id = user_id if user_id else "guest"
+    """로그인한 회원마다 정기/조건부 알림과 자동 실행 이력을 따로 저장한다
+    (비로그인은 예전 전역 파일 그대로 — 기존 데이터/테스트 호환). 계정이
+    바뀌면 메모리의 목록/타이머를 비우고 새 계정 파일을 다시 읽는다."""
+    global _current_user_id, ROUTINES_FILE, CONDITIONS_FILE, ACTION_LOG_FILE
+    global _routines, _routines_loaded, _conditions, _conditions_loaded
+    new_id = user_id if user_id else "guest"
+    if new_id == _current_user_id:
+        return
+    from core.user_context import safe_uid, is_guest
+    if is_guest(new_id):
+        ROUTINES_FILE, CONDITIONS_FILE, ACTION_LOG_FILE = (
+            _GUEST_ROUTINES_FILE, _GUEST_CONDITIONS_FILE, _GUEST_ACTION_LOG_FILE)
+    else:
+        user_dir = os.path.join(ROUTINES_DIR, "users")
+        os.makedirs(user_dir, exist_ok=True)
+        uid = safe_uid(new_id)
+        ROUTINES_FILE = os.path.join(user_dir, f"{uid}_routines.json")
+        CONDITIONS_FILE = os.path.join(user_dir, f"{uid}_conditions.json")
+        ACTION_LOG_FILE = os.path.join(user_dir, f"{uid}_action_log.jsonl")
+    _current_user_id = new_id
+    with _routines_lock:
+        _routines, _routines_loaded = {}, False
+    with _conditions_lock:
+        _conditions, _conditions_loaded = {}, False
+    with _lock:
+        _active_timers.clear()
 
 
 _lock = threading.Lock()
@@ -167,6 +191,7 @@ BASE_DIR         = os.path.dirname(os.path.abspath(__file__))
 ROUTINES_DIR     = os.path.join(BASE_DIR, "reminder")
 os.makedirs(ROUTINES_DIR, exist_ok=True)
 ROUTINES_FILE    = os.path.join(ROUTINES_DIR, "routines.json")
+_GUEST_ROUTINES_FILE = ROUTINES_FILE
 
 _routines_lock   = threading.Lock()
 _routines: dict  = {}   # id -> {"label": str, "hour": int, "minute": int, "last_fired_date": str|None}
@@ -174,6 +199,7 @@ _routines_loaded = False
 
 # ── 조건부 알림(condition reminder) — 디스크 저장 ──
 CONDITIONS_FILE    = os.path.join(ROUTINES_DIR, "conditions.json")
+_GUEST_CONDITIONS_FILE = CONDITIONS_FILE
 _conditions_lock   = threading.Lock()
 # id -> {"type": "usage_limit"|"spending_limit"|"cpu_limit"|"disk_limit",
 #        "target": str, "threshold": float, "label": str, "last_state": bool,
@@ -247,6 +273,7 @@ assert all(spec["comparison"] in _COMPARATORS for spec in _CONDITION_TYPES.value
 ALLOWED_ACTIONS = {"notify", "iot_control"}
 
 ACTION_LOG_FILE      = os.path.join(ROUTINES_DIR, "action_log.jsonl")
+_GUEST_ACTION_LOG_FILE = ACTION_LOG_FILE
 _action_log_lock     = threading.Lock()
 _ACTION_LOG_MAX_LINES = 200  # 무한정 커지지 않도록 최근 N건만 유지
 

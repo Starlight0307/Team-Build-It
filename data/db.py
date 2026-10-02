@@ -124,7 +124,8 @@ def _store_tokens(access_token: str, refresh_token: str = None):
         _session["expires_at"] = 0
 
 
-def set_session(access_token: str, username: str, refresh_token: str = None, remember: bool = True):
+def set_session(access_token: str, username: str, refresh_token: str = None, remember: bool = True,
+                method: str = None):
     """구글 로그인 등 다른 경로로 이미 세션을 얻은 경우 여기에 등록한다.
     remember=True(기본)면 refresh_token을 로컬에 저장해 다음 실행 때
     자동 로그인에 쓴다 — "로그인 유지 안 함"을 선택했을 때만 False로 부른다."""
@@ -132,6 +133,51 @@ def set_session(access_token: str, username: str, refresh_token: str = None, rem
     _session["username"] = username
     if remember and _session.get("refresh_token"):
         _persist_session()
+    elif not remember:
+        clear_persistent_session()   # "자동 로그인" 해제 → 예전에 저장된 로그인 정보도 지운다
+    if method:
+        record_login(username, method)
+
+
+# ==========================================
+# 🕘 로그인 기록 (로컬) — 마이페이지에서 "최근 로그인"으로 보여준다
+# ==========================================
+LOGIN_HISTORY_DIR = os.path.join(PROJECT_ROOT, "data", "login_history")
+_LOGIN_HISTORY_MAX = 30
+
+
+def _login_history_path(user_id: str) -> str:
+    uid = "".join(c if c.isalnum() else "_" for c in str(user_id or "guest"))
+    return os.path.join(LOGIN_HISTORY_DIR, f"{uid}.json")
+
+
+def record_login(user_id: str, method: str) -> None:
+    """로그인 성공 시각과 방식을 남긴다 (최근 30건만 유지). 실패해도 로그인엔 영향 없음."""
+    try:
+        os.makedirs(LOGIN_HISTORY_DIR, exist_ok=True)
+        rows = get_login_history(user_id, limit=_LOGIN_HISTORY_MAX - 1)
+        if rows and rows[0].get("method") == method:
+            try:
+                last = datetime.strptime(rows[0]["time"], "%Y-%m-%d %H:%M:%S")
+                if (datetime.now() - last).total_seconds() < 60:
+                    return   # 같은 방식으로 1분 안에 또 들어온 건 한 번으로 본다
+            except (KeyError, ValueError):
+                pass
+        rows.insert(0, {"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "method": method})
+        with open(_login_history_path(user_id), "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[로그인 기록 저장 오류] {e}")
+
+
+def get_login_history(user_id: str, limit: int = 20) -> list:
+    """최근 로그인 기록 [{"time":..., "method":...}] 최신순."""
+    try:
+        with open(_login_history_path(user_id), "r", encoding="utf-8") as f:
+            rows = json.load(f)
+        return rows[:limit] if isinstance(rows, list) else []
+    except Exception:
+        return []
 
 
 def clear_session():
@@ -203,7 +249,7 @@ def try_auto_login():
             raise ValueError(f"세션 만료 ({resp.status_code})")
 
         data = resp.json()
-        set_session(data.get("access_token"), username, data.get("refresh_token"))
+        set_session(data.get("access_token"), username, data.get("refresh_token"), method="자동 로그인")
         return username
     except Exception as e:
         print(f"[자동 로그인 실패] {e}")
@@ -214,6 +260,22 @@ def try_auto_login():
 # ==========================================
 # 💾 대화기록 저장/조회 (로컬 JSON) — 변경 없음
 # ==========================================
+
+def _read_chat_file(path: str) -> dict:
+    """대화 파일 읽기 — 암호화된 파일/예전 평문 파일 모두 처리."""
+    from data.chat_crypto import decrypt_text
+    with open(path, "r", encoding="utf-8") as f:
+        return json.loads(decrypt_text(f.read()))
+
+
+def _write_chat_file(path: str, data: dict) -> None:
+    """대화 파일 저장 — 항상 암호화해서 쓴다(임시 파일에 쓴 뒤 교체해 도중에 꺼져도 안전)."""
+    from data.chat_crypto import encrypt_text
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(encrypt_text(json.dumps(data, ensure_ascii=False)))
+    os.replace(tmp, path)
+
 
 def save_chat_to_file(user_id, role, content, session_id=None, session_title=None):
     """로그인 상태의 유저 대화를 JSON 파일로 저장합니다."""
@@ -226,8 +288,7 @@ def save_chat_to_file(user_id, role, content, session_id=None, session_title=Non
         filepath = os.path.join(user_dir, f"{sid}.json")
 
         if os.path.exists(filepath):
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = _read_chat_file(filepath)
         else:
             data = {
                 "session_id":    sid,
@@ -245,8 +306,7 @@ def save_chat_to_file(user_id, role, content, session_id=None, session_title=Non
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        _write_chat_file(filepath, data)
 
     except Exception as e:
         print(f"[파일 저장 오류] {e}")
@@ -266,8 +326,7 @@ def load_sessions(user_id: str) -> list:
             continue
         fpath = os.path.join(user_dir, fname)
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = _read_chat_file(fpath)
             messages   = data.get("messages", [])
             title      = data.get("session_title", "대화")
             session_id = data.get("session_id", fname.replace(".json", ""))
@@ -294,8 +353,7 @@ def load_messages(user_id: str, session_id: str) -> list:
     if not os.path.exists(fpath):
         return []
 
-    with open(fpath, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = _read_chat_file(fpath)
 
     results = []
     for msg in data.get("messages", []):
@@ -324,8 +382,7 @@ def search_sessions(user_id: str, query: str) -> list:
     for session_id, title, started_at, msg_count in load_sessions(uid):
         fpath = os.path.join(user_dir, f"{session_id}.json")
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                messages = json.load(f).get("messages", [])
+            messages = _read_chat_file(fpath).get("messages", [])
         except Exception:
             messages = []
         match_count = sum(1 for m in messages if q in str(m.get("content", "")).casefold())
@@ -345,10 +402,87 @@ def count_sessions(user_id: str) -> int:
 
 
 # ==========================================
+# 🗂️ 대화기록 관리 — 이름 바꾸기 / 삭제 / 내보내기 / 암호화 전환
+# ==========================================
+
+def _session_path(user_id: str, session_id: str) -> str:
+    uid = user_id if user_id else "guest"
+    # session_id에 경로 문자가 섞여 다른 폴더를 건드리지 못하게 막는다
+    sid = os.path.basename(str(session_id))
+    return os.path.join(CHAT_LOG_DIR, uid, f"{sid}.json")
+
+
+def rename_session(user_id: str, session_id: str, new_title: str) -> bool:
+    new_title = (new_title or "").strip()
+    path = _session_path(user_id, session_id)
+    if not new_title or not os.path.exists(path):
+        return False
+    try:
+        data = _read_chat_file(path)
+        data["session_title"] = new_title[:100]
+        _write_chat_file(path, data)
+        return True
+    except Exception as e:
+        print(f"[대화 이름 변경 오류] {e}")
+        return False
+
+
+def delete_session(user_id: str, session_id: str) -> bool:
+    path = _session_path(user_id, session_id)
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+    except OSError as e:
+        print(f"[대화 삭제 오류] {e}")
+    return False
+
+
+def export_session_text(user_id: str, session_id: str) -> str:
+    """대화 하나를 사람이 읽을 수 있는 텍스트로 만든다 (파일로 저장하는 건 호출하는 쪽)."""
+    path = _session_path(user_id, session_id)
+    data = _read_chat_file(path)
+    lines = ["# " + str(data.get("session_title", "대화")), ""]
+    for m in data.get("messages", []):
+        who = "나" if m.get("role") == "user" else "LUMI"
+        lines.append("[" + str(m.get("timestamp", "")) + "] " + who)
+        lines.append(str(m.get("content", "")))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def encrypt_existing_chats(user_id: str = None) -> int:
+    """예전에 평문으로 저장된 대화 파일을 암호화 형태로 바꾼다. 바꾼 파일 수를 반환."""
+    from data.chat_crypto import available, is_encrypted
+    if not available() or not os.path.isdir(CHAT_LOG_DIR):
+        return 0
+    users = [user_id] if user_id else os.listdir(CHAT_LOG_DIR)
+    changed = 0
+    for uid in users:
+        d = os.path.join(CHAT_LOG_DIR, uid)
+        if not os.path.isdir(d):
+            continue
+        for fname in os.listdir(d):
+            if not fname.endswith(".json"):
+                continue
+            fpath = os.path.join(d, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    raw = f.read()
+                if is_encrypted(raw):
+                    continue
+                _write_chat_file(fpath, json.loads(raw))
+                changed += 1
+            except Exception:
+                pass
+    return changed
+
+
+# ==========================================
 # 🔐 회원 인증 (Supabase Auth)
 # ==========================================
 
-def verify_login(username: str, password: str) -> bool:
+def verify_login(username: str, password: str, remember: bool = True) -> bool:
     """로그인 검증. 아이디→이메일 조회(RPC) 후 Supabase에 비밀번호 검증을
     맡긴다. 성공하면 세션(access_token)을 저장해 마이페이지 등에서 재사용."""
     try:
@@ -367,7 +501,8 @@ def verify_login(username: str, password: str) -> bool:
             return False
 
         data = resp.json()
-        set_session(data.get("access_token"), username, data.get("refresh_token"))
+        set_session(data.get("access_token"), username, data.get("refresh_token"),
+                    remember=remember, method="비밀번호")
         return True
     except Exception as e:
         print(f"[로그인 오류] {e}")
@@ -576,7 +711,7 @@ def delete_account(username: str, password: str) -> bool:
 # 처리했음(신규면 auth.users insert 시점에 자동 생성됨).
 # ==========================================
 
-def complete_google_login(access_token: str, refresh_token: str = None) -> str:
+def complete_google_login(access_token: str, refresh_token: str = None, remember: bool = True) -> str:
     """구글 로그인 후 세션을 등록하고, 내 아이디(username)를 반환한다."""
     resp = requests.get(
         f"{SUPABASE_URL}/rest/v1/profiles",
@@ -592,7 +727,7 @@ def complete_google_login(access_token: str, refresh_token: str = None) -> str:
     if not rows:
         raise RuntimeError("프로필 정보를 찾을 수 없습니다.")
     username = rows[0]["username"]
-    set_session(access_token, username, refresh_token)
+    set_session(access_token, username, refresh_token, remember=remember, method="Google")
     return username
 
 

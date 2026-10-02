@@ -63,7 +63,14 @@ def _free_port() -> int:
     return port
 
 
-def _wait_for_redirect(port: int, timeout: int = 180) -> str:
+class LoginCancelled(RuntimeError):
+    """사용자가 앱에서 구글 로그인을 취소했을 때."""
+
+
+GOOGLE_LOGIN_TIMEOUT = 30  # 초 — 이 시간 안에 브라우저에서 인증을 끝내야 한다
+
+
+def _wait_for_redirect(port: int, timeout: int = GOOGLE_LOGIN_TIMEOUT, cancel_event=None) -> str:
     """로컬 서버로 OAuth 리다이렉트를 받아 인증 코드(code)를 반환한다."""
     result = {}
     done = threading.Event()
@@ -80,8 +87,16 @@ def _wait_for_redirect(port: int, timeout: int = 180) -> str:
     thread = threading.Thread(target=httpd.handle_request, daemon=True)
     thread.start()
 
-    if not done.wait(timeout=timeout):
-        raise TimeoutError("로그인 대기 시간이 초과되었습니다. 다시 시도해주세요.")
+    # 0.3초마다 깨어나 "취소" 요청이 왔는지 본다 (브라우저 창을 그냥 닫아버린 경우 대비)
+    waited = 0.0
+    while not done.wait(timeout=0.3):
+        waited += 0.3
+        if cancel_event is not None and cancel_event.is_set():
+            httpd.server_close()
+            raise LoginCancelled("로그인을 취소했어요.")
+        if waited >= timeout:
+            httpd.server_close()
+            raise TimeoutError("로그인 대기 시간이 초과되었습니다. 다시 시도해주세요.")
     httpd.server_close()
 
     if result.get("error"):
@@ -91,7 +106,7 @@ def _wait_for_redirect(port: int, timeout: int = 180) -> str:
     return result["code"]
 
 
-def sign_in_with_google() -> tuple[str, str]:
+def sign_in_with_google(cancel_event=None) -> tuple[str, str]:
     """Supabase Auth(구글 프로바이더)로 로그인시키고 세션 토큰을 반환한다.
 
     Returns:
@@ -114,7 +129,7 @@ def sign_in_with_google() -> tuple[str, str]:
     })
     webbrowser.open(authorize_url)
 
-    code = _wait_for_redirect(port)
+    code = _wait_for_redirect(port, cancel_event=cancel_event)
 
     token_resp = requests.post(
         f"{SUPABASE_URL}/auth/v1/token",

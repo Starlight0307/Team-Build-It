@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
+from PyQt6.QtWidgets import (QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLineEdit, QPushButton, QLabel, QMessageBox,
                              QSizePolicy, QGraphicsDropShadowEffect)
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
@@ -105,13 +105,22 @@ class FindPwWidget(QWidget):
         self.root.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         rl.addWidget(self.root)
 
-        cl = QVBoxLayout(self.root)
+        # 창이 카드보다 낮아도 잘리지 않게, 카드 전체를 스크롤 영역 안에 둔다
+        root_lay = QVBoxLayout(self.root); root_lay.setContentsMargins(0, 0, 0, 0)
+        page_scroll = QScrollArea(); page_scroll.setWidgetResizable(True)
+        page_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        page_scroll.viewport().setAutoFillBackground(False)
+        page = QWidget(); page.setObjectName("AuthPage")
+        cl = QVBoxLayout(page)
         cl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cl.setContentsMargins(20, 20, 20, 20)
+        page_scroll.setWidget(page)
+        root_lay.addWidget(page_scroll)
 
         self.card = QFrame(); self.card.setObjectName("Card")
         self.card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.card.setFixedWidth(320)
+        self.card.setFixedWidth(390)
         sh = QGraphicsDropShadowEffect()
         sh.setBlurRadius(28); sh.setOffset(0, 6)
         sh.setColor(QColor(0, 0, 0, 50))
@@ -325,4 +334,6 @@ class FindPwWidget(QWidget):
         self.input_code.setEnabled(True)
 
     def update_theme(self, is_dark: bool):
-        self.setStyleSheet(get_stylesheet(is_dark))
+        from widget.auth_style import overrides
+        self.setStyleSheet("")   # 처음 표시 전에 남은 QSS 때문에 갱신이 안 되는 Qt 현상 방지
+        self.setStyleSheet(get_stylesheet(is_dark) + overrides(is_dark))

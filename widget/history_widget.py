@@ -4,7 +4,7 @@ from datetime import datetime
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QScrollArea, QFrame, QPushButton, QSizePolicy,
-                             QGraphicsOpacityEffect, QSplitter, QLineEdit)
+                             QGraphicsOpacityEffect, QSplitter, QLineEdit, QMessageBox)
 from PyQt6.QtCore import Qt, QPropertyAnimation, QThread, QTimer, pyqtSignal
 
 from data.db import load_sessions, load_messages, search_sessions
@@ -195,6 +195,15 @@ class HistoryWidget(QWidget):
         hf = QFrame(); hf.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True); hf.setFixedHeight(54)
         hl = QHBoxLayout(hf); hl.setContentsMargins(20, 0, 20, 0)
         self.title_lbl = QLabel("🕒 대화 기록"); hl.addWidget(self.title_lbl); hl.addStretch()
+        self.action_btns = []
+        for text, handler in (("✏️ 이름 변경", self._rename_current),
+                              ("📤 내보내기", self._export_current),
+                              ("🗑 삭제", self._delete_current)):
+            b = QPushButton(text); b.setFixedSize(96, 34); b.setEnabled(False)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet("QPushButton { background-color: #E8E3FF; color: #4B3FA0; font-weight: bold; "
+                            "border-radius: 6px; border: none; } QPushButton:disabled { background-color: #D8D8E0; color: #9A9AA8; }")
+            b.clicked.connect(handler); hl.addWidget(b); self.action_btns.append(b)
         self.refresh_btn = QPushButton("🔄 새로고침"); self.refresh_btn.setFixedSize(110, 34)
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.setStyleSheet("background-color: #8B78EE; color: white; font-weight: bold; border-radius: 6px; border: none;")
@@ -289,7 +298,55 @@ class HistoryWidget(QWidget):
             self.session_items.append(item)
             self.session_layout.insertWidget(self.session_layout.count() - 1, item)
 
+    def _user_id(self):
+        return self.get_mock_user().get("name") or "guest"
+
+    def _current_title(self):
+        item = next((i for i in self.session_items if i.session_id == self.current_session), None)
+        return item.title_lbl.text() if item else "대화"
+
+    def _rename_current(self):
+        if not self.current_session: return
+        from PyQt6.QtWidgets import QInputDialog
+        from data.db import rename_session
+        text, ok = QInputDialog.getText(self, "이름 변경", "새 대화 이름", text=self._current_title())
+        if ok and text.strip():
+            if rename_session(self._user_id(), self.current_session, text):
+                self.session_title_lbl.setText(f"  {text.strip()}")
+                self.load_sessions()
+            else:
+                QMessageBox.warning(self, "이름 변경", "이름을 바꾸지 못했어요.")
+
+    def _delete_current(self):
+        if not self.current_session: return
+        from data.db import delete_session
+        r = QMessageBox.question(self, "대화 삭제",
+                                 f"'{self._current_title()}' 대화를 삭제할까요?\n삭제하면 되돌릴 수 없어요.")
+        if r != QMessageBox.StandardButton.Yes: return
+        if delete_session(self._user_id(), self.current_session):
+            self.current_session = None
+            self._clear_bubbles(); self.msg_scroll.hide()
+            self.session_title_lbl.setText("  대화를 선택하세요")
+            self.status_lbl.setText("대화를 삭제했어요."); self.status_lbl.show()
+            for b in self.action_btns: b.setEnabled(False)
+            self.load_sessions()
+
+    def _export_current(self):
+        if not self.current_session: return
+        from PyQt6.QtWidgets import QFileDialog
+        from data.db import export_session_text
+        path, _ = QFileDialog.getSaveFileName(self, "대화 내보내기", f"{self._current_title()}.txt",
+                                              "텍스트 파일 (*.txt)")
+        if not path: return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(export_session_text(self._user_id(), self.current_session))
+            QMessageBox.information(self, "내보내기", "저장했어요.")
+        except Exception as e:
+            QMessageBox.warning(self, "내보내기", f"저장하지 못했어요.\n{e}")
+
     def _on_session_clicked(self, item):
+        for b in self.action_btns: b.setEnabled(True)
         for s in self.session_items: s.setChecked(s is item); s.update_theme(self.is_dark_mode, s is item)
         self.current_session = item.session_id
         self.session_title_lbl.setText(f"  {item.title_lbl.text()}")
