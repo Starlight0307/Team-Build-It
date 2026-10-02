@@ -316,7 +316,7 @@ def _ime_typing():
         raw, _ = typed(lambda: (c.kb.type("naver"), c._tap(c._kb_mod.Key.enter)))
         ime_active = any("\u3130" <= ch <= "\ud7a3" for ch in raw)
         rows, bad = [], []
-        for case in ["naver.com", "https://www.youtube.com", "Hello World 123", "아이유 iu"]:
+        for case in ["naver.com", "https://www.youtube.com", "Hello World 123", "아이유 iu", "오늘 할 일: 장보기"]:
             got, mode_after = typed(lambda case=case: c.type_text(case + "\n"))
             restored = mode_after is None or bool(int(mode_after) & 1)
             rows.append(f"{case!r}→{got!r}{'' if restored else ' (한글 모드로 안 돌아옴)'}")

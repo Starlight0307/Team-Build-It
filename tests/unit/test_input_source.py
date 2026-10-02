@@ -74,14 +74,14 @@ def test_type_text_picks_method_by_text(monkeypatch):
     c = screen_agent.InputController.__new__(screen_agent.InputController)
     calls = []
     st = _fake(monkeypatch, "KO")
-    monkeypatch.setattr(ins, "type_unicode", lambda t: calls.append(("unicode", t, st["now"])) or True)
+    monkeypatch.setattr(ins, "type_unicode", lambda t, windows=False: calls.append(("unicode", t, st["now"])) or True)
     monkeypatch.setattr(screen_agent.time, "sleep", lambda s: None)
     c.type_text("naver.com")
     c.type_text("아이유")
     assert calls == [("unicode", "naver.com", "EN"), ("unicode", "아이유", "KO")]
     assert st["now"] == "KO"   # 다 친 뒤 원래 입력기
     # 문자로 못 치는 환경(Windows 등) → 한글 글은 붙여넣기
-    monkeypatch.setattr(ins, "type_unicode", lambda t: False)
+    monkeypatch.setattr(ins, "type_unicode", lambda t, windows=False: False)
     monkeypatch.setattr(c, "_paste", lambda t: calls.append(("paste", t)) or True, raising=False)
     c.type_text("아이유")
     assert calls[-1] == ("paste", "아이유")

@@ -40,7 +40,7 @@ jobs:
           python -m pytest -q -rfE --tb=line -p no:cacheprovider 2>&1 | tee pytest.txt
           status=${PIPESTATUS[0]}
           if [ $status -ne 0 ]; then
-            grep -E "^(FAILED|ERROR) |^[A-Za-z]:?[^ ]*\.py:[0-9]+: " pytest.txt | head -60 | python -c "import sys; print('::error title=pytest failures::' + '%0A'.join(l.rstrip().replace('%', '%25') for l in sys.stdin))"
+            tail -n 60 pytest.txt | python -c "import sys; print('::error title=pytest failures::' + '%0A'.join(l.rstrip().replace('%', '%25').replace(chr(13), '') for l in sys.stdin))"
           fi
           exit $status
 

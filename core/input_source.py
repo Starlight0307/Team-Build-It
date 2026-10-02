@@ -158,11 +158,17 @@ def _win_set_mode(mode: int) -> bool:
 # ─────────────────────────────────────────────
 # 입력기와 상관없이 글자 그대로 치기 (macOS)
 # ─────────────────────────────────────────────
-def type_unicode(text: str) -> bool:
+def type_unicode(text: str, windows: bool = False) -> bool:
     """글자를 '키'가 아니라 '문자'로 보낸다 — 한글 입력기 상태여도 "jangan.ac.kr"이 그대로 들어간다
     (2026-10-02 실측 8/8. 입력기를 바꾸고 키로 치는 방법은 상대 앱이 전환을 늦게 알아채서 7/8).
-    클립보드도 건드리지 않는다. macOS가 아니거나 실패하면 False."""
-    if not IS_MAC or not text:
+    클립보드도 건드리지 않는다. 실패하면 False.
+    windows=True면 Windows에서도 쓴다 (SendInput 유니코드) — 한글이 섞인 글용. Windows의 영어는
+    입력기를 영문으로 바꿔 키로 치는 쪽이 실제 Windows(한국어 IME 한글 모드)에서 확인됐다."""
+    if not text:
+        return False
+    if IS_WIN:
+        return windows and _win_type_unicode(text)
+    if not IS_MAC:
         return False
     try:
         import time
@@ -174,6 +180,41 @@ def type_unicode(text: str) -> bool:
                 Quartz.CGEventKeyboardSetUnicodeString(ev, units, ch)
                 Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
             time.sleep(0.008)   # 너무 빨리 보내면 앱이 글자를 놓친다
+        return True
+    except Exception:
+        return False
+
+
+def _win_type_unicode(text: str) -> bool:
+    """Windows: SendInput + KEYEVENTF_UNICODE로 글자를 그대로 보낸다 (클립보드를 쓰지 않는다).
+    2026-10-02 Windows 점검: 한글이 섞인 글을 클립보드로 붙여넣었더니 아무것도 안 들어갔다."""
+    try:
+        import time
+        from ctypes import wintypes
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                        ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+        class _U(ctypes.Union):
+            # MOUSEINPUT이 가장 커서 INPUT 크기를 맞추려고 넉넉히 잡는다
+            _fields_ = [("ki", KEYBDINPUT), ("pad", ctypes.c_byte * 32)]
+
+        class INPUT(ctypes.Structure):
+            _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+        KEYEVENTF_UNICODE, KEYEVENTF_KEYUP, INPUT_KEYBOARD = 0x0004, 0x0002, 1
+        send = ctypes.windll.user32.SendInput
+        for ch in text:
+            data = ch.encode("utf-16-le")
+            for i in range(0, len(data), 2):   # 서로게이트 쌍(이모지 등)은 두 번
+                code = int.from_bytes(data[i:i + 2], "little")
+                for flags in (KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP):
+                    inp = INPUT(type=INPUT_KEYBOARD)
+                    inp.u.ki = KEYBDINPUT(0, code, flags, 0, 0)
+                    if send(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) != 1:
+                        return False
+            time.sleep(0.008)
         return True
     except Exception:
         return False

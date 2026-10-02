@@ -670,7 +670,8 @@ class InputController:
         - 영어(주소/영어 단어): 입력기를 확인해서 한글이면 영문으로 바꾸고, 다 친 뒤 원래대로 되돌린다
           (core/input_source.py).
         - 치는 방법: macOS는 글자를 '문자'로 보낸다 (입력기 상태와 상관없이 정확, 클립보드 안 씀).
-          그게 안 되는 환경(Windows)은 영문으로 바꾼 뒤 키로 치고, 그것도 안 되면 클립보드 붙여넣기."""
+          Windows의 영어는 영문으로 바꾼 뒤 키로 치고(실제 Windows에서 확인), 한글이 섞인 글은 '문자'로
+          보낸다. 다 안 되면 클립보드 붙여넣기."""
         from core import input_source
         lines = (text or "").split("\n")
         for i, line in enumerate(lines):
@@ -694,7 +695,7 @@ class InputController:
                         # 글자가 한글로 들어갔다 ("https://ㅈㅈㅈ.ㅛㅐㅕ…", 실측)
                         time.sleep(input_source.SWITCH_SETTLE + 0.02 * len(line))
                         continue
-            elif input_source.type_unicode(line):
+            elif input_source.type_unicode(line, windows=True):   # 한글이 섞인 글 — 클립보드 없이
                 continue
             if not self._paste(line):
                 self.kb.type(line)
@@ -720,7 +721,12 @@ class InputController:
             self.kb.press(mod)
             self._tap(self._kb_mod.KeyCode.from_vk(9) if IS_MAC else self._kb_mod.KeyCode.from_char("v"))
             self.kb.release(mod)
-            time.sleep(0.15)
+            # 상대 앱이 클립보드 내용을 가져가는 동안 응답할 수 있게 이벤트를 처리하며 기다린다 —
+            # 그냥 멈춰 기다리면 Windows에서 붙여넣기가 비어 들어갔다 (2026-10-02 Windows 점검)
+            end = time.time() + 0.4
+            while time.time() < end:
+                QApplication.processEvents()
+                time.sleep(0.02)
             # 상대 앱이 붙여넣기를 마칠 시간을 준 뒤 원래 클립보드로 되돌린다
             QTimer.singleShot(800, lambda: cb.setMimeData(saved) if cb.text() == text else None)
             return True
