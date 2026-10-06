@@ -14,7 +14,7 @@ import threading
 import time
 from datetime import datetime
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen, QRadialGradient
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton,
                              QSizePolicy, QVBoxLayout, QWidget)
@@ -52,6 +52,8 @@ class Panel(QFrame):
         hl.addStretch()
         self._header_layout = hl
         self._header_buttons = []
+        self._fitting = False
+        self.header.installEventFilter(self)
         outer.addWidget(self.header)
 
         body = QWidget()
@@ -69,10 +71,39 @@ class Panel(QFrame):
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setToolTip(tooltip)
         btn.clicked.connect(on_click)
-        btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)   # 좁아도 글자가 잘리지 않게
+        btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        btn.setProperty("full_text", text)
         self._header_layout.addWidget(btn)
         self._header_buttons.append(btn)
+        self._fit_header_buttons()
         return btn
+
+    def eventFilter(self, obj, event):
+        if obj is self.header and event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+            self._fit_header_buttons()
+        return super().eventFilter(obj, event)
+
+    def _fit_header_buttons(self):
+        """제목 줄 버튼 글자가 잘리지 않게 — 글자까지 다 들어갈 폭이 안 되면 아이콘만
+        보여준다(설명은 툴팁). Fixed 정책만으로는 패널이 좁을 때 Qt가 버튼을 글자보다
+        좁게 눌러서 "새 채팅"이 "새 채"처럼 잘려 보였다(대화 패널 최소 폭 400px).
+        레이아웃은 크기 계산을 캐시하므로 글자를 바꾼 뒤 invalidate()로 다시 재야 한다 —
+        안 그러면 그리기 전 값으로 판정해 넓은데도 아이콘만 남았다."""
+        if self._fitting or not self._header_buttons:
+            return
+        self._fitting = True
+        try:
+            for btn in self._header_buttons:
+                btn.setText(btn.property("full_text"))
+                btn.setMinimumWidth(0)
+            self._header_layout.invalidate()
+            compact = self._header_layout.sizeHint().width() > self.header.width()
+            for btn in self._header_buttons:
+                if compact and not btn.icon().isNull():
+                    btn.setText("")
+                btn.setMinimumWidth(btn.sizeHint().width())   # 레이아웃이 더 좁게 누르지 못하게
+        finally:
+            self._fitting = False
 
     def apply_theme(self, p: dict):
         self.setStyleSheet(
@@ -85,9 +116,13 @@ class Panel(QFrame):
         for btn in self._header_buttons:
             btn.setStyleSheet(
                 f"QPushButton {{ background-color: {p['pb']}; color: {p['tc2']}; border: 1px solid {p['pbrd']}; "
-                f"border-radius: 11px; padding: 4px 8px; font-size: 12px; }}"
+                f"border-radius: 11px; padding: 4px 6px; font-size: 12px; }}"
                 f"QPushButton:hover {{ color: {p['tc']}; border-color: {p['accent']}; }}"
             )
+        # 글자 크기·여백이 바뀌었으니 폭을 다시 잰다 — 같은 줄의 다른 위젯(확대 버튼 등)
+        # 스타일은 이 다음에 바뀌므로 이벤트 루프가 한 번 돈 뒤에도 다시 잰다
+        self._fit_header_buttons()
+        QTimer.singleShot(0, self._fit_header_buttons)
 
 
 class StatBar(QWidget):

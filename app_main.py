@@ -694,7 +694,10 @@ class AssistantApp(QWidget):
         toast = NotificationToast(message)
         toast.setParent(self)
 
-        toast.adjustSize()
+        # adjustSize()는 자식 위젯에선 줄바꿈(heightForWidth)을 반영하지 않아서
+        # 긴 메시지가 2줄 높이로 잡혀 아랫줄이 잘렸다 — 고정 폭 기준 높이로 맞춘다
+        toast.ensurePolished()
+        toast.resize(toast.width(), toast.heightForWidth(toast.width()))
         margin = 20
         stack_offset = sum(t.height() + 10 for t in self._active_toasts)
         x = self.width() - toast.width() - margin
@@ -1020,7 +1023,7 @@ class AssistantApp(QWidget):
             self.zoom_label.setText(ui_scale.percent_label())
             self.zoom_label.setStyleSheet(
                 f"color: {p['tc2']}; font-size: 12px; font-family: {NUM_FONT}; background: transparent; border: none; "
-                f"min-width: 38px;"
+                f"min-width: 34px;"
             )
             zoom_btn_style = (
                 f"QPushButton {{ background-color: {p['pb']}; border: 1px solid {p['pbrd']}; "
@@ -1318,7 +1321,7 @@ class AssistantApp(QWidget):
 
         # ── 오른쪽: 대화 패널 ──
         self.chat_panel = Panel("message-circle", "대화")
-        self.chat_panel.setMinimumWidth(400)
+        self.chat_panel.setMinimumWidth(420)   # 제목 줄 버튼 글자(새 채팅·지우기·내보내기)가 다 들어가는 폭
         self.chat_panel.setMaximumWidth(560)
         header = self.chat_panel._header_layout
         # 🔍 대화 글자 확대/축소
@@ -1335,7 +1338,9 @@ class AssistantApp(QWidget):
         for w in (self.zoom_out_btn, self.zoom_label, self.zoom_in_btn):
             w.setCursor(Qt.CursorShape.PointingHandCursor)
             header.addWidget(w)
-        header.addSpacing(6)
+        # 최소 폭(400px)에서도 버튼 글자가 다 들어가도록 간격을 좁게 둔다
+        header.setSpacing(4)
+        header.addSpacing(4)
         self.chat_panel.add_header_button(" 새 채팅", "새 대화 시작 (Ctrl+N) — 지금 대화는 기록에 그대로 남아요",
                                           self._new_chat, icon="message-circle")
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self._new_chat)
@@ -1742,7 +1747,7 @@ class AssistantApp(QWidget):
         city, source = app_settings.get("weather_city"), app_settings.get("weather_source")
         if not city:
             return "처음 실행하면 현재 위치를 자동으로 찾아요. 시·군 이름이나 해외 도시를 직접 입력해도 돼요."
-        how = {"os": "Windows 위치 서비스로 찾은 위치",
+        how = {"os": "기기 위치 서비스로 찾은 위치",
                "ip": "인터넷 주소로 찾은 대략적인 위치 — 실제와 다르면 직접 고쳐주세요",
                }.get(source, "직접 입력한 지역")
         return f"현재: {city} ({how})"

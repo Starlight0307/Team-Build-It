@@ -16,7 +16,7 @@ DEFAULTS = {
     "dark_mode":   False,  # 화면 테마 (파스텔 테마는 밝은 모드가 기본)
     "weather_city": None,   # 홈 화면 날씨 지역 — None이면 처음 실행 때 현재 위치를 자동으로 찾는다
     "weather_coords": None, # [위도, 경도] — 자동으로 찾았을 때만 (직접 입력하면 None)
-    "weather_source": None, # "os"(Windows 위치 서비스) / "ip"(대략적) / "manual"(직접 입력)
+    "weather_source": None, # "os"(Windows/macOS 위치 서비스) / "ip"(대략적) / "manual"(직접 입력)
     "dashboard_widgets": None,  # 홈 화면 왼쪽 위젯 순서 (None이면 기본 순서)
     "hidden_widgets": [],       # 숨긴 위젯 id
     "disabled_skills": [],      # 끈 OpenClaw 스킬 이름 (core/skills.py)

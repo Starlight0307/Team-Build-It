@@ -9,18 +9,22 @@ weather.py  ─  홈 화면 날씨 패널용 현재 날씨 (Open-Meteo, 인증 �
 
 현재 위치 자동 찾기 (detect_location)
 - Windows: Windows 위치 서비스(와이파이 기반, 더 정확) → 안 되면 IP 기반.
-- macOS: IP 기반만. python.org 파이썬 같은 일반 실행 파일은 macOS 위치 권한을
-  요청할 수 있는 앱 정보(Info.plist)가 없어서 위치 서비스를 쓸 수 없다.
+- macOS: 위치 도우미 앱(assets/macos_locator/LUMILocator.app)으로 macOS 위치 서비스
+  (와이파이 기반, 더 정확) → 안 되면 IP 기반. 파이썬 실행 파일은 위치 권한을 요청할
+  앱 정보(Info.plist)가 없어서 직접은 못 쓰므로, 권한 문구가 든 작은 앱을 따로 띄워
+  Chrome처럼 처음 한 번 "위치 허용"을 받는다.
 - IP 기반은 통신사 기준이라 구·시 단위로 틀릴 수 있다(2026-09-30 확인: 같은 PC에서
   서비스마다 서울/광명/강서구/성남). 그래서 화면에 "대략적인 위치"라고 알리고,
   환경설정에서 바로 고칠 수 있게 한다. 이때 이 PC의 공인 IP가 위치 서비스로 전송된다.
 - 좌표가 주요 시·군(KOREAN_CITIES) 근처면 한국어 이름으로 보여준다.
 """
+import json
 import math
 import os
 import re
 import subprocess
 import sys
+import tempfile
 
 import requests
 
@@ -153,9 +157,44 @@ def _windows_location():
         return None
 
 
+_MACOS_LOCATOR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "assets", "macos_locator", "LUMILocator.app")
+
+
+def _macos_location():
+    """macOS 위치 서비스 → (위도, 경도, 지명 또는 None). 거부/실패/도우미 앱 없음이면 None.
+
+    `open`으로 띄워야 위치 권한이 파이썬/터미널이 아니라 도우미 앱(LUMI) 앞으로
+    요청된다 — 그래서 결과는 stdout 파이프 대신 임시 파일로 받는다. 처음엔 허용
+    창에 답할 때까지 기다리므로 도우미 앱 자체 제한(60초)보다 조금 길게 기다린다."""
+    if not os.path.isdir(_MACOS_LOCATOR):
+        return None
+    fd, out_path = tempfile.mkstemp(prefix="lumi-loc-", suffix=".json")
+    os.close(fd)
+    try:
+        subprocess.run(["open", "-W", "-n", "--stdout", out_path, _MACOS_LOCATOR],
+                       capture_output=True, timeout=70)
+        with open(out_path, encoding="utf-8") as f:
+            d = json.loads(f.read().strip() or "{}")
+        if "lat" not in d:
+            return None
+        return float(d["lat"]), float(d["lon"]), _short_name(d.get("locality")) or None
+    except Exception:
+        return None
+    finally:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+
+
 def _ip_location():
     """IP 기반 대략적 위치 → (위도, 경도, 영문 도시 이름)."""
+    # ipinfo.io를 먼저 쓴다 — 2026-10-06 수원(KT)에서 ipwho.is·ipapi.co는 성남으로,
+    # ipinfo.io만 수원으로 맞게 나왔다
     services = (
+        ("https://ipinfo.io/json",
+         lambda d: (*map(float, d["loc"].split(",")), d.get("city")) if d.get("loc") else None),
         ("https://ipwho.is/?fields=success,city,latitude,longitude",
          lambda d: (d["latitude"], d["longitude"], d.get("city")) if d.get("success", True) else None),
         ("http://ip-api.com/json/?fields=status,city,lat,lon",
@@ -180,6 +219,12 @@ def detect_location() -> dict:
         if pos:
             lat, lon = pos
             name = nearest_korean_city(lat, lon) or f"{lat:.2f}, {lon:.2f}"
+            return {"name": name, "lat": lat, "lon": lon, "source": "os"}
+    elif sys.platform == "darwin":
+        pos = _macos_location()
+        if pos:
+            lat, lon, locality = pos
+            name = locality or nearest_korean_city(lat, lon) or f"{lat:.2f}, {lon:.2f}"
             return {"name": name, "lat": lat, "lon": lon, "source": "os"}
     found = _ip_location()
     if not found:

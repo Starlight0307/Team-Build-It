@@ -175,12 +175,14 @@ def test_nearest_korean_city(lat, lon, expected):
 
 def test_detect_location_uses_ip_and_korean_name(monkeypatch):
     monkeypatch.setattr(weather.sys, "platform", "darwin")
+    monkeypatch.setattr(weather, "_macos_location", lambda: None)
     monkeypatch.setattr(weather, "_ip_location", lambda: (37.477, 126.866, "Gwangmyeong"))
     assert weather.detect_location() == {"name": "광명", "lat": 37.477, "lon": 126.866, "source": "ip"}
 
 
 def test_detect_location_abroad_uses_english_city(monkeypatch):
     monkeypatch.setattr(weather.sys, "platform", "darwin")
+    monkeypatch.setattr(weather, "_macos_location", lambda: None)
     monkeypatch.setattr(weather, "_ip_location", lambda: (35.68, 139.69, "Shibuya-ku (Tokyo)"))
     assert weather.detect_location()["name"] == "Shibuya-ku"
 
@@ -193,8 +195,35 @@ def test_detect_location_prefers_windows_location_service(monkeypatch):
     assert loc["name"] == "수원" and loc["source"] == "os"
 
 
+def test_detect_location_prefers_macos_location_service(monkeypatch):
+    monkeypatch.setattr(weather.sys, "platform", "darwin")
+    monkeypatch.setattr(weather, "_macos_location", lambda: (37.2111, 126.9472, "화성"))
+    monkeypatch.setattr(weather, "_ip_location", lambda: pytest.fail("OS 위치가 있으면 IP는 안 씀"))
+    assert weather.detect_location() == {"name": "화성", "lat": 37.2111, "lon": 126.9472, "source": "os"}
+
+
+def test_macos_location_reads_helper_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(weather, "_MACOS_LOCATOR", str(tmp_path))
+    def fake_run(cmd, **k):
+        out = cmd[cmd.index("--stdout") + 1]
+        with open(out, "w", encoding="utf-8") as f:
+            f.write('{"lat": 37.2111, "lon": 126.9472, "accuracy": 35, "locality": "화성시"}\n')
+    monkeypatch.setattr(weather.subprocess, "run", fake_run)
+    assert weather._macos_location() == (37.2111, 126.9472, "화성")
+
+
+def test_macos_location_denied_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setattr(weather, "_MACOS_LOCATOR", str(tmp_path))
+    def fake_run(cmd, **k):
+        with open(cmd[cmd.index("--stdout") + 1], "w", encoding="utf-8") as f:
+            f.write('{"error": "denied"}\n')
+    monkeypatch.setattr(weather.subprocess, "run", fake_run)
+    assert weather._macos_location() is None
+
+
 def test_detect_location_failure_is_friendly(monkeypatch):
     monkeypatch.setattr(weather.sys, "platform", "darwin")
+    monkeypatch.setattr(weather, "_macos_location", lambda: None)
     monkeypatch.setattr(weather, "_ip_location", lambda: None)
     with pytest.raises(weather.WeatherError, match="직접 입력"):
         weather.detect_location()
