@@ -71,3 +71,10 @@ def test_login_history(chat_env):
     rows = db.get_login_history("alice")
     assert [r["method"] for r in rows] == ["Google", "비밀번호"]
     assert db.get_login_history("nobody") == []
+
+
+def test_never_saves_plaintext_without_crypto(chat_env, monkeypatch):
+    monkeypatch.setattr(chat_crypto, "Fernet", None)
+    db.save_chat_to_file("alice", "user", "비밀 이야기", session_id="s1")
+    path = os.path.join(db.CHAT_LOG_DIR, "alice", "s1.json")
+    assert not os.path.exists(path) or "비밀" not in open(path, encoding="utf-8").read()

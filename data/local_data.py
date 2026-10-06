@@ -16,15 +16,25 @@ from core.user_context import safe_uid
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def purge_user_data(user_id: str, root: str = PROJECT_ROOT) -> int:
-    """지운 파일/폴더 수를 반환한다. 일부 실패해도 나머지는 계속 지운다."""
+def purge_user_data(user_id: str, root: str = PROJECT_ROOT, chat_root: str = None) -> int:
+    """지운 파일/폴더 수를 반환한다. 일부 실패해도 나머지는 계속 지운다.
+    chat_root: 대화기록 폴더 — 생략하면 실제 앱에서는 앱 폴더 밖 대화기록 위치(data/db.py),
+    root를 따로 준 경우(테스트)는 root/chat_logs."""
     if not user_id or safe_uid(user_id) == "guest":
         return 0   # 비로그인 공용 데이터는 건드리지 않는다
     uid = safe_uid(user_id)
     removed = 0
 
-    chat_dir = os.path.join(root, "chat_logs", user_id)
-    if os.path.isdir(chat_dir) and os.path.basename(chat_dir) != "chat_logs":
+    if chat_root is None:
+        if root == PROJECT_ROOT:
+            from data import db
+            chat_root = db.CHAT_LOG_DIR
+        else:
+            chat_root = os.path.join(root, "chat_logs")
+    chat_dir = os.path.normpath(os.path.join(chat_root, user_id))
+    # 대화기록 폴더 바로 아래의 그 계정 폴더만 지운다 (".." 등으로 다른 곳을 지우지 않게)
+    if os.path.isdir(chat_dir) and \
+            os.path.normcase(os.path.dirname(chat_dir)) == os.path.normcase(os.path.normpath(chat_root)):
         shutil.rmtree(chat_dir, ignore_errors=True)
         removed += 1
 

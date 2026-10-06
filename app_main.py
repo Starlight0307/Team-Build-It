@@ -20,13 +20,15 @@ if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
 # import보다 반드시 먼저 돌아야 한다. 테스트에서 app_main을 import할 때는
 # 건너뛴다(직접 실행할 때만).
 if __name__ == "__main__":
-    from core.bootstrap import ensure_requirements, relaunch_without_console
+    from core.bootstrap import ensure_requirements, relaunch_without_console, ensure_git_hooks
     # 더블클릭 실행 시 뜨는 검은 콘솔 창 없애기 — 창 없이 다시 띄우고 이 프로세스는
     # 종료(그러면 콘솔 창도 닫힘). 터미널에서 실행했으면 그대로 진행.
     if relaunch_without_console():
         sys.exit(0)
     if not ensure_requirements():
         sys.exit(1)
+    # 개인 기록(대화/로그인 기록 등)이 커밋되지 않게 막는 git 훅을 자동으로 켠다 (맥/윈도우 공통)
+    ensure_git_hooks()
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -1603,6 +1605,17 @@ class AssistantApp(QWidget):
         self.weather_location_desc = self._settings_descs[-1]
         outer.addSpacing(18)
 
+        # 대화기록 저장 위치 — 앱 폴더 밖에서 사용자가 직접 고른다
+        from data import db as _db
+        self.chat_dir_btn = QPushButton("위치 변경")
+        self.chat_dir_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.chat_dir_btn.clicked.connect(self._change_chat_dir)
+        outer.addWidget(self._make_settings_card("대화기록", icon="folder-open", rows=[
+            ("저장 위치", _db.CHAT_LOG_DIR, self.chat_dir_btn),
+        ]))
+        self.chat_dir_desc = self._settings_descs[-1]
+        outer.addSpacing(18)
+
         # 홈 화면 위젯 편집 — 보이기/숨기기 + 순서
         self.widget_editor_card = QFrame()
         self.widget_editor_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -1768,6 +1781,29 @@ class AssistantApp(QWidget):
         rough = " (대략적인 위치라 다르면 환경설정 > 날씨에서 고쳐주세요)" if loc["source"] == "ip" else ""
         self._show_toast(f"📍 현재 위치를 '{loc['name']}'(으)로 찾았어요.{rough}")
 
+    def _change_chat_dir(self):
+        """대화기록 저장 위치 바꾸기 — 앱 폴더 안은 고를 수 없다(설치 파일에 대화가 들어가지 않게)."""
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        from data import db
+        folder = QFileDialog.getExistingDirectory(self, "대화기록을 저장할 폴더 선택", db.CHAT_LOG_DIR)
+        if not folder:
+            return
+        try:
+            info = db.set_chat_log_dir(folder)
+        except ValueError as e:
+            QMessageBox.warning(self, "대화기록 저장 위치", str(e))
+            return
+        except OSError as e:
+            QMessageBox.warning(self, "대화기록 저장 위치", f"옮기지 못했어요.\n{e}")
+            return
+        self.chat_dir_desc.setText(info["path"])
+        msg = f"대화 {info['moved']}개를 옮겼어요."
+        if info["skipped"]:
+            msg += f" (같은 이름이 있어 {info['skipped']}개는 원래 자리에 남겨뒀어요)"
+        self._show_toast(f"📁 {msg}")
+        if hasattr(self, "history_page"):
+            self.history_page.load_sessions()
+
     def _save_weather_city(self):
         city = self.weather_city_input.text().strip()
         if not city:
@@ -1858,10 +1894,11 @@ class AssistantApp(QWidget):
             f"QLineEdit {{ background-color: {p['ib']}; color: {p['tc']}; border: 1px solid {p['ibrd']}; "
             f"border-radius: 15px; padding: 5px 14px; font-size: 13px; }}"
             f"QLineEdit:focus {{ border-color: {p['accent']}; }}")
-        self.weather_locate_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {p['pb']}; color: {p['tc']}; border: 1px solid {p['pbrd']}; "
-            f"border-radius: 13px; padding: 6px 14px; font-size: 13px; font-weight: bold; }}"
-            f"QPushButton:hover {{ border-color: {p['accent']}; }}")
+        for _b in (self.weather_locate_btn, self.chat_dir_btn):
+            _b.setStyleSheet(
+                f"QPushButton {{ background-color: {p['pb']}; color: {p['tc']}; border: 1px solid {p['pbrd']}; "
+                f"border-radius: 13px; padding: 6px 14px; font-size: 13px; font-weight: bold; }}"
+                f"QPushButton:hover {{ border-color: {p['accent']}; }}")
         self.widget_reset_btn.setStyleSheet(
             f"QPushButton {{ background-color: {p['pb']}; color: {p['tc2']}; border: 1px solid {p['pbrd']}; "
             f"border-radius: 12px; padding: 5px 12px; font-size: 12px; }}"
@@ -3519,6 +3556,17 @@ if __name__ == "__main__":
     # True라서 이걸 안 끄면 closeEvent에서 event.ignore()를 해도 소용없이
     # "보이는 최상위 창이 하나도 없다"는 이유로 앱이 그냥 종료돼버린다.
     app.setQuitOnLastWindowClosed(False)
+    # 앱 폴더 안에 남은 예전 대화기록/암호 키를 앱 폴더 밖으로 옮기고(설치 파일에 대화가
+    # 같이 묶여 들어가지 않게), 아직 평문인 대화 파일을 모든 계정에 대해 암호화한다.
+    # 키를 옮기기 전에 암호화가 먼저 일어나면 새 키가 생겨 예전 대화를 못 여니
+    # 창을 만들기(자동 로그인) 전에 한다.
+    try:
+        from data import storage_location
+        from data.db import encrypt_existing_chats
+        storage_location.migrate_legacy()
+        encrypt_existing_chats()
+    except Exception as e:
+        print(f"[대화기록 위치 이전 오류] {e}")
     ex  = AssistantApp()
     ex.show()
     app.aboutToQuit.connect(ex.shutdown_background_work)   # Cmd+Q 등 모든 종료 경로

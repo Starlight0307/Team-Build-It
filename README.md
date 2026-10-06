@@ -15,6 +15,8 @@ git clone https://github.com/Starlight0307/Team-Build-It
 
 cd Team-Build-It
 
+(💡 대화기록·로그인 기록·일정·메모 같은 개인 기록은 커밋되지 않도록 막혀 있습니다 — 앱을 처음 켤 때 git 훅(.githooks)이 맥/윈도우 모두 자동으로 설정됩니다. 대화기록은 프로젝트 폴더가 아니라 윈도우는 %LOCALAPPDATA%\Lumi, 맥은 ~/Library/Application Support/Lumi 에 암호화되어 저장되고, 저장 위치는 환경설정에서 바꿀 수 있습니다.)
+
 3. 독립된 파이썬 가상환경 생성 및 접속
 패키지 충돌을 막기 위해 현재 프로젝트 전용 가상환경(방)을 만듭니다. (Anaconda Prompt에서 계속 진행합니다.)
 

@@ -1,2 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# git 훅은 sh 스크립트라 Windows에서도 줄바꿈이 LF여야 실행된다
+.githooks/* text eol=lf

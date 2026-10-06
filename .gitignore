@@ -61,3 +61,13 @@ data/login_history/
 # IoT 방(Room) 설정(plugins/iot_control.py) — 기기 별칭/고유 ID가 들어 있어 사람/집마다 다르고 개인적이다.
 plugins/iot_rooms.json
 plugins/iot_rooms.json.lock
+
+# ── 회원/PC별 개인 기록 — 팀 전체에서 커밋 목록에 안 뜨고 커밋도 안 되게 ──
+# (커밋을 막는 장치는 .githooks/pre-commit, 목록은 tests/test_no_personal_data_tracked.py와 같이 관리)
+plugins/activity_log/
+plugins/local_calendar/
+plugins/todo_list/
+plugins/notes/
+plugins/expense_tracker/
+plugins/iot_scenes.json
+calendar_feature/event_duration_memory.json

@@ -314,3 +314,35 @@ def _refresh_import_paths():
         user_site = site.getusersitepackages()
         if os.path.isdir(user_site) and user_site not in sys.path:
             site.addsitedir(user_site)
+
+
+GIT_HOOKS_DIR = ".githooks"
+
+
+def ensure_git_hooks(root: str = None) -> bool:
+    """git으로 받은 프로젝트면 .githooks(개인 기록 커밋 차단)를 쓰도록 설정한다.
+    맥/윈도우 모두 앱을 켤 때 자동으로 — 팀원이 따로 명령을 입력하지 않아도 되게.
+    이미 설정돼 있거나, git이 없거나, git 저장소가 아니면 아무것도 안 한다. 설정했으면 True."""
+    root = root or PROJECT_ROOT
+    if not os.path.isdir(os.path.join(root, ".git")) or \
+            not os.path.isfile(os.path.join(root, GIT_HOOKS_DIR, "pre-commit")):
+        return False
+    kwargs = {"cwd": root, "capture_output": True, "text": True, "encoding": "utf-8",
+              "errors": "replace", "timeout": 10}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # 검은 콘솔 창 안 띄움
+    try:
+        cur = subprocess.run(["git", "config", "--local", "core.hooksPath"], **kwargs).stdout.strip()
+        if cur == GIT_HOOKS_DIR:
+            return False
+        if cur:   # 사람이 일부러 다른 훅 폴더를 쓰고 있으면 건드리지 않는다
+            print(f"[루미] core.hooksPath가 '{cur}'로 설정돼 있어 그대로 둡니다.")
+            return False
+        subprocess.run(["git", "config", "--local", "core.hooksPath", GIT_HOOKS_DIR], check=True, **kwargs)
+        if sys.platform != "win32":   # 맥/리눅스: 실행 권한이 빠진 채 받았을 때 대비
+            hook = os.path.join(root, GIT_HOOKS_DIR, "pre-commit")
+            os.chmod(hook, os.stat(hook).st_mode | 0o111)
+        return True
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"[루미] git 훅 설정 건너뜀: {e}")
+        return False

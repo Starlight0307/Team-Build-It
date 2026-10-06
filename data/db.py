@@ -18,7 +18,8 @@ DB 마스터 비밀번호와는 성격이 다릅니다. .env 설정이 더 이�
                      005_migrate_existing_users.sql
 
 저장 구조 (대화기록은 여전히 로컬 JSON):
-  chat_logs/{user_id}/{session_id}.json
+  {대화기록 폴더}/{user_id}/{session_id}.json
+  대화기록 폴더는 앱 폴더 밖 — data/storage_location.py
 """
 import os
 import json
@@ -26,14 +27,24 @@ from datetime import datetime
 
 import requests
 
+from data import storage_location
+
 SUPABASE_URL      = "https://ttydhxlswdutdptvzhwp.supabase.co"
 SUPABASE_ANON_KEY = "sb_publishable_16Rn4ZYkiX6FiJBYa2nqMg_DoOFwBOf"
 
-# data/db.py 기준 프로젝트 루트(한 단계 위)의 chat_logs/ — 폴더 정리로 db.py가
-# data/ 밑으로 옮겨졌지만 대화기록 저장 위치는 그대로 유지하기 위함.
+# 대화기록은 앱(설치) 폴더 밖에 둔다 — 설치 파일에 대화가 같이 묶여 들어가지 않게.
+# 기본 %LOCALAPPDATA%/Lumi/chat_logs, 환경설정에서 바꾸면 set_chat_log_dir()로 이 값도 바뀐다.
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHAT_LOG_DIR = os.path.join(PROJECT_ROOT, "chat_logs")
+CHAT_LOG_DIR = storage_location.chat_dir()
 os.makedirs(CHAT_LOG_DIR, exist_ok=True)
+
+
+def set_chat_log_dir(chosen_folder: str) -> dict:
+    """대화기록을 사용자가 고른 폴더로 옮긴다 (storage_location.change_chat_dir 참고)."""
+    global CHAT_LOG_DIR
+    info = storage_location.change_chat_dir(chosen_folder)
+    CHAT_LOG_DIR = info["path"]
+    return info
 
 # 현재 로그인한 사용자의 Supabase 세션. 이 앱은 한 번에 한 명만 로그인하는
 # 데스크톱 앱이라 프로세스 전역으로 하나만 유지한다. 마이페이지에서
@@ -273,9 +284,10 @@ def _read_chat_file(path: str) -> dict:
 def _write_chat_file(path: str, data: dict) -> None:
     """대화 파일 저장 — 항상 암호화해서 쓴다(임시 파일에 쓴 뒤 교체해 도중에 꺼져도 안전)."""
     from data.chat_crypto import encrypt_text
+    encrypted = encrypt_text(json.dumps(data, ensure_ascii=False))   # 실패하면 파일을 건드리기 전에 멈춘다
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        f.write(encrypt_text(json.dumps(data, ensure_ascii=False)))
+        f.write(encrypted)
     os.replace(tmp, path)
 
 

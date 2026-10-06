@@ -1,13 +1,18 @@
 """대화기록 파일 암호화 (Fernet).
 
-- 키는 data/.chat_key 에 이 컴퓨터에서 한 번 만들어 저장한다(.gitignore 등록).
+- 키는 앱 폴더 밖(%LOCALAPPDATA%/Lumi/.chat_key, data/storage_location.py)에 이 컴퓨터에서
+  한 번 만들어 저장한다 — 설치 파일에 키가 같이 들어가지 않게.
   파일을 그냥 열어봐서는 대화가 안 보이게 하는 용도이며, 키 파일까지 가져가는
   사람에게는 소용없다 — 그 한계는 mypage 안내에도 적어 둔다.
 - 암호화 파일은 "ENC1:" + 토큰으로 시작한다. 이전에 저장된 평문 JSON도 그대로
   읽을 수 있고, 다음에 저장될 때 암호화된 형태로 바뀐다.
-- cryptography 패키지가 없으면 평문으로 동작한다(앱이 안 켜지는 일이 없게).
+- cryptography 패키지가 없으면 평문으로 저장하지 않고 저장을 건너뛴다(encrypt_text가
+  RuntimeError — 호출하는 쪽이 잡는다). 패키지는 requirements.txt에 있어 앱 시작 때
+  자동 설치된다(core/bootstrap.py).
 """
 import os
+
+from data.storage_location import key_file
 
 try:
     from cryptography.fernet import Fernet, InvalidToken
@@ -16,7 +21,7 @@ except ImportError:  # pragma: no cover
     InvalidToken = Exception
 
 PREFIX = "ENC1:"
-KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".chat_key")
+KEY_FILE = key_file()
 _fernet = None
 
 
@@ -35,6 +40,7 @@ def _get_fernet():
             key = f.read().strip()
     except OSError:
         key = Fernet.generate_key()
+        os.makedirs(os.path.dirname(KEY_FILE), exist_ok=True)
         with open(KEY_FILE, "wb") as f:
             f.write(key)
         try:
@@ -48,7 +54,8 @@ def _get_fernet():
 def encrypt_text(text: str) -> str:
     f = _get_fernet()
     if f is None:
-        return text
+        # 평문으로 저장하느니 저장하지 않는다 — 대화 파일은 항상 암호화돼 있어야 한다
+        raise RuntimeError("cryptography 패키지가 없어 대화기록을 암호화할 수 없어요.")
     return PREFIX + f.encrypt(text.encode("utf-8")).decode("ascii")
 
 
