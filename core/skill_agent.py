@@ -24,7 +24,7 @@ import threading
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from settings.config import OLLAMA_MODEL
+from settings.config import OLLAMA_MODEL, OLLAMA_THINK
 
 MAX_STEPS = 8
 COMMAND_TIMEOUT = 60
@@ -141,7 +141,7 @@ class SkillAgentWorker(QThread):
             "요청을 처리하는 데 꼭 맞는 스킬이 있으면 그 이름을, 루미 기본 기능으로 할 일이거나 "
             "일상 대화이거나 맞는 스킬이 없으면 none을 고르세요. 애매하면 none."
         )
-        resp = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "user", "content": prompt}],
+        resp = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=[{"role": "user", "content": prompt}],
                            format={"type": "object", "properties": {"skill": {"type": "string"}},
                                    "required": ["skill"]},
                            options={"temperature": 0, "num_predict": 40})
@@ -171,7 +171,7 @@ class SkillAgentWorker(QThread):
         for _ in range(MAX_STEPS):
             if self._stop.is_set():
                 return self.finished_skill.emit(False, skill.name, "스킬 실행을 멈췄어요.", log)
-            resp = ollama.chat(model=OLLAMA_MODEL, messages=messages, tools=TOOLS,
+            resp = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=messages, tools=TOOLS,
                                options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 1024})
             msg = resp["message"]
             calls = list(msg.get("tool_calls") or []) or _faked_tool_calls(msg.get("content") or "")

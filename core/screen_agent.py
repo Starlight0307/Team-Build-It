@@ -389,7 +389,7 @@ def route_request(text: str) -> str:
     사용자는 모드를 신경 쓰지 않고 말만 하면 되고, 확인은 되돌리기 어려운 동작에서만 받는다."""
     import ollama
     from core.skill_agent import _BUILTIN_FEATURES
-    from settings.config import OLLAMA_MODEL
+    from settings.config import OLLAMA_MODEL, OLLAMA_THINK
     prompt = (
         f"사용자 요청: {text}\n\n"
         f"루미(AI 비서)가 자체 기능으로 할 수 있는 일: {_BUILTIN_FEATURES}\n\n"
@@ -399,7 +399,7 @@ def route_request(text: str) -> str:
         f"{_ROUTE_EXAMPLES}"
     )
     try:
-        resp = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "user", "content": prompt}],
+        resp = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=[{"role": "user", "content": prompt}],
                            format={"type": "object", "properties": {"route": {"type": "string",
                                    "enum": ["screen", "lumi"]}}, "required": ["route"]},
                            options={"temperature": 0, "num_predict": 20})

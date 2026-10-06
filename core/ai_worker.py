@@ -9,7 +9,7 @@ import ollama
 import httpx  # ollama 패키지가 이미 의존하는 라이브러리 — 오류 종류 구분에만 사용
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from settings.config import TOOL_SCHEMAS, MOCK_USER, OLLAMA_MODEL
+from settings.config import TOOL_SCHEMAS, MOCK_USER, OLLAMA_MODEL, OLLAMA_THINK
 
 # 응답 길이 상한 — 2026-10-02 전체 기능 점검 중, 길이 제한이 없던 요청 하나에서 llama3.1이
 # 같은 말을 반복하는 상태에 빠져 24,000토큰 넘게(19분) 끝없이 생성한 것을 확인했다. Ollama는
@@ -4289,7 +4289,7 @@ def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
     # 억제하고 num_predict로 최악의 경우에도 응답 길이에 상한을 둔다.
     _SUMMARY_OPTIONS = {'repeat_penalty': 1.3, 'num_predict': 700}
 
-    final_response = ollama.chat(model=OLLAMA_MODEL, messages=summary_messages, options=_SUMMARY_OPTIONS)
+    final_response = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=summary_messages, options=_SUMMARY_OPTIONS)
     result = final_response['message']['content'].strip()
 
     if _looks_like_repetition_loop(result):
@@ -4315,7 +4315,7 @@ def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
                 "결과에 없는 내용은 무엇이든 절대 추가하지 마."
             )
         }]
-        retry_response = ollama.chat(model=OLLAMA_MODEL, messages=retry_messages, options=_SUMMARY_OPTIONS)
+        retry_response = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=retry_messages, options=_SUMMARY_OPTIONS)
         result = retry_response['message']['content'].strip()
 
     if (_looks_like_json_leak(result) or _looks_like_unrelated_topic_leak(result, raw_results)
@@ -4418,8 +4418,11 @@ def _truncate_tool_result(text: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str
     result += f"\n...(내용이 길어 일부만 표시했습니다 — 전체 {len(text)}자 중 앞부분{'과 경고 항목' if dropped_alert_lines else ''}만)"
     return result
 
-# Windows 환경에서 IANA 시간대 미지원 문제 방지
-os.environ.setdefault("TZ", "Asia/Seoul")
+# (예전엔 여기서 os.environ["TZ"] = "Asia/Seoul"을 넣었다 — 2026-10-06 삭제.
+# Windows C 런타임은 TZ를 "KST-9" 같은 POSIX 형식으로만 읽어서 "Asia/Seoul"을
+# 이름 "Asi" + 시차 0, 즉 UTC로 해석했고, 화면 시계·일정 시간이 9시간 늦게 나왔다.
+# ZoneInfo("Asia/Seoul")는 TZ와 무관하고 Windows에선 tzdata 패키지가 필요하므로
+# requirements.txt에 tzdata를 넣어 해결한다.)
 
 # ==========================================
 # 🧠 백그라운드 AI 스레드
@@ -5514,7 +5517,7 @@ class AIWorker(QThread):
                         }]
 
                         final_response = ollama.chat(
-                            model=OLLAMA_MODEL,
+                            model=OLLAMA_MODEL, think=OLLAMA_THINK,
                             messages=summary_messages,
                             options={'temperature': 0.3, 'num_predict': _MAX_REPLY_TOKENS}
                         )
@@ -5667,7 +5670,7 @@ class AIWorker(QThread):
                         }]
 
                         final_response = ollama.chat(
-                            model=OLLAMA_MODEL,
+                            model=OLLAMA_MODEL, think=OLLAMA_THINK,
                             messages=summary_messages,
                             options={'temperature': 0.3, 'num_predict': _MAX_REPLY_TOKENS}
                         )
@@ -6014,7 +6017,7 @@ class AIWorker(QThread):
             sys.stderr.flush()
 
             response = ollama.chat(
-                model=OLLAMA_MODEL,
+                model=OLLAMA_MODEL, think=OLLAMA_THINK,
                 messages=self.chat_history,
                 tools=ollama_tools if use_tools else None,
                 options=({'temperature': 0.1} if use_tools else {'temperature': 0.7})
@@ -6536,7 +6539,7 @@ class AIWorker(QThread):
                             'role': 'user',
                             'content': "JSON이나 코드 형식 말고, 한국어 문장으로만 답변해줘. 함수를 실행한 결과를 자연스럽게 설명해줘."
                         }]
-                        retry_response = ollama.chat(model=OLLAMA_MODEL, messages=retry_messages,
+                        retry_response = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=retry_messages,
                                                      options={'num_predict': _MAX_REPLY_TOKENS})
                         clean_reply = retry_response['message']['content'].strip()
 

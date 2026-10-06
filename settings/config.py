@@ -13,7 +13,13 @@ MOCK_USER = {"name": "", "logged_in": False}
 # core/ai_worker.py는 이제 여기서 import해서 쓰되, 기존에 `from core.ai_worker
 # import OLLAMA_MODEL`로 쓰던 곳(tests/llm_smoke/ 여러 파일)은 재수출(re-export)
 # 덕분에 그대로 동작한다.
-OLLAMA_MODEL = "llama3.1"
+# LUMI_OLLAMA_MODEL 환경변수로 바꿔 끼울 수 있다 — 다른 모델을 평가셋(tests/llm_smoke/)으로
+# 비교할 때 이 파일을 고치지 않고 돌리기 위해 (예: LUMI_OLLAMA_MODEL=gemma4:12b pytest -m llm)
+OLLAMA_MODEL = os.environ.get("LUMI_OLLAMA_MODEL") or "llama3.1"
+# 모델의 "생각하기(thinking)" — 끈다. gemma4 같은 모델은 기본으로 켜져 있어서 매 답변 전에
+# 긴 생각을 먼저 해 3~5배 느려지고, 생각한 토큰도 답변 길이 상한(num_predict)을 깎아먹는다
+# (2026-10-06 평가셋 실측). 생각하기가 없는 모델(llama3.1)에 넘겨도 무시된다.
+OLLAMA_THINK = False
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_DIR = os.path.join(os.getcwd(), "plugins")

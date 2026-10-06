@@ -73,7 +73,7 @@ import time
 
 import ollama
 
-from settings.config import OLLAMA_MODEL
+from settings.config import OLLAMA_MODEL, OLLAMA_THINK
 
 _MAX_TEXT_LENGTH = 4000
 _MAX_LANGUAGE_LENGTH = 20  # "브라질 포르투갈어" 정도까지 허용, 그 이상은 언어 이름이 아닐 가능성이 높음
@@ -134,7 +134,7 @@ def _chat_once(system_prompt: str, user_prompt: str) -> str:
     """내부 전용 — tools를 아예 넘기지 않는 순수 텍스트 응답 호출(모듈
     docstring의 안전장치 1 참고). 예외는 호출부에서 처리."""
     response = ollama.chat(
-        model=OLLAMA_MODEL,
+        model=OLLAMA_MODEL, think=OLLAMA_THINK,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
