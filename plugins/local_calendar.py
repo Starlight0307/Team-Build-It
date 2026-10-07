@@ -21,7 +21,7 @@ from typing import Optional
 # ⚙️ 설정
 # ─────────────────────────────────────────────
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
-EVENTS_DIR    = os.path.join(BASE_DIR, "local_calendar")
+EVENTS_DIR = __import__("data.storage_location", fromlist=["x"]).user_data_dir("local_calendar")   # 앱 폴더 밖(개인 기록)
 os.makedirs(EVENTS_DIR, exist_ok=True)
 
 DEFAULT_TIMEZONE = "Asia/Seoul"

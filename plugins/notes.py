@@ -37,7 +37,7 @@ import json
 from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-NOTES_DIR = os.path.join(BASE_DIR, "notes")
+NOTES_DIR = __import__("data.storage_location", fromlist=["x"]).user_data_dir("notes")   # 앱 폴더 밖(개인 기록)
 os.makedirs(NOTES_DIR, exist_ok=True)
 
 _current_user_id: str = "guest"

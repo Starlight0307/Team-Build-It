@@ -3,7 +3,7 @@
 # 커밋에 들어가는 것을 막는다 — .gitignore를 무시하고 `git add -f`로 넣은 경우까지.
 # 사용 설정(저장소마다 한 번): git config core.hooksPath .githooks
 # 목록을 바꾸면 tests/test_no_personal_data_tracked.py 의 PERSONAL 도 같이 바꿀 것.
-PERSONAL='^(chat_logs/|data/\.chat_key$|data/\.session\.json$|data/login_history/|\.env$|users\.json$|settings/app_settings\.json$|settings/users/|core/preference_memory(\.json$|/)|calendar_feature/event_duration_memory\.json$|plugins/(activity_log|local_calendar|todo_list|notes|expense_tracker|reminder|app_usage|system_history|tokens)/|plugins/(iot_rooms|iot_scenes|credentials)\.json$|plugins/client_secret_)'
+PERSONAL='^(chat_logs/|data/\.chat_key$|data/\.session\.json$|data/login_history/|\.env$|users\.json$|settings/app_settings\.json$|settings/users/|core/preference_memory(\.json$|/)|calendar_feature/event_duration_memory\.json$|plugins/(activity_log|local_calendar|todo_list|notes|expense_tracker|reminder|app_usage|system_history|tokens)/|plugins/(iot_rooms|iot_scenes|credentials)\.json$|plugins/client_secret_|(.*/)?[^/]*\.lumi(bak)?$|(.*/)?lumi_backup_[^/]*\.zip$)'
 
 blocked=$(git diff --cached --name-only --diff-filter=ACMR | grep -E "$PERSONAL")
 if [ -n "$blocked" ]; then

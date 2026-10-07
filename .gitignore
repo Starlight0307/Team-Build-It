@@ -71,3 +71,8 @@ plugins/notes/
 plugins/expense_tracker/
 plugins/iot_scenes.json
 calendar_feature/event_duration_memory.json
+
+# 내보낸 암호화 대화(.lumi)와 내 데이터 백업 zip — 개인 기록이라 커밋하지 않는다
+*.lumi
+lumi_backup_*.zip
+*.lumibak

@@ -74,7 +74,7 @@ import atexit
 import threading
 from datetime import datetime, timedelta
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "system_history")
+DATA_DIR = __import__("data.storage_location", fromlist=["x"]).user_data_dir("system_history")   # 앱 폴더 밖(개인 기록)
 HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
 
 _MAX_RETAINED_DAYS = 400

@@ -17,6 +17,15 @@ if PROJECT_ROOT not in sys.path:
 
 import pytest
 
+# 테스트가 실제 사용자의 앱 데이터 폴더(%LOCALAPPDATA%/Lumi 등 — 로그인 기록, 알림, 설정 …)를
+# 건드리지 않게, 어떤 모듈보다 먼저(import 시점에) 임시 폴더로 돌려놓는다.
+import tempfile
+_TEST_HOME = tempfile.mkdtemp(prefix="lumi_test_home_")
+os.environ["LOCALAPPDATA"] = _TEST_HOME
+os.environ["XDG_DATA_HOME"] = _TEST_HOME
+os.environ["HOME"] = _TEST_HOME
+os.environ["USERPROFILE"] = _TEST_HOME
+
 
 @pytest.fixture
 def isolated_chat_logs(tmp_path, monkeypatch):

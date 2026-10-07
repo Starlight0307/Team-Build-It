@@ -199,13 +199,18 @@ class HistoryWidget(QWidget):
         self.title_lbl = QLabel(icons.label_html("history", "대화 기록", 22)); hl.addWidget(self.title_lbl); hl.addStretch()
         self.action_btns = []
         for text, handler in (("✏️ 이름 변경", self._rename_current),
-                              ("📤 내보내기", self._export_current),
+                              ("🔒 암호화 내보내기", self._export_current),
                               ("🗑 삭제", self._delete_current)):
-            b = QPushButton(text); b.setFixedSize(96, 34); b.setEnabled(False)
+            b = QPushButton(text); b.setFixedSize(130 if "암호화" in text else 96, 34); b.setEnabled(False)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet("QPushButton { background-color: #E8E3FF; color: #4B3FA0; font-weight: bold; "
                             "border-radius: 6px; border: none; } QPushButton:disabled { background-color: #D8D8E0; color: #9A9AA8; }")
             b.clicked.connect(handler); hl.addWidget(b); self.action_btns.append(b)
+        self.open_enc_btn = QPushButton("🔓 암호화 파일 열기"); self.open_enc_btn.setFixedSize(140, 34)
+        self.open_enc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_enc_btn.setStyleSheet("QPushButton { background-color: #E8E3FF; color: #4B3FA0; font-weight: bold; "
+                                        "border-radius: 6px; border: none; }")
+        self.open_enc_btn.clicked.connect(self._open_encrypted_file); hl.addWidget(self.open_enc_btn)
         self.refresh_btn = QPushButton(" 새로고침"); self.refresh_btn.setFixedSize(110, 34)
         self.refresh_btn.setIcon(icons.icon("refresh-cw", white=True))
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -337,17 +342,24 @@ class HistoryWidget(QWidget):
 
     def _export_current(self):
         if not self.current_session: return
-        from PyQt6.QtWidgets import QFileDialog
         from data.db import export_session_text
-        path, _ = QFileDialog.getSaveFileName(self, "대화 내보내기", f"{self._current_title()}.txt",
-                                              "텍스트 파일 (*.txt)")
-        if not path: return
+        from widget.export_dialog import save_encrypted_export
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(export_session_text(self._user_id(), self.current_session))
-            QMessageBox.information(self, "내보내기", "저장했어요.")
+            text = export_session_text(self._user_id(), self.current_session)
         except Exception as e:
-            QMessageBox.warning(self, "내보내기", f"저장하지 못했어요.\n{e}")
+            QMessageBox.warning(self, "내보내기", f"대화를 읽지 못했어요.\n{e}"); return
+        save_encrypted_export(self, text, self._current_title())
+
+    def _open_encrypted_file(self):
+        from widget.export_dialog import open_encrypted_export
+        from data.db import import_session_text
+
+        def do_import(text):
+            _sid, title, count = import_session_text(self._user_id(), text)
+            self.load_sessions()
+            return f"'{title}' 대화({count}개 메시지)를 대화 기록에 추가했어요."
+
+        open_encrypted_export(self, on_import=do_import)
 
     def _on_session_clicked(self, item):
         for b in self.action_btns: b.setEnabled(True)

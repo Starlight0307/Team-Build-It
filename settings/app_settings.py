@@ -11,6 +11,7 @@ import os
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _GUEST_PATH = os.path.join(_DIR, "app_settings.json")
 _PATH = _GUEST_PATH
+_USER_DIR = None   # 계정별 설정 폴더 — 처음 필요할 때 앱 폴더 밖(storage_location)으로 정한다
 
 DEFAULTS = {
     "dark_mode":   False,  # 화면 테마 (파스텔 테마는 밝은 모드가 기본)
@@ -40,9 +41,12 @@ def set_current_user(user_id) -> None:
     if is_guest(user_id):
         _PATH = _GUEST_PATH
     else:
-        user_dir = os.path.join(_DIR, "users")
-        os.makedirs(user_dir, exist_ok=True)
-        _PATH = os.path.join(user_dir, f"{safe_uid(user_id)}.json")
+        global _USER_DIR
+        if _USER_DIR is None:
+            from data import storage_location
+            _USER_DIR = storage_location.user_data_dir("settings")
+        os.makedirs(_USER_DIR, exist_ok=True)
+        _PATH = os.path.join(_USER_DIR, f"{safe_uid(user_id)}.json")
     _cache = None
 
 

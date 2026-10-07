@@ -153,7 +153,7 @@ def set_session(access_token: str, username: str, refresh_token: str = None, rem
 # ==========================================
 # 🕘 로그인 기록 (로컬) — 마이페이지에서 "최근 로그인"으로 보여준다
 # ==========================================
-LOGIN_HISTORY_DIR = os.path.join(PROJECT_ROOT, "data", "login_history")
+LOGIN_HISTORY_DIR = storage_location.user_data_dir("login_history")
 _LOGIN_HISTORY_MAX = 30
 
 
@@ -463,6 +463,46 @@ def export_session_text(user_id: str, session_id: str) -> str:
         lines.append(str(m.get("content", "")))
         lines.append("")
     return "\n".join(lines)
+
+
+_EXPORT_HEADER = __import__("re").compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] (나|LUMI)$")
+
+
+def parse_export_text(text: str):
+    """export_session_text가 만든 텍스트를 (제목, [{role, content, timestamp}])로 되돌린다."""
+    lines = text.splitlines()
+    title, start = "가져온 대화", 0
+    if lines and lines[0].startswith("# "):
+        title, start = (lines[0][2:].strip() or title), 1
+    messages, cur = [], None
+    for line in lines[start:]:
+        m = _EXPORT_HEADER.match(line)
+        if m:
+            if cur:
+                messages.append(cur)
+            cur = {"role": "user" if m.group(2) == "나" else "assistant",
+                   "timestamp": m.group(1), "lines": []}
+        elif cur is not None:
+            cur["lines"].append(line)
+    if cur:
+        messages.append(cur)
+    return title, [{"role": c["role"], "timestamp": c["timestamp"],
+                    "content": "\n".join(c["lines"]).strip("\n")} for c in messages]
+
+
+def import_session_text(user_id: str, text: str):
+    """내보낸 대화 텍스트를 이 계정의 새 대화로 저장한다(기존 대화는 건드리지 않음).
+    (session_id, 제목, 메시지 수)를 반환. 읽을 대화가 없으면 ValueError."""
+    import uuid
+    title, messages = parse_export_text(text)
+    if not messages:
+        raise ValueError("대화 내용을 찾지 못했어요. 루미에서 내보낸 파일이 맞는지 확인해주세요.")
+    uid = user_id if user_id else "guest"
+    sid = str(uuid.uuid4())
+    os.makedirs(os.path.join(CHAT_LOG_DIR, uid), exist_ok=True)
+    _write_chat_file(os.path.join(CHAT_LOG_DIR, uid, f"{sid}.json"), {
+        "session_id": sid, "session_title": title[:100], "user_id": uid, "messages": messages})
+    return sid, title, len(messages)
 
 
 def encrypt_existing_chats(user_id: str = None) -> int:

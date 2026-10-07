@@ -53,7 +53,7 @@ from calendar import monthrange
 from datetime import datetime, timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TODO_DIR = os.path.join(BASE_DIR, "todo_list")
+TODO_DIR = __import__("data.storage_location", fromlist=["x"]).user_data_dir("todo_list")   # 앱 폴더 밖(개인 기록)
 os.makedirs(TODO_DIR, exist_ok=True)
 
 _current_user_id: str = "guest"

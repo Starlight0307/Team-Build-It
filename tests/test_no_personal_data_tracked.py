@@ -18,7 +18,8 @@ PERSONAL = re.compile(
     r"|settings/app_settings\.json$|settings/users/|core/preference_memory(\.json$|/)"
     r"|calendar_feature/event_duration_memory\.json$"
     r"|plugins/(activity_log|local_calendar|todo_list|notes|expense_tracker|reminder|app_usage|system_history|tokens)/"
-    r"|plugins/(iot_rooms|iot_scenes|credentials)\.json$|plugins/client_secret_)"
+    r"|plugins/(iot_rooms|iot_scenes|credentials)\.json$|plugins/client_secret_"
+    r"|(.*/)?[^/]*\.lumi(bak)?$|(.*/)?lumi_backup_[^/]*\.zip$)"
 )
 
 

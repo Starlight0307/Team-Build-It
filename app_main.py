@@ -1348,7 +1348,7 @@ class AssistantApp(QWidget):
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self._new_chat)
         self.chat_panel.add_header_button(" 지우기", "대화 내용을 지우고 새로 시작", self._clear_conversation,
                                           icon="trash-2")
-        self.chat_panel.add_header_button(" 내보내기", "대화 내용을 텍스트 파일로 저장", self._export_conversation,
+        self.chat_panel.add_header_button(" 내보내기", "대화 내용을 비밀번호로 암호화해 파일로 저장", self._export_conversation,
                                           icon="download")
 
         body = self.chat_panel.body
@@ -1496,21 +1496,16 @@ class AssistantApp(QWidget):
         self.welcome_widget.show()
 
     def _export_conversation(self):
-        from PyQt6.QtWidgets import QFileDialog
         if not self.chat_bubbles:
             self._show_toast("내보낼 대화가 아직 없어요.")
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "대화 내보내기", f"루미_대화_{datetime.now():%Y%m%d_%H%M}.txt", "텍스트 파일 (*.txt)")
-        if not path:
-            return
-        lines = [f"{'나' if b.is_user else '루미'}: {b._raw_text}" for b in self.chat_bubbles]
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("\n\n".join(lines) + "\n")
-            self._show_toast("💾 대화를 저장했어요.")
-        except OSError as e:
-            self._show_toast(f"⚠️ 저장하지 못했어요: {e}")
+        from widget.export_dialog import save_encrypted_export
+        now = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
+        lines = ["# 루미 대화", ""]
+        for b in self.chat_bubbles:   # 대화 기록 화면의 내보내기와 같은 형식 — 나중에 가져오기가 가능하다
+            lines += [f"[{now}] {'나' if b.is_user else 'LUMI'}", b._raw_text, ""]
+        if save_encrypted_export(self, "\n".join(lines), f"루미_대화_{datetime.now():%Y%m%d_%H%M}"):
+            self._show_toast("🔒 암호화해서 저장했어요.")
 
     def init_settings_page(self):
         page = QFrame()

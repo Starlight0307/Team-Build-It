@@ -40,7 +40,7 @@ import json
 import threading
 from datetime import datetime
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "activity_log")
+DATA_DIR = __import__("data.storage_location", fromlist=["x"]).user_data_dir("activity_log")   # 앱 폴더 밖(개인 기록)
 
 _lock = threading.Lock()
 _current_user_id = None  # None=미로그인, "guest"=게스트, 그 외=실제 로그인 사용자

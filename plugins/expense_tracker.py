@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
-EXPENSES_DIR  = os.path.join(BASE_DIR, "expense_tracker")
+EXPENSES_DIR = __import__("data.storage_location", fromlist=["x"]).user_data_dir("expense_tracker")   # 앱 폴더 밖(개인 기록)
 os.makedirs(EXPENSES_DIR, exist_ok=True)
 
 DEFAULT_TIMEZONE = "Asia/Seoul"

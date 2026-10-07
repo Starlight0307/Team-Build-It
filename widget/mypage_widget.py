@@ -417,26 +417,38 @@ class MyPageWidget(QWidget):
 
     def _backup(self):
         from PyQt6.QtWidgets import QFileDialog
-        from data.backup import create_backup, default_backup_name
+        from data.backup import create_backup, default_backup_name, BACKUP_EXT
+        from widget.export_dialog import ask_new_password
         user = (self._username or "")
-        path, _ = QFileDialog.getSaveFileName(self, "백업 저장", default_backup_name(user), "백업 파일 (*.zip)")
+        path, _ = QFileDialog.getSaveFileName(self, "백업 저장", default_backup_name(user),
+                                              f"루미 백업 (*{BACKUP_EXT})")
         if not path: return
+        if not path.lower().endswith(BACKUP_EXT):
+            path += BACKUP_EXT
+        pw = ask_new_password(self, "백업 파일")
+        if pw is None: return
         try:
-            info = create_backup(user, path)
-            QMessageBox.information(self, "백업", f"대화 {info['chats']}개와 설정을 저장했어요.\n"
-                                    "백업 파일은 암호가 풀린 상태이니 안전한 곳에 보관하세요.")
+            info = create_backup(user, path, pw)
+            QMessageBox.information(self, "백업", f"대화 {info['chats']}개와 설정을 비밀번호로 암호화해 저장했어요.\n"
+                                    "비밀번호를 잊으면 복원할 수 없어요.")
         except Exception as e:
             QMessageBox.warning(self, "백업", f"백업하지 못했어요.\n{e}")
 
     def _restore(self):
         from PyQt6.QtWidgets import QFileDialog
-        from data.backup import restore_backup
-        path, _ = QFileDialog.getOpenFileName(self, "백업 불러오기", "", "백업 파일 (*.zip)")
+        from data.backup import restore_backup, is_encrypted_backup, BACKUP_EXT
+        path, _ = QFileDialog.getOpenFileName(self, "백업 불러오기", "",
+                                              f"루미 백업 (*{BACKUP_EXT} *.zip)")
         if not path: return
+        password = None
+        if is_encrypted_backup(path):
+            password, ok = QInputDialog.getText(self, "백업 비밀번호", "백업할 때 정한 비밀번호를 입력하세요.",
+                                                QLineEdit.EchoMode.Password)
+            if not ok: return
         r = QMessageBox.question(self, "복원", "같은 이름의 대화와 설정은 백업 내용으로 덮어써져요. 계속할까요?")
         if r != QMessageBox.StandardButton.Yes: return
         try:
-            info = restore_backup((self._username or ""), path)
+            info = restore_backup((self._username or ""), path, password)
             QMessageBox.information(self, "복원", f"대화 {info['chats']}개를 복원했어요.\n"
                                     "설정은 다음 로그인부터 적용돼요.")
         except Exception as e:

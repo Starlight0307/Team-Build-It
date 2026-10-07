@@ -167,7 +167,11 @@ def set_current_user(user_id: str):
         ROUTINES_FILE, CONDITIONS_FILE, ACTION_LOG_FILE = (
             _GUEST_ROUTINES_FILE, _GUEST_CONDITIONS_FILE, _GUEST_ACTION_LOG_FILE)
     else:
-        user_dir = os.path.join(ROUTINES_DIR, "users")
+        global _USER_DIR
+        if _USER_DIR is None:
+            from data import storage_location
+            _USER_DIR = storage_location.user_data_dir("reminder")
+        user_dir = _USER_DIR
         os.makedirs(user_dir, exist_ok=True)
         uid = safe_uid(new_id)
         ROUTINES_FILE = os.path.join(user_dir, f"{uid}_routines.json")
@@ -194,6 +198,7 @@ ROUTINES_DIR     = os.path.join(BASE_DIR, "reminder")
 os.makedirs(ROUTINES_DIR, exist_ok=True)
 ROUTINES_FILE    = os.path.join(ROUTINES_DIR, "routines.json")
 _GUEST_ROUTINES_FILE = ROUTINES_FILE
+_USER_DIR = None   # 계정별 알림 폴더 — 처음 필요할 때 앱 폴더 밖(storage_location)으로 정한다
 
 _routines_lock   = threading.Lock()
 _routines: dict  = {}   # id -> {"label": str, "hour": int, "minute": int, "last_fired_date": str|None}

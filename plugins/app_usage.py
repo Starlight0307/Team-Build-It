@@ -30,6 +30,7 @@ USAGE_DIR  = os.path.join(BASE_DIR, "app_usage")
 os.makedirs(USAGE_DIR, exist_ok=True)
 USAGE_FILE = os.path.join(USAGE_DIR, "usage.json")
 _GUEST_USAGE_FILE = USAGE_FILE
+_USER_DIR = None   # 계정별 기록 폴더 — 처음 필요할 때 앱 폴더 밖(storage_location)으로 정한다
 
 _SAMPLE_INTERVAL_SECONDS = 5
 _IDLE_LIMIT_SECONDS      = 5 * 60
@@ -312,7 +313,11 @@ def set_current_user(user_id) -> bool:
     if is_guest(user_id):
         usage_file, goals_file = _GUEST_USAGE_FILE, _GUEST_GOALS_FILE
     else:
-        user_dir = os.path.join(USAGE_DIR, "users")
+        global _USER_DIR
+        if _USER_DIR is None:
+            from data import storage_location
+            _USER_DIR = storage_location.user_data_dir("app_usage")
+        user_dir = _USER_DIR
         os.makedirs(user_dir, exist_ok=True)
         uid = safe_uid(user_id)
         usage_file = os.path.join(user_dir, f"{uid}_usage.json")

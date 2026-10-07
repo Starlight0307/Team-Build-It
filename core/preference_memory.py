@@ -16,6 +16,7 @@ from core.user_context import safe_uid, is_guest
 _DIR = os.path.dirname(__file__)
 _GUEST_FILE = os.path.join(_DIR, "preference_memory.json")
 _FILE = _GUEST_FILE
+_USER_DIR = None   # 계정별 기억 폴더 — 처음 필요할 때 앱 폴더 밖(storage_location)으로 정한다
 
 
 def set_current_user(user_id) -> None:
@@ -24,9 +25,12 @@ def set_current_user(user_id) -> None:
     if is_guest(user_id):
         _FILE = _GUEST_FILE
     else:
-        user_dir = os.path.join(_DIR, "preference_memory")
-        os.makedirs(user_dir, exist_ok=True)
-        _FILE = os.path.join(user_dir, f"{safe_uid(user_id)}.json")
+        global _USER_DIR
+        if _USER_DIR is None:
+            from data import storage_location
+            _USER_DIR = storage_location.user_data_dir("preference_memory")
+        os.makedirs(_USER_DIR, exist_ok=True)
+        _FILE = os.path.join(_USER_DIR, f"{safe_uid(user_id)}.json")
 
 
 def get_pref(namespace: str, key: str, max_age_days: float = None):

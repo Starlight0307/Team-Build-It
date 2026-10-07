@@ -122,3 +122,46 @@ def migrate_legacy() -> int:
     except OSError:
         pass
     return moved
+
+
+# ─────────────────────────────────────────────
+# 계정별 데이터(로그인 기록, 설정, 알림, 할 일, 메모, 가계부 …)도 대화기록처럼 앱 폴더 밖에 둔다.
+# 이름 → 예전(앱 폴더 안) 위치. 처음 쓸 때 예전 파일을 새 위치로 옮긴다(같은 이름이 이미 있으면 건너뜀).
+# 비로그인(guest)이 쓰는 공용 파일(plugins/reminder/routines.json 등)은 그대로 둔다.
+# ─────────────────────────────────────────────
+LEGACY_USER_DIRS = {
+    "login_history":     os.path.join(PROJECT_ROOT, "data", "login_history"),
+    "settings":          os.path.join(PROJECT_ROOT, "settings", "users"),
+    "preference_memory": os.path.join(PROJECT_ROOT, "core", "preference_memory"),
+    "reminder":          os.path.join(PROJECT_ROOT, "plugins", "reminder", "users"),
+    "app_usage":         os.path.join(PROJECT_ROOT, "plugins", "app_usage", "users"),
+    "todo_list":         os.path.join(PROJECT_ROOT, "plugins", "todo_list"),
+    "notes":             os.path.join(PROJECT_ROOT, "plugins", "notes"),
+    "expense_tracker":   os.path.join(PROJECT_ROOT, "plugins", "expense_tracker"),
+    "local_calendar":    os.path.join(PROJECT_ROOT, "plugins", "local_calendar"),
+    "activity_log":      os.path.join(PROJECT_ROOT, "plugins", "activity_log"),
+    "system_history":    os.path.join(PROJECT_ROOT, "plugins", "system_history"),
+}
+_migrated_user_dirs = set()
+
+
+def user_data_dir(name: str) -> str:
+    """계정별 데이터 폴더(앱 폴더 밖)를 만들어 돌려준다. 예전 위치에 파일이 남아 있으면 처음 한 번 옮긴다."""
+    path = os.path.join(app_data_dir(), name)
+    os.makedirs(path, exist_ok=True)
+    legacy = LEGACY_USER_DIRS.get(name)
+    if legacy and name not in _migrated_user_dirs:
+        _migrated_user_dirs.add(name)
+        try:
+            if os.path.isdir(legacy) and os.path.normcase(legacy) != os.path.normcase(path):
+                for fname in os.listdir(legacy):
+                    src, dst = os.path.join(legacy, fname), os.path.join(path, fname)
+                    if os.path.isfile(src) and not os.path.exists(dst):
+                        shutil.move(src, dst)
+                try:
+                    os.rmdir(legacy)   # 비었을 때만 지워진다
+                except OSError:
+                    pass
+        except OSError as e:
+            print(f"[개인 데이터 위치 이전 오류] {name}: {e}")
+    return path

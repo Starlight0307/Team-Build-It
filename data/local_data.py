@@ -16,6 +16,24 @@ from core.user_context import safe_uid
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+_LEGACY_REL = {
+    "login_history": ("data", "login_history"), "settings": ("settings", "users"),
+    "preference_memory": ("core", "preference_memory"), "reminder": ("plugins", "reminder", "users"),
+    "app_usage": ("plugins", "app_usage", "users"), "todo_list": ("plugins", "todo_list"),
+    "notes": ("plugins", "notes"), "expense_tracker": ("plugins", "expense_tracker"),
+    "local_calendar": ("plugins", "local_calendar"), "activity_log": ("plugins", "activity_log"),
+}
+
+
+def _user_dir(root: str, name: str) -> str:
+    """계정별 데이터 폴더. 실제 앱(root=프로젝트 폴더)에서는 앱 폴더 밖, 테스트처럼 root를 따로 준
+    경우는 root 아래 예전 구조를 쓴다."""
+    if root == PROJECT_ROOT:
+        from data import storage_location
+        return storage_location.user_data_dir(name)
+    return os.path.join(root, *_LEGACY_REL[name])
+
+
 def purge_user_data(user_id: str, root: str = PROJECT_ROOT, chat_root: str = None) -> int:
     """지운 파일/폴더 수를 반환한다. 일부 실패해도 나머지는 계속 지운다.
     chat_root: 대화기록 폴더 — 생략하면 실제 앱에서는 앱 폴더 밖 대화기록 위치(data/db.py),
@@ -38,13 +56,17 @@ def purge_user_data(user_id: str, root: str = PROJECT_ROOT, chat_root: str = Non
         shutil.rmtree(chat_dir, ignore_errors=True)
         removed += 1
 
+    d = lambda name: _user_dir(root, name)
     targets = [
-        os.path.join(root, "data", "login_history", f"{uid}.json"),
-        os.path.join(root, "settings", "users", f"{uid}.json"),
-        os.path.join(root, "core", "preference_memory", f"{uid}.json"),
+        os.path.join(d("login_history"), f"{uid}.json"),
+        os.path.join(d("settings"), f"{uid}.json"),
+        os.path.join(d("preference_memory"), f"{uid}.json"),
     ]
-    targets += glob.glob(os.path.join(root, "plugins", "reminder", "users", f"{uid}_*"))
-    targets += glob.glob(os.path.join(root, "plugins", "app_usage", "users", f"{uid}_*"))
+    targets += glob.glob(os.path.join(d("reminder"), f"{uid}_*"))
+    targets += glob.glob(os.path.join(d("app_usage"), f"{uid}_*"))
+    # 할 일/메모/가계부/캘린더/활동 이력 — 파일 이름이 {uid}.json, {uid}_budget.json, {uid}.jsonl 등
+    for name in ("todo_list", "notes", "expense_tracker", "local_calendar", "activity_log"):
+        targets += glob.glob(os.path.join(d(name), f"{uid}.*")) + glob.glob(os.path.join(d(name), f"{uid}_*"))
     for path in targets:
         try:
             if os.path.isfile(path):
@@ -58,13 +80,15 @@ def purge_user_data(user_id: str, root: str = PROJECT_ROOT, chat_root: str = Non
 def _guest_sources(root: str, uid: str):
     """(비로그인 때 쓰던 공용 파일, 이 계정의 새 파일) 쌍 목록."""
     j = os.path.join
+    # guest_data_exists는 원본(공용 파일)만 보므로(uid="x") 새 위치 폴더를 만들 필요가 없다
+    d = (lambda name: "") if uid == "x" else (lambda name: _user_dir(root, name))
     return [
-        (j(root, "settings", "app_settings.json"), j(root, "settings", "users", f"{uid}.json")),
-        (j(root, "core", "preference_memory.json"), j(root, "core", "preference_memory", f"{uid}.json")),
-        (j(root, "plugins", "reminder", "routines.json"), j(root, "plugins", "reminder", "users", f"{uid}_routines.json")),
-        (j(root, "plugins", "reminder", "conditions.json"), j(root, "plugins", "reminder", "users", f"{uid}_conditions.json")),
-        (j(root, "plugins", "app_usage", "usage.json"), j(root, "plugins", "app_usage", "users", f"{uid}_usage.json")),
-        (j(root, "plugins", "app_usage", "goals.json"), j(root, "plugins", "app_usage", "users", f"{uid}_goals.json")),
+        (j(root, "settings", "app_settings.json"), j(d("settings"), f"{uid}.json")),
+        (j(root, "core", "preference_memory.json"), j(d("preference_memory"), f"{uid}.json")),
+        (j(root, "plugins", "reminder", "routines.json"), j(d("reminder"), f"{uid}_routines.json")),
+        (j(root, "plugins", "reminder", "conditions.json"), j(d("reminder"), f"{uid}_conditions.json")),
+        (j(root, "plugins", "app_usage", "usage.json"), j(d("app_usage"), f"{uid}_usage.json")),
+        (j(root, "plugins", "app_usage", "goals.json"), j(d("app_usage"), f"{uid}_goals.json")),
     ]
 
 
