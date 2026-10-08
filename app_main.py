@@ -156,6 +156,12 @@ def _sync_calendar_user(user_id: str):
         set_backup_user(user_id)
     except ImportError:
         pass
+    try:
+        # 3단계 보안 점검 기록(신뢰 목록·점검 이력) — 계정별로 따로 남긴다(core/security_records.py)
+        from core.security_records import set_current_user as set_security_records_user
+        set_security_records_user(user_id)
+    except ImportError:
+        pass
 
 
 # ==========================================
@@ -435,16 +441,16 @@ class AssistantApp(QWidget):
     # 🔄 앱 실행 시 1회 자동 업데이트 상태 체크
     # ─────────────────────────────────────────────
     def _run_startup_update_check(self):
-        check_func = next((f for f in self.installed_tools if f.__name__ == 'check_update_status'), None)
-        if not check_func:
-            return
-        self._update_worker = UpdateCheckWorker(check_func)
+        # Windows 업데이트 + 방화벽 + 열린 포트를 백그라운드에서 확인해 한 메시지로 보여준다
+        from core.startup_security import build_startup_notice
+        func_map = {f.__name__: f for f in self.installed_tools}
+        self._update_worker = UpdateCheckWorker(lambda: build_startup_notice(func_map))
         self._update_worker.result_ready.connect(self._on_update_check_result)
         self._update_worker.start()
 
     def _on_update_check_result(self, result: str):
-        # 경고가 필요한 경우에만 배너로 표시 (정상이면 조용히 넘어감)
-        if "🚨" in result or "⚠️" in result:
+        # 점검할 플러그인이 하나도 없으면 빈 글 — 아무것도 띄우지 않는다
+        if result and result.strip():
             self.display_ai_response(f"🤖 로컬 비서: {result}")
 
     # ─────────────────────────────────────────────

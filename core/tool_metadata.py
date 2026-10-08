@@ -139,6 +139,38 @@ TOOL_METADATA: dict = {
         name="disable_risky_firewall_rules", module="network_security", category="network_security",
         risk_level="dangerous", read_only=False, llm_exposed=True,
     ),
+    "get_listening_ports": ToolMetadata(
+        name="get_listening_ports", module="network_security", category="network_security",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "check_firewall_status": ToolMetadata(
+        name="check_firewall_status", module="network_security", category="network_security",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "enable_windows_firewall": ToolMetadata(
+        name="enable_windows_firewall", module="network_security", category="network_security",
+        risk_level="dangerous", read_only=False, llm_exposed=True,
+    ),
+    "block_risky_open_ports": ToolMetadata(
+        name="block_risky_open_ports", module="network_security", category="network_security",
+        risk_level="dangerous", read_only=False, llm_exposed=True,
+    ),
+    "preview_risky_open_ports": ToolMetadata(
+        name="preview_risky_open_ports", module="network_security", category="network_security",
+        risk_level="safe", read_only=True, llm_exposed=False,
+    ),
+    "block_program_internet": ToolMetadata(
+        name="block_program_internet", module="network_security", category="network_security",
+        risk_level="dangerous", read_only=False, llm_exposed=True,
+    ),
+    "list_lumi_firewall_rules": ToolMetadata(
+        name="list_lumi_firewall_rules", module="network_security", category="network_security",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "remove_lumi_firewall_rule": ToolMetadata(
+        name="remove_lumi_firewall_rule", module="network_security", category="network_security",
+        risk_level="dangerous", read_only=False, llm_exposed=True,
+    ),
     "discover_iot_devices": ToolMetadata(
         name="discover_iot_devices", module="iot_control", category="iot",
         risk_level="safe", read_only=True, llm_exposed=True,
@@ -571,6 +603,30 @@ TOOL_METADATA: dict = {
     ),
     "scan_suspicious_services": ToolMetadata(
         name="scan_suspicious_services", module="malware_detection", category="malware_detection",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "check_defender_status": ToolMetadata(
+        name="check_defender_status", module="malware_detection", category="malware_detection",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "scan_scheduled_tasks": ToolMetadata(
+        name="scan_scheduled_tasks", module="malware_detection", category="malware_detection",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "trust_security_item": ToolMetadata(
+        name="trust_security_item", module="malware_detection", category="malware_detection",
+        risk_level="dangerous", read_only=False, llm_exposed=True,
+    ),
+    "untrust_security_item": ToolMetadata(
+        name="untrust_security_item", module="malware_detection", category="malware_detection",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "describe_trust_candidate": ToolMetadata(
+        name="describe_trust_candidate", module="malware_detection", category="malware_detection",
+        risk_level="safe", read_only=True, llm_exposed=False,
+    ),
+    "list_trusted_security_items": ToolMetadata(
+        name="list_trusted_security_items", module="malware_detection", category="malware_detection",
         risk_level="safe", read_only=True, llm_exposed=True,
     ),
     "scan_temp_files": ToolMetadata(

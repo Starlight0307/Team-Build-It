@@ -1,10 +1,52 @@
+import json
+import os
 import platform
 import psutil
 import time
 import subprocess
 import socket
 from datetime import datetime
+
+from core import security_records
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+UNKNOWN_MARK = "❔"
+
+
+class CheckResult(str):
+    """점검 결과 글 + 판정 개수(3단계, 2026-10-08) — malware_detection.CheckResult와 같은 클래스
+    (플러그인끼리 import하지 않는 관례라 각자 둔다). 종합 점수는 이 개수만 쓰고 결과 글은 읽지 않는다.
+    critical=위험(🚨), warning=주의(⚠️), unknown=확인하지 못한 부분(❔ — 점수에 넣지 않음)."""
+
+    def __new__(cls, text: str, critical: int = 0, warning: int = 0, unknown: int = 0, summary: str = ""):
+        obj = super().__new__(cls, text)
+        # summary: 시작 알림처럼 한 줄로 보여줄 때 쓰는 요약(없으면 빈 문자열)
+        obj.summary = str(summary or "")
+        # 개수는 0 이상의 정수만 받는다 — 음수가 들어가면 점수가 오히려 올라가고, bool/실수/문자열은 코드
+        # 실수다. 잘못된 값은 조용히 고치지 않고 바로 오류를 내서(점검 함수 단위로 ❔ 처리됨) 드러낸다
+        # (ChatGPT 검수 3단계 1차). unknown은 '확인하지 못한 항목 수'다.
+        for label, value in (("critical", critical), ("warning", warning), ("unknown", unknown)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"CheckResult.{label}는 0 이상의 정수여야 합니다: {value!r}")
+        obj.critical, obj.warning, obj.unknown = critical, warning, unknown
+        return obj
+
+
+def _judgment_counts(result):
+    """점검 결과의 (위험, 주의, 확인 못 함) 개수, 판정 정보가 없으면 None.
+    클래스 이름이 아니라 속성으로 읽는다 — 세 플러그인이 같은 모양의 CheckResult를 각자 갖고 있어서
+    다른 플러그인의 결과가 섞여도 같은 규칙으로 읽히게."""
+    if not isinstance(result, str):
+        return None
+    try:
+        counts = tuple(getattr(result, name, None) for name in ("critical", "warning", "unknown"))
+    except Exception:
+        # 속성을 읽다가 오류가 나는 객체(property 오류 등) — 리포트 전체가 멈추지 않게 '판정 정보 없음'
+        return None
+    if all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in counts):
+        return counts
+    return None
 
 
 # ==========================================
@@ -207,6 +249,104 @@ TOOL_SCHEMAS = {
             ),
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
+    },
+    # 2026-10-08: 열린 포트(접속 대기) 점검 + Windows 방화벽 활용
+    "get_listening_ports": {
+        "type": "function",
+        "function": {
+            "name": "get_listening_ports",
+            "description": (
+                "이 PC에서 지금 다른 기기의 접속을 기다리는(열려 있는) 포트를 실제 연결 정보로 보여줍니다. "
+                "네트워크에 열린 포트와 이 PC 안에서만 쓰는 포트를 나누고, 어떤 프로그램이 열었는지와 위험도를 "
+                "알려줍니다. '열린 포트 보여줘', '내 컴퓨터 포트 열려있는 거 있어?', '포트 점검해줘'에 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "check_firewall_status": {
+        "type": "function",
+        "function": {
+            "name": "check_firewall_status",
+            "description": (
+                "Windows 방화벽이 네트워크 종류(도메인·개인·공용)별로 켜져 있는지, 들어오는 연결을 기본으로 막는지, "
+                "지금 연결된 네트워크 종류를 확인합니다. '방화벽 켜져 있어?', '방화벽 상태 알려줘'에 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "enable_windows_firewall": {
+        "type": "function",
+        "function": {
+            "name": "enable_windows_firewall",
+            "description": (
+                "Windows 방화벽을 모든 네트워크에서 켜고 들어오는 연결을 기본으로 막습니다(나가는 연결은 그대로). "
+                "사용자가 '방화벽 켜줘'처럼 명확히 요청할 때만 호출하세요. Windows 관리자 승인 창이 뜹니다."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "block_risky_open_ports": {
+        "type": "function",
+        "function": {
+            "name": "block_risky_open_ports",
+            "description": (
+                "네트워크에 열린 위험한 포트(파일 공유·원격 접속·데이터베이스 등)로 들어오는 연결을 Windows 방화벽 "
+                "차단 규칙으로 막습니다. 사용자가 '위험한 포트 막아줘'처럼 명확히 요청할 때만 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["public", "all"],
+                        "description": "public=공용 네트워크(카페·공항 와이파이)에서만 막기(기본), all=모든 네트워크에서 막기"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    "block_program_internet": {
+        "type": "function",
+        "function": {
+            "name": "block_program_internet",
+            "description": (
+                "특정 프로그램(.exe)이 인터넷을 쓰지 못하게 Windows 방화벽 규칙을 만듭니다. 사용자가 프로그램 경로를 "
+                "말하며 '이 프로그램 인터넷 막아줘'라고 요청할 때만 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "program_path": {"type": "string", "description": "막을 프로그램 파일의 전체 경로 (예: C:\\Program Files\\App\\app.exe)"}
+                },
+                "required": ["program_path"]
+            }
+        }
+    },
+    "list_lumi_firewall_rules": {
+        "type": "function",
+        "function": {
+            "name": "list_lumi_firewall_rules",
+            "description": "루미가 만든 Windows 방화벽 규칙(포트 차단·프로그램 인터넷 차단) 목록을 보여줍니다. 'LUMI 방화벽 규칙 보여줘'에 호출하세요.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "remove_lumi_firewall_rule": {
+        "type": "function",
+        "function": {
+            "name": "remove_lumi_firewall_rule",
+            "description": (
+                "루미가 만든 Windows 방화벽 규칙을 지워 되돌립니다(루미가 만들지 않은 규칙은 지우지 않음). "
+                "'LUMI 방화벽 규칙 지워줘', '차단 풀어줘'에 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "rule_name": {"type": "string", "description": "지울 규칙 이름(list_lumi_firewall_rules 결과의 정확한 이름). 전부 지우려면 'all'"}
+                },
+                "required": []
+            }
+        }
     }
 }
 
@@ -311,6 +451,40 @@ def _parse_fw_block(rule: dict, out: list):
 # 🔍 포트 스캔
 # ─────────────────────────────────────────────
 
+# 포트별 위험 등급 표 — 판정 기준이다(🚨 위험 / ⚠️ 주의 / ✅ 안전). scan_open_ports와
+# get_listening_ports가 함께 쓴다.
+PORT_RISKS = {
+    21:  ("FTP(파일 전송)",       "⚠️ 통신 내용이 암호화되지 않아 비밀번호가 노출될 수 있음"),
+    22:  ("SSH(원격 접속)",       "✅ 암호화된 연결 — 안전"),
+    23:  ("Telnet(원격 접속)",    "🚨 통신 내용이 암호화되지 않음, 사용하지 않는 걸 권장"),
+    25:  ("SMTP(메일 발송)",      "⚠️ 스팸 메일 발송에 악용될 수 있음"),
+    53:  ("DNS(주소 변환)",       "⚠️ 공격에 이용될 수 있는 포트"),
+    80:  ("HTTP(웹)",            "⚠️ 암호화 안 된 웹 접속 — HTTPS 사용 권장"),
+    110: ("POP3(메일 수신)",      "⚠️ 통신 내용이 암호화되지 않음"),
+    135: ("RPC(윈도우 원격 기능)", "🚨 외부에 노출되면 위험할 수 있음"),
+    139: ("NetBIOS(내부망 공유)",  "🚨 내부용 기능이라 외부에 노출되면 위험함"),
+    143: ("IMAP(메일 수신)",      "⚠️ 통신 내용이 암호화되지 않음"),
+    443: ("HTTPS(웹)",           "✅ 암호화된 연결 — 안전"),
+    445: ("SMB(파일 공유)",       "🚨 랜섬웨어가 자주 노리는 통로 — 즉시 점검 필요"),
+    1433:("MSSQL(데이터베이스)",   "⚠️ 외부에 노출되면 정보 유출 위험이 큼"),
+    3306:("MySQL(데이터베이스)",   "⚠️ 외부에 노출되면 정보 유출 위험이 큼"),
+    3389:("원격 데스크톱",         "🚨 비밀번호를 계속 시도하는 공격의 주요 표적"),
+    4444:("의심 포트",            "🚨 해킹 도구가 자주 쓰는 포트 — 악성 프로그램 의심"),
+    5432:("PostgreSQL(데이터베이스)","⚠️ 외부에 노출되면 정보 유출 위험이 큼"),
+    6379:("Redis(데이터베이스)",   "🚨 비밀번호 없이 노출되면 데이터를 뺏길 위험이 큼"),
+    6667:("IRC(채팅)",           "⚠️ 악성 프로그램의 원격 조종 통신에 자주 쓰임"),
+    8080:("웹(개발용)",           "⚠️ 개발 중인 서비스 포트, 보안 설정이 허술할 수 있음"),
+    8443:("웹 보안(개발용)",       "⚠️ 개발 중인 서비스 포트"),
+    9001:("Tor(익명 통신)",       "⚠️ 익명 네트워크 중계 포트"),
+    9050:("Tor(익명 통신)",       "⚠️ 익명 네트워크 접속 포트"),
+    27017:("MongoDB(데이터베이스)", "🚨 비밀번호 없이 노출되면 전체 데이터를 뺏길 위험이 큼"),
+    31337:("의심 포트",            "🚨 악성 원격제어 도구가 자주 쓰는 포트"),
+    5900:("VNC(원격 화면)",         "🚨 원격으로 화면을 보고 조작할 수 있는 포트 — 외부 노출 시 매우 위험"),
+    5985:("WinRM(원격 관리)",       "🚨 원격으로 명령을 실행할 수 있는 관리 포트"),
+    5986:("WinRM(원격 관리, 암호화)", "⚠️ 원격 관리 포트 — 쓰지 않으면 닫는 걸 권장"),
+}
+
+
 def scan_open_ports(target: str = "127.0.0.1", port_range: str = "1-1024") -> str:
     print(f"\n[네트워크 보안] {target} 포트 스캔 중... ({port_range})")
 
@@ -329,39 +503,18 @@ def scan_open_ports(target: str = "127.0.0.1", port_range: str = "1-1024") -> st
         else:
             start_port = end_port = int(port_range.strip())
     except ValueError:
-        return "포트 범위 형식이 잘못되었습니다. 예: '1-1024' 또는 포트 하나만 '445'처럼 입력해도 됩니다."
+        return CheckResult("포트 범위 형식이 잘못되었습니다. 예: '1-1024' 또는 포트 하나만 '445'처럼 입력해도 됩니다.",
+                           unknown=1)
+    # 거꾸로 된 범위(1024-1)나 1~65535 밖의 포트는 스캔이 아예 안 돌아서 예전에는 "열린 포트 없음"(정상)으로
+    # 보였다 — 스캔하지 못한 것을 정상으로 보이지 않게 확인 못 함으로 돌려준다(ChatGPT 검수 3단계 1차 테스트에서 발견)
+    if not (1 <= start_port <= end_port <= 65535):
+        return CheckResult("포트 범위가 올바르지 않습니다. 1~65535 사이에서 작은 번호부터 적어 주세요 (예: '1-1024').",
+                           unknown=1)
 
     total = end_port - start_port + 1
     if total > 10000:
-        return "⚠️ 보안상 한 번에 10,000개 이상의 포트는 스캔할 수 없습니다."
+        return CheckResult("⚠️ 보안상 한 번에 10,000개 이상의 포트는 스캔할 수 없습니다.", unknown=1)
 
-    PORT_RISKS = {
-        21:  ("FTP(파일 전송)",       "⚠️ 통신 내용이 암호화되지 않아 비밀번호가 노출될 수 있음"),
-        22:  ("SSH(원격 접속)",       "✅ 암호화된 연결 — 안전"),
-        23:  ("Telnet(원격 접속)",    "🚨 통신 내용이 암호화되지 않음, 사용하지 않는 걸 권장"),
-        25:  ("SMTP(메일 발송)",      "⚠️ 스팸 메일 발송에 악용될 수 있음"),
-        53:  ("DNS(주소 변환)",       "⚠️ 공격에 이용될 수 있는 포트"),
-        80:  ("HTTP(웹)",            "⚠️ 암호화 안 된 웹 접속 — HTTPS 사용 권장"),
-        110: ("POP3(메일 수신)",      "⚠️ 통신 내용이 암호화되지 않음"),
-        135: ("RPC(윈도우 원격 기능)", "🚨 외부에 노출되면 위험할 수 있음"),
-        139: ("NetBIOS(내부망 공유)",  "🚨 내부용 기능이라 외부에 노출되면 위험함"),
-        143: ("IMAP(메일 수신)",      "⚠️ 통신 내용이 암호화되지 않음"),
-        443: ("HTTPS(웹)",           "✅ 암호화된 연결 — 안전"),
-        445: ("SMB(파일 공유)",       "🚨 랜섬웨어가 자주 노리는 통로 — 즉시 점검 필요"),
-        1433:("MSSQL(데이터베이스)",   "⚠️ 외부에 노출되면 정보 유출 위험이 큼"),
-        3306:("MySQL(데이터베이스)",   "⚠️ 외부에 노출되면 정보 유출 위험이 큼"),
-        3389:("원격 데스크톱",         "🚨 비밀번호를 계속 시도하는 공격의 주요 표적"),
-        4444:("의심 포트",            "🚨 해킹 도구가 자주 쓰는 포트 — 악성 프로그램 의심"),
-        5432:("PostgreSQL(데이터베이스)","⚠️ 외부에 노출되면 정보 유출 위험이 큼"),
-        6379:("Redis(데이터베이스)",   "🚨 비밀번호 없이 노출되면 데이터를 뺏길 위험이 큼"),
-        6667:("IRC(채팅)",           "⚠️ 악성 프로그램의 원격 조종 통신에 자주 쓰임"),
-        8080:("웹(개발용)",           "⚠️ 개발 중인 서비스 포트, 보안 설정이 허술할 수 있음"),
-        8443:("웹 보안(개발용)",       "⚠️ 개발 중인 서비스 포트"),
-        9001:("Tor(익명 통신)",       "⚠️ 익명 네트워크 중계 포트"),
-        9050:("Tor(익명 통신)",       "⚠️ 익명 네트워크 접속 포트"),
-        27017:("MongoDB(데이터베이스)", "🚨 비밀번호 없이 노출되면 전체 데이터를 뺏길 위험이 큼"),
-        31337:("의심 포트",            "🚨 악성 원격제어 도구가 자주 쓰는 포트"),
-    }
 
     def _check_port(port):
         try:
@@ -386,13 +539,17 @@ def scan_open_ports(target: str = "127.0.0.1", port_range: str = "1-1024") -> st
     open_ports.sort()
 
     if not open_ports:
-        return (f"[🔍 포트 스캔 결과] {target} ({port_range})\n"
-                f"열린 포트가 없습니다. (스캔 시간: {elapsed}초)")
+        return CheckResult(f"[🔍 포트 스캔 결과] {target} ({port_range})\n"
+                           f"열린 포트가 없습니다. (스캔 시간: {elapsed}초)")
 
     lines = []
+    critical = warning = 0
     for port in open_ports:
         if port in PORT_RISKS:
             svc, risk = PORT_RISKS[port]
+            # 위험도는 PORT_RISKS 표에 정해 둔 등급 기호(🚨/⚠️/✅)로 센다 — 표 자체가 판정 기준이다
+            critical += risk.startswith("🚨")
+            warning += risk.startswith("⚠️")
             lines.append(f"  - 포트 {port:5d} ({svc}) — {risk}")
         else:
             lines.append(f"  - 포트 {port:5d} (알 수 없음)")
@@ -400,7 +557,7 @@ def scan_open_ports(target: str = "127.0.0.1", port_range: str = "1-1024") -> st
     result = (f"[🔍 포트 스캔 결과] {target} ({port_range})\n"
               f"열린 포트 {len(open_ports)}개 발견 (스캔 시간: {elapsed}초):\n")
     result += "\n".join(lines)
-    return result
+    return CheckResult(result, critical=critical, warning=warning)
 
 
 # ─────────────────────────────────────────────
@@ -414,11 +571,12 @@ def get_firewall_rules() -> str:
     try:
         if system == "Linux":
             result = subprocess.check_output(["ufw", "status", "verbose"], text=True, stderr=subprocess.DEVNULL)
-            return f"[🛡️ 방화벽 규칙 (ufw)]\n{result.strip()}"
+            # 리눅스/맥은 규칙 원문만 보여주고 위험 판정은 하지 않는다 — 판정하지 않은 것을 ✅로 보이지 않게
+            return CheckResult(f"[🛡️ 방화벽 규칙 (ufw)]\n{result.strip()}", unknown=1)
 
         elif system == "Darwin":
             result = subprocess.check_output(["pfctl", "-sr"], text=True, stderr=subprocess.STDOUT)
-            return f"[🛡️ 방화벽 규칙 (pfctl)]\n{result.strip()}"
+            return CheckResult(f"[🛡️ 방화벽 규칙 (pfctl)]\n{result.strip()}", unknown=1)
 
         elif system == "Windows":
             proc = subprocess.run(
@@ -459,7 +617,7 @@ def get_firewall_rules() -> str:
                 _parse_fw_block(rule, rules)
 
             if not rules:
-                return "[🛡️ 방화벽 규칙]\n활성화된 인바운드 허용 규칙이 없습니다."
+                return CheckResult("[🛡️ 방화벽 규칙]\n활성화된 인바운드 허용 규칙이 없습니다.")
 
             # 위험(🚨) 규칙을 앞으로 정렬 — 규칙이 많아 결과가 잘려도(_truncate_tool_result)
             # 위험 항목은 항상 앞부분에 남아 누락되지 않는다 (get_network_connections의
@@ -469,16 +627,17 @@ def get_firewall_rules() -> str:
 
             header = (f"[🛡️ 방화벽 규칙 — 인바운드 허용 {len(rules)}개]\n"
                       "※ 외부에서 이 PC로 들어올 수 있는 규칙 목록입니다.\n\n")
-            return header + "\n".join(risky_rules + normal_rules)
+            # risky_rules는 _parse_fw_block이 "모든 포트 개방"으로 판정해 🚨를 붙인 규칙들
+            return CheckResult(header + "\n".join(risky_rules + normal_rules), critical=len(risky_rules))
 
         else:
-            return f"⚠️ 지원하지 않는 OS입니다: {system}"
+            return CheckResult(f"⚠️ 지원하지 않는 OS입니다: {system}", unknown=1)
 
     except FileNotFoundError:
-        return "⚠️ 방화벽 정보를 확인할 수 없습니다."
+        return CheckResult("⚠️ 방화벽 정보를 확인할 수 없습니다.", unknown=1)
     except subprocess.CalledProcessError as e:
         print(f"[네트워크 보안] 방화벽 조회 오류: {e}")
-        return "⚠️ 방화벽 규칙을 불러오지 못했습니다. 잠시 후 다시 시도해주세요."
+        return CheckResult("⚠️ 방화벽 규칙을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
 
 
 def manage_firewall(action: str, port: int, protocol: str = "tcp") -> str:
@@ -831,7 +990,7 @@ def get_network_connections() -> str:
 
     connections = psutil.net_connections(kind='inet')
     if not connections:
-        return "현재 활성화된 네트워크 연결이 없습니다."
+        return CheckResult("현재 활성화된 네트워크 연결이 없습니다.")
 
     external = []
     suspicious = []
@@ -881,7 +1040,9 @@ def get_network_connections() -> str:
     if not suspicious and not external and not local:
         result += "외부로 나가는 연결이 없습니다."
 
-    return result.strip()
+    # 해킹 도구가 자주 쓰는 포트로 나가는 연결(⛔) 하나당 위험 1개 — 예전 점수 계산은 🚨/⚠️만 세서
+    # ⛔로 표시되는 이 의심 연결이 점수에 전혀 반영되지 않았다(3단계에서 발견)
+    return CheckResult(result.strip(), critical=len(suspicious))
 
 
 def monitor_network_traffic(duration_seconds: int = 5) -> str:
@@ -962,7 +1123,7 @@ def monitor_network_traffic(duration_seconds: int = 5) -> str:
 def check_dns_settings() -> str:
     print("\n[네트워크 보안] DNS 설정 확인 중...")
     if platform.system() != "Windows":
-        return "⚠️ 이 기능은 Windows 전용입니다."
+        return CheckResult("⚠️ 이 기능은 Windows 전용입니다.", unknown=1)
 
     try:
         proc = subprocess.run(
@@ -975,7 +1136,7 @@ def check_dns_settings() -> str:
         )
         raw = proc.stdout.strip()
         if not raw:
-            return "[🌐 DNS 설정]\nDNS 서버 정보를 가져올 수 없습니다."
+            return CheckResult("[🌐 DNS 설정]\nDNS 서버 정보를 가져올 수 없습니다.", unknown=1)
 
         all_ips = set()
         for line in raw.splitlines():
@@ -985,7 +1146,7 @@ def check_dns_settings() -> str:
                     all_ips.add(ip)
 
         if not all_ips:
-            return "[🌐 DNS 설정]\n설정된 DNS 서버가 없습니다 (DHCP 자동)."
+            return CheckResult("[🌐 DNS 설정]\n설정된 DNS 서버가 없습니다 (DHCP 자동).")
 
         lines = []
         suspicious = []
@@ -1005,33 +1166,589 @@ def check_dns_settings() -> str:
                         "네트워크 어댑터 설정에서 DNS를 직접 확인하세요.")
         else:
             result += "\n\n✅ 알려진 정상 DNS 서버만 사용 중입니다."
-        return result
+        # 알 수 없는 외부 DNS 서버 하나당 위험 1개(아래 경고 문단은 같은 내용의 요약이라 세지 않음)
+        return CheckResult(result, critical=len(suspicious))
 
     except subprocess.TimeoutExpired:
-        return "⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요."
+        return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
     except Exception as e:
         print(f"[네트워크 보안] DNS 확인 오류: {e}")
-        return "⚠️ DNS 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return CheckResult("⚠️ DNS 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
 
 
 # ─────────────────────────────────────────────
 # 📊 네트워크 보안 종합 리포트 (이 파일 안의 항목만 — 다른 플러그인 의존 없음)
 # ─────────────────────────────────────────────
 
-def _score_report(title: str, checks) -> str:
-    """checks: [(항목명, 실행함수), ...] — 각 결과의 🚨/⚠️ 개수로 점수화."""
+# ─────────────────────────────────────────────
+# 🔌 열린 포트(접속 대기) 점검 + 🧱 Windows 방화벽 활용 (2026-10-08)
+# ─────────────────────────────────────────────
+# 루미가 직접 보안 기능을 수행하지는 않는다 — 열린 포트를 정확히 보여주고, 막는 일은 Windows 방화벽
+# 규칙으로 한다. 루미가 만든 규칙은 모두 그룹 "LUMI 보안"에 넣어 한눈에 보고 되돌릴 수 있게 한다.
+# 방화벽 설정 변경은 Windows 관리자 승인(UAC)이 필요하다 — 앱이 관리자 권한이 아니면 승인 창을 띄운다.
+
+LUMI_FIREWALL_GROUP = "LUMI 보안"
+LUMI_RULE_PREFIX = "LUMI 보안 - "
+_LOOPBACK_PREFIXES = ("127.", "::1")
+# Windows가 동적으로 여는 RPC 포트(49152~65535)를 쓰는 기본 구성요소 — 정상 동작이라 위험으로 치지 않는다
+_WINDOWS_RPC_OWNERS = {"lsass.exe", "wininit.exe", "services.exe", "spoolsv.exe", "svchost.exe"}
+# 인터넷 차단을 걸면 Windows 자체가 망가지는 프로그램 — 차단을 거부한다
+_UNBLOCKABLE_PROGRAMS = {
+    "svchost.exe", "lsass.exe", "services.exe", "wininit.exe", "winlogon.exe", "csrss.exe", "smss.exe",
+    "explorer.exe", "system", "dwm.exe", "spoolsv.exe", "msmpeng.exe", "searchhost.exe",
+}
+
+
+def _ns_powershell_exe():
+    """Windows PowerShell 전체 경로 — malware_detection._powershell_exe와 같은 규칙(플러그인끼리 import하지
+    않는 관례라 각자 둔다). Windows 폴더를 OS API로 구하고, 못 구하면 None."""
+    if os.name != "nt":
+        return "powershell"
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(260)
+        n = ctypes.windll.kernel32.GetSystemWindowsDirectoryW(buf, 260)
+        root = buf.value if 0 < n < 260 else None
+    except Exception:
+        root = None
+    if not root:
+        return None
+    path = os.path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    return path if os.path.isfile(path) else None
+
+
+def _ps_json(script: str, timeout: int = 30):
+    """읽기 전용 PowerShell을 실행해 JSON을 받는다. 실패하면 None."""
+    ps = _ns_powershell_exe()
+    if not ps:
+        return None
+    try:
+        proc = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command",
+             "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + script],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return json.loads(proc.stdout.strip() or "null")
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return None
+
+
+def _ps_quote(text: str) -> str:
+    """PowerShell 작은따옴표 문자열 — 안의 ' 는 '' 로."""
+    return "'" + str(text).replace("'", "''") + "'"
+
+
+def _is_admin() -> bool:
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _run_admin_powershell(script: str, timeout: int = 90):
+    """방화벽을 바꾸는 PowerShell을 관리자 권한으로 실행한다 → 결과 줄 목록, 또는 (None, 이유).
+
+    앱이 관리자 권한이 아니면 Windows 관리자 승인 창(UAC)을 띄운다 — 사용자가 직접 승인해야 실행된다.
+    스크립트는 -EncodedCommand로 넘겨 따옴표·특수문자가 섞여도 명령이 바뀌지 않게 하고, 결과는 루미가
+    만든 임시 파일로만 받는다. 스크립트 안의 값(포트·경로·이름)은 부르는 쪽이 검증·_ps_quote 처리한다.
+
+    스크립트는 단계마다 $lumiOut.Add('OK …'/'SKIP …'/'FAIL … 이유')로 결과를 남긴다 — 여러 규칙 중 일부만
+    성공해도 무엇이 바뀌었는지 정확히 알리기 위해서다(ChatGPT 검수 A/B 1차). 끝까지 돌면 'DONE'이 붙는다.
+    반환: (lines, "") — 관리자 작업이 실행됨 / (None, 이유) — 실행되지 않았거나 결과를 알 수 없음."""
+    import base64
+    import tempfile
+    ps = _ns_powershell_exe()
+    if not ps:
+        return None, "Windows PowerShell을 찾지 못해 방화벽을 바꾸지 않았어요."
+    workdir = tempfile.mkdtemp(prefix="lumi_fw_")
+    out_file = os.path.join(workdir, "result.txt")
+    inner = (
+        "$ErrorActionPreference = 'Stop'; $lumiOut = New-Object System.Collections.Generic.List[string]; "
+        f"try {{ {script}; $lumiOut.Add('DONE') }} catch {{ $lumiOut.Add('ERROR ' + $_.Exception.Message) }}; "
+        f"$lumiOut | Out-File -Encoding utf8 {_ps_quote(out_file)}"
+    )
+    encoded = base64.b64encode(inner.encode("utf-16-le")).decode("ascii")
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        if _is_admin():
+            subprocess.run([ps, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                           capture_output=True, timeout=timeout, creationflags=flags)
+        else:
+            outer = (f"Start-Process -FilePath {_ps_quote(ps)} -Verb RunAs -WindowStyle Hidden -Wait "
+                     f"-ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}'")
+            subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", outer],
+                           capture_output=True, timeout=timeout, creationflags=flags)
+        if not os.path.isfile(out_file):
+            return None, ("관리자 권한 작업이 끝나지 않아 방화벽을 바꾸지 않았어요 "
+                          "(관리자 승인 창에서 '아니요'를 눌렀거나, 관리자 작업을 실행하지 못했어요).")
+        with open(out_file, "r", encoding="utf-8-sig", errors="replace") as f:
+            return [ln.strip() for ln in f.read().splitlines() if ln.strip()], ""
+    except subprocess.TimeoutExpired:
+        return None, ("관리자 작업이 시간 안에 끝나지 않았어요. 방화벽이 일부 바뀌었을 수 있으니 "
+                      "'LUMI 방화벽 규칙 보여줘'로 확인해 주세요.")
+    except OSError as e:
+        return None, f"관리자 작업을 실행하지 못해 방화벽을 바꾸지 않았어요: {e}"
+    finally:
+        try:
+            if os.path.isfile(out_file):
+                os.remove(out_file)
+            os.rmdir(workdir)
+        except OSError:
+            pass
+
+
+def _step(key: str, body: str) -> str:
+    """관리자 스크립트의 한 단계 — 실패해도 다음 단계는 계속하고 결과를 key로 남긴다."""
+    return (f"try {{ {body}; $lumiOut.Add({_ps_quote('OK ' + key)}) }} "
+            f"catch {{ $lumiOut.Add({_ps_quote('FAIL ' + key + ' ')} + $_.Exception.Message) }}")
+
+
+def _step_results(lines):
+    """결과 줄 → ({key: "OK"/"SKIP"/"FAIL"}, {key: 실패 이유}, 끝까지 돌았는지)."""
+    status, reasons = {}, {}
+    for ln in lines or []:
+        kind, _, rest = ln.partition(" ")
+        if kind in ("OK", "SKIP", "FAIL"):
+            key, _, why = rest.partition(" ")
+            status[key] = kind
+            if kind == "FAIL":
+                reasons[key] = why[:200]
+    return status, reasons, bool(lines) and lines[-1] == "DONE"
+
+
+def _listening_ports():
+    """{포트: {"addrs": set, "procs": set}} — 지금 접속을 기다리는 TCP 포트. 실패하면 None."""
+    try:
+        conns = psutil.net_connections(kind="tcp")
+    except (psutil.AccessDenied, OSError):
+        return None
+    ports = {}
+    names = {}
+    for c in conns:
+        if c.status != psutil.CONN_LISTEN or not c.laddr:
+            continue
+        entry = ports.setdefault(c.laddr.port, {"addrs": set(), "procs": set()})
+        entry["addrs"].add(c.laddr.ip)
+        if c.pid not in names:
+            try:
+                names[c.pid] = psutil.Process(c.pid).name() if c.pid else "알 수 없음"
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                names[c.pid] = "확인 불가"
+        entry["procs"].add(names[c.pid])
+    return ports
+
+
+def _is_network_exposed(addrs) -> bool:
+    """루프백(127.x, ::1)에만 열린 포트는 이 PC 안에서만 쓰인다 — 그 외 주소가 하나라도 있으면 네트워크에 열림."""
+    return any(not str(a).startswith(_LOOPBACK_PREFIXES) for a in addrs)
+
+
+def _port_judgment(port: int, procs):
+    """(심각도 "critical"/"warning"/"", 서비스 이름, 설명) — 네트워크에 열린 포트 기준."""
+    if port >= 49152 and procs and set(p.lower() for p in procs) <= _WINDOWS_RPC_OWNERS:
+        return "", "Windows 기본 기능(동적 RPC)", ""
+    if port in PORT_RISKS:
+        svc, risk = PORT_RISKS[port]
+        if risk.startswith("🚨"):
+            return "critical", svc, risk[2:].strip()
+        if risk.startswith("⚠️"):
+            return "warning", svc, risk[2:].strip()
+        return "", svc, risk[2:].strip()
+    return "", "", ""
+
+
+def _risky_exposed_ports(ports=None):
+    """[(포트, 심각도, 서비스, 설명, 프로그램들)] — 네트워크에 열린 포트 중 위험/주의 등급."""
+    ports = _listening_ports() if ports is None else ports
+    out = []
+    for port, info in sorted((ports or {}).items()):
+        if not _is_network_exposed(info["addrs"]):
+            continue
+        severity, svc, desc = _port_judgment(port, info["procs"])
+        if severity:
+            out.append((port, severity, svc, desc, sorted(info["procs"])))
+    return out
+
+
+def get_listening_ports() -> str:
+    """지금 다른 기기의 접속을 기다리는 포트(TCP)를 실제 연결 정보로 확인한다."""
+    print("\n[네트워크 보안] 열린 포트(접속 대기) 확인 중...")
+    title = "[🔌 열린 포트 점검]"
+    ports = _listening_ports()
+    if ports is None:
+        return CheckResult(f"{title}\n{UNKNOWN_MARK} 열린 포트 정보를 읽지 못해 확인하지 못했어요.", unknown=1,
+                           summary="확인하지 못함")
+    exposed = {p: i for p, i in ports.items() if _is_network_exposed(i["addrs"])}
+    local_only = len(ports) - len(exposed)
+    critical = warning = 0
+    risky_lines, known_lines, other_lines, summary_items = [], [], [], []
+    for port in sorted(exposed):
+        procs = ", ".join(sorted(exposed[port]["procs"]))
+        severity, svc, desc = _port_judgment(port, exposed[port]["procs"])
+        label = f"{port}" + (f" ({svc})" if svc else "")
+        if severity == "critical":
+            critical += 1
+            risky_lines.append(f"  🚨 {label} — {procs} — {desc}")
+            summary_items.append(f"{port} {svc}")
+        elif severity == "warning":
+            warning += 1
+            risky_lines.append(f"  ⚠️ {label} — {procs} — {desc}")
+            summary_items.append(f"{port} {svc}")
+        elif svc:
+            known_lines.append(f"  - {label} — {procs}")
+        else:
+            # 위험 포트 표에 없는 포트 — '안전'이 아니라 '분류하지 못함'이다(ChatGPT 검수 A/B 1차).
+            # 이 프로그램을 내가 알고 쓰는지 확인해 보라고 따로 보여준다(점수에는 넣지 않음)
+            other_lines.append(f"  - {port} — {procs} (알려진 포트 목록에 없음)")
+    lines = [f"{title} (다른 기기의 접속을 기다리는 TCP 포트 {len(ports)}개)", ""]
+    if exposed:
+        lines.append(f"네트워크에 열린 포트 {len(exposed)}개:")
+        lines += risky_lines + known_lines + other_lines
+        if other_lines:
+            lines.append(f"ℹ️ 알려진 포트 목록에 없는 포트 {len(other_lines)}개는 위험하다는 뜻은 아니지만, 연 프로그램을 "
+                         "내가 알고 쓰는지 확인해 보세요.")
+    else:
+        lines.append("✅ 네트워크에 열린 포트가 없어요.")
+    lines.append(f"\n🏠 이 PC 안에서만 쓰는 포트 {local_only}개 (다른 기기에서는 접속할 수 없음)")
+    if critical or warning:
+        lines.append("💡 '열려 있다'는 건 프로그램이 접속을 기다린다는 뜻이에요. 실제로 밖에서 닿는지는 Windows 방화벽 "
+                     "규칙에 달려 있어요. '위험한 포트 막아줘'라고 하면 Windows 방화벽 차단 규칙으로 확실히 막을 수 있어요.")
+    unclassified = f", 목록에 없는 포트 {len(other_lines)}개" if other_lines else ""
+    if critical or warning:
+        summary = (f"네트워크에 열린 포트 {len(exposed)}개 — 위험 {critical}개, 주의 {warning}개{unclassified} "
+                   f"({', '.join(summary_items[:4])}{' …' if len(summary_items) > 4 else ''})")
+    else:
+        summary = f"네트워크에 열린 포트 {len(exposed)}개 — 알려진 위험 포트 없음{unclassified}"
+    return CheckResult("\n".join(lines), critical=critical, warning=warning, summary=summary)
+
+
+_CATEGORY_TO_PROFILE = {"public": "Public", "private": "Private", "domainauthenticated": "Domain"}
+_CATEGORY_LABEL = {"Public": "공용", "Private": "개인", "Domain": "도메인(회사)"}
+
+
+def _firewall_state():
+    return _ps_json(
+        "$p = @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop | ForEach-Object { [ordered]@{ "
+        "name=[string]$_.Name; enabled=[string]$_.Enabled; inbound=[string]$_.DefaultInboundAction } }); "
+        "$n = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { [ordered]@{ "
+        "name=[string]$_.Name; category=[string]$_.NetworkCategory } }); "
+        "ConvertTo-Json -InputObject ([ordered]@{ profiles=$p; networks=$n }) -Depth 4 -Compress")
+
+
+def check_firewall_status() -> str:
+    """Windows 방화벽이 켜져 있는지(프로필별), 들어오는 연결을 기본으로 막는지, 지금 네트워크 종류."""
+    print("\n[네트워크 보안] Windows 방화벽 상태 확인 중...")
+    title = "[🧱 Windows 방화벽 상태]"
+    if platform.system() != "Windows":
+        return CheckResult("⚠️ 이 기능은 Windows 전용입니다.", unknown=1, summary="확인하지 못함")
+    data = _firewall_state()
+    profiles = data.get("profiles") if isinstance(data, dict) else None
+    if not isinstance(profiles, list) or not profiles:
+        return CheckResult(f"{title}\n{UNKNOWN_MARK} 방화벽 상태를 읽지 못해 확인하지 못했어요.", unknown=1,
+                           summary="확인하지 못함")
+    networks = data.get("networks") if isinstance(data.get("networks"), list) else []
+    current = {_CATEGORY_TO_PROFILE.get(str(n.get("category", "")).lower()) for n in networks if isinstance(n, dict)}
+    current.discard(None)
+    critical = warning = unknown = 0
+    lines = []
+    off = []
+    for prof in profiles:
+        if not isinstance(prof, dict):
+            continue
+        name = str(prof.get("name", ""))
+        label = _CATEGORY_LABEL.get(name, name)
+        in_use = " ← 지금 연결된 네트워크" if name in current else ""
+        enabled = str(prof.get("enabled", "")).lower()
+        inbound = str(prof.get("inbound", "")).lower()
+        if enabled == "false":
+            # 지금 쓰는 네트워크의 방화벽이 꺼져 있으면 위험, 다른 프로필이면 주의
+            if name in current:
+                critical += 1
+                lines.append(f"🚨 {label} 네트워크 방화벽이 꺼져 있어요{in_use}")
+            else:
+                warning += 1
+                lines.append(f"⚠️ {label} 네트워크 방화벽이 꺼져 있어요")
+            off.append(label)
+        elif enabled == "true":
+            if inbound == "allow":
+                critical += 1 if name in current else 0
+                warning += 0 if name in current else 1
+                lines.append(f"{'🚨' if name in current else '⚠️'} {label} 네트워크: 방화벽은 켜져 있지만 들어오는 "
+                             f"연결을 기본으로 허용해요{in_use}")
+            elif inbound == "block":
+                lines.append(f"✅ {label} 네트워크 방화벽 켜짐 (들어오는 연결 기본 차단){in_use}")
+            else:
+                # NotConfigured·빈 값 등 — '기본 차단'이라고 단정하지 않는다(ChatGPT 검수 A/B 1차)
+                unknown += 1
+                lines.append(f"{UNKNOWN_MARK} {label} 네트워크 방화벽은 켜져 있지만 들어오는 연결 기본 동작을 "
+                             f"확인하지 못했어요{in_use}")
+        else:
+            unknown += 1
+            lines.append(f"{UNKNOWN_MARK} {label} 네트워크 방화벽 상태를 알 수 없어요")
+    for n in networks:
+        if isinstance(n, dict) and str(n.get("category", "")).lower() == "private":
+            lines.append(f"ℹ️ 지금 '{n.get('name')}' 네트워크를 '개인'으로 쓰고 있어요 — 카페·공용 와이파이라면 "
+                         "'공용'으로 바꾸는 게 더 안전해요(Windows 설정 > 네트워크 및 인터넷).")
+    if critical or warning:
+        lines.append("💡 '방화벽 켜줘'라고 하면 Windows 방화벽을 모든 네트워크에서 켜고 들어오는 연결을 기본으로 막아요.")
+    if off:
+        summary = f"{', '.join(off)} 네트워크에서 꺼져 있음"
+    elif critical or warning:
+        summary = "켜져 있지만 들어오는 연결을 기본 허용하는 프로필이 있음"
+    elif unknown:
+        summary = "일부 상태를 확인하지 못함"
+    else:
+        cur = ", ".join(_CATEGORY_LABEL.get(c, c) for c in sorted(current)) or "알 수 없음"
+        summary = f"모든 네트워크에서 켜짐 (지금 네트워크: {cur})"
+    return CheckResult(f"{title}\n" + "\n".join(lines), critical=critical, warning=warning, unknown=unknown,
+                       summary=summary)
+
+
+def enable_windows_firewall() -> str:
+    """모든 네트워크 프로필에서 Windows 방화벽을 켜고 들어오는 연결을 기본으로 막는다(나가는 연결은 허용 유지)."""
+    if platform.system() != "Windows":
+        return "⚠️ 이 기능은 Windows 전용입니다."
+    lines, why = _run_admin_powershell(_step(
+        "firewall", "Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True "
+                    "-DefaultInboundAction Block -DefaultOutboundAction Allow"))
+    if lines is None:
+        return f"[방화벽 켜기 안 됨]\n{why}"
+    status, reasons, _ = _step_results(lines)
+    if status.get("firewall") == "OK":
+        return ("[✅ Windows 방화벽 켜기 완료]\n모든 네트워크(도메인·개인·공용)에서 방화벽을 켜고, 들어오는 연결은 "
+                "허용 규칙이 있는 것만 받도록 했어요. 나가는 연결(인터넷 사용)은 그대로예요.")
+    return f"[방화벽 켜기 안 됨]\n{reasons.get('firewall') or '방화벽 설정을 바꾸지 못했어요.'}"
+
+
+_PROFILE_SCOPES = {"public": "Public", "all": "Any"}
+
+
+def preview_risky_open_ports(scope: str = "public") -> str:
+    """block_risky_open_ports 확인창에 보여줄 내용(AI가 직접 부르지 않는 내부 함수)."""
+    risky = _risky_exposed_ports()
+    where = "공용 네트워크(카페·공항 와이파이 등)에서만" if scope != "all" else "모든 네트워크에서"
+    if not risky:
+        return "지금 네트워크에 열린 위험한 포트가 없어요 — 만들 차단 규칙이 없어요."
+    lines = [f"Windows 방화벽에 차단 규칙을 만들어 {where} 아래 포트로 들어오는 연결을 막아요:"]
+    for port, severity, svc, _, procs in risky:
+        lines.append(f"  - {port} ({svc}) — {', '.join(procs)}")
+    if any(p in (139, 445) for p, *_ in risky) and scope == "all":
+        lines.append("⚠️ 445/139(파일 공유)를 모든 네트워크에서 막으면 집·회사의 공유 폴더·프린터 공유가 안 될 수 있어요.")
+    return "\n".join(lines)
+
+
+def _new_rule_id() -> str:
+    import uuid
+    return "LUMI-" + uuid.uuid4().hex
+
+
+def _create_rules(specs):
+    """specs: [(보이는 이름, New-NetFirewallRule 뒤에 붙일 조건)] → (만든 것, 이미 있던 것, 실패 [(이름, 이유)], 안내).
+
+    같은 목적(보이는 이름)의 규칙이 이미 루미 장부에 있고 실제로도 있으면 다시 만들지 않는다('이미 적용됨').
+    장부에 없는 같은 이름 규칙(다른 프로그램·사용자가 만든 것)은 루미 것으로 치지 않는다 — 그대로 두고
+    루미 규칙을 새 고유 이름으로 따로 만든다(ChatGPT 검수 A/B 1차)."""
+    ledger = {r["display"]: r["name"] for r in security_records.load_firewall_rules()}
+    steps, keys = [], {}
+    for i, (display, conditions) in enumerate(specs):
+        key = f"r{i}"
+        rule_id = _new_rule_id()
+        existing = ledger.get(display)
+        check = (f"(Get-NetFirewallRule -Name {_ps_quote(existing)} -ErrorAction SilentlyContinue | "
+                 f"Where-Object {{ $_.Group -eq {_ps_quote(LUMI_FIREWALL_GROUP)} }})") if existing else "$null"
+        keys[key] = (display, rule_id)
+        steps.append(
+            f"if ({check}) {{ $lumiOut.Add({_ps_quote('SKIP ' + key)}) }} else {{ "
+            + _step(key, f"New-NetFirewallRule -Name {_ps_quote(rule_id)} -DisplayName {_ps_quote(display)} "
+                         f"-Group {_ps_quote(LUMI_FIREWALL_GROUP)} {conditions} | Out-Null") + " }")
+    lines, why = _run_admin_powershell("; ".join(steps))
+    if lines is None:
+        return None, None, None, why
+    status, reasons, _ = _step_results(lines)
+    made = [(d, rid) for k, (d, rid) in keys.items() if status.get(k) == "OK"]
+    kept = [d for k, (d, _) in keys.items() if status.get(k) == "SKIP"]
+    failed = [(d, reasons.get(k) or "실행되지 않았어요") for k, (d, _) in keys.items() if status.get(k) not in ("OK", "SKIP")]
+    note = ""
+    if made and not security_records.add_firewall_rules([{"name": rid, "display": d} for d, rid in made]):
+        note = ("※ 규칙은 만들었지만 루미 장부에 적지 못했어요 — 이 규칙은 루미가 지울 수 없으니 필요하면 "
+                "Windows 방화벽 설정(고급 보안)에서 'LUMI 보안' 그룹 규칙을 직접 지워 주세요.")
+    return [d for d, _ in made], kept, failed, note
+
+
+def _creation_report(title: str, made, kept, failed, note: str, what: str) -> str:
+    if made is None:
+        return f"[{title} 안 됨]\n{note}"
+    lines = []
+    if made:
+        lines.append(f"새로 만든 차단 규칙 {len(made)}개: " + ", ".join(made))
+    if kept:
+        lines.append(f"이미 루미가 만들어 둔 규칙 {len(kept)}개(그대로 둠): " + ", ".join(kept))
+    for display, why in failed:
+        lines.append(f"⚠️ 만들지 못함: {display} — {why}")
+    if note:
+        lines.append(note)
+    if failed and (made or kept):
+        head = f"[⚠️ {title} 일부만 완료]"
+    elif failed:
+        head = f"[{title} 안 됨]"
+    else:
+        head = f"[✅ {title} 완료]"
+    if made or kept:
+        lines.append(f"{what}\n되돌리려면 'LUMI 방화벽 규칙 지워줘'라고 말해 주세요.")
+    return head + "\n" + "\n".join(lines)
+
+
+def block_risky_open_ports(scope: str = "public") -> str:
+    """네트워크에 열린 위험/주의 포트를 Windows 방화벽 차단 규칙으로 막는다(기본: 공용 네트워크에서만)."""
+    if platform.system() != "Windows":
+        return "⚠️ 이 기능은 Windows 전용입니다."
+    scope = scope if scope in _PROFILE_SCOPES else "public"
+    risky = _risky_exposed_ports()
+    if not risky:
+        return "[🧱 포트 차단]\n지금 네트워크에 열린 위험한 포트가 없어서 만들 차단 규칙이 없어요."
+    profile = _PROFILE_SCOPES[scope]
+    where = "공용" if scope != "all" else "전체"
+    specs = [(f"{LUMI_RULE_PREFIX}포트 {int(port)} 차단 (TCP, {where})",
+              f"-Direction Inbound -Action Block -Protocol TCP -LocalPort {int(port)} -Profile {profile}")
+             for port, *_ in risky]
+    made, kept, failed, note = _create_rules(specs)
+    where_text = "공용 네트워크에서" if scope != "all" else "모든 네트워크에서"
+    return _creation_report("포트 차단", made, kept, failed, note,
+                            f"{where_text} 위 포트로 들어오는 연결을 Windows 방화벽이 막아요.")
+
+
+def block_program_internet(program_path: str) -> str:
+    """특정 프로그램이 인터넷(들어오고 나가는 연결)을 쓰지 못하게 Windows 방화벽 규칙을 만든다."""
+    if platform.system() != "Windows":
+        return "⚠️ 이 기능은 Windows 전용입니다."
+    path = (program_path or "").strip().strip('"')
+    if not path or not os.path.isfile(path):
+        return f"[인터넷 차단 안 됨]\n'{path}' 프로그램 파일을 찾지 못했어요. 전체 경로를 알려주세요."
+    base = os.path.basename(path)
+    if base.lower() in _UNBLOCKABLE_PROGRAMS:
+        return (f"[인터넷 차단 안 됨]\n'{base}'은(는) Windows가 동작하는 데 필요한 프로그램이라 막으면 PC가 "
+                "제대로 동작하지 않아요. 차단하지 않았어요.")
+    specs = [(f"{LUMI_RULE_PREFIX}인터넷 차단: {base} ({label})",
+              f"-Direction {direction} -Action Block -Program {_ps_quote(path)}")
+             for direction, label in (("Outbound", "나가는"), ("Inbound", "들어오는"))]
+    made, kept, failed, note = _create_rules(specs)
+    return _creation_report("인터넷 차단", made, kept, failed, note,
+                            f"'{base}'이(가) 인터넷을 쓰지 못하게 했어요.\n경로: {path}")
+
+
+def _lumi_rules():
+    """루미 장부에 있고 지금 실제로도 있는 규칙 [{"id","name","enabled","direction","action"}] 또는 None.
+
+    '루미 것'의 기준: 장부에 적힌 고유 이름(LUMI-<16진수 32자리>)이고, 실제 규칙의 그룹도 루미 그룹.
+    이름·그룹 글자만 같은 다른 규칙은 루미 것으로 치지 않는다."""
+    ledger = security_records.load_firewall_rules()
+    if not ledger:
+        return []
+    names = ",".join(_ps_quote(r["name"]) for r in ledger)
+    data = _ps_json(
+        f"$r = @(Get-NetFirewallRule -Name @({names}) -ErrorAction SilentlyContinue | Where-Object {{ "
+        f"$_.Group -eq {_ps_quote(LUMI_FIREWALL_GROUP)} }} | ForEach-Object {{ "
+        "[ordered]@{ id=[string]$_.Name; name=[string]$_.DisplayName; enabled=[string]$_.Enabled; "
+        "direction=[string]$_.Direction; action=[string]$_.Action } }); ConvertTo-Json -InputObject $r -Compress",
+        timeout=60)
+    if data is None:
+        return None
+    rows = data if isinstance(data, list) else [data]
+    known = {r["name"] for r in ledger}
+    return [r for r in rows if isinstance(r, dict) and r.get("id") in known]
+
+
+def list_lumi_firewall_rules() -> str:
+    if platform.system() != "Windows":
+        return "⚠️ 이 기능은 Windows 전용입니다."
+    rules = _lumi_rules()
+    if rules is None:
+        return f"[🧱 루미가 만든 방화벽 규칙]\n{UNKNOWN_MARK} 방화벽 규칙을 읽지 못했어요."
+    if not rules:
+        return "[🧱 루미가 만든 방화벽 규칙]\n루미가 만든 방화벽 규칙이 없어요."
+    dir_label = {"inbound": "들어오는", "outbound": "나가는"}
+    lines = [f"  - {r['name']} ({dir_label.get(str(r.get('direction')).lower(), r.get('direction'))} 연결 "
+             f"{'차단' if str(r.get('action')).lower() == 'block' else '허용'}"
+             f"{'' if str(r.get('enabled')).lower() == 'true' else ', 꺼져 있음'})" for r in rules]
+    return f"[🧱 루미가 만든 방화벽 규칙] {len(rules)}개\n" + "\n".join(lines)
+
+
+def remove_lumi_firewall_rule(rule_name: str = "all") -> str:
+    """루미가 만든 방화벽 규칙을 지운다(rule_name이 'all'이면 전부). 루미 장부에 없는 규칙은 지우지 않는다."""
+    if platform.system() != "Windows":
+        return "⚠️ 이 기능은 Windows 전용입니다."
+    rules = _lumi_rules()
+    if rules is None:
+        return "[방화벽 규칙 삭제 안 됨]\n방화벽 규칙을 읽지 못했어요. 잠시 후 다시 시도해 주세요."
+    name = (rule_name or "all").strip()
+    if name.lower() in ("all", "전부", "전체", "모두"):
+        targets = rules
+    else:
+        targets = [r for r in rules if r.get("name") == name]
+        if not targets:
+            return ("[방화벽 규칙 삭제 안 됨]\n루미가 만든 규칙 중에 그 이름이 없어요(루미가 만들지 않은 규칙은 지우지 "
+                    "않아요). 'LUMI 방화벽 규칙 보여줘'로 정확한 이름을 확인해 주세요.")
+    if not targets:
+        security_records.remove_firewall_rules([r["name"] for r in security_records.load_firewall_rules()])
+        return "[방화벽 규칙 삭제]\n지울 루미 방화벽 규칙이 없어요."
+    keys = {f"r{i}": r for i, r in enumerate(targets)}
+    # 지우기 직전에도 그룹을 다시 확인한다 — 고유 이름이 같아도 루미 그룹이 아니면 지우지 않는다
+    script = "; ".join(_step(k, f"Get-NetFirewallRule -Name {_ps_quote(r['id'])} -ErrorAction Stop | Where-Object {{ "
+                                f"$_.Group -eq {_ps_quote(LUMI_FIREWALL_GROUP)} }} | Remove-NetFirewallRule")
+                       for k, r in keys.items())
+    lines, why = _run_admin_powershell(script)
+    if lines is None:
+        return f"[방화벽 규칙 삭제 안 됨]\n{why}"
+    status, reasons, _ = _step_results(lines)
+    removed = [r for k, r in keys.items() if status.get(k) == "OK"]
+    failed = [(r, reasons.get(k) or "실행되지 않았어요") for k, r in keys.items() if status.get(k) != "OK"]
+    security_records.remove_firewall_rules([r["id"] for r in removed])
+    out = [f"지운 규칙 {len(removed)}개: " + ", ".join(r["name"] for r in removed)] if removed else []
+    out += [f"⚠️ 지우지 못함: {r['name']} — {why}" for r, why in failed]
+    if failed and removed:
+        head = "[⚠️ 방화벽 규칙 삭제 일부만 완료]"
+    elif failed:
+        head = "[방화벽 규칙 삭제 안 됨]"
+    else:
+        head = "[✅ 방화벽 규칙 삭제 완료]"
+    return head + "\n" + "\n".join(out)
+
+
+def _score_report(title: str, checks, kind: str = None) -> str:
+    """checks: [(항목명, 실행함수), ...] — 각 점검이 돌려준 CheckResult의 판정 개수로 점수화한다.
+    결과 글 속 기호는 읽지 않는다(3단계, malware_detection._score_report와 같은 규칙). CheckResult가
+    아닌 결과(판정 정보 없음)나 예외는 '확인하지 못함'으로 본다."""
     score = 100
     sections = []
+    marks = {}
+    unknown = 0
     for name, fn in checks:
         try:
             result = fn()
         except Exception as e:
-            result = f"⚠️ 점검 실패: {e}"
-        critical = result.count("🚨")
-        warning  = result.count("⚠️")
+            print(f"[네트워크 보안] 종합 리포트 — {name} 점검 실패: {e}")
+            result = None
+        counts = _judgment_counts(result)
+        if counts is None:
+            if result is not None:
+                print(f"[네트워크 보안] 종합 리포트 — {name} 결과에 판정 정보가 없어 '확인하지 못함'으로 처리")
+            critical, warning, partial_unknown = 0, 0, 1
+        else:
+            critical, warning, partial_unknown = counts
         score -= critical * 8 + warning * 3
-        mark = "🚨" if critical else ("⚠️" if warning else "✅")
+        if critical:
+            mark = "🚨"
+        elif warning:
+            mark = "⚠️"
+        elif partial_unknown:
+            mark = UNKNOWN_MARK   # 확인하지 못함 — 점수는 깎지 않지만 ✅로 보이면 안 된다
+            unknown += 1
+        else:
+            mark = "✅"
         sections.append(f"{mark} {name}")
+        marks[name] = mark
 
     score = max(0, min(100, score))
     if score >= 90:   grade = "🟢 안전"
@@ -1039,9 +1756,16 @@ def _score_report(title: str, checks) -> str:
     elif score >= 50: grade = "🟠 주의"
     else:             grade = "🔴 위험"
 
+    # 점검 이력(3단계) — 지난번과 달라진 항목을 한 줄로 알려준다. 기록 실패는 리포트에 영향 없음
+    history = ""
+    if kind:
+        changed = security_records.record_report(kind, score, marks)
+        history = f"\n{changed}" if changed else ""
+    note = (f"\n※ {UNKNOWN_MARK} 표시 {unknown}개 항목은 확인하지 못해 점수에 반영하지 않았어요."
+            if unknown else "")
     return (f"{title}\n점수: {score}/100 ({grade})\n\n"
             "항목별 상태:\n" + "\n".join(f"  {s}" for s in sections) +
-            "\n\n※ 상세 내용이 필요한 항목은 개별로 다시 요청하세요.")
+            "\n\n※ 상세 내용이 필요한 항목은 개별로 다시 요청하세요." + note + history)
 
 
 def get_network_security_report() -> str:
@@ -1052,4 +1776,4 @@ def get_network_security_report() -> str:
         ("DNS 설정",      check_dns_settings),
         ("네트워크 연결", get_network_connections),
     ]
-    return _score_report("[🌐 네트워크 보안 종합 리포트]", checks)
+    return _score_report("[🌐 네트워크 보안 종합 리포트]", checks, kind="network")

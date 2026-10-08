@@ -189,3 +189,15 @@ def _isolate_login_state(tmp_path, monkeypatch):
     from data import db
     monkeypatch.setattr(db, "SESSION_FILE", str(tmp_path / "no_session.json"))
     monkeypatch.setattr(db, "LOGIN_HISTORY_DIR", str(tmp_path / "login_history"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_security_history(request, tmp_path, monkeypatch):
+    """보안 점검 이력(core/security_records.py)은 같은 테스트 실행 안에서 계속 쌓이므로, 이력을 직접
+    검사하는 테스트(@pytest.mark.security_history)가 아니면 기록하지 않게 한다 — 앞 테스트의 이력 때문에
+    리포트에 '지난 점검 대비' 줄이 붙어 다른 테스트 결과가 달라지지 않게."""
+    if request.node.get_closest_marker("security_history"):
+        monkeypatch.setattr("data.storage_location.app_data_dir", lambda: str(tmp_path / "lumi_app_data"))
+        return
+    import core.security_records as sr
+    monkeypatch.setattr(sr, "record_report", lambda *a, **k: "")

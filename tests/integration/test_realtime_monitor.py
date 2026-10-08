@@ -176,6 +176,23 @@ def test_whitelisted_process_never_flagged_even_if_new(mock_conns):
 
 
 @patch("plugins.realtime_monitor.psutil.net_connections")
+def test_new_process_impersonating_system_name_is_flagged(mock_conns):
+    """2026-10-08: 이름이 explorer.exe여도 Windows 폴더가 아닌 곳에서 실행되면 이름 사칭으로 알린다."""
+    mock_conns.return_value = []
+    rtm._known_pids = set()
+    proc = _fake_process(100, "explorer.exe")
+    proc.info["exe"] = "C:\\Users\\a\\AppData\\Roaming\\explorer.exe"
+
+    with patch("plugins.realtime_monitor.psutil.process_iter") as mock_iter, \
+         patch("plugins.realtime_monitor._system_root", return_value="C:\\Windows"):
+        mock_iter.return_value = [proc]
+        alerts = rtm._check_new_suspicious_processes()
+
+    assert len(alerts) == 1
+    assert "이름 사칭" in alerts[0]
+
+
+@patch("plugins.realtime_monitor.psutil.net_connections")
 def test_known_pid_is_not_rechecked(mock_conns):
     """이미 확인한 PID는 다시 검사하지 않는다 — 신규 등장 프로세스만 검사
     대상이라는 설계."""

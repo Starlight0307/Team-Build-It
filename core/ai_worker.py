@@ -311,6 +311,63 @@ def _describe_delete_duplicate_files(a: dict, func_map: dict) -> str:
     return desc
 
 
+def _describe_trust_security_item(a: dict, func_map: dict) -> str:
+    """신뢰 목록 추가 확인창 문구 — 무엇을 신뢰하는지(이름·경로·해시·서명) 보여주고, 신뢰는 '안전 보증'이
+    아니라 '의심 알림에서 빼는 예외'라는 점을 분명히 한다(ChatGPT 검수 3단계-2 1차)."""
+    path = str(a.get("path", "") or "")
+    describe = func_map.get("describe_trust_candidate")
+    try:
+        details = describe(path) if describe else f"경로: {path}"
+    except Exception:
+        details = f"경로: {path}"
+    return ("보안 점검 신뢰 목록에 추가\n"
+            f"{details}\n\n"
+            "신뢰 목록은 '안전하다는 보증'이 아니라, 앞으로 보안 점검에서 이 파일을 의심 항목으로 알리지 않는 "
+            "예외예요(파일 내용이 바뀌면 다시 알림). 이름 사칭·숨긴 명령은 신뢰해도 계속 알려요.\n"
+            "본인이 직접 설치한 프로그램이 맞을 때만 진행하세요.")
+
+
+def _describe_block_risky_open_ports(a: dict, func_map: dict) -> str:
+    """block_risky_open_ports 확인창 — 실제로 막힐 포트를 실행 전에 조회해 보여준다
+    (_describe_disable_risky_firewall_rules와 같은 원칙)."""
+    scope = a.get("scope") if a.get("scope") in ("public", "all") else "public"
+    a["scope"] = scope
+    preview = func_map.get("preview_risky_open_ports")
+    try:
+        details = preview(scope) if preview else ""
+    except Exception:
+        details = ""
+    desc = "Windows 방화벽 차단 규칙 만들기 (위험한 열린 포트로 들어오는 연결 막기)"
+    if details:
+        desc += "\n\n" + details
+    desc += ("\n\n※ Windows 관리자 승인 창이 뜹니다. 규칙은 'LUMI 보안' 그룹에 만들어지고, "
+             "'LUMI 방화벽 규칙 지워줘'로 언제든 되돌릴 수 있어요.")
+    return desc
+
+
+def _describe_block_program_internet(a: dict, func_map: dict) -> str:
+    path = str(a.get("program_path", "") or "").strip().strip('"')
+    return (f"이 프로그램이 인터넷을 쓰지 못하게 Windows 방화벽 차단 규칙 만들기\n\n프로그램: {path or '(경로 없음)'}\n\n"
+            "※ 이 프로그램의 업데이트·온라인 기능이 멈춰요. Windows 관리자 승인 창이 뜨고, "
+            "'LUMI 방화벽 규칙 지워줘'로 되돌릴 수 있어요.")
+
+
+def _describe_remove_lumi_firewall_rule(a: dict, func_map: dict) -> str:
+    name = str(a.get("rule_name", "") or "all").strip()
+    if name.lower() in ("all", "전부", "전체", "모두", ""):
+        desc = "루미가 만든 Windows 방화벽 규칙을 모두 삭제 (막아 둔 포트·프로그램이 다시 열려요)"
+        lister = func_map.get("list_lumi_firewall_rules")
+        try:
+            listing = lister() if lister else ""
+        except Exception:
+            listing = ""
+        if listing:
+            desc += "\n\n" + listing
+    else:
+        desc = f"루미가 만든 Windows 방화벽 규칙 '{name}' 삭제 (막아 둔 것이 다시 열려요)"
+    return desc + "\n\n※ Windows 관리자 승인 창이 뜹니다."
+
+
 _DANGEROUS_FUNCS = {
     "kill_process":             lambda a, fm: f"'{a.get('process_name_or_number', '')}' 프로세스 강제 종료" + _repeat_kill_hint(a.get('process_name_or_number', '')),
     "manage_firewall":          lambda a, fm: f"방화벽 규칙 변경 (포트 {a.get('port', '?')}/{a.get('protocol', 'tcp')}, 동작: {a.get('action', '?')})",
@@ -324,6 +381,15 @@ _DANGEROUS_FUNCS = {
     "restrict_shared_folder_permission": lambda a, fm: f"공유 폴더 '{a.get('share_name', '')}'의 Everyone(누구나) 공유 권한 제거 (NTFS 파일 권한은 변경되지 않음)",
     "disable_firewall_rule":    lambda a, fm: f"방화벽 규칙 '{a.get('rule_name', '')}' 비활성화 (삭제가 아니라 꺼두는 것이라 나중에 다시 켤 수 있음)",
     "disable_risky_firewall_rules": _describe_disable_risky_firewall_rules,
+    # 3단계(2026-10-08): 신뢰 목록에 넣으면 다음 점검부터 그 파일을 의심 항목으로 알리지 않는다 —
+    # 악성코드를 예외로 만드는 데 악용될 수 있어서(문서·웹 내용에 섞인 지시 등) 항상 사용자 확인을 받는다.
+    "trust_security_item": lambda a, fm: _describe_trust_security_item(a, fm),
+    # 2026-10-08: Windows 방화벽을 바꾸는 기능 — 확인창 + Windows 관리자 승인(UAC) 두 번을 거친다
+    "enable_windows_firewall": lambda a, fm: ("Windows 방화벽을 모든 네트워크(도메인·개인·공용)에서 켜고 들어오는 연결을 "
+                                              "기본으로 막기 (나가는 연결은 그대로)\n\n※ Windows 관리자 승인 창이 뜹니다."),
+    "block_risky_open_ports": _describe_block_risky_open_ports,
+    "block_program_internet": _describe_block_program_internet,
+    "remove_lumi_firewall_rule": _describe_remove_lumi_firewall_rule,
     # control_iot_device는 여기 넣지 않는다 — 처음엔 "물리적 기기에 영향을 주니
     # 위험하다"고 넣었는데, 실제로 켜보니 사용자 입장에서 이상한 UX였다:
     # kill_process/manage_firewall/block_suspicious_process는 AI가 스스로
@@ -440,6 +506,9 @@ _DETECTION_BEFORE_ACTION = {
     'delete_recurring_series': ('search_events', 'get_events_by_date', 'get_upcoming_events'),
     'local_delete_recurring_series': ('local_search_events', 'local_get_events_by_date', 'local_get_upcoming_events'),
     'delete_duplicate_files': ('find_duplicate_files',),
+    # 2026-10-08: '포트 확인하고 위험하면 막아줘' — 같은 턴에 조회했으면 결과부터 보여준다
+    'block_risky_open_ports': ('get_listening_ports', 'scan_open_ports'),
+    'block_program_internet': ('get_network_connections', 'detect_suspicious_processes', 'get_listening_ports'),
 }
 
 # get_realtime_alerts/get_realtime_alert_count는 "이미 실행 중인 백그라운드 감시"가
@@ -508,7 +577,9 @@ _TOOL_CATEGORIES = {
          "local_create_recurring_event", "local_get_schedule_summary", "local_get_daily_briefing"),
     ),
     "network_security": (
-        ("포트", "방화벽", "네트워크", "dns", "보안", "스캔", "연결", "트래픽", "종합", "점수", "리포트"),
+        ("포트", "방화벽", "네트워크", "dns", "보안", "스캔", "연결", "트래픽", "종합", "점수", "리포트",
+         # 2026-10-08: 프로그램 인터넷 차단, 루미 방화벽 규칙
+         "인터넷 막", "인터넷 차단", "차단 풀"),
         # disable_firewall_rule/disable_risky_firewall_rules 둘 다 위 _DANGEROUS_FUNCS +
         # _DETECTION_BEFORE_ACTION에 이미 등록되어 있어(확인창 없이는 절대 실행되지
         # 않음), 여기 노출 목록에 추가하는 것 자체는 "AI가 이 함수를 볼 수 있다"는
@@ -516,13 +587,22 @@ _TOOL_CATEGORIES = {
         # 수준으로 카테고리에 포함한다.
         ("scan_open_ports", "get_firewall_rules", "manage_firewall", "get_network_connections",
          "monitor_network_traffic", "check_dns_settings", "get_network_security_report",
-         "block_suspicious_process", "disable_firewall_rule", "disable_risky_firewall_rules"),
+         "block_suspicious_process", "disable_firewall_rule", "disable_risky_firewall_rules",
+         # 2026-10-08: 바꾸는 함수(enable/block/remove)는 _DANGEROUS_FUNCS에 있어 확인창 + UAC를 거친다
+         "get_listening_ports", "check_firewall_status", "enable_windows_firewall", "block_risky_open_ports",
+         "block_program_internet", "list_lumi_firewall_rules", "remove_lumi_firewall_rule"),
     ),
     "malware_detection": (
         ("의심", "악성", "시작프로그램", "자동실행", "자동 실행", "서비스", "해킹",
-         "보안", "종합", "점수", "리포트"),
+         "보안", "종합", "점수", "리포트",
+         # 2026-10-08 2단계: 백신 상태, 예약 작업 점검
+         "백신", "바이러스", "디펜더", "defender", "예약 작업", "예약작업", "작업 스케줄러",
+         # 3단계: 신뢰 목록(오탐 예외)
+         "신뢰 목록", "신뢰해", "내가 설치", "예외 처리"),
         ("detect_suspicious_processes", "scan_startup_items", "scan_suspicious_services", "get_malware_report",
-         "block_suspicious_process"),
+         "block_suspicious_process", "check_defender_status", "scan_scheduled_tasks",
+         # trust_security_item은 _DANGEROUS_FUNCS에 있어 확인창 없이는 실행되지 않는다
+         "trust_security_item", "untrust_security_item", "list_trusted_security_items"),
     ),
     "system_security": (
         ("업데이트", "패치", "공유폴더", "공유 폴더", "로그인실패", "로그인 실패",
@@ -944,6 +1024,8 @@ _REPORT_DETAIL_TARGETS = {
     "의심 프로세스": "detect_suspicious_processes",
     "시작프로그램": "scan_startup_items",
     "자동 시작 서비스": "scan_suspicious_services",
+    "백신 상태": "check_defender_status",
+    "예약 작업": "scan_scheduled_tasks",
     # system_security._score_report checks
     "Windows 업데이트": "check_update_status",
     "공유 폴더": "scan_shared_folders",
@@ -1188,7 +1270,8 @@ _SCORE_REPORT_SCORE_PATTERN = re.compile(r'점수:\s*(\d+)/100')
 # 항목이 위험/정상 어느 쪽에도 안 들어가고 조용히 통째로 사라지는 버그가
 # 있었다(오프라인 테스트로 발견, GUI 재현 전에 잡음). 반드시 (마커1|마커2|마커3)
 # 형태의 대안(alternation)으로 각 마커를 통째 문자열로 매치해야 한다.
-_SCORE_REPORT_CATEGORY_LINE = re.compile(r'^[ \t]*(🚨|⚠️|✅)[ \t]*(.+?)[ \t]*$', re.MULTILINE)
+# ❔ = 권한 부족 등으로 확인하지 못한 항목(plugins/system_security.py의 UNKNOWN_MARK, 2026-10-08).
+_SCORE_REPORT_CATEGORY_LINE = re.compile(r'^[ \t]*(🚨|⚠️|✅|❔)[ \t]*(.+?)[ \t]*$', re.MULTILINE)
 _SCORE_REPORT_TITLE_LINE = re.compile(r'^\[([^\]]+)\]$', re.MULTILINE)
 
 
@@ -1221,6 +1304,7 @@ def _build_score_report_reply(raw_results: str):
     score = int(score_match.group(1))
     risky = [name.strip() for marker, name in categories if marker in ('🚨', '⚠️')]
     safe = [name.strip() for marker, name in categories if marker == '✅']
+    unknown = [name.strip() for marker, name in categories if marker == '❔']
 
     title_match = _SCORE_REPORT_TITLE_LINE.search(raw_results)
     title = re.sub(r'^[^\w가-힣]+', '', title_match.group(1)).strip() if title_match else "점검 리포트"
@@ -1230,13 +1314,26 @@ def _build_score_report_reply(raw_results: str):
         parts.append(f"{', '.join(risky)} 쪽에 위험 표시가 있어서 확인이 필요해 보여요.")
         if safe:
             parts.append(f"{', '.join(safe)}는 정상이고요.")
+    elif safe:
+        # 확인하지 못한 항목이 있으면 "모두 정상"이라고 하지 않는다
+        parts.append(f"{', '.join(safe)}는 정상이에요." if unknown
+                     else f"{', '.join(safe)} 모두 정상이라 지금은 특별히 걱정할 부분이 없어요.")
+    if unknown:
+        parts.append(f"{', '.join(unknown)}는 권한 부족 등으로 확인하지 못해서 점수에 넣지 않았어요.")
+    # 3단계: 점검 이력 — "※ 지난 점검(시각) 대비: 점수 84→97, 시작프로그램 🚨→⚠️" / "※ 지난 점검(시각)과 같아요."
+    history = _SCORE_REPORT_HISTORY_LINE.search(raw_results)
+    if history:
+        parts.append(f"지난 점검({history.group('time')}){history.group('rest')}")
+    if risky:
         parts.append(f"{risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?")
-    else:
-        parts.append(f"{', '.join(safe)} 모두 정상이라 지금은 특별히 걱정할 부분이 없어요.")
     return " ".join(parts)
 
 
-_SINGLE_VERDICT_LINE = re.compile(r'^(?:(✅|⚠️|🚨)\s*)?(.+)$')
+_SCORE_REPORT_HISTORY_LINE = re.compile(
+    r'^※ 지난 점검\((?P<time>[^)]+)\)(?P<rest>(?: 대비: .+|과 같아요\.))$', re.MULTILINE)
+
+
+_SINGLE_VERDICT_LINE = re.compile(r'^(?:(✅|⚠️|🚨|❔)\s*)?(.+)$')
 
 
 def _build_single_verdict_reply(raw_results: str):
@@ -2256,6 +2353,15 @@ _SUSPICIOUS_PROC_ITEM = re.compile(
 )
 _SUSPICIOUS_PROC_REASON = re.compile(r'^ {5}발견 이유: (?P<reasons>.+)$', re.MULTILINE)
 _SUSPICIOUS_PROC_FOOTER = "💡 종료하고 싶은 프로그램의 이름이나 번호를 말씀해주시면 종료해드릴게요."
+# 2026-10-08: 관리자 권한이 없어 위치를 못 읽은 시스템 프로그램 수를 알리는 줄(본문 첫 줄, 선택).
+# plugins/malware_detection.py의 UNVERIFIED_NOTE_PREFIX로 시작한다.
+_SUSPICIOUS_PROC_UNVERIFIED = re.compile(
+    r'^ℹ️ 위치를 확인하지 못한 Windows 시스템 프로그램 (?P<count>\d+)개는 .+\n'
+)
+# 3단계: 신뢰 목록 때문에 뺀 프로그램 수(plugins/malware_detection.py의 TRUSTED_NOTE_PREFIX, 선택)
+_SUSPICIOUS_PROC_TRUSTED = re.compile(
+    r'^ℹ️ 의심 조건에 해당했지만 사용자가 신뢰한 프로그램 (?P<count>\d+)개는 .+\n'
+)
 
 
 def _build_suspicious_process_reply(raw_results: str):
@@ -2274,8 +2380,17 @@ def _build_suspicious_process_reply(raw_results: str):
         return None
     scanned = m.group('scanned')
     body = m.group('body').strip()
+    unverified_note = ""
+    if (um := _SUSPICIOUS_PROC_UNVERIFIED.match(body)):
+        unverified_note = (f" 다만 Windows 시스템 프로그램 {um.group('count')}개는 관리자 권한 부족 등으로 "
+                           "실행 위치를 확인하지 못했어요.")
+        body = body[um.end():].strip()
+    if (tm := _SUSPICIOUS_PROC_TRUSTED.match(body + "\n")):
+        unverified_note += f" 신뢰 목록에 있는 {tm.group('count')}개는 의심 항목에서 뺐어요."
+        body = (body + "\n")[tm.end():].strip()
     if body == _SUSPICIOUS_PROC_NONE:
-        return f"지금 실행 중인 프로그램 {scanned}개를 확인해봤는데, 의심스러운 프로그램은 없었어요."
+        return (f"지금 실행 중인 프로그램 {scanned}개를 확인해봤는데, 의심스러운 프로그램은 없었어요."
+                + unverified_note)
 
     lines = body.split('\n')
     if not lines or not (cm := _SUSPICIOUS_PROC_COUNT.match(lines[0])):
@@ -2295,6 +2410,8 @@ def _build_suspicious_process_reply(raw_results: str):
     ]
     for (name, pid), reason in zip(names, reasons):
         result_lines.append(f"- {name} (실행 번호: {pid}) — {reason}")
+    if unverified_note:
+        result_lines.append(unverified_note.strip())
     result_lines.append("종료하고 싶은 프로그램의 이름이나 번호를 말씀해주시면 바로 종료해드릴게요.")
     return "\n".join(result_lines)
 
@@ -2504,7 +2621,83 @@ def _build_startup_items_reply(raw_results: str):
         lines.append(f"- {name} — {command}")
     if normal_more:
         lines.append(f"- 그 외에도 {normal_more}개가 더 있어요")
+    # 2026-10-08: 바로가기(.lnk/.url)가 실제로 무엇을 실행하는지 못 읽은 항목은 ❔로 표시된다 —
+    # "의심 없음"이라고만 말하면 확인 못 한 걸 정상처럼 전하게 되므로 따로 밝힌다.
+    unknown = sum(1 for _, _, command in normal_items if "❔" in command)
+    if unknown:
+        lines.append(f"(❔ 표시 {unknown}개는 바로가기가 실제로 무엇을 실행하는지 확인하지 못했어요.)")
 
+    return "\n".join(lines)
+
+
+# 2026-10-08 2단계: 백신 상태 / 예약 작업 결과도 다른 보안 점검처럼 고정 구조라서 LLM에 자유 요약을
+# 맡기지 않고 코드로 문장을 만든다(_build_startup_items_reply와 같은 이유 — 위험/정상 표시를
+# 뒤집어 말하거나 항목을 빠뜨리는 걸 막는다).
+_DEFENDER_HEADER = "[🛡️ 백신(Windows 보안) 상태]"
+_STATUS_MARK_PREFIX = (("🚨", "[위험] "), ("⚠️", "[주의] "), ("❔", "[확인 못 함] "), ("✅", ""), ("ℹ️", ""))
+
+
+def _strip_status_mark(line: str) -> str:
+    line = line.strip()
+    for mark, prefix in _STATUS_MARK_PREFIX:
+        if line.startswith(mark):
+            return prefix + line[len(mark):].strip()
+    return line
+
+
+def _build_defender_status_reply(raw_results: str):
+    raw = raw_results.strip()
+    if not raw.startswith(_DEFENDER_HEADER + "\n"):
+        return None
+    body = [ln for ln in raw[len(_DEFENDER_HEADER) + 1:].split("\n") if ln.strip()]
+    if not body:
+        return None
+    return "\n".join(["백신(Windows 보안) 상태를 확인해봤어요:"] + [f"- {_strip_status_mark(ln)}" for ln in body])
+
+
+_TASKS_HEADER = re.compile(
+    r'^\[🗓️ 예약 작업 점검 결과\] \(프로그램을 실행하는 작업 (?P<total>\d+)개, '
+    r'Microsoft 기본 작업 (?P<ms>\d+)개 포함\)\n\n(?P<body>.+)$', re.DOTALL)
+_TASKS_OTHER_HEADER = re.compile(r'^📋 Microsoft 외 작업 (?P<count>\d+)개:$')
+
+
+def _build_scheduled_tasks_reply(raw_results: str):
+    raw = raw_results.strip()
+    if raw.startswith("[🗓️ 예약 작업 점검 결과]\n"):
+        rest = raw.split("\n", 1)[1].strip()
+        if "\n" not in rest:                   # "등록된 예약 작업이 없습니다." / "❔ … 확인하지 못했어요."
+            return "예약 작업을 확인해봤는데, " + _strip_status_mark(rest).replace("[확인 못 함] ", "")
+    m = _TASKS_HEADER.match(raw)
+    if not m:
+        return None
+    blocks = m.group('body').split('\n\n')
+    sus_block = blocks[0] if len(blocks) == 2 else None
+    other_lines = blocks[-1].split('\n')
+    om = _TASKS_OTHER_HEADER.match(other_lines[0])
+    if not om or len(blocks) > 2:
+        return None
+
+    lines = [f"예약 작업 중 프로그램을 실행하는 작업 {m.group('total')}개를 확인해봤어요 "
+             f"(Microsoft 기본 작업 {m.group('ms')}개 포함)."]
+    if sus_block is not None:
+        sus = re.findall(r'^ {2}- \[(?P<src>[^\]]+)\] (?P<name>.+?) → (?P<cmd>.+)$\n {5}(?P<why>.+)$',
+                         sus_block, re.MULTILINE)
+        if not sus:
+            return None
+        lines.append(f"그중 {len(sus)}개는 확인이 필요해요:")
+        for src, name, cmd, why in sus:
+            lines.append(f"- {name}({src}) — {cmd}\n  {_strip_status_mark(why)}")
+    else:
+        lines.append("의심스러운 작업은 없었어요.")
+    others = [ln for ln in other_lines[1:] if ln.startswith("  - ")]
+    if others:
+        lines.append(f"Microsoft 외 작업 {om.group('count')}개:")
+        for ln in others:
+            im = _STARTUP_ITEM_LINE.match(ln)
+            lines.append(f"- {im.group('name')} — {im.group('command')}" if im else ln.strip())
+    more = [ln for ln in other_lines[1:] if _STARTUP_MORE_LINE.match(ln)]
+    if more:
+        lines.append(f"- 그 외에도 {_STARTUP_MORE_LINE.match(more[0]).group('more')}개가 더 있어요")
     return "\n".join(lines)
 
 
@@ -3515,6 +3708,45 @@ def _build_file_search_reply(raw_results: str):
     return "\n".join(lines)
 
 
+# 2026-10-08: 열린 포트·Windows 방화벽 도구 — 결과 글을 그대로 보여준다(작은 로컬 모델이 포트 번호·
+# 규칙 이름을 바꿔 말하면 안 되는 내용이라 요약하지 않는다). 제목 줄만 안내 문장으로 바꾼다.
+_FIREWALL_TOOL_HEADERS = (
+    (re.compile(r'^\[🔌 열린 포트 점검\](?: \(다른 기기의 접속을 기다리는 TCP 포트 (\d+)개\))?$'), "열린 포트(접속 대기)를 확인해봤어요"),
+    (re.compile(r'^\[🧱 Windows 방화벽 상태\]$'), "Windows 방화벽 상태를 확인해봤어요"),
+    (re.compile(r'^\[🧱 루미가 만든 방화벽 규칙\](?: (\d+)개)?$'), "루미가 만든 방화벽 규칙이에요"),
+    (re.compile(r'^\[🧱 포트 차단\]$'), "포트 차단 결과예요"),
+    (re.compile(r'^\[✅ (Windows 방화벽 켜기|포트 차단|인터넷 차단|방화벽 규칙 삭제) 완료\]$'), "done"),
+    (re.compile(r'^\[(방화벽 켜기|포트 차단|인터넷 차단|방화벽 규칙 삭제) 안 됨\]$'), "failed"),
+    (re.compile(r'^\[⚠️ (포트 차단|인터넷 차단|방화벽 규칙 삭제) 일부만 완료\]$'), "partial"),
+    (re.compile(r'^\[방화벽 규칙 삭제\]$'), "방화벽 규칙 삭제 결과예요"),
+)
+_FIREWALL_ACTION_OBJECT = {"Windows 방화벽 켜기": "Windows 방화벽 켜기를", "방화벽 켜기": "방화벽 켜기를",
+                           "포트 차단": "포트 차단을", "인터넷 차단": "인터넷 차단을",
+                           "방화벽 규칙 삭제": "방화벽 규칙 삭제를"}
+
+
+def _build_firewall_tool_reply(raw_results: str):
+    raw = raw_results.strip()
+    head, _, body = raw.partition("\n")
+    body = body.strip()
+    if not body:
+        return None
+    for pattern, lead in _FIREWALL_TOOL_HEADERS:
+        m = pattern.match(head)
+        if not m:
+            continue
+        if lead in ("done", "failed", "partial"):
+            obj = _FIREWALL_ACTION_OBJECT[m.group(1)]
+            lead = {"done": f"{obj} 마쳤어요", "failed": f"{obj} 하지 못했어요",
+                    "partial": f"{obj} 일부만 마쳤어요 — 아래에서 무엇이 바뀌었는지 확인해 주세요"}[lead]
+        elif m.groups() and m.group(1):
+            lead += f" (모두 {m.group(1)}개)"
+        elif "\n" not in body:
+            return body                        # "루미가 만든 방화벽 규칙이 없어요." 같은 한 줄 결과
+        return f"{lead}:\n{body}"
+    return None
+
+
 _DETERMINISTIC_REPLY_BUILDERS = (
     _build_score_report_reply,
     _build_realtime_status_reply,
@@ -3555,6 +3787,9 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_traffic_monitor_reply,
     _build_suspicious_process_reply,
     _build_startup_items_reply,
+    _build_defender_status_reply,
+    _build_scheduled_tasks_reply,
+    _build_firewall_tool_reply,
     _build_system_info_reply,
     _build_system_trend_reply,
     _build_price_search_reply,
@@ -4469,12 +4704,24 @@ TOOL_STATUS_NAMES = {
     "manage_firewall":           "🛡️  방화벽 설정 변경 중",
     "disable_firewall_rule":     "🛡️  방화벽 규칙 비활성화 중",
     "disable_risky_firewall_rules": "🛡️  위험한 방화벽 규칙 정리 중",
+    "get_listening_ports":       "🔌  열린 포트 확인 중",
+    "check_firewall_status":     "🧱  방화벽 상태 확인 중",
+    "enable_windows_firewall":   "🧱  Windows 방화벽 켜는 중",
+    "block_risky_open_ports":    "🧱  위험한 포트 차단 규칙 만드는 중",
+    "block_program_internet":    "🧱  프로그램 인터넷 차단 규칙 만드는 중",
+    "list_lumi_firewall_rules":  "🧱  루미 방화벽 규칙 확인 중",
+    "remove_lumi_firewall_rule": "🧱  루미 방화벽 규칙 지우는 중",
     "get_network_connections":   "🌐  네트워크 연결 확인 중",
     "monitor_network_traffic":   "📡  네트워크 트래픽 분석 중",
     "check_dns_settings":        "🌐  DNS 설정 확인 중",
     "get_network_security_report":"📊  네트워크 보안 리포트 생성 중",
     "scan_startup_items":        "🔁  시작프로그램 스캔 중",
     "scan_suspicious_services":  "⚙️  서비스 점검 중",
+    "check_defender_status":     "🛡️  백신 상태 확인 중",
+    "scan_scheduled_tasks":      "🗓️  예약 작업 점검 중",
+    "trust_security_item":       "🤝  신뢰 목록에 추가 중",
+    "untrust_security_item":     "🤝  신뢰 목록에서 빼는 중",
+    "list_trusted_security_items": "🤝  신뢰 목록 확인 중",
     "get_malware_report":        "📊  악성코드 탐지 리포트 생성 중",
     "check_update_status":       "🔄  업데이트 상태 확인 중",
     "scan_shared_folders":       "📁  공유 폴더 점검 중",
@@ -6106,6 +6353,10 @@ class AIWorker(QThread):
                             action_verb, target_noun = "제한", "공유 폴더 이름"
                         elif func_name == 'delete_duplicate_files':
                             action_verb, target_noun = "정리", "그룹 번호(전체는 '다')"
+                        elif func_name == 'block_risky_open_ports':
+                            action_verb, target_noun = "차단", "요청('위험한 포트 막아줘')"
+                        elif func_name == 'block_program_internet':
+                            action_verb, target_noun = "차단", "프로그램 경로"
                         else:  # delete_event, local_delete_event, delete_recurring_series, local_delete_recurring_series
                             action_verb, target_noun = "삭제", "일정 제목"
                         tool_results.append(

@@ -22,6 +22,7 @@ _LEGACY_REL = {
     "app_usage": ("plugins", "app_usage", "users"), "todo_list": ("plugins", "todo_list"),
     "notes": ("plugins", "notes"), "expense_tracker": ("plugins", "expense_tracker"),
     "local_calendar": ("plugins", "local_calendar"), "activity_log": ("plugins", "activity_log"),
+    "security_trust": ("data", "security_trust"), "security_history": ("data", "security_history"),
 }
 
 
@@ -66,6 +67,9 @@ def purge_user_data(user_id: str, root: str = PROJECT_ROOT, chat_root: str = Non
     targets += glob.glob(os.path.join(d("app_usage"), f"{uid}_*"))
     # 할 일/메모/가계부/캘린더/활동 이력 — 파일 이름이 {uid}.json, {uid}_budget.json, {uid}.jsonl 등
     for name in ("todo_list", "notes", "expense_tracker", "local_calendar", "activity_log"):
+        targets += glob.glob(os.path.join(d(name), f"{uid}.*")) + glob.glob(os.path.join(d(name), f"{uid}_*"))
+    # 보안 점검 신뢰 목록({uid}.json)과 점검 이력({uid}_종류.json) — core/security_records.py
+    for name in ("security_trust", "security_history"):
         targets += glob.glob(os.path.join(d(name), f"{uid}.*")) + glob.glob(os.path.join(d(name), f"{uid}_*"))
     for path in targets:
         try:

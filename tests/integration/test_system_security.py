@@ -6,9 +6,12 @@ get_login_failures의 판정 로직(날짜 임계값, 공유 폴더 위험 판�
 실패 횟수 임계값)을 검증한다.
 """
 from datetime import datetime, timedelta
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 from plugins.system_security import (
+    CheckResult,
     check_update_status,
     scan_shared_folders,
     get_login_failures,
@@ -168,20 +171,122 @@ def test_five_or_more_failures_from_same_ip_triggers_brute_force_warning(mock_sy
 # ── get_system_security_report (점수화) ─────────────────────────────
 
 def test_report_aggregates_three_checks_with_full_score():
-    with patch("plugins.system_security.check_update_status", return_value="✅ 정상"), \
-         patch("plugins.system_security.scan_shared_folders", return_value="✅ 정상"), \
-         patch("plugins.system_security.get_login_failures", return_value="✅ 정상"):
+    ok = CheckResult("✅ 정상")
+    with patch("plugins.system_security.check_update_status", return_value=ok), \
+         patch("plugins.system_security.scan_shared_folders", return_value=ok), \
+         patch("plugins.system_security.get_login_failures", return_value=ok):
         result = get_system_security_report()
 
     assert "100/100" in result
     assert "🟢 안전" in result
+    assert "✅ Windows 업데이트" in result
 
 
 def test_report_grade_drops_to_danger_with_multiple_critical_findings():
-    with patch("plugins.system_security.check_update_status", return_value="🚨 위험"), \
-         patch("plugins.system_security.scan_shared_folders", return_value="🚨 위험"), \
-         patch("plugins.system_security.get_login_failures", return_value="🚨 위험"):
+    bad = CheckResult("결과", critical=1)
+    with patch("plugins.system_security.check_update_status", return_value=bad), \
+         patch("plugins.system_security.scan_shared_folders", return_value=bad), \
+         patch("plugins.system_security.get_login_failures", return_value=bad):
         result = get_system_security_report()
 
     # 100 - (3 * 8) = 76 → 🟡 양호(70 이상)이지 🔴 위험은 아님 — 점수 산식 확인용
     assert "76/100" in result
+
+
+# ── 확인하지 못한 상태(❔) — 2026-10-08 ──────────────────────────────
+# 관리자 권한이 없으면 보안 로그를 못 읽는데, 예전에는 이걸 "✅ 기록 없음"으로 답했다.
+
+@patch("plugins.system_security._run_powershell")
+@patch("plugins.system_security.platform.system", return_value="Windows")
+def test_no_access_to_security_log_is_reported_as_unknown(mock_system, mock_ps):
+    mock_ps.return_value = _fake_ps_result("LUMI_NO_ACCESS")
+
+    result = get_login_failures()
+
+    assert "❔" in result
+    assert "관리자 권한" in result
+    assert "✅" not in result
+    assert "기록이 없습니다" not in result
+
+
+@patch("plugins.system_security._run_powershell")
+@patch("plugins.system_security.platform.system", return_value="Windows")
+def test_query_failure_is_reported_as_unknown(mock_system, mock_ps):
+    mock_ps.return_value = _fake_ps_result("LUMI_QUERY_FAILED")
+
+    result = get_login_failures()
+
+    assert "❔" in result
+    assert "✅" not in result
+
+
+@patch("plugins.system_security._run_powershell")
+@patch("plugins.system_security.platform.system", return_value="Windows")
+def test_login_failures_script_checks_access_before_querying(mock_system, mock_ps):
+    """권한 확인(필터 없이 한 건 읽기)이 필터 조회보다 먼저 있어야 한다 — 필터 조회는
+    권한이 없을 때 '이벤트 없음'으로 실패해서 둘을 구분할 수 없다."""
+    mock_ps.return_value = _fake_ps_result("")
+
+    get_login_failures()
+
+    script = mock_ps.call_args.args[0]
+    assert "UnauthorizedAccessException" in script
+    assert script.index("-LogName Security -MaxEvents 1") < script.index("-FilterHashtable")
+    assert "NoMatchingEventsFound" in script
+    assert "SilentlyContinue" not in script
+
+
+@pytest.mark.parametrize("hours, expected", [("48", 48), ("abc", 24), (0, 1), (10**6, 720)])
+@patch("plugins.system_security._run_powershell")
+@patch("plugins.system_security.platform.system", return_value="Windows")
+def test_login_failures_hours_is_sanitized(mock_system, mock_ps, hours, expected):
+    """hours는 AI가 채우는 값이라 PowerShell 명령에 넣기 전에 정수로 정리한다."""
+    mock_ps.return_value = _fake_ps_result("")
+
+    get_login_failures(hours)
+
+    assert f"AddHours(-{expected})" in mock_ps.call_args.args[0]
+
+
+def test_report_marks_unknown_check_without_score_penalty():
+    unknown = CheckResult("[🔑 로그인 실패 이력] (최근 24시간)\n❔ 관리자 권한이 없어 확인하지 못한 상태예요.",
+                          unknown=1)
+    ok = CheckResult("✅ 정상")
+    with patch("plugins.system_security.check_update_status", return_value=ok), \
+         patch("plugins.system_security.scan_shared_folders", return_value=ok), \
+         patch("plugins.system_security.get_login_failures", return_value=unknown):
+        result = get_system_security_report()
+
+    assert "100/100" in result
+    assert "❔ 로그인 실패 이력" in result
+    assert "✅ 로그인 실패 이력" not in result
+    assert "확인하지 못해 점수에 반영하지 않았어요" in result
+
+
+def test_report_title_emoji_is_not_counted():
+    """3단계: 점수는 결과 글을 읽지 않는다 — 글에 🚨/⚠️가 있어도 판정 개수가 0이면 정상."""
+    titled = CheckResult("[🚨 제목에 이모지]\n🚨 설명 속 기호 ⚠️\n✅ 정상")
+    ok = CheckResult("✅ 정상")
+    with patch("plugins.system_security.check_update_status", return_value=titled), \
+         patch("plugins.system_security.scan_shared_folders", return_value=ok), \
+         patch("plugins.system_security.get_login_failures", return_value=ok):
+        result = get_system_security_report()
+
+    assert "100/100" in result
+    assert "✅ Windows 업데이트" in result
+
+
+def test_report_plain_text_or_exception_is_unknown():
+    def _raise():
+        raise RuntimeError("PowerShell 없음")
+
+    ok = CheckResult("✅ 정상")
+    with patch("plugins.system_security.check_update_status", return_value="🚨 판정 정보 없는 글"), \
+         patch("plugins.system_security.scan_shared_folders", side_effect=_raise), \
+         patch("plugins.system_security.get_login_failures", return_value=ok):
+        result = get_system_security_report()
+
+    assert "❔ Windows 업데이트" in result
+    assert "❔ 공유 폴더" in result
+    assert "100/100" in result
+    assert "PowerShell 없음" not in result

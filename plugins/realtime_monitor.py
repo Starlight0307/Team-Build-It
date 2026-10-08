@@ -12,6 +12,7 @@
 """
 
 import os
+import ntpath
 import platform
 import threading
 import psutil
@@ -138,14 +139,27 @@ _SUSPICIOUS_KEYWORDS = [
     "trojan", "backdoor", "keylogger",
     "proxychains",
 ]
-_PROCESS_WHITELIST = {
-    "svchost.exe", "lsass.exe", "csrss.exe", "winlogon.exe",
-    "explorer.exe", "taskhostw.exe", "dwm.exe", "conhost.exe",
-    "RuntimeBroker.exe", "SearchHost.exe", "ShellExperienceHost.exe",
+# 이름만 보고 넘기면 "svchost.exe 이름 사칭"을 놓친다 — 기준과 이유는 malware_detection.py의
+# SYSTEM_PROCESS_DIRS / APP_PROCESS_WHITELIST 주석 참고(같은 표, 테스트가 둘이 같은지 검사).
+_SYSTEM32 = ("system32",)
+_SYSTEM_PROCESS_DIRS = {
+    "svchost.exe": _SYSTEM32, "lsass.exe": _SYSTEM32, "csrss.exe": _SYSTEM32,
+    "winlogon.exe": _SYSTEM32, "services.exe": _SYSTEM32, "smss.exe": _SYSTEM32,
+    "wininit.exe": _SYSTEM32, "taskhostw.exe": _SYSTEM32, "dwm.exe": _SYSTEM32,
+    "conhost.exe": _SYSTEM32, "runtimebroker.exe": _SYSTEM32, "spoolsv.exe": _SYSTEM32,
+    "explorer.exe": ("",),
+    "searchhost.exe": ("systemapps",),
+    "shellexperiencehost.exe": ("systemapps",),
+}
+_APP_PROCESS_WHITELIST = {
     "python.exe", "python3.exe", "pythonw.exe",
     "node.exe", "chrome.exe", "msedge.exe", "firefox.exe",
-    "Code.exe", "claude.exe",
+    "code.exe", "claude.exe",
 }
+_TEMP_DIR_MARKERS = ("\\temp\\", "/tmp/", "/var/tmp/")
+_USER_DROP_DIR_MARKERS = _TEMP_DIR_MARKERS + (
+    "\\downloads\\", "\\desktop\\", "\\users\\public\\", "\\appdata\\roaming\\", "\\programdata\\",
+)
 
 # ─────────────────────────────────────────────
 # 📖 "이게 뭐고 어떻게 해결하나" — AI에 묻지 않고 알림 자체에 정확한
@@ -250,6 +264,64 @@ def _is_local_ip(ip: str) -> bool:
     return False
 
 
+_IMPERSONATION_INFO = (
+    "🎭 시스템 프로그램 이름 사칭",
+    "Windows 핵심 프로그램과 이름이 같지만, 원래 있어야 할 Windows 시스템 폴더가 아닌 곳에서 "
+    "실행되고 있습니다. 악성코드가 작업 관리자에서 눈에 띄지 않으려고 자주 쓰는 수법입니다.",
+    "작업 관리자에서 해당 프로세스를 우클릭 → '파일 위치 열기'로 위치를 확인하고, "
+    "백신 프로그램으로 그 파일을 검사하세요. 확실하지 않으면 함부로 지우지 마세요."
+)
+
+
+def _system_root():
+    """실제 Windows 폴더 — malware_detection._system_root와 같은 규칙(Windows에서는 OS API만,
+    실패하면 None)."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(260)
+            n = ctypes.windll.kernel32.GetSystemWindowsDirectoryW(buf, 260)
+            if 0 < n < 260:
+                return buf.value
+        except Exception:
+            pass
+        return None
+    return os.environ.get("SystemRoot") or os.environ.get("WINDIR") or "C:\\Windows"
+
+
+def _in_temp_dir(exe: str) -> bool:
+    exel = (exe or "").lower()
+    return any(m in exel for m in _TEMP_DIR_MARKERS)
+
+
+def _in_allowed_system_dir(exe: str, allowed: tuple, system_root: str) -> bool:
+    root = ntpath.normcase(ntpath.normpath(system_root))
+    folder = ntpath.normcase(ntpath.dirname(ntpath.normpath(exe)))
+    for sub in allowed:
+        if sub == "systemapps":
+            if folder.startswith(ntpath.join(root, "systemapps") + "\\"):
+                return True
+        elif folder == (ntpath.join(root, sub) if sub else root):
+            return True
+    return False
+
+
+def _whitelist_verdict(name: str, exe: str, system_root=None) -> str:
+    """'trusted' / 'impersonating' / 'unverified' / 'check' — malware_detection._whitelist_verdict와 같은 규칙."""
+    namel = (name or "").lower()
+    if namel in _SYSTEM_PROCESS_DIRS:
+        if system_root is None:
+            system_root = _system_root()
+        if not exe or not system_root:
+            return "unverified"   # 판정할 정보가 없음 — 판단할 수 없어 알리지 않는다
+        allowed = _SYSTEM_PROCESS_DIRS[namel]
+        return "trusted" if _in_allowed_system_dir(exe, allowed, system_root) else "impersonating"
+    if namel in _APP_PROCESS_WHITELIST:
+        in_drop = any(m in (exe or "").lower() for m in _USER_DROP_DIR_MARKERS)
+        return "check" if (not exe or in_drop) else "trusted"
+    return "check"
+
+
 def _check_new_suspicious_processes():
     """직전 검사 이후 새로 나타난 프로세스 중 의심스러운 것만 골라 알림 문자열로 반환."""
     global _known_pids
@@ -264,6 +336,7 @@ def _check_new_suspicious_processes():
 
     current_pids = set()
     new_alerts = []
+    system_root = _system_root() or ""   # 프로세스마다 OS API를 부르지 않게 한 번만
 
     for proc in psutil.process_iter(['pid', 'name', 'exe', 'memory_percent']):
         try:
@@ -276,20 +349,22 @@ def _check_new_suspicious_processes():
             name  = info.get('name') or ""
             namel = name.lower()
             exe   = info.get('exe') or ""
-            if name in _PROCESS_WHITELIST:
+            verdict = _whitelist_verdict(name, exe, system_root)
+            if verdict in ("trusted", "unverified"):
                 continue
 
             reasons = []
             explanations = []
+            if verdict == "impersonating":
+                reasons.append(f"Windows 시스템 프로그램 이름인데 시스템 폴더가 아닌 곳에서 실행 중 ({exe})")
+                explanations.append(_format_info(_IMPERSONATION_INFO))
             for kw in _SUSPICIOUS_KEYWORDS:
                 if namel == kw or namel.startswith(kw + "."):
                     reasons.append("알려진 해킹 도구와 이름이 같음")
                     explanations.append(_keyword_explanation(kw))
                     break
 
-            temp_paths = ["\\Temp\\", "\\AppData\\Local\\Temp\\", "/tmp/", "/var/tmp/"]
-            in_temp = any(p.lower() in exe.lower() for p in temp_paths)
-            if in_temp and pid in external_pids:
+            if _in_temp_dir(exe) and pid in external_pids:
                 reasons.append("임시 폴더에서 실행되면서 인터넷과 연결되어 있음")
                 explanations.append(_format_info(_TEMP_NETWORK_INFO))
 
