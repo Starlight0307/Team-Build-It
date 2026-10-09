@@ -1260,7 +1260,10 @@ class AssistantApp(QWidget):
         ll.setContentsMargins(0, 0, 4, 0)
         ll.setSpacing(14)
         self.stats_panel   = SystemStatsPanel()
-        self.weather_panel = WeatherPanel(self._weather_location)
+        # 자동으로 찾은 위치(os/ip)면 켤 때마다 다시 찾는다 — 직접 입력한 지역은 그대로 둔다
+        self.weather_panel = WeatherPanel(
+            self._weather_location,
+            detect_on_start=lambda: app_settings.get("weather_source") in ("os", "ip"))
         self.weather_panel.weather_ready.connect(self._on_weather)
         self.weather_panel.location_detected.connect(self._on_location_detected)
         self.today_panel   = TodayPanel(lambda: MOCK_USER)
@@ -1761,8 +1764,8 @@ class AssistantApp(QWidget):
         city, source = app_settings.get("weather_city"), app_settings.get("weather_source")
         if not city:
             return "처음 실행하면 현재 위치를 자동으로 찾아요. 시·군 이름이나 해외 도시를 직접 입력해도 돼요."
-        how = {"os": "기기 위치 서비스로 찾은 위치",
-               "ip": "인터넷 주소로 찾은 대략적인 위치 — 실제와 다르면 직접 고쳐주세요",
+        how = {"os": "기기 위치 서비스로 찾은 위치 — 켤 때마다 다시 찾아요",
+               "ip": "인터넷 주소로 찾은 대략적인 위치, 켤 때마다 다시 찾아요 — 실제와 다르면 직접 고쳐주세요",
                }.get(source, "직접 입력한 지역")
         return f"현재: {city} ({how})"
 
@@ -1772,6 +1775,7 @@ class AssistantApp(QWidget):
         self.weather_panel.detect_and_refresh()
 
     def _on_location_detected(self, loc: dict):
+        unchanged = loc.get("on_start") and loc["name"] == app_settings.get("weather_city")
         app_settings.set("weather_city", loc["name"])
         app_settings.set("weather_coords", [loc["lat"], loc["lon"]])
         app_settings.set("weather_source", loc["source"])
@@ -1779,6 +1783,8 @@ class AssistantApp(QWidget):
         self.weather_location_desc.setText(self._weather_location_text())
         self.weather_locate_btn.setEnabled(True)
         self.weather_locate_btn.setText(" 내 위치 찾기")
+        if unchanged:
+            return   # 켤 때 다시 찾았는데 지난번과 같은 곳 — 알림을 띄우지 않는다
         rough = " (대략적인 위치라 다르면 환경설정 > 날씨에서 고쳐주세요)" if loc["source"] == "ip" else ""
         self._show_toast(f"📍 현재 위치를 '{loc['name']}'(으)로 찾았어요.{rough}")
 

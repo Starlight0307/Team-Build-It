@@ -8,6 +8,8 @@
 점검 하나가 실패해도 나머지는 그대로 보여준다(그 줄은 ❔).
 """
 
+from core import mac_security
+
 # (함수 이름, 줄 이름) — 보여주는 순서
 STARTUP_CHECKS = (
     ("check_update_status", "Windows 업데이트"),
@@ -71,11 +73,15 @@ def build_startup_notice(func_map) -> str:
     order = {"✅": 0, "❔": 1, "⚠️": 2, "🚨": 3}
     marks = {}
     for func_name, label in STARTUP_CHECKS:
+        if mac_security.is_mac():
+            label = label.replace("Windows", "macOS" if "업데이트" in label else "Mac")
         func = func_map.get(func_name)
         if not func:
             continue
         try:
-            result = func()
+            # 앱 시작 알림은 사용자가 요청한 점검이 아니다 — Mac 관리자 암호 창을 띄우지 않는다
+            with mac_security.no_admin_prompt():
+                result = func()
         except Exception as e:
             print(f"[시작 보안 알림] {func_name} 오류: {e}")
             rows.append(f"❔ {label}: 확인하지 못했어요")
@@ -83,10 +89,12 @@ def build_startup_notice(func_map) -> str:
             continue
         mark = _mark(_counts(result))
         summary = _summary(result) or "확인했어요"
-        if func_name == "get_listening_ports" and mark == "🚨" and marks.get("check_firewall_status") == "✅":
+        if (func_name == "get_listening_ports" and mark == "🚨" and marks.get("check_firewall_status") == "✅"
+                and not mac_security.is_mac()):
             # 포트는 '열려서 기다리는 중'이지만 방화벽이 모든 네트워크에서 켜져 있고 들어오는 연결을 기본으로
             # 막는다 — 허용 규칙이 없으면 밖에서 닿지 않으므로 '바로 위험'이 아니라 '확인 필요'로 보여준다.
             # (허용 규칙까지 따지는 정밀 판정은 보류한 4단계 몫)
+            # Mac 방화벽은 '허용한 앱'과 서명된 앱의 연결을 기본으로 받아서 이 판단을 하지 않는다
             mark = "⚠️"
             summary += (" — 방화벽은 켜져 있고 들어오는 연결을 기본으로 막지만, 이 포트들을 허용하는 규칙이 있는지는 "
                         "아직 확인하지 않았어요")

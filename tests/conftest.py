@@ -192,6 +192,16 @@ def _isolate_login_state(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _windows_security_logic_by_default(request, monkeypatch):
+    """보안 플러그인 테스트는 대부분 Windows 동작을 흉내 낸다 — Mac 개발 PC에서 돌려도 Mac 점검
+    (core/mac_security.py)으로 빠지지 않게 끈다. Mac 점검 테스트는 @pytest.mark.mac_security로 표시한다."""
+    if request.node.get_closest_marker("mac_security"):
+        return
+    from core import mac_security
+    monkeypatch.setattr(mac_security, "is_mac", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_security_history(request, tmp_path, monkeypatch):
     """보안 점검 이력(core/security_records.py)은 같은 테스트 실행 안에서 계속 쌓이므로, 이력을 직접
     검사하는 테스트(@pytest.mark.security_history)가 아니면 기록하지 않게 한다 — 앞 테스트의 이력 때문에

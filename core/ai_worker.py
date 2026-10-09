@@ -597,6 +597,7 @@ _TOOL_CATEGORIES = {
          "보안", "종합", "점수", "리포트",
          # 2026-10-08 2단계: 백신 상태, 예약 작업 점검
          "백신", "바이러스", "디펜더", "defender", "예약 작업", "예약작업", "작업 스케줄러",
+         "xprotect", "게이트키퍼", "gatekeeper", "파일볼트", "filevault", "디스크 암호화", "크론", "cron",
          # 3단계: 신뢰 목록(오탐 예외)
          "신뢰 목록", "신뢰해", "내가 설치", "예외 처리"),
         ("detect_suspicious_processes", "scan_startup_items", "scan_suspicious_services", "get_malware_report",
@@ -1020,6 +1021,8 @@ _REPORT_DETAIL_TARGETS = {
     "방화벽 규칙": "get_firewall_rules",
     "DNS 설정": "check_dns_settings",
     "네트워크 연결": "get_network_connections",
+    "방화벽 상태": "check_firewall_status",   # Mac 네트워크 리포트 항목
+    "열린 포트": "get_listening_ports",
     # malware_detection._score_report checks
     "의심 프로세스": "detect_suspicious_processes",
     "시작프로그램": "scan_startup_items",
@@ -1028,6 +1031,7 @@ _REPORT_DETAIL_TARGETS = {
     "예약 작업": "scan_scheduled_tasks",
     # system_security._score_report checks
     "Windows 업데이트": "check_update_status",
+    "macOS 업데이트": "check_update_status",
     "공유 폴더": "scan_shared_folders",
     "로그인 실패 이력": "get_login_failures",
 }
@@ -2356,7 +2360,7 @@ _SUSPICIOUS_PROC_FOOTER = "💡 종료하고 싶은 프로그램의 이름이나
 # 2026-10-08: 관리자 권한이 없어 위치를 못 읽은 시스템 프로그램 수를 알리는 줄(본문 첫 줄, 선택).
 # plugins/malware_detection.py의 UNVERIFIED_NOTE_PREFIX로 시작한다.
 _SUSPICIOUS_PROC_UNVERIFIED = re.compile(
-    r'^ℹ️ 위치를 확인하지 못한 Windows 시스템 프로그램 (?P<count>\d+)개는 .+\n'
+    r'^ℹ️ 위치를 확인하지 못한 (?P<os>Windows|macOS) 시스템 프로그램 (?P<count>\d+)개는 .+\n'
 )
 # 3단계: 신뢰 목록 때문에 뺀 프로그램 수(plugins/malware_detection.py의 TRUSTED_NOTE_PREFIX, 선택)
 _SUSPICIOUS_PROC_TRUSTED = re.compile(
@@ -2382,8 +2386,12 @@ def _build_suspicious_process_reply(raw_results: str):
     body = m.group('body').strip()
     unverified_note = ""
     if (um := _SUSPICIOUS_PROC_UNVERIFIED.match(body)):
-        unverified_note = (f" 다만 Windows 시스템 프로그램 {um.group('count')}개는 관리자 권한 부족 등으로 "
-                           "실행 위치를 확인하지 못했어요.")
+        if um.group('os') == "macOS":
+            unverified_note = (f" 실행 파일 위치가 없는 macOS 커널 프로그램 {um.group('count')}개는 이름 사칭 여부를 "
+                               "판단하지 않았어요.")
+        else:
+            unverified_note = (f" 다만 Windows 시스템 프로그램 {um.group('count')}개는 관리자 권한 부족 등으로 "
+                               "실행 위치를 확인하지 못했어요.")
         body = body[um.end():].strip()
     if (tm := _SUSPICIOUS_PROC_TRUSTED.match(body + "\n")):
         unverified_note += f" 신뢰 목록에 있는 {tm.group('count')}개는 의심 항목에서 뺐어요."
@@ -2653,6 +2661,24 @@ def _build_defender_status_reply(raw_results: str):
     if not body:
         return None
     return "\n".join(["백신(Windows 보안) 상태를 확인해봤어요:"] + [f"- {_strip_status_mark(ln)}" for ln in body])
+
+
+# 2026-10-10 Mac 보안 점검(core/mac_security.py) — 제목이 "[🍎 "로 시작하는 결과는 항목마다 기호로 판정이 붙은
+# 고정 구조라 LLM 없이 그대로 전한다(위 백신 상태와 같은 원칙). 자동 실행 목록(📋)·설명 줄도 그대로 둔다.
+_MAC_HEADER = re.compile(r'^\[🍎 (?P<title>[^\]]+)\](?P<rest>.*)$')
+
+
+def _build_mac_check_reply(raw_results: str):
+    lines = raw_results.strip().split("\n")
+    m = _MAC_HEADER.match(lines[0]) if lines else None
+    body = [ln for ln in lines[1:] if ln.strip()]
+    if not m or not body:
+        return None
+    out = [f"{m.group('title')} 확인 결과예요{m.group('rest')}:"]
+    for ln in body:
+        stripped = _strip_status_mark(ln)
+        out.append(f"- {stripped}" if stripped != ln.strip() else ln.rstrip())
+    return "\n".join(out)
 
 
 _TASKS_HEADER = re.compile(
@@ -3789,6 +3815,7 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_startup_items_reply,
     _build_defender_status_reply,
     _build_scheduled_tasks_reply,
+    _build_mac_check_reply,
     _build_firewall_tool_reply,
     _build_system_info_reply,
     _build_system_trend_reply,
@@ -4019,6 +4046,57 @@ def _is_pc_health_check_request(text_lower: str) -> bool:
     if any(neg in text_lower for neg in _PC_HEALTH_CHECK_NEGATION_MARKERS):
         return False
     return True
+
+
+# ── 보안 단일 점검 바로 실행 (2026-10-10) ──
+# 실제 앱에서 확인: 시작 보안 알림이 "'열린 포트 보여줘' 또는 '방화벽 상태 알려줘'라고 말해 주세요"라고 안내하는데,
+# llama3.1이 "열린 포트 보여줘"에 없는 도구(list_open_ports)를 글로 지어내 답하지 못했고, "백신 상태 알려줘"에는
+# 조건부 알림 목록(list_conditions)을 불렀다. 뜻이 하나뿐인 점검 요청은 LLM을 거치지 않고 해당 점검을 바로
+# 실행한다(PC 종합 점검 fast-path와 같은 원칙). 순서대로 먼저 맞는 것 하나만 고른다.
+_SECURITY_SINGLE_CHECKS = (
+    (("열린 포트", "열려있는 포트", "열려 있는 포트"), "get_listening_ports"),
+    (("방화벽 상태", "방화벽 확인", "방화벽 켜져 있", "방화벽 꺼져 있"), "check_firewall_status"),
+    (("백신 상태", "백신 확인", "백신 켜져 있", "디펜더 상태", "defender 상태", "xprotect", "게이트키퍼", "gatekeeper",
+      "파일볼트", "filevault", "mac 기본 보안"), "check_defender_status"),
+    (("시작프로그램", "시작 프로그램"), "scan_startup_items"),
+)
+# 바꾸는 요청(막기·켜기·끄기·지우기·신뢰 등)은 확인창을 거쳐야 하므로 여기서 가로채지 않고 평소 경로로 보낸다.
+# 종합 점검이나 "하지 마/말고"도 제외한다.
+_SECURITY_SINGLE_EXCLUDE = ("막아", "막아줘", "차단", "켜줘", "켜 줘", "켜주", "꺼줘", "꺼 줘", "꺼주", "끄", "지워", "삭제",
+                            "풀어", "허용", "신뢰", "종료", "추가", "등록", "만들어", "사용 안 함",
+                            "지 마", "지마", "지 말", "말고", "필요 없", "필요없") + _PC_HEALTH_CHECK_KEYWORDS
+
+
+# 분야 리포트 요청 — 앱의 빠른 실행 카드 문구("네트워크 보안 종합해줘" 등)에도 llama3.1이 다른 분야 리포트
+# (get_system_security_report)를 부르는 걸 실제 앱에서 확인했다
+_SECURITY_REPORTS = (
+    (("네트워크 보안 종합", "네트워크 보안 점검", "네트워크 보안 리포트"), "get_network_security_report"),
+    (("시스템 보안 종합", "시스템 보안 점검", "시스템 보안 리포트"), "get_system_security_report"),
+    (("악성코드 종합", "악성코드 점검", "악성코드 리포트", "악성코드 검사"), "get_malware_report"),
+)
+# 한 분야의 점검 여러 개를 함께 묻는 요청(빠른 실행 버튼 "포트랑 방화벽 상태 확인해줘", "의심스러운 프로세스나
+# 시작프로그램 있는지 확인해줘") — 하나만 보여주지 않고 그 분야 리포트로. 단어가 모두 있어야 한다.
+_SECURITY_COMBOS = (
+    (("포트", "방화벽"), "get_network_security_report"),
+    (("프로세스", "시작프로그램"), "get_malware_report"),
+    (("프로세스", "시작 프로그램"), "get_malware_report"),
+)
+
+
+def _single_security_check_request(text_lower: str):
+    """보안 점검(또는 한 분야 리포트) 하나를 바로 실행할 요청이면 그 함수 이름, 아니면 None."""
+    if any(x in text_lower for x in _SECURITY_SINGLE_EXCLUDE):
+        return None
+    for keywords, func_name in _SECURITY_REPORTS:
+        if any(k in text_lower for k in keywords):
+            return func_name
+    for words, func_name in _SECURITY_COMBOS:
+        if all(w in text_lower for w in words):
+            return func_name
+    for keywords, func_name in _SECURITY_SINGLE_CHECKS:
+        if any(k in text_lower for k in keywords):
+            return func_name
+    return None
 
 
 def _build_pc_health_check(func_map: dict) -> str:
@@ -5987,6 +6065,23 @@ class AIWorker(QThread):
                     return
 
                 self.response_ready.emit(f"🤖 로컬 비서: {health_report}")
+                return
+
+            # ── 빠른 감지 2.6b: 보안 점검 하나(열린 포트/방화벽/백신/시작프로그램) 직접 실행 ──
+            security_func_name = _single_security_check_request(text_lower)
+            security_func = next((f for f in self.installed_tools if f.__name__ == security_func_name), None)
+            if security_func:
+                sys.stderr.write(f"\n🎯 보안 점검 직접 호출 (정규식 감지): {security_func_name}\n")
+                sys.stderr.flush()
+                self.status_update.emit("🛡️  보안 점검 중")
+                try:
+                    raw = str(security_func())
+                except Exception as e:
+                    sys.stderr.write(f"[보안 점검 직접 호출 오류] {e}\n")
+                    self.response_ready.emit("🤖 로컬 비서: 점검 중에 문제가 생겨 확인하지 못했어요. 잠시 후 다시 시도해주세요.")
+                    return
+                reply = _build_deterministic_reply(raw) or raw
+                self.response_ready.emit(f"🤖 로컬 비서: {reply}")
                 return
 
             # ── 빠른 감지 2.7: 캘린더+파일 검색 연계 요청 직접 감지 ──

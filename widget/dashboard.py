@@ -251,14 +251,19 @@ class WeatherPanel(Panel):
     """현재 날씨 (core/weather.py, Open-Meteo). 30분마다, 지역을 바꾸면 바로 갱신.
     네트워크는 스레드에서 하고 결과는 신호로 받는다 (화면 멈춤 방지).
     get_location() → (지역 이름 또는 None, (위도, 경도) 또는 None). 이름이 None이면
-    (처음 실행) 현재 위치를 자동으로 찾고 location_detected로 알린다 — 저장은 앱이 한다."""
+    (처음 실행) 현재 위치를 자동으로 찾고 location_detected로 알린다 — 저장은 앱이 한다.
+    detect_on_start() → True면 앱을 켤 때(첫 조회) 저장된 지역이 있어도 현재 위치를 다시 찾는다.
+    이때 위치를 못 찾으면 저장된 지역으로 날씨를 보여준다."""
     weather_ready = pyqtSignal(dict)       # 상단 바 날씨 표시도 이 신호를 받는다
-    location_detected = pyqtSignal(dict)   # 자동으로 찾은 위치 {"name", "lat", "lon", "source"}
+    # 자동으로 찾은 위치 {"name", "lat", "lon", "source", "on_start"} — on_start는 시작할 때 조용히 다시 찾은 것
+    location_detected = pyqtSignal(dict)
     _result = pyqtSignal(object)           # 스레드 → 메인 스레드 (dict 또는 오류 문장)
 
-    def __init__(self, get_location, parent=None):
+    def __init__(self, get_location, parent=None, detect_on_start=None):
         super().__init__("cloud-sun", "날씨", parent)
         self._get_location = get_location
+        self._detect_on_start = detect_on_start
+        self._start_pending = True   # 앱을 켠 뒤 첫 조회인지
         self._force_detect = False
         self.add_header_button("", "새로고침", self.refresh, icon="refresh-cw")
         top = QHBoxLayout()
@@ -303,18 +308,27 @@ class WeatherPanel(Panel):
         self._loading = True
         gen = self._gen
         city, coords = self._get_location()
-        detect, self._force_detect = (self._force_detect or not city), False
+        on_start = (self._start_pending and bool(city) and not self._force_detect
+                    and bool(self._detect_on_start and self._detect_on_start()))
+        self._start_pending = False
+        detect, self._force_detect = (self._force_detect or on_start or not city), False
 
         def work():
             from core.weather import WeatherError, detect_location, fetch_weather
             try:
                 nonlocal city, coords
                 if detect:
-                    loc = detect_location()
+                    try:
+                        loc = detect_location()
+                    except WeatherError:
+                        if not on_start:
+                            raise
+                        loc = None   # 시작할 때 다시 찾기 실패 — 저장된 지역으로 보여준다
                     if gen != self._gen:
                         return   # 그 사이 계정이 바뀜 — 이전 계정 설정에 위치를 저장하지 않는다
-                    self.location_detected.emit(loc)
-                    city, coords = loc["name"], (loc["lat"], loc["lon"])
+                    if loc:
+                        self.location_detected.emit({**loc, "on_start": on_start})
+                        city, coords = loc["name"], (loc["lat"], loc["lon"])
                 data = fetch_weather(city, coords)
                 if gen == self._gen:
                     self._result.emit(data)

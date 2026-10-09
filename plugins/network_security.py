@@ -7,7 +7,7 @@ import subprocess
 import socket
 from datetime import datetime
 
-from core import security_records
+from core import mac_security, security_records
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -31,6 +31,13 @@ class CheckResult(str):
                 raise ValueError(f"CheckResult.{label}는 0 이상의 정수여야 합니다: {value!r}")
         obj.critical, obj.warning, obj.unknown = critical, warning, unknown
         return obj
+
+
+def _from_mac(r) -> "CheckResult":
+    """core/mac_security의 점검 결과(MacCheck)를 이 플러그인의 CheckResult로 감싼다 — Mac에서는 점검을
+    거기서 하고, 점수 계산·AI 답변은 Windows와 같은 길을 쓴다."""
+    return CheckResult(r.text, critical=r.critical, warning=r.warning, unknown=r.unknown,
+                       summary=r.summary)
 
 
 def _judgment_counts(result):
@@ -1320,6 +1327,9 @@ def _step_results(lines):
 
 def _listening_ports():
     """{포트: {"addrs": set, "procs": set}} — 지금 접속을 기다리는 TCP 포트. 실패하면 None."""
+    if mac_security.is_mac():
+        # Mac은 관리자 권한 없이 psutil로 연결 목록을 못 읽는다 — lsof + 위험 포트 직접 접속 확인
+        return mac_security.listening_ports(probe_ports=PORT_RISKS)
     try:
         conns = psutil.net_connections(kind="tcp")
     except (psutil.AccessDenied, OSError):
@@ -1412,7 +1422,11 @@ def get_listening_ports() -> str:
     else:
         lines.append("✅ 네트워크에 열린 포트가 없어요.")
     lines.append(f"\n🏠 이 PC 안에서만 쓰는 포트 {local_only}개 (다른 기기에서는 접속할 수 없음)")
-    if critical or warning:
+    if (critical or warning) and mac_security.is_mac():
+        lines.append("💡 '열려 있다'는 건 프로그램이 접속을 기다린다는 뜻이에요. 실제로 밖에서 닿는지는 Mac 방화벽 설정에 "
+                     "달려 있어요. 시스템 설정 > 네트워크 > 방화벽에서 켜고, 쓰지 않는 기능(화면 공유·파일 공유 등)은 "
+                     "시스템 설정 > 일반 > 공유에서 꺼 주세요.")
+    elif critical or warning:
         lines.append("💡 '열려 있다'는 건 프로그램이 접속을 기다린다는 뜻이에요. 실제로 밖에서 닿는지는 Windows 방화벽 "
                      "규칙에 달려 있어요. '위험한 포트 막아줘'라고 하면 Windows 방화벽 차단 규칙으로 확실히 막을 수 있어요.")
     unclassified = f", 목록에 없는 포트 {len(other_lines)}개" if other_lines else ""
@@ -1441,6 +1455,8 @@ def check_firewall_status() -> str:
     """Windows 방화벽이 켜져 있는지(프로필별), 들어오는 연결을 기본으로 막는지, 지금 네트워크 종류."""
     print("\n[네트워크 보안] Windows 방화벽 상태 확인 중...")
     title = "[🧱 Windows 방화벽 상태]"
+    if mac_security.is_mac():
+        return _from_mac(mac_security.check_firewall_status())
     if platform.system() != "Windows":
         return CheckResult("⚠️ 이 기능은 Windows 전용입니다.", unknown=1, summary="확인하지 못함")
     data = _firewall_state()
@@ -1770,6 +1786,15 @@ def _score_report(title: str, checks, kind: str = None) -> str:
 
 def get_network_security_report() -> str:
     print("\n[네트워크 보안] 종합 리포트 생성 중...")
+    if mac_security.is_mac():
+        # Mac에서는 방화벽 규칙·DNS·연결 점검이 Windows 전용이라 전부 ❔가 되고, 점수가 실제(방화벽 꺼짐, 화면 공유
+        # 포트 열림)와 상관없이 100점이 나왔다(실제 앱에서 확인) — Mac에서 확인되는 점검으로 채운다
+        checks = [
+            ("포트 스캔",     scan_open_ports),
+            ("방화벽 상태",   check_firewall_status),
+            ("열린 포트",     get_listening_ports),
+        ]
+        return _score_report("[🌐 네트워크 보안 종합 리포트]", checks, kind="network_mac")
     checks = [
         ("포트 스캔",     scan_open_ports),
         ("방화벽 규칙",   get_firewall_rules),

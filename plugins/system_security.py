@@ -5,7 +5,7 @@ import csv
 import io
 from datetime import datetime
 
-from core import security_records
+from core import mac_security, security_records
 from collections import Counter
 
 
@@ -133,6 +133,8 @@ def _run_powershell(command: str, timeout: int):
 
 def check_update_status() -> str:
     print("\n[시스템 보안] Windows 업데이트 상태 확인 중...")
+    if mac_security.is_mac():
+        return _from_mac(mac_security.check_update_status())
 
     if platform.system() != "Windows":
         return CheckResult("⚠️ 이 기능은 Windows 전용입니다.", unknown=1)
@@ -176,6 +178,8 @@ def check_update_status() -> str:
 
 def scan_shared_folders() -> str:
     print("\n[시스템 보안] 공유 폴더 점검 중...")
+    if mac_security.is_mac():
+        return _from_mac(mac_security.scan_shared_folders())
     if platform.system() != "Windows":
         return CheckResult("⚠️ 이 기능은 Windows 전용입니다.", unknown=1)
 
@@ -307,6 +311,12 @@ class CheckResult(str):
                 raise ValueError(f"CheckResult.{label}는 0 이상의 정수여야 합니다: {value!r}")
         obj.critical, obj.warning, obj.unknown = critical, warning, unknown
         return obj
+
+
+def _from_mac(r) -> "CheckResult":
+    """core/mac_security의 점검 결과(MacCheck)를 이 플러그인의 CheckResult로 감싼다 — Mac에서는 점검을
+    거기서 하고, 점수 계산·AI 답변은 Windows와 같은 길을 쓴다."""
+    return CheckResult(r.text, critical=r.critical, warning=r.warning, unknown=r.unknown)
 
 
 def _judgment_counts(result):
@@ -450,7 +460,7 @@ def _score_report(title: str, checks, kind: str = None) -> str:
 def get_system_security_report() -> str:
     print("\n[시스템 보안] 종합 리포트 생성 중...")
     checks = [
-        ("Windows 업데이트", check_update_status),
+        ("macOS 업데이트" if mac_security.is_mac() else "Windows 업데이트", check_update_status),
         ("공유 폴더",        scan_shared_folders),
         ("로그인 실패 이력", get_login_failures),
     ]
