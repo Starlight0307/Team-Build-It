@@ -152,7 +152,6 @@ def _validate_password(pw: str):
 
 class MyPageWidget(QWidget):
     logout_requested = pyqtSignal()
-    sync_requested = pyqtSignal()   # "지금 동기화" (app_main이 처리)
     import_guest_requested = pyqtSignal()   # 비로그인 때 쓰던 데이터 가져오기 (app_main이 처리)
     go_home           = pyqtSignal()
 
@@ -297,17 +296,6 @@ class MyPageWidget(QWidget):
         L.addLayout(br)
         L.addSpacing(8)
 
-        sync_row = QHBoxLayout(); sync_row.setSpacing(8)
-        self.lbl_sync = QLabel("☁️ 동기화 상태를 확인하는 중..."); self.lbl_sync.setWordWrap(True)
-        self.lbl_sync.setStyleSheet("color: #888; font-size: 11px;")
-        self.btn_sync = QPushButton("지금 동기화")
-        self.btn_sync.setObjectName("MPSave"); self.btn_sync.setMinimumHeight(32); self.btn_sync.setMinimumWidth(96)
-        self.btn_sync.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_sync.clicked.connect(self.sync_requested)
-        sync_row.addWidget(self.lbl_sync, 1); sync_row.addWidget(self.btn_sync)
-        L.addLayout(sync_row)
-        L.addSpacing(8)
-
         self.btn_import_guest = QPushButton("📂 로그인 전에 쓰던 설정·기억 가져오기")
         self.btn_import_guest.setObjectName("MPSave"); self.btn_import_guest.setMinimumHeight(36)
         self.btn_import_guest.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -376,23 +364,9 @@ class MyPageWidget(QWidget):
         scroll.setWidget(inner)
         cl.addWidget(self.card)
 
-    def update_sync_label(self):
-        """☁️ 마지막 동기화 상태 문구를 다시 그린다."""
-        from data.cloud_sync import get_last_status, describe_status
-        status = get_last_status(self._username) if self._username else None
-        text = "☁️ " + describe_status(status)
-        self.lbl_sync.setText(text)
-        bad = bool(status) and not status.get("ok")
-        self.lbl_sync.setStyleSheet(f"color: {'#E5484D' if bad else '#888'}; font-size: 11px;")
-
-    def set_sync_busy(self, busy: bool):
-        self.btn_sync.setEnabled(not busy)
-        self.btn_sync.setText("동기화 중..." if busy else "지금 동기화")
-
     def refresh(self, username: str):
         """로그인 후 호출 — 유저 정보 갱신"""
         self._username = username
-        self.update_sync_label()
         self.lbl_username.setText(username)
         self.lbl_count.setText(str(count_sessions(username)))
 

@@ -62,36 +62,13 @@ from widget.history_widget import HistoryWidget
 from widget.mypage_widget import MyPageWidget
 
 
-class SyncNowWorker(QThread):
-    """"지금 동기화" — 네트워크 호출이라 백그라운드에서."""
-    done = pyqtSignal(dict)
-
-    def __init__(self, user):
-        super().__init__()
-        self._user = user
-
-    def run(self):
-        from data.cloud_sync import sync_now
-        try:
-            self.done.emit(sync_now(self._user))
-        except Exception as e:
-            self.done.emit({"pulled": 0, "pushed": 0, "skipped": 0, "error": str(e)})
-
-
 class AutoLoginWorker(QThread):
     """저장된 세션으로 자동 로그인 시도 (네트워크 호출이라 백그라운드에서)."""
     done = pyqtSignal(str)   # 성공한 아이디, 실패하면 빈 문자열
 
     def run(self):
         from data.db import try_auto_login
-        uid = try_auto_login() or ""
-        if uid:
-            from data.cloud_sync import pull_for_login   # 서버가 안 되면 조용히 로컬로만 시작한다
-            try:
-                pull_for_login(uid)
-            except Exception as e:
-                print(f"[동기화] 로그인 직후 가져오기 실패: {e}")
-        self.done.emit(uid)
+        self.done.emit(try_auto_login() or "")
 from widget.calendar_widget import CalendarWidget
 from data.db import save_chat_to_file
 from core.voice import (VoiceListener, Speaker, VoiceInstallWorker,
@@ -315,11 +292,6 @@ class AssistantApp(QWidget):
         # 신규 기능 6(앱 사용 통계) — 사용자가 이전에 기록을 켜둔 경우에만 이어서 기록한다.
         QTimer.singleShot(1500, self._resume_usage_tracking)
 
-        # 로그인한 계정의 바뀐 데이터를 1분마다 서버에 올린다(서버가 안 되면 다음 기회에 자동 재시도)
-        self._cloud_push_timer = QTimer(self)
-        self._cloud_push_timer.timeout.connect(self._push_cloud_async)
-        self._cloud_push_timer.start(60000)
-
         # 실시간 감시 알림을 주기적으로 확인 — 새 알림이 생겼을 때만 조용히 토스트로 알림
         self._alert_poll_timer = QTimer(self)
         self._alert_poll_timer.timeout.connect(self._poll_realtime_alerts)
@@ -419,35 +391,10 @@ class AssistantApp(QWidget):
         self.raise_()
         self.activateWindow()
 
-    def _push_cloud_async(self):
-        """바뀐 로컬 데이터를 백그라운드에서 서버에 올린다 (화면이 멈추지 않게)."""
-        user = MOCK_USER.get("name")
-        if not MOCK_USER.get("logged_in") or not user:
-            return
-        import threading
-        from data.cloud_sync import push_changes
-        threading.Thread(target=lambda: push_changes(user), daemon=True).start()
-
-    def _push_cloud_now(self, user: str):
-        """로그아웃/종료 직전에 마지막으로 올린다 (세션이 살아 있는 동안 — 몇 초 안에 끝나거나 포기)."""
-        if not user:
-            return
-        try:
-            from data.cloud_sync import push_changes
-            push_changes(user)
-        except Exception as e:
-            print(f"[동기화] 마지막 올리기 실패: {e}")
-
     def _quit_app(self):
         """트레이 메뉴의 "종료"(또는 Ctrl+C)에서 호출 — closeEvent가 이 플래그를 보고
         진짜로 앱을 끝낸다(X 버튼과 구분하는 핵심)."""
         self._force_quit = True
-        try:   # 앱 사용 기록 등 메모리에 있는 것을 파일로 저장한 뒤 올리려고, 종료 정리를 먼저 한다
-            from plugins.app_usage import _flush
-            _flush(force=True)
-        except Exception:
-            pass
-        self._push_cloud_now(MOCK_USER.get("name") if MOCK_USER.get("logged_in") else "")
         self.shutdown_background_work()
         if self.tray_icon:
             self.tray_icon.hide()
@@ -1268,7 +1215,6 @@ class AssistantApp(QWidget):
         self.mypage = MyPageWidget(self)                                        # index 5
         self.mypage.logout_requested.connect(self._handle_logout)
         self.mypage.import_guest_requested.connect(self._import_guest_data)
-        self.mypage.sync_requested.connect(self._sync_now)
         self.mypage.go_home.connect(self._go_home)
         self.stacked_widget.addWidget(self.mypage)
 
@@ -2163,32 +2109,6 @@ class AssistantApp(QWidget):
         self._refresh_info_panels()   # 오늘 일정/할 일 패널에 이전 계정 내용이 남지 않게 다시 읽는다
         self._resume_usage_tracking()
 
-    def _sync_now(self):
-        """마이페이지 "지금 동기화" — 현재 상태를 파일로 저장(guest 전환)한 뒤 서버와 맞추고, 다시 이 계정으로 읽는다."""
-        uid = MOCK_USER.get("name")
-        if not MOCK_USER.get("logged_in") or not uid or getattr(self, "_sync_worker", None) is not None:
-            return
-        self.mypage.set_sync_busy(True)
-        _sync_calendar_user("guest")      # 메모리의 상태를 파일로 저장하고 비운다
-        self._sync_worker = SyncNowWorker(uid)
-        self._sync_worker.done.connect(lambda result, u=uid: self._on_sync_now_done(u, result))
-        self._sync_worker.start()
-
-    def _on_sync_now_done(self, uid, result):
-        worker, self._sync_worker = self._sync_worker, None
-        if worker is not None:
-            worker.deleteLater()
-        if MOCK_USER.get("logged_in") and MOCK_USER.get("name") == uid:
-            _sync_calendar_user(uid)       # 받아온 파일을 다시 읽는다
-            self._apply_user_settings()
-        self.mypage.set_sync_busy(False)
-        self.mypage.update_sync_label()
-        from data.cloud_sync import friendly_error
-        if result.get("error"):
-            self._show_toast("⚠️ " + friendly_error(result["error"]))
-        else:
-            self._show_toast(f"☁️ 동기화 완료 (올림 {result['pushed']} · 받음 {result['pulled']})")
-
     def _import_guest_data(self):
         """마이페이지 "로그인 전에 쓰던 설정·기억 가져오기" — 현재 계정 상태를 먼저 저장하고(guest로
         전환), 공용 파일을 이 계정 파일로 복사한 뒤, 다시 이 계정으로 불러온다."""
@@ -2242,13 +2162,11 @@ class AssistantApp(QWidget):
         self.update_sidebar_ui()
 
     def _handle_logout(self):
-        leaving = MOCK_USER.get("name") if MOCK_USER.get("logged_in") else ""
         MOCK_USER["logged_in"] = False
         MOCK_USER["name"]      = ""
         self.current_session_id    = None
         self.current_session_title = None
-        _sync_calendar_user("guest")   # 메모리의 상태를 파일로 저장한다
-        self._push_cloud_now(leaving)  # 세션이 아직 살아 있을 때(아래 logout()이 지우기 전에) 올린다
+        _sync_calendar_user("guest")
         self._apply_user_settings()
         self.auth_page.logout()
         for b in self.nav_info: b.setChecked(False)
