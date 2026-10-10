@@ -397,10 +397,15 @@ class MyPageWidget(QWidget):
         self.input_birthday.setCursorPosition(len(formatted))
 
     def _show_login_history(self):
-        from data.db import get_login_history
-        rows = get_login_history((self._username or ""), limit=15)
-        text = "\n".join(f"{r.get('time', '')}   {r.get('method', '')}" for r in rows) \
-            or "아직 로그인 기록이 없어요."
+        from data.db import get_login_history, get_server_login_history
+        rows = get_server_login_history(15)
+        source = "서버에 저장된 기록"
+        if rows is None:   # 서버에 닿지 못하면 이 PC에 남은 기록으로
+            rows = get_login_history((self._username or ""), limit=15)
+            source = "이 PC에 저장된 기록 (서버에 연결하지 못했어요)"
+        lines = [f"{r.get('time', '')}   {r.get('method', '')}" + (f"   ({r['device']})" if r.get("device") else "")
+                 for r in rows]
+        text = f"{source}\n\n" + ("\n".join(lines) or "아직 로그인 기록이 없어요.")
         QMessageBox.information(self, "최근 로그인 기록", text)
 
     def _import_guest(self):

@@ -189,6 +189,7 @@ def _isolate_login_state(tmp_path, monkeypatch):
     from data import db
     monkeypatch.setattr(db, "SESSION_FILE", str(tmp_path / "no_session.json"))
     monkeypatch.setattr(db, "LOGIN_HISTORY_DIR", str(tmp_path / "login_history"))
+    monkeypatch.setattr(db, "_upload_login_event", lambda method: None)   # 테스트에서 실제 서버로 보내지 않는다
 
 
 @pytest.fixture(autouse=True)

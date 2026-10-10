@@ -177,8 +177,67 @@ def record_login(user_id: str, method: str) -> None:
         rows.insert(0, {"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "method": method})
         with open(_login_history_path(user_id), "w", encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False)
+        _upload_login_event(method)   # 서버에도 남긴다 (서버에 저장하는 개인 정보는 이것뿐)
     except Exception as e:
         print(f"[로그인 기록 저장 오류] {e}")
+
+
+LOGIN_EVENTS_URL = f"{SUPABASE_URL}/rest/v1/login_events"
+
+
+def _device_label() -> str:
+    """기기 종류만 남긴다 (예: Windows 11, macOS 14.5). 컴퓨터 이름/IP 같은 건 저장하지 않는다."""
+    import platform
+    return f"{platform.system()} {platform.release()}"[:80]
+
+
+def _send_login_event(method: str) -> bool:
+    """로그인 기록 한 건을 서버에 추가한다. 성공 여부만 돌려주고 예외는 던지지 않는다."""
+    if not _session.get("access_token"):
+        return False
+    try:
+        resp = requests.post(
+            LOGIN_EVENTS_URL,
+            headers={**_session_headers(), "Prefer": "return=minimal"},
+            json={"user_id": _current_uid(), "method": method, "device": _device_label()},
+            timeout=10,
+        )
+        return resp.status_code < 300
+    except Exception as e:
+        print(f"[로그인 기록 서버 저장 실패] {e}")
+        return False
+
+
+def _upload_login_event(method: str) -> None:
+    """로그인 흐름이 멈추지 않게 백그라운드에서 올린다. 서버가 안 돼도 로컬 기록은 이미 남아 있다."""
+    import threading
+    threading.Thread(target=_send_login_event, args=(method,), daemon=True).start()
+
+
+def get_server_login_history(limit: int = 20):
+    """서버에 남은 내 로그인 기록 [{"time": "YYYY-MM-DD HH:MM:SS"(내 시간대), "method":..., "device":...}] 최신순.
+    서버에 닿지 못하면 None (호출하는 쪽이 로컬 기록으로 대신 보여준다)."""
+    if not _session.get("access_token"):
+        return None
+    try:
+        resp = requests.get(
+            LOGIN_EVENTS_URL,
+            params={"select": "logged_in_at,method,device", "order": "logged_in_at.desc", "limit": str(limit)},
+            headers=_session_headers(), timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        out = []
+        for r in resp.json():
+            try:
+                t = datetime.fromisoformat(str(r["logged_in_at"]).replace("Z", "+00:00")).astimezone()
+                when = t.strftime("%Y-%m-%d %H:%M:%S")
+            except (KeyError, ValueError):
+                when = str(r.get("logged_in_at", ""))
+            out.append({"time": when, "method": r.get("method", ""), "device": r.get("device") or ""})
+        return out
+    except Exception:
+        return None
 
 
 def get_login_history(user_id: str, limit: int = 20) -> list:
