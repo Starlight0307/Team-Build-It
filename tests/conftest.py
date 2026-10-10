@@ -17,6 +17,15 @@ if PROJECT_ROOT not in sys.path:
 
 import pytest
 
+# 맥 Anaconda 등에서는 PyQt6가 자기 Qt 플러그인 폴더를 못 찾아 QApplication을 만드는 순간
+# 프로세스가 죽는다(Abort) — run_app.sh가 하는 것처럼 플러그인 경로를 알려준다.
+if not os.environ.get("QT_PLUGIN_PATH"):
+    try:
+        import PyQt6
+        os.environ["QT_PLUGIN_PATH"] = os.path.join(os.path.dirname(PyQt6.__file__), "Qt6", "plugins")
+    except ImportError:
+        pass
+
 # 테스트가 실제 사용자의 앱 데이터 폴더(%LOCALAPPDATA%/Lumi 등 — 로그인 기록, 알림, 설정 …)를
 # 건드리지 않게, 어떤 모듈보다 먼저(import 시점에) 임시 폴더로 돌려놓는다.
 import tempfile
@@ -25,6 +34,11 @@ os.environ["LOCALAPPDATA"] = _TEST_HOME
 os.environ["XDG_DATA_HOME"] = _TEST_HOME
 os.environ["HOME"] = _TEST_HOME
 os.environ["USERPROFILE"] = _TEST_HOME
+# 자동 로그인 파일(data/.session.json)도 처음부터 임시 경로로 — 모듈/세션 범위 fixture가 테스트 함수보다
+# 먼저 메인 창(AssistantApp)을 만들면 함수 단위 fixture(_isolate_login_state)가 적용되기 전이라
+# 실제 로그인 파일로 자동 로그인을 시도했고, 테스트용 암호 키로는 못 풀어서 실제 파일을 지워버렸다(2026-10-11).
+from data import db as _db
+_db.SESSION_FILE = os.path.join(_TEST_HOME, "no_session.json")
 
 
 @pytest.fixture

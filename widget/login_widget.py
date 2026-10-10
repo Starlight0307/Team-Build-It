@@ -90,8 +90,11 @@ class GoogleLoginWorker(QThread):
         try:
             from auth.supabase_google_auth import sign_in_with_google
             from data.db import complete_google_login
-            access_token, refresh_token = sign_in_with_google(self._cancel)
+            access_token, refresh_token, google_token = sign_in_with_google(self._cancel)
             username = complete_google_login(access_token, refresh_token, remember=self._remember)
+            if google_token:   # 구글 캘린더용 토큰 — 파일에 저장하지 않고 메모리에만 둔다
+                from plugins.calendar_tool import set_google_access_token
+                set_google_access_token(username, google_token)
             self.result_ready.emit(True, username, "")
         except Exception as e:
             self.result_ready.emit(False, "", str(e))

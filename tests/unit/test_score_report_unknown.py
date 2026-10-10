@@ -43,7 +43,7 @@ def test_single_unknown_line_drops_the_mark():
 
     reply = _build_single_verdict_reply(raw)
 
-    assert reply == "확인해봤는데, 관리자 권한이 없어 Windows 보안 기록을 읽지 못했어요."
+    assert reply == "관리자 권한이 없어 Windows 보안 기록을 읽지 못했어요."
 
 
 # ── 의심 프로세스 결과의 '위치를 확인하지 못한 시스템 프로그램' 줄 ────────────
@@ -57,14 +57,14 @@ _HEAD = "[🚨 의심 프로그램 점검 결과] (2026-10-08 16:00:00)\n실행 
 def test_clean_process_scan_with_unverified_note():
     reply = _build_suspicious_process_reply(_HEAD + _UNVERIFIED + "✅ 의심스러운 프로그램이 발견되지 않았습니다.")
 
-    assert reply.startswith("지금 실행 중인 프로그램 300개를 확인해봤는데, 의심스러운 프로그램은 없었어요.")
+    assert reply.startswith("지금 실행 중인 프로그램 300개를 살펴보니 의심스러운 프로그램은 없었어요.")
     assert "시스템 프로그램 12개는 관리자 권한 부족 등으로" in reply
 
 
 def test_clean_process_scan_without_note_is_unchanged():
     reply = _build_suspicious_process_reply(_HEAD + "✅ 의심스러운 프로그램이 발견되지 않았습니다.")
 
-    assert reply == "지금 실행 중인 프로그램 300개를 확인해봤는데, 의심스러운 프로그램은 없었어요."
+    assert reply == "지금 실행 중인 프로그램 300개를 살펴보니 의심스러운 프로그램은 없었어요."
 
 
 def test_flagged_process_scan_with_unverified_note():

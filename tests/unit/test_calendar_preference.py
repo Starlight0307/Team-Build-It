@@ -38,3 +38,16 @@ def test_invalid_value_is_silently_ignored(isolated_calendar_preference):
 def test_corrupted_file_falls_back_to_default(isolated_calendar_preference):
     isolated_calendar_preference.write_text("이건 JSON이 아님", encoding="utf-8")
     assert get_active_calendar() == "google"
+
+
+def test_legacy_file_in_app_folder_is_moved_out(isolated_calendar_preference, tmp_path, monkeypatch):
+    """예전(앱 폴더 안, git에 올라가 있던) 설정 파일은 앱 폴더 밖으로 옮겨지고 값이 유지된다."""
+    from calendar_feature import calendar_preference
+    legacy = tmp_path / "legacy_calendar_preference.json"
+    legacy.write_text('{"active": "local"}', encoding="utf-8")
+    monkeypatch.setattr(calendar_preference, "_LEGACY_FILE", str(legacy))
+
+    calendar_preference.migrate_legacy_file()
+
+    assert not legacy.exists()
+    assert get_active_calendar() == "local"

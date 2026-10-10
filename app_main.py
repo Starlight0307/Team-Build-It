@@ -1,3 +1,4 @@
+import os
 import random
 import re
 import sys
@@ -36,7 +37,7 @@ load_dotenv()
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QLabel,
                              QScrollArea, QFrame,
-                             QSplitter, QSizePolicy,
+                             QSplitter, QSizePolicy, QSpacerItem,
                              QSystemTrayIcon, QMenu, QStyle)
 from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QShortcut, QKeySequence, QIcon
@@ -804,7 +805,7 @@ class AssistantApp(QWidget):
         if is_status_query:
             active = calendar_preference.get_active_calendar()
             label  = "내부 캘린더" if active == "local" else "구글 캘린더"
-            self.display_ai_response(f"🤖 로컬 비서: 지금은 **{label}**를 사용 중입니다.")
+            self.display_ai_response(f"🤖 로컬 비서: 지금은 **{label}**를 쓰고 있어요.")
             return True
 
         if has_local and has_verb and not has_google:
@@ -816,14 +817,14 @@ class AssistantApp(QWidget):
                 return True
             calendar_preference.set_active_calendar("local")
             self.display_ai_response(
-                "🤖 로컬 비서: 이제부터 **내부 캘린더**를 사용합니다. "
+                "🤖 로컬 비서: 이제부터 **내부 캘린더**를 쓸게요. "
                 "구글 계정 없이 이 컴퓨터에만 일정이 저장돼요."
             )
             return True
 
         if has_google and has_verb and not has_local:
             calendar_preference.set_active_calendar("google")
-            self.display_ai_response("🤖 로컬 비서: 이제부터 **구글 캘린더**를 사용합니다.")
+            self.display_ai_response("🤖 로컬 비서: 이제부터 **구글 캘린더**를 쓸게요.")
             return True
 
         return False
@@ -1123,9 +1124,27 @@ class AssistantApp(QWidget):
         self.top_bar = QFrame()
         self.top_bar.setObjectName("topBar")   # 스타일이 안쪽 QLabel(QFrame 자식 클래스)에 번지지 않게
         self.top_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        tb = QHBoxLayout(self.top_bar)
-        tb.setContentsMargins(20, 10, 16, 10)
-        tb.setSpacing(8)
+        top = QHBoxLayout(self.top_bar)
+        top.setContentsMargins(20, 10, 16, 10)
+        top.setSpacing(8)
+        # 왼쪽(로고·상태) ··· [가운데 자리] ··· 오른쪽(메뉴·프로필). 가운데 묶음(시계·날씨)은 레이아웃에
+        # 넣지 않고 _center_top_bar가 직접 위치를 정한다 — 레이아웃 비율로 맞추면 오른쪽 메뉴가 절반보다
+        # 넓을 때 버튼이 눌려 "대화" 글자가 잘리거나 창이 넓어지는 문제가 있었다. 레이아웃에는 가운데
+        # 묶음 폭만큼 빈 자리(_top_center_gap)만 잡아둬서 서로 겹치지 않게 한다.
+        def _group(parent=None):
+            w = QWidget(parent); w.setStyleSheet("background: transparent;")
+            lay = QHBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(8)
+            return w, lay
+        left_box, tb = _group()
+        center_box, center = _group(self.top_bar)
+        right_box, right = _group()
+        self._top_center_gap = QSpacerItem(0, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+        top.addWidget(left_box)
+        top.addStretch(1)
+        top.addItem(self._top_center_gap)
+        top.addStretch(1)
+        top.addWidget(right_box)
+        self._top_groups = (top, left_box, center_box, right_box)
         self.brand_icon = QLabel()
         self.brand_icon.setPixmap(icons.pixmap("sparkles", 26))
         self.brand_icon.setStyleSheet("background: transparent;")
@@ -1137,12 +1156,16 @@ class AssistantApp(QWidget):
         tb.addWidget(self.status_pill)
         tb.addStretch(1)
         self.clock_pill = QLabel()
-        tb.addWidget(self.clock_pill)
-        tb.addStretch(1)
+        center.addWidget(self.clock_pill)
         self.weather_pill = QLabel(icons.label_html("cloud-sun", "--°C"))
         self.weather_pill.setToolTip("환경설정 > 날씨에서 지역을 바꿀 수 있어요")
-        tb.addWidget(self.weather_pill)
-        tb.addSpacing(4)
+        center.addWidget(self.weather_pill)
+        for _pill in (self.clock_pill, self.weather_pill):
+            # 모서리 반지름(18px)의 두 배보다 낮으면 Qt가 둥근 모서리를 못 그리고 네모로 그린다
+            _pill.setMinimumHeight(36)
+            _pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tb = right
+        tb.addStretch(1)
 
         self.btn_chat     = QPushButton()
         self.btn_plugin   = QPushButton()
@@ -1428,14 +1451,39 @@ class AssistantApp(QWidget):
             w = self.width()
             self.left_column.setVisible(w >= 1180)
             self.center_column.setVisible(w >= 860)
+        if hasattr(self, 'clock_pill'):
+            self._tick_clock()   # 창 폭에 맞는 시계 형식으로 바로 바꾸고 가운데 위치도 다시 잡는다
+
+    def _center_top_bar(self):
+        """상단 바 가운데 묶음(시계·날씨)을 정중앙에 둔다. 좌우 묶음과 겹치면 그 사이 빈 공간의 가운데로."""
+        top, left, center, right = getattr(self, "_top_groups", (None,) * 4)
+        if top is None:
+            return
+        hint = center.sizeHint()
+        gap_w = hint.width() + 2 * top.spacing()
+        if self._top_center_gap.sizeHint().width() != gap_w:   # 가운데 묶음 폭만큼 레이아웃에 자리를 비워둔다
+            self._top_center_gap.changeSize(gap_w, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+            top.invalidate()
+        bar_w = self.top_bar.width()
+        x = (bar_w - hint.width()) // 2
+        lo = left.geometry().right() + top.spacing()
+        hi = right.geometry().left() - top.spacing() - hint.width()
+        if not lo <= x <= hi:   # 정중앙이면 좌우 묶음과 겹친다 → 둘 사이 빈 공간의 가운데
+            x = max(lo, (lo + hi) // 2)
+        center.setGeometry(x, (self.top_bar.height() - hint.height()) // 2, hint.width(), hint.height())
+        center.raise_()
 
     def _tick_clock(self):
         now = datetime.now()
         ampm = "오전" if now.hour < 12 else "오후"
         hour = now.hour % 12 or 12
         weekday = "월화수목금토일"[now.weekday()]
-        self.clock_pill.setText(icons.label_html(
-            "clock", f"{ampm} {hour}:{now:%M:%S}   |   {now.year}년 {now.month}월 {now.day}일 ({weekday})"))
+        if self.width() >= 1300:
+            text = f"{ampm} {hour}:{now:%M:%S}   |   {now.year}년 {now.month}월 {now.day}일 ({weekday})"
+        else:   # 좁은 창에서는 연도·초를 빼서 상단 메뉴 버튼이 눌리지 않게 한다
+            text = f"{ampm} {hour}:{now:%M}  ·  {now.month}월 {now.day}일 ({weekday})"
+        self.clock_pill.setText(icons.label_html("clock", text))
+        self._center_top_bar()   # 프로필 이름·연결 상태 글자가 바뀌어 묶음 폭이 달라져도 가운데를 유지
 
     def _check_ollama(self):
         """Ollama가 켜져 있는지 백그라운드에서 확인 (화면 멈춤 없게 스레드로)."""
@@ -1523,10 +1571,15 @@ class AssistantApp(QWidget):
         outer = QVBoxLayout(page)
         outer.setContentsMargins(48, 32, 48, 32)
         outer.setSpacing(0)
-        outer.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # 카드(최대 760px)를 가운데로 — 예전엔 왼쪽에 붙어 오른쪽이 비어 보였다. 제목·설명도 같은 폭으로
+        # 맞춰야 카드와 왼쪽 줄이 맞는다.
+        outer.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
         self.settings_title    = QLabel("환경설정")
         self.settings_subtitle = QLabel("루미의 화면과 음성 동작을 원하는 대로 바꿀 수 있어요.")
+        for _w in (self.settings_title, self.settings_subtitle):
+            _w.setMaximumWidth(760)
+            _w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         outer.addWidget(self.settings_title)
         outer.addSpacing(6)
         outer.addWidget(self.settings_subtitle)
@@ -1624,6 +1677,7 @@ class AssistantApp(QWidget):
         self.widget_editor_card = QFrame()
         self.widget_editor_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.widget_editor_card.setMaximumWidth(760)
+        self.widget_editor_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         wel = QVBoxLayout(self.widget_editor_card)
         wel.setContentsMargins(24, 20, 24, 16)
         wel.setSpacing(0)
@@ -1835,6 +1889,7 @@ class AssistantApp(QWidget):
         card = QFrame()
         card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         card.setMaximumWidth(760)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)   # 가운데 정렬에서도 760px까지 넓게
         cl = QVBoxLayout(card)
         cl.setContentsMargins(24, 20, 24, 12)
         cl.setSpacing(0)
@@ -2467,15 +2522,18 @@ class AssistantApp(QWidget):
             if func_name in func_map:
                 try:
                     result = func_map[func_name](**args)
-                    self.display_ai_response(f"🤖 로컬 비서: {result}")
+                    # 확인 후 실행한 결과도 평소 답변과 같은 문장으로(플러그인 원문 "[🗑️ … 삭제 완료]"가 그대로 보였다)
+                    from core.ai_worker import _build_deterministic_reply
+                    reply = _build_deterministic_reply(str(result)) or result
+                    self.display_ai_response(f"🤖 로컬 비서: {reply}")
                     self._remember_kill_confirmation(func_name, args)
                 except Exception as e:
                     print(f"[확인 후 실행 오류] {func_name}: {e}")
-                    self.display_ai_response("❌ 요청하신 작업을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.")
+                    self.display_ai_response("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.")
             else:
                 self.display_ai_response("❌ 이 기능을 사용하려면 관련 플러그인이 설치되어 있는지 확인해주세요.")
         else:
-            self.display_ai_response("🤖 로컬 비서: 요청하신 작업을 취소했습니다.")
+            self.display_ai_response("🤖 로컬 비서: 알겠어요, 요청하신 작업은 하지 않았어요.")
 
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
 
@@ -3571,6 +3629,7 @@ if __name__ == "__main__":
         from data import storage_location
         from data.db import encrypt_existing_chats
         storage_location.migrate_legacy()
+        calendar_preference.migrate_legacy_file()   # 구글/내부 캘린더 선택도 앱 폴더 밖으로
         encrypt_existing_chats()
         # 설정/기억/알림/할 일 등 나머지 로컬 기록도 평문으로 남은 게 있으면 암호화한다
         from data.secure_store import encrypt_existing_records
@@ -3591,7 +3650,6 @@ if __name__ == "__main__":
     # 터미널에서 Ctrl+C / 종료 신호 → 곧바로 죽지 않고 정상 종료 절차를 밟는다.
     # Qt 이벤트 루프가 도는 동안엔 파이썬이 신호를 처리할 틈이 없어서, 짧은
     # 타이머로 주기적으로 파이썬에 제어를 넘겨준다.
-    import os
     import signal
     for _sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(_sig, lambda *_: QTimer.singleShot(0, ex._quit_app))

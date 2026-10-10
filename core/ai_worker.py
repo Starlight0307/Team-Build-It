@@ -3,7 +3,7 @@ import re
 import time
 import inspect
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import ollama
 import httpx  # ollama 패키지가 이미 의존하는 라이브러리 — 오류 종류 구분에만 사용
@@ -941,6 +941,8 @@ _CONDITION_SETTERS = frozenset(("set_usage_condition", "set_spending_condition",
                                 "set_app_usage_trend_condition"))
 _REMINDER_FUNCS = _TIMER_FUNCS | _DAILY_FUNCS | _CONDITION_COMMON_FUNCS | _CONDITION_SETTERS
 
+# 하루가 아니라 기간을 묻는 표현 — "오늘부터 3일", "금요일까지", "일주일 동안" (날짜 하나로 바꾸면 안 됨)
+_DATE_RANGE_WORDS = re.compile(r"부터|까지|동안|앞으로|일간|며칠|\d+\s*일\s*치|이번\s*주|다음\s*주\s*(일정|약속|스케줄)|주간")
 _TIMER_PATTERN = re.compile(r"\d+\s*(초|분|시간)\s*(뒤|후|있다가)|타이머")
 _DAILY_PATTERN = re.compile(r"매일|평일|주말마다|아침마다|저녁마다|밤마다|날마다|정기\s*알림")
 _CONDITION_PATTERN = re.compile(r"넘으면|넘게|넘을\s*때|초과하면|이상이면|떨어지면|아래로|밑으로|부족해지면|이하되면|이하로")
@@ -1071,6 +1073,16 @@ _FOLLOWUP_ACCEPT_PATTERN = re.compile(
 )
 
 
+def _strip_wrapping_quotes(text: str) -> str:
+    """모델이 답 전체를 따옴표로 감싸 보낸 경우("…")만 벗긴다. 2026-10-11 실제 앱: "'루미테스트' 일정을 …
+    '루미테스트 3번'"처럼 제목 인용으로 시작·끝나는 답의 양 끝 따옴표까지 벗겨 "루미테스트' 일정을…"이 됐다
+    — 그 따옴표가 답 안에 딱 두 개(양 끝)뿐일 때만 감싼 것으로 본다."""
+    for q in ('"', "'"):
+        if len(text) >= 2 and text[0] == q and text[-1] == q and text.count(q) == 2:
+            return text[1:-1]
+    return text
+
+
 def _looks_like_json_leak(text: str) -> bool:
     """모델이 자연어 대신 tool_calls 형식을 흉내 낸 JSON/코드 조각을 그대로
     출력했는지 검사한다. 원래는 첫 모델 응답에서만 썼는데, _summarize_tool_results
@@ -1083,10 +1095,15 @@ def _looks_like_json_leak(text: str) -> bool:
         or re.search(r'"parameters\{"', text)
         or re.search(r'^\s*\w+\([^)]*\)\s*$', text, re.MULTILINE)
         or re.search(r'^\s*\{.*"message".*\}\s*$', text.strip(), re.DOTALL)
+        # 2026-10-11 실제 앱 테스트: '{"name": "get_calendar", }'처럼 arguments 없이 함수 이름만
+        # 흉내 낸 조각이 답으로 나갔다 — 답 전체가 "name" 키를 가진 중괄호 덩어리면 JSON 흉내로 본다.
+        or re.search(r'^\{\s*"name"\s*:\s*"[^"]*".*\}$', text.strip(), re.DOTALL)
+        # '["get_login_status", "해드릴까요?"]'처럼 함수 이름으로 시작하는 JSON 배열 하나가 답 전체인 경우
+        or re.search(r'^\[\s*"[a-z_]+"\s*(,.*)?\]$', text.strip(), re.DOTALL)
     )
 
 
-_UNRELATED_TOPIC_MARKERS = ("일정", "캘린더", "스케줄", "포트", "방화벽", "SMB")
+# 감시하는 주제 단어는 아래 _TOPIC_GROUPS — 일정/캘린더/스케줄, 포트/방화벽/SMB.
 
 # 2026-09-24 "Semantic Fidelity" 과제 진단 중 재현: chat_history가 완전히
 # 빈 상태(직전 맥락 유출 가능성 자체가 없음)에서도, 실시간 감시/업데이트
@@ -1096,7 +1113,7 @@ _UNRELATED_TOPIC_MARKERS = ("일정", "캘린더", "스케줄", "포트", "방�
 # 통과됐다(문자 그대로 "포트"라고 안 쓰고 "SMB"라고만 썼기 때문). 이전
 # 사례(chat_history 맥락 유출)와 달리 맥락 없이도 자체적으로 지어내는
 # 패턴이라, 원인은 다르지만 증상(원본에 없는 주제 등장)은 동일해서 같은
-# 메커니즘(_contains_topic_marker)으로 잡는다.
+# 메커니즘(_topic_groups)으로 잡는다.
 
 # 2026-09-11 system_info 재검증에서 발견한 버그: "CPU 많이 먹는 프로그램
 # 보여줘"라고 요청해서 실제로는 get_top_cpu_processes 결과(프로세스 목록,
@@ -1120,10 +1137,20 @@ _PORT_WORD_PATTERN = re.compile(r'(?<!리)포트(?!폴리오)')
 # "포트 445가 열려 있어서 위험할 수 있어요"라는, 이번 결과와 전혀 무관한
 # 지어낸 문장이 그대로 사용자에게 노출됐다. "포트"만 별도로 "리포트"의
 # 일부가 아닌 경우에만 매치하도록 정규식으로 분리했다.
-def _contains_topic_marker(text: str) -> bool:
+# 2026-10-11 실제 앱 테스트: "내 구글 캘린더 목록 보여줘" 요약 끝에 결과에 없는 "SMB 포트 445"가
+# 붙어 나왔는데 가드를 통과했다 — 원본(캘린더 목록)에 "캘린더"가 있어서 "원본에도 주제 단어가
+# 있다"로 판정됐기 때문. 주제를 묶음별로 따로 봐야 "캘린더 결과에 포트 얘기"를 잡는다.
+_TOPIC_GROUPS = (
+    ("calendar", ("일정", "캘린더", "스케줄")),
+    ("network", ("방화벽", "SMB")),   # "포트"는 "리포트" 충돌 때문에 _PORT_WORD_PATTERN으로 따로 본다
+)
+
+
+def _topic_groups(text: str) -> set:
+    found = {name for name, words in _TOPIC_GROUPS if any(w in text for w in words)}
     if _PORT_WORD_PATTERN.search(text):
-        return True
-    return any(kw in text for kw in _UNRELATED_TOPIC_MARKERS if kw != "포트")
+        found.add("network")
+    return found
 
 
 def _looks_like_unrelated_topic_leak(result: str, raw_results: str) -> bool:
@@ -1139,8 +1166,8 @@ def _looks_like_unrelated_topic_leak(result: str, raw_results: str) -> bool:
     등장하면 지어낸 것으로 간주한다. system_info 재검증에서 "포트"/"방화벽"도
     같은 패턴(직전 turn의 network_security 맥락이 무관한 요약에 새어듦)으로
     나타나서 목록에 추가했다. ("포트" 단독 판정은 위 "리포트" 충돌 문제 때문에
-    _contains_topic_marker로 분리)."""
-    return _contains_topic_marker(result) and not _contains_topic_marker(raw_results)
+    _topic_groups가 정규식으로 따로 본다)."""
+    return bool(_topic_groups(result) - _topic_groups(raw_results))
 
 
 # 2026-09-24 "Semantic Fidelity" 과제 진단 중 재현한 별도 버그: "VPN -
@@ -1313,7 +1340,7 @@ def _build_score_report_reply(raw_results: str):
     title_match = _SCORE_REPORT_TITLE_LINE.search(raw_results)
     title = re.sub(r'^[^\w가-힣]+', '', title_match.group(1)).strip() if title_match else "점검 리포트"
 
-    parts = [f"{title}를 확인해봤는데, 점수는 {score}/100점이에요."]
+    parts = [f"{title}를 살펴보니 점수는 {score}/100점이에요."]
     if risky:
         parts.append(f"{', '.join(risky)} 쪽에 위험 표시가 있어서 확인이 필요해 보여요.")
         if safe:
@@ -1368,7 +1395,7 @@ def _build_single_verdict_reply(raw_results: str):
     match = _SINGLE_VERDICT_LINE.match(body_lines[0])
     if not match:
         return None
-    return f"확인해봤는데, {match.group(2).strip()}"
+    return f"{match.group(2).strip()}"
 
 
 _REALTIME_STATUS_MARKER = "[🛰️ 실시간 감시 상태]"
@@ -1396,7 +1423,7 @@ def _build_realtime_status_reply(raw_results: str):
     if _REALTIME_STATUS_MARKER not in raw_results:
         return None
     if _REALTIME_NOT_RUNNING_TEXT in raw_results:
-        return "확인해봤는데, 지금은 실시간 감시가 꺼져 있어요."
+        return "지금은 실시간 감시가 꺼져 있어요."
     match = _REALTIME_RUNNING_PATTERN.search(raw_results)
     if not match:
         return None
@@ -1426,13 +1453,16 @@ def _build_realtime_stop_reply(raw_results: str):
     누락). 이 두 결과 모두 고정 문자열이라 LLM 없이 바로 답할 수 있다."""
     stripped = raw_results.strip()
     if stripped == _REALTIME_STOP_NOT_RUNNING:
-        return "확인해봤는데, 실시간 감시가 원래 실행 중이 아니었어요."
+        return "실시간 감시가 원래 실행 중이 아니었어요."
     if stripped.startswith(_REALTIME_STOP_SUCCESS_MARKER):
         return "네, 실시간 감시를 중지했어요."
     return None
 
 
-_CALENDAR_CONFIRM_MARKERS = ("[✅ 일정 등록 완료 (내부 캘린더)]", "[✅ 일정 수정 완료 (내부 캘린더)]")
+# 구글 캘린더(calendar_tool)의 헤더도 넣는다 — 2026-10-11 실제 앱 테스트에서 구글 캘린더로 일정을
+# 등록하자 이 빌더가 건너뛰어져 LLM이 요약을 맡았고, '{"name": "get_calendar", }'가 답으로 나갔다.
+_CALENDAR_CONFIRM_MARKERS = ("[✅ 일정 등록 완료 (내부 캘린더)]", "[✅ 일정 수정 완료 (내부 캘린더)]",
+                             "[✅ 일정 등록 완료]", "[✅ 일정 수정 완료]")
 _CALENDAR_FIELD_LINE = re.compile(r'^- (제목|시작|종료): (.+)$', re.MULTILINE)
 _CALENDAR_DT_FORMATS = ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M")
 # 2026-09-21 신기능(캘린더 반복 일정 고도화) 추가 시 발견한 위험: local_create_event가
@@ -1450,7 +1480,10 @@ def _parse_calendar_dt(s: str):
             return datetime.strptime(s, fmt)
         except ValueError:
             continue
-    return None
+    try:   # 구글 캘린더 수정 결과는 "2026-10-11T16:00:00+09:00"(ISO, 시간대 포함) — 그 시간대의 시각 그대로 쓴다
+        return datetime.fromisoformat(s).replace(tzinfo=None)
+    except ValueError:
+        return None
 
 
 def _format_calendar_dt_korean(dt: datetime, include_date: bool = True) -> str:
@@ -1489,8 +1522,14 @@ def _build_calendar_confirmation_reply(raw_results: str):
     is_update = "수정" in raw_results.split('\n', 1)[0]
     verb = "수정했어요" if is_update else "등록했어요"
     start_str = _format_calendar_dt_korean(start_dt)
-    same_day = start_dt.date() == end_dt.date()
-    end_str = _format_calendar_dt_korean(end_dt, include_date=not same_day)
+    # 자정에 끝나는 일정("16시부터 00시까지")은 "13일 오전 12시"보다 "12일 밤 12시"가 자연스럽다
+    ends_at_midnight = end_dt.hour == 0 and end_dt.minute == 0 and end_dt > start_dt
+    end_day = (end_dt - timedelta(days=1)) if ends_at_midnight else end_dt
+    same_day = start_dt.date() == end_day.date()
+    if ends_at_midnight:
+        end_str = "밤 12시" if same_day else f"{_format_calendar_dt_korean(end_day).rsplit(' ', 2)[0]} 밤 12시"
+    else:
+        end_str = _format_calendar_dt_korean(end_dt, include_date=not same_day)
     reply = f"'{title}' 일정을 {start_str}부터 {end_str}까지로 {verb}."
     conflict_m = _CALENDAR_CONFLICT_LINE.search(raw_results)
     if conflict_m:
@@ -1570,7 +1609,29 @@ def _build_calendar_empty_reply(raw_results: str):
                   if ln.strip() and not ln.strip().startswith('[')]
     if len(body_lines) != 1 or "없습니다" not in body_lines[0]:
         return None
-    return f"확인해봤는데, {body_lines[0]}"
+    return _soften_calendar_empty_sentence(body_lines[0], raw_results)
+
+
+def _soften_calendar_empty_sentence(sentence: str, raw_results: str = "") -> str:
+    """플러그인의 고정 문장("향후 7일 내 일정이 없습니다.")을 루미 말투로 바꾼다
+    (2026-10-11 "답변을 더 부드럽게" 요청). 바꿀 수 없는 형태면 어미만 해요체로."""
+    m = re.fullmatch(r"향후 (\d+)일 내 일정이 없습니다\.", sentence)
+    if m:
+        return f"앞으로 {m.group(1)}일 안에는 등록된 일정이 없어요."
+    m = re.fullmatch(r"최근 (\d+)일 내 일정이 없습니다\.", sentence)
+    if m:
+        return f"최근 {m.group(1)}일 동안 등록된 일정이 없어요."
+    m = re.fullmatch(r"±(\d+)일 범위에서 일치하는 일정이 없습니다\.", sentence)
+    if m:
+        k = re.match(r"\[🔍 검색 결과(?: \(내부 캘린더\))?\] '(?P<kw>.+)'", raw_results.strip())
+        about = f"'{k.group('kw')}' 일정은" if k else "찾는 일정은"
+        return f"{about} 앞뒤 {m.group(1)}일 안에 없어요."
+    if sentence == "일정이 없습니다.":
+        d = re.match(r"\[📋 (?P<date>[\d-]+) \((?P<weekday>.)요일\) 일정", raw_results.strip())
+        if d:
+            return f"{d.group('date')}({d.group('weekday')}요일)에는 등록된 일정이 없어요."
+        return "등록된 일정이 없어요."
+    return sentence.replace("없습니다.", "없어요.")
 
 
 _LOCAL_SEARCH_HEADER = re.compile(
@@ -1702,7 +1763,7 @@ def _build_local_upcoming_events_reply(raw_results: str):
     stripped = raw_results.strip()
     m_empty = _LOCAL_UPCOMING_EMPTY.match(stripped)
     if m_empty:
-        return f"확인해봤는데, 앞으로 {m_empty.group('days')}일 안에는 등록된 일정이 없어요."
+        return f"앞으로 {m_empty.group('days')}일 안에는 등록된 일정이 없어요."
     m = _LOCAL_UPCOMING_HEADER.match(stripped)
     if not m:
         return None
@@ -1720,7 +1781,7 @@ def _build_local_events_by_date_reply(raw_results: str):
     stripped = raw_results.strip()
     m_empty = _LOCAL_BYDATE_EMPTY.match(stripped)
     if m_empty:
-        return f"확인해봤는데, {m_empty.group('date')}({m_empty.group('weekday')}요일)에는 일정이 없어요."
+        return f"{m_empty.group('date')}({m_empty.group('weekday')}요일)에는 일정이 없어요."
     m = _LOCAL_BYDATE_HEADER.match(stripped)
     if not m:
         return None
@@ -1743,13 +1804,26 @@ def _build_local_daily_briefing_reply(raw_results: str):
     if not m:
         return None
     label, date, time_now, rest = m.group('label'), m.group('date'), m.group('time'), m.group('rest')
-    if rest.strip() == "일정이 없습니다.":
-        return f"지금 {time_now}인데, {label}({date}) 일정은 없어요."
-    events = _parse_local_event_blocks(rest)
-    if events is None or not events:
-        return None
-    lines = [f"지금 {time_now}인데, {label}({date}) 일정이 {len(events)}건 있어요."]
-    lines.extend(_format_local_events_lines(events))
+    # 구글 캘린더 브리핑은 일정 목록 뒤에 마감 할 일(✅)·우산(☔)·준비(📝) 같은 안내가 붙는다 — 이미 사용자용
+    # 문장이라 그대로 덧붙이고, 일정 목록만 코드로 정리한다(2026-10-11 실제 앱: 이 꼬리 때문에 빌더가 건너뛰어져
+    # LLM이 "오늘 내일 '알바' 일정 있어요! … 알록달록 맑은 날씨예보" 같은 답을 만들었다).
+    rest = rest.strip("\n")
+    if rest.startswith("일정이 없습니다."):
+        events_part, extra = "", rest[len("일정이 없습니다."):]
+    else:
+        cut = re.search(r"\n+(?=[^\s\d])", rest)
+        events_part, extra = (rest[:cut.start()], rest[cut.end():]) if cut else (rest, "")
+    extra = extra.strip("\n")
+    if not events_part:
+        lines = [f"지금 {time_now}인데, {label}({date}) 일정은 없어요."]
+    else:
+        events = _parse_local_event_blocks(events_part)
+        if events is None or not events:
+            return None
+        lines = [f"지금 {time_now}인데, {label}({date}) 일정이 {len(events)}건 있어요."]
+        lines.extend(_format_local_events_lines(events))
+    if extra:
+        lines += ["", extra]
     return "\n".join(lines)
 
 
@@ -1777,7 +1851,7 @@ def _build_local_schedule_summary_reply(raw_results: str):
     stripped = raw_results.strip()
     m_empty = _LOCAL_SUMMARY_EMPTY.match(stripped)
     if m_empty:
-        return f"최근 {m_empty.group('days')}일 일정을 확인해봤는데, 등록된 일정이 없어요."
+        return f"최근 {m_empty.group('days')}일 동안 등록된 일정이 없어요."
     m = _LOCAL_SUMMARY_HEADER.match(stripped)
     if not m:
         return None
@@ -1805,7 +1879,7 @@ def _build_iot_no_devices_reply(raw_results: str):
     없다"는 사실 하나뿐이었다. 이 결과는 항상 동일한 고정 문자열이므로
     정확히 일치할 때 LLM을 거치지 않고 결정론적으로 답한다."""
     if raw_results.strip() == _IOT_NO_DEVICES_TEXT:
-        return ("확인해봤는데, 로컬 네트워크에서 발견된 Kasa 스마트 기기가 없어요. "
+        return ("로컬 네트워크에서 발견된 Kasa 스마트 기기가 없어요. "
                  "기기 전원이 켜져 있고 이 컴퓨터와 같은 Wi-Fi에 연결돼 있는지 확인해봐 주실래요?")
     return None
 
@@ -1891,7 +1965,7 @@ def _build_run_scene_reply(raw_results: str):
     if not items or summary is None:
         return None
 
-    lines = [f"확인해봤는데, '{scene_name}' 씬을 실행했어요."]
+    lines = [f"'{scene_name}' 씬을 실행했어요."]
     for mark, device, detail in items:
         lines.append(f"- {mark} {device}: {detail}")
 
@@ -1933,7 +2007,7 @@ def _build_room_control_reply(raw_results: str):
         return None
     if not items or summary is None:
         return None
-    lines = [f"확인해봤는데, '{m.group('name')}' 방 전체 {m.group('verb')}를 실행했어요."]
+    lines = [f"'{m.group('name')}' 방 전체 {m.group('verb')}를 실행했어요."]
     for mark, device, detail in items:
         lines.append(f"- {mark} {device}: {detail}")
     if summary.group('failed') is not None:
@@ -1977,7 +2051,7 @@ def _build_port_scan_reply(raw_results: str):
         return None
     target, prange, body = m.group('target'), m.group('range'), m.group('body').strip()
     if _PORT_SCAN_NONE.match(body):
-        return f"{target}의 {prange} 포트를 확인해봤는데, 열린 포트가 없어요."
+        return f"{target}의 {prange} 포트를 살펴보니 열린 포트가 없어요."
     lines = body.split('\n')
     if not lines or not _PORT_SCAN_COUNT.match(lines[0]):
         return None
@@ -2000,7 +2074,7 @@ def _build_port_scan_reply(raw_results: str):
         else:
             item_lines.append(f"포트 {port}는 어떤 서비스인지 알려진 게 없어요.")
 
-    header_line = f"{target}의 {prange} 포트를 확인해봤는데, 열린 포트가 {len(items)}개 있어요."
+    header_line = f"{target}의 {prange} 포트를 살펴보니 열린 포트가 {len(items)}개 있어요."
     if len(items) == 1:
         result = f"{header_line} {item_lines[0]}"
     else:
@@ -2054,14 +2128,14 @@ def _build_dns_check_reply(raw_results: str):
     labels = {label for _, _, label in items}
     if len(items) == 1:
         _, ip, label = items[0]
-        parts = [f"DNS 서버를 확인해봤는데 {ip}({label}) 하나를 쓰고 있어요."]
+        parts = [f"DNS 서버를 살펴보니 {ip}({label}) 하나를 쓰고 있어요."]
     elif len(labels) == 1:
         label = labels.pop()
         ip_list = ", ".join(ip for _, ip, _ in items)
-        parts = [f"DNS 서버를 확인해봤는데 {ip_list} 총 {len(items)}개가 설정되어 있고, 모두 {label}예요."]
+        parts = [f"DNS 서버를 살펴보니 {ip_list} 총 {len(items)}개가 설정되어 있고, 모두 {label}예요."]
     else:
         detail = ", ".join(f"{ip}({label})" for _, ip, label in items)
-        parts = [f"DNS 서버를 확인해봤는데 {detail}로 총 {len(items)}개가 설정되어 있어요."]
+        parts = [f"DNS 서버를 살펴보니 {detail}로 총 {len(items)}개가 설정되어 있어요."]
 
     tail = tail.strip()
     if tail == _DNS_CHECK_OK_SUFFIX:
@@ -2142,7 +2216,7 @@ def _build_network_connections_reply(raw_results: str):
     # 2026-09-13 실사용자 지적: 의심 연결이 여러 건이면 한 문단으로 이어
     # 붙여서 가시성이 떨어진다는 지적을 받아, 2건 이상이면 줄바꿈 목록으로
     # 보여준다(1건뿐일 땐 자연스러운 한 문장으로 유지).
-    lines = [f"네트워크 연결을 확인해봤는데, 총 {total}건이 있어요."]
+    lines = [f"네트워크 연결을 살펴보니 총 {total}건이 있어요."]
     if suspicious_items:
         item_lines = [f"{proc}({raddr}) — {warn}." for proc, _pid, raddr, warn in suspicious_items]
         if len(item_lines) == 1:
@@ -2231,7 +2305,7 @@ def _build_firewall_rules_reply(raw_results: str):
         return None
     risky = [(name, prog) for mark, name, port, prog, _warn in items if mark == '🚨']
 
-    lines = [f"방화벽 인바운드 허용 규칙을 확인해봤는데, 총 {total}개가 있어요."]
+    lines = [f"방화벽 인바운드 허용 규칙을 살펴보니 총 {total}개가 있어요."]
 
     if risky:
         grouped = {}
@@ -2331,7 +2405,7 @@ def _build_traffic_monitor_reply(raw_results: str):
             return None  # 예상 못한 형식이면 안전하게 LLM 경로로 폴백
 
     lines = [
-        f"최근 {dur}초 동안 네트워크 트래픽을 확인해봤는데, "
+        f"최근 {dur}초 동안 네트워크 트래픽을 살펴보니 "
         f"업로드 {up_kb}KB({up_rate}KB/초), 다운로드 {down_kb}KB({down_rate}KB/초)였어요."
     ]
     if proc_lines:
@@ -2397,7 +2471,7 @@ def _build_suspicious_process_reply(raw_results: str):
         unverified_note += f" 신뢰 목록에 있는 {tm.group('count')}개는 의심 항목에서 뺐어요."
         body = (body + "\n")[tm.end():].strip()
     if body == _SUSPICIOUS_PROC_NONE:
-        return (f"지금 실행 중인 프로그램 {scanned}개를 확인해봤는데, 의심스러운 프로그램은 없었어요."
+        return (f"지금 실행 중인 프로그램 {scanned}개를 살펴보니 의심스러운 프로그램은 없었어요."
                 + unverified_note)
 
     lines = body.split('\n')
@@ -2414,7 +2488,7 @@ def _build_suspicious_process_reply(raw_results: str):
         return None  # 예상 밖 형식 — 안전하게 LLM 경로로 폴백
 
     result_lines = [
-        f"지금 실행 중인 프로그램 {scanned}개를 확인해봤는데, 그중 {count}개가 의심스러워요:"
+        f"지금 실행 중인 프로그램 {scanned}개를 살펴보니 그중 {count}개가 의심스러워요:"
     ]
     for (name, pid), reason in zip(names, reasons):
         result_lines.append(f"- {name} (실행 번호: {pid}) — {reason}")
@@ -2454,7 +2528,7 @@ def _build_system_info_reply(raw_results: str):
     g = m.groupdict()
 
     lines = [
-        f"지금 컴퓨터 상태를 확인해봤는데, 운영체제는 {g['os']}이고 "
+        f"지금 컴퓨터 상태를 살펴보니 운영체제는 {g['os']}이고 "
         f"CPU는 {g['cores']}코어에 점유율 {g['cpu_pct']}%예요."
     ]
     if g['cpu_temp'] == _SYSINFO_UNAVAILABLE:
@@ -2616,7 +2690,7 @@ def _build_startup_items_reply(raw_results: str):
     if len(suspicious_items) + normal_declared != total:
         return None
 
-    lines = [f"자동으로 실행되도록 등록된 프로그램을 확인해봤는데, 총 {total}개가 있어요."]
+    lines = [f"자동으로 실행되도록 등록된 프로그램을 살펴보니 총 {total}개가 있어요."]
     if suspicious_items:
         lines.append(f"그중 {len(suspicious_items)}개가 임시/다운로드 폴더에서 실행되고 있어서 의심스러워요:")
         for source, name, command in suspicious_items:
@@ -2692,7 +2766,7 @@ def _build_scheduled_tasks_reply(raw_results: str):
     if raw.startswith("[🗓️ 예약 작업 점검 결과]\n"):
         rest = raw.split("\n", 1)[1].strip()
         if "\n" not in rest:                   # "등록된 예약 작업이 없습니다." / "❔ … 확인하지 못했어요."
-            return "예약 작업을 확인해봤는데, " + _strip_status_mark(rest).replace("[확인 못 함] ", "")
+            return "예약 작업을 살펴보니 " + _strip_status_mark(rest).replace("[확인 못 함] ", "")
     m = _TASKS_HEADER.match(raw)
     if not m:
         return None
@@ -2840,7 +2914,7 @@ def _build_disable_risky_firewall_reply(raw_results: str):
     안전하게 LLM 경로로 폴백한다."""
     stripped = raw_results.strip()
     if stripped == _DISABLE_RISKY_FW_NONE:
-        return "확인해봤는데, 현재 위험으로 표시되는 방화벽 규칙이 없어서 따로 바꿀 게 없었어요."
+        return "현재 위험으로 표시되는 방화벽 규칙이 없어서 따로 바꿀 게 없었어요."
 
     m = _DISABLE_RISKY_FW_HEADER.match(stripped)
     if not m:
@@ -2907,7 +2981,7 @@ def _build_duplicate_files_reply(raw_results: str):
     stripped = raw_results.strip()
     m_none = _DUP_FILES_NONE.match(stripped)
     if m_none:
-        return f"확인해봤는데, 중복된 파일을 찾지 못했어요. (파일 {m_none.group('scanned')}개 확인)"
+        return f"중복된 파일을 찾지 못했어요. (파일 {m_none.group('scanned')}개 확인)"
 
     m = _DUP_FILES_HEADER.match(stripped)
     if not m:
@@ -2965,7 +3039,7 @@ def _build_large_files_reply(raw_results: str):
     stripped = raw_results.strip()
     m_none = _LARGE_FILES_NONE.match(stripped)
     if m_none:
-        return (f"확인해봤는데, {m_none.group('min_mb')}MB 이상인 파일을 찾지 못했어요. "
+        return (f"{m_none.group('min_mb')}MB 이상인 파일을 찾지 못했어요. "
                 f"(파일 {m_none.group('scanned')}개 확인)")
 
     m = _LARGE_FILES_HEADER.match(stripped)
@@ -3012,7 +3086,7 @@ def _build_startup_impact_reply(raw_results: str):
     일치할 때만 문장을 만든다."""
     stripped = raw_results.strip()
     if stripped == _STARTUP_IMPACT_EMPTY:
-        return "확인해봤는데, 등록된 시작프로그램이 없어서 부팅 속도에는 영향이 없어요."
+        return "등록된 시작프로그램이 없어서 부팅 속도에는 영향이 없어요."
 
     m = _STARTUP_IMPACT_HEADER.match(stripped)
     if not m:
@@ -3083,7 +3157,7 @@ def _build_installed_programs_reply(raw_results: str):
         return None
 
     sort_label = {"name": "이름순", "size": "용량이 큰 순", "date": "최근 설치순"}.get(sort_by, sort_by)
-    lines = [f"설치된 프로그램을 확인해봤는데, 총 {total}개 중 {shown_declared}개를 {sort_label}으로 보여드릴게요."]
+    lines = [f"설치된 프로그램을 살펴보니 총 {total}개 중 {shown_declared}개를 {sort_label}으로 보여드릴게요."]
     for entry in items:
         lines.append(f"- {entry}")
     if more:
@@ -3106,7 +3180,7 @@ def _build_timer_list_reply(raw_results: str):
     일치할 때만 문장을 만든다."""
     stripped = raw_results.strip()
     if stripped == _TIMER_LIST_EMPTY:
-        return "확인해봤는데, 설정된 타이머가 없어요."
+        return "설정된 타이머가 없어요."
 
     m = _TIMER_LIST_HEADER.match(stripped)
     if not m:
@@ -3175,7 +3249,7 @@ def _build_todo_list_reply(raw_results: str):
     아님) 내용 자체를 바꾸지 않고 그대로 옮기기만 한다."""
     stripped = raw_results.strip()
     if stripped == _TODO_LIST_EMPTY_PENDING or stripped == _TODO_LIST_EMPTY_DONE:
-        return f"확인해봤는데, {stripped.split(chr(10), 1)[1]}"
+        return f"{stripped.split(chr(10), 1)[1]}"
 
     m = _TODO_PENDING_HEADER.match(stripped)
     if m:
@@ -3239,7 +3313,7 @@ def _build_note_list_reply(raw_results: str):
     자체를 절대 바꾸지 않고 그대로 옮긴다."""
     stripped = raw_results.strip()
     if stripped == _NOTE_LIST_EMPTY:
-        return "확인해봤는데, 저장된 메모가 없어요."
+        return "저장된 메모가 없어요."
 
     m = _NOTE_SEARCH_NO_MATCH.match(stripped)
     if m:
@@ -3413,7 +3487,7 @@ def _build_daily_reminder_list_reply(raw_results: str):
     선언된 개수와 실제 파싱된 항목 수가 일치할 때만 문장을 만든다."""
     stripped = raw_results.strip()
     if stripped == _DAILY_REMINDER_LIST_EMPTY:
-        return "확인해봤는데, 등록된 정기 알림이 없어요."
+        return "등록된 정기 알림이 없어요."
 
     m = _DAILY_REMINDER_LIST_HEADER.match(stripped)
     if not m:
@@ -3455,7 +3529,7 @@ def _build_condition_list_reply(raw_results: str):
     이미 사람이 읽는 문장으로 만들어둔 것을 그대로 relay한다."""
     stripped = raw_results.strip()
     if stripped == _CONDITION_LIST_EMPTY:
-        return "확인해봤는데, 등록된 조건부 알림이 없어요."
+        return "등록된 조건부 알림이 없어요."
 
     m = _CONDITION_LIST_HEADER.match(stripped)
     if not m:
@@ -3501,7 +3575,7 @@ def _build_purchase_list_reply(raw_results: str):
     stripped = raw_results.strip()
     m_empty = _PURCHASE_LIST_EMPTY.match(stripped)
     if m_empty:
-        return f"확인해봤는데, 최근 {m_empty.group('days')}일 동안 구매 기록이 없어요."
+        return f"최근 {m_empty.group('days')}일 동안 구매 기록이 없어요."
 
     m = _PURCHASE_LIST_HEADER.match(stripped)
     if not m:
@@ -3540,7 +3614,7 @@ def _build_spending_summary_reply(raw_results: str):
     stripped = raw_results.strip()
     m_empty = _SPENDING_SUMMARY_EMPTY.match(stripped)
     if m_empty:
-        return f"확인해봤는데, 최근 {m_empty.group('days')}일 동안 구매 기록이 없어요."
+        return f"최근 {m_empty.group('days')}일 동안 구매 기록이 없어요."
 
     m = _SPENDING_SUMMARY_HEADER.match(stripped)
     if not m:
@@ -3572,7 +3646,7 @@ def _build_budget_status_reply(raw_results: str):
     stripped = raw_results.strip()
     m_not_set = _BUDGET_STATUS_NOT_SET.match(stripped)
     if m_not_set:
-        return f"확인해봤는데, 아직 설정된 예산이 없어요. {m_not_set.group('hint')}"
+        return f"아직 설정된 예산이 없어요. {m_not_set.group('hint')}"
 
     m = _BUDGET_STATUS_HEADER.match(stripped)
     if not m:
@@ -3655,7 +3729,7 @@ def _build_goal_status_reply(raw_results: str):
     같은 원칙 — 퍼센트/마커 판정을 LLM이 다시 계산하게 하지 않고 그대로 relay한다."""
     stripped = raw_results.strip()
     if stripped == _GOAL_STATUS_NONE_SET:
-        return "확인해봤는데, 아직 설정된 목표가 없어요. '유튜브 하루 1시간까지만 보고 싶어'처럼 말씀해주시면 설정해드릴게요."
+        return "아직 설정된 목표가 없어요. '유튜브 하루 1시간까지만 보고 싶어'처럼 말씀해주시면 설정해드릴게요."
 
     m_not_found = _GOAL_STATUS_NOT_FOUND.match(stripped)
     if m_not_found:
@@ -3773,6 +3847,82 @@ def _build_firewall_tool_reply(raw_results: str):
     return None
 
 
+# 구글 캘린더 연결 상태·캘린더 목록 — 2026-10-11 실제 앱 테스트에서 LLM 요약이 '["get_login_status",
+# "해드릴까요?"]' 같은 조각이나 반말 되묻기("~뭐라고 적혀있었죠?")를 만들었다. 둘 다 calendar_tool이
+# 정해진 형식으로 돌려주므로 코드로 문장을 만든다.
+_GOOGLE_STATUS_HEADER = re.compile(r"^\[🔐 로그인 상태\] \(사용자: [^)]*\)\n")
+_GOOGLE_ACCOUNT_LINE = re.compile(r"^- 구글 계정: (.+)$", re.MULTILINE)
+_GOOGLE_MINUTES_LINE = re.compile(r"^- 남은 시간: 약 (\d+)분", re.MULTILINE)
+
+
+def _build_calendar_login_status_reply(raw_results: str):
+    text = raw_results.strip()
+    if text.startswith("[🔐 구글 캘린더"):   # 연결 필요/만료/권한 필요 안내 — 이미 사용자용 문장이다
+        return "\n".join(text.split("\n")[1:]).strip() or None
+    if not _GOOGLE_STATUS_HEADER.match(text):
+        return None
+    body = _GOOGLE_STATUS_HEADER.sub("", text, count=1)
+    if "로그인되지 않은 상태" in body:
+        return ("아직 구글 캘린더가 연결되지 않았어요. '구글 캘린더 연결해줘'라고 말씀하시거나 "
+                "마이페이지의 [구글 연동하기]를 누르면 연결할 수 있어요.")
+    if "만료" in body:
+        return ("구글 캘린더 연결 시간이 지났어요. '구글 캘린더 연결해줘'라고 말씀하시거나 "
+                "마이페이지에서 다시 연결해 주세요.")
+    account = _GOOGLE_ACCOUNT_LINE.search(body)
+    if "✅" not in body or not account:
+        return None
+    minutes = _GOOGLE_MINUTES_LINE.search(body)
+    reply = f"구글 캘린더에 연결돼 있어요. 연결된 구글 계정은 {account.group(1).strip()}이에요."
+    if minutes:
+        reply += f" 앞으로 약 {minutes.group(1)}분 동안 연결이 유지돼요."
+    return reply
+
+
+_CALENDAR_LIST_HEADER = re.compile(r"^\[📆 캘린더 목록\] \(총 (?P<count>\d+)개\)\n")
+_CALENDAR_LIST_ITEM = re.compile(r"^- (?P<name>.+?)(?P<primary> ⭐ 기본)?\s*\n.*?권한: (?P<role>\w+)",
+                                 re.MULTILINE | re.DOTALL)
+_CALENDAR_ROLE_LABELS = {"owner": "내 캘린더", "writer": "편집 가능", "reader": "보기 전용",
+                         "freeBusyReader": "일정 유무만 보기"}
+
+
+def _build_calendar_list_reply(raw_results: str):
+    text = raw_results.strip()
+    if text == "등록된 캘린더가 없습니다.":
+        return "연결된 구글 계정에 캘린더가 없어요."
+    m = _CALENDAR_LIST_HEADER.match(text)
+    if not m:
+        return None
+    items = list(_CALENDAR_LIST_ITEM.finditer(text[m.end():]))
+    if len(items) != int(m.group("count")):
+        return None
+    lines = [f"구글 캘린더 {len(items)}개가 연결돼 있어요."]
+    for it in items:
+        tags = (["기본"] if it.group("primary") else []) + [_CALENDAR_ROLE_LABELS.get(it.group("role"), it.group("role"))]
+        lines.append(f"- {it.group('name').strip()} ({' · '.join(tags)})")
+    return "\n".join(lines)
+
+
+# 일정 삭제 결과 — 플러그인 원문("[🗑️ 일정 삭제 완료]\n제목 'X' 일정이 삭제되었습니다.")이 그대로 보였다(2026-10-11)
+_DELETE_ONE = re.compile(r"^\[🗑️ 일정 삭제 완료(?: \(내부 캘린더\))?\]\n제목 '(?P<title>.+)' 일정이 삭제되었습니다\.(?P<hint>.*)$", re.DOTALL)
+_DELETE_SERIES = re.compile(r"^\[🗑️ 반복 일정 시리즈 삭제 완료(?: \(내부 캘린더\))?\]\n'(?P<title>.+)' 반복 일정 시리즈 전체"
+                            r"(?:\((?P<count>\d+)건\))?가 삭제되었습니다\.$")
+
+
+def _build_calendar_delete_reply(raw_results: str):
+    text = raw_results.strip()
+    m = _DELETE_ONE.match(text)
+    if m:
+        hint = m.group("hint").strip()
+        if hint:   # "(반복 일정의 일부였어요 — 나머지 회차는 그대로 있어요. …)" — 이미 사용자용 문장
+            hint = " " + hint.strip("() ").rstrip(".") + "."
+        return f"'{m.group('title')}' 일정을 삭제했어요.{hint}"
+    m = _DELETE_SERIES.match(text)
+    if m:
+        count = f" {m.group('count')}건" if m.group("count") else ""
+        return f"'{m.group('title')}' 반복 일정{count}을 모두 삭제했어요."
+    return None
+
+
 _DETERMINISTIC_REPLY_BUILDERS = (
     _build_score_report_reply,
     _build_realtime_status_reply,
@@ -3780,6 +3930,9 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_calendar_confirmation_reply,
     _build_recurring_calendar_confirmation_reply,
     _build_calendar_empty_reply,
+    _build_calendar_login_status_reply,
+    _build_calendar_list_reply,
+    _build_calendar_delete_reply,
     _build_local_search_events_reply,
     _build_local_upcoming_events_reply,
     _build_local_events_by_date_reply,
@@ -4517,6 +4670,14 @@ def _build_condition_recommendation(cond: dict, func_map: dict) -> str:
     return ""
 
 
+# 답변 말투 — 모든 답변 프롬프트가 같이 쓴다(2026-10-11 "답변을 더 부드럽게" 요청).
+_SOFT_TONE_RULE = (
+    "- 말투: 옆에서 챙겨주는 다정한 비서처럼 부드럽고 따뜻한 해요체(~해요, ~이에요, ~있어요)로 말하세요. "
+    "'~습니다'로 딱딱하게 끝내거나 '확인해봤는데,'처럼 보고하듯 시작하지 말고, 결과를 바로 자연스럽게 "
+    "전해주세요. 반말은 쓰지 마세요.\n"
+)
+
+
 def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
     """자유형 LLM 요약 — _summarize_tool_results가 결정론적 처리로 못 거른
     나머지 결과에 대해서만 이 함수를 호출한다. 원래 이 로직 전체가
@@ -4588,8 +4749,10 @@ def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
             "없지만 ~가 위험할 수 있어요'처럼 안전하다는 말과 위험하다는 말을 한 문장/문단에 "
             "같이 쓰면 앞뒤가 안 맞는 답이 되니 절대 이렇게 섞어 쓰지 마.\n"
             "- 문장마다 줄바꿈을 넣어서 뚝뚝 끊어 보이게 하지 말고, 자연스러운 대화 문단으로 이어줘.\n"
+            + _SOFT_TONE_RULE +
             "\n"
-            "일정 조회 결과라면 결과에 있는 제목과 시간만 그대로 보여줘 (위 방식은 적용하지 마).\n"
+            "일정 조회 결과라면 결과에 있는 제목과 시간만 그대로 보여주고(말투 규칙은 지켜줘), "
+            "일정이 없으면 '등록된 일정이 없어요'처럼 부드럽게 알려줘 (위 점검 결과 방식은 적용하지 마).\n"
             "가격 검색 결과라면 결과에 있는 정보만 그대로 보여줘 (위 방식은 적용하지 마).\n"
             "링크(http)는 출력하지 마.\n"
             "JSON이나 코드 형식으로 출력하지 마."
@@ -4935,6 +5098,8 @@ class AIWorker(QThread):
         t = re.sub(r'\d{1,2}월\s*\d{1,2}일', '', t)
         t = re.sub(r'(아침|점심|저녁|밤|새벽)?\s*(오전|오후)?\s*\d{1,2}시(\s*\d{1,2}분)?(에서?)?', '', t)
         t = re.sub(r'\d{1,2}:\d{2}', '', t)
+        # 시각을 지운 자리에 남은 "부터/까지/~"(예: "오후 2시부터 3시까지" → "부터까지") 제거
+        t = re.sub(r'(부터|까지|~)+(로)?(?=\s|$)', '', t)
         # 시간 부사 제거
         for kw in ['내일', '모레', '오늘', '이번주', '다음주']:
             t = t.replace(kw, '')
@@ -4946,6 +5111,8 @@ class AIWorker(QThread):
         # "매주/매일/매월/매년"과 "반복"을 요일 이름과 함께 제거한다.
         for kw in ['매주', '매일', '매월', '매년']:
             t = t.replace(kw, '')
+        # "3번/3회/5차례" 반복 횟수도 제목에서 뺀다(2026-10-11 실제 앱: "루미테스트  3번"으로 저장됨)
+        t = re.sub(r'\d+\s*(번|회|차례)(씩|만)?', '', t)
         for kw in self._WEEKDAY_NAME_TO_INDEX:
             t = t.replace(kw, '')
         # 문장 맨 앞 주어(대명사) 제거 — "저" 뒤에 공백/끝이 와야만 대명사로 보고
@@ -4976,6 +5143,69 @@ class AIWorker(QThread):
         t = re.sub(r'[을를에이가은는으로도]\s*$', '', t.strip())
         t = t.strip()
         return t if len(t) >= 2 else ""
+
+    def _rebuild_faked_create_event(self, content: str, exposed: set, func_map: dict):
+        """모델이 일정 등록을 본문 JSON으로 흉내만 냈을 때, 사용자 문장에서 제목·날짜·시작 시각을 모두
+        뽑을 수 있으면 실제 호출 형태로 만든다. 하나라도 못 뽑으면 None(기존 안내 그대로)."""
+        name = _extract_faked_tool_call(content or "")
+        name = _FAKED_NAME_ALIASES.get(name, name)
+        if name not in ('create_event', 'local_create_event') or name not in exposed or name not in func_map:
+            return None
+        title = self._extract_event_title(self.user_text)
+        day = self._resolve_event_date(self.user_text)
+        start, end = self._resolve_event_times(self.user_text)
+        if not (title and day and start):
+            return None
+        args = {'title': title, 'start_datetime': f"{day} {start}"}
+        if end:
+            args['end_datetime'] = f"{day} {end}"
+        return {'function': {'name': name, 'arguments': args}}
+
+    _SEARCH_VERBS = re.compile(r"\s*(좀\s*)?(찾아\s*줘|찾아\s*봐|찾아|검색해\s*줘|검색해|검색)\S*")
+
+    def _extract_search_keyword(self, text: str) -> str:
+        """"루미테스트 일정 찾아줘" → "루미테스트". 검색어가 남지 않으면 ""."""
+        t = self._SEARCH_VERBS.sub(" ", text)
+        t = re.sub(r"(일정|스케줄)", " ", t)
+        t = re.sub(r"[을를이가은는]?\s*$", "", t.strip()).strip()
+        return t if len(t) >= 2 else ""
+
+    _DATE_WORDS = re.compile(r"오늘|내일|모레|글피|[월화수목금토일]요일|\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}-\d{2}-\d{2}")
+
+    _CLOCK = re.compile(r"(오전|오후|아침|저녁|밤|새벽)?\s*(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분|\s*(반))?")
+
+    def _resolve_event_times(self, text: str):
+        """"오후 5시부터 6시까지" → ("17:00", "18:00"). 시각 표현이 없으면 (None, None).
+        시작은 오전/오후 같은 표시가 있거나 13시 이상·0시처럼 뜻이 분명할 때만 정한다.
+        끝 시각에 표시가 없으면 두 가지 읽기(h, h+12) 중 시작 바로 다음에 오는 쪽을 고른다
+        — 그래도 시작보다 이르면 다음 날로(캘린더 플러그인의 _end_after_start가 처리)."""
+        found = list(self._CLOCK.finditer(text))
+        if not found:
+            return None, None
+
+        def to_24(m, ref=None):
+            mark, h = m.group(1), int(m.group(2))
+            minute = 30 if m.group(4) else int(m.group(3) or 0)
+            if h > 24 or minute > 59:
+                return None
+            if mark in ("오후", "저녁", "밤") and h < 12:
+                h += 12
+            elif mark in ("오전", "아침", "새벽") and h == 12:
+                h = 0
+            elif not mark and ref is not None and h <= 12:
+                cands = sorted({h % 24, (h + 12) % 24})
+                later = [c for c in cands if c * 60 + minute > ref]
+                h = later[0] if later else cands[0]
+            elif not mark and not (h >= 13 or h == 0 or h == 24):
+                return None   # "3시"만으로는 오전인지 오후인지 모른다 — 모델 값을 그대로 둔다
+            return (h % 24) * 60 + minute
+
+        start = to_24(found[0])
+        end = None
+        if len(found) >= 2 and start is not None and re.search(r"부터|~|에서", text[found[0].end():found[1].start()] or ""):
+            end = to_24(found[1], ref=start)
+        fmt = lambda v: f"{v // 60:02d}:{v % 60:02d}" if v is not None else None
+        return fmt(start), fmt(end)
 
     # 상대 날짜 표현 → 오늘 기준 며칠 뒤인지
     _RELATIVE_DAY_OFFSETS = {"오늘": 0, "내일": 1, "모레": 2, "글피": 3}
@@ -5682,6 +5912,16 @@ class AIWorker(QThread):
             if (cat_name == "calendar" and last_categories and "calendar" not in last_categories
                     and all(kw in _CALENDAR_WEAK_KEYWORDS for kw in keywords if kw in text)):
                 continue
+            # 2026-10-11 실제 앱 테스트: "내일 일정 알려줘"가 "알려줘" 하나로 알림 도구까지 노출돼서
+            # 일정 조회 대신 조건부 알림(set_app_usage_trend_condition)을 고르는 오답이 났다.
+            # 일정/약속 같은 명시적 신호가 있고 알림 쪽은 "알려줘"로만 걸렸으며 타이머·조건·매일
+            # 표현이 없으면 "알려줘"는 "말해줘"라는 뜻으로 보고 알림 도구를 넣지 않는다.
+            if (cat_name == "reminder" and "calendar" in matched_categories
+                    and any(w in text for w in _CALENDAR_EXPLICIT_WORDS)
+                    and all(kw == "알려줘" for kw in keywords if kw in text)
+                    and not (_TIMER_PATTERN.search(text) or _CONDITION_PATTERN.search(text)
+                             or _DAILY_PATTERN.search(text) or _TREND_CONDITION_PATTERN.search(text))):
+                continue
             allowed.update(funcs)
 
         for cat_name in last_categories:
@@ -5822,7 +6062,7 @@ class AIWorker(QThread):
                         self.status_update.emit("📋  결과 정리 중")
                         summary_messages = [{
                             'role': 'system',
-                            'content': '한국어로 존댓말로 답변하세요.'
+                            'content': '한국어로, 부드럽고 따뜻한 해요체(~해요, ~이에요)로 답변하세요. 반말은 쓰지 마세요.'
                         }, {
                             'role': 'user',
                             'content': (
@@ -5970,7 +6210,7 @@ class AIWorker(QThread):
                         self.status_update.emit("📋  결과 정리 중")
                         summary_messages = [{
                             'role': 'system',
-                            'content': '한국어로 존댓말로 답변하세요.'
+                            'content': '한국어로, 부드럽고 따뜻한 해요체(~해요, ~이에요)로 답변하세요. 반말은 쓰지 마세요.'
                         }, {
                             'role': 'user',
                             'content': (
@@ -6224,7 +6464,7 @@ class AIWorker(QThread):
                     "아래 설명에 없는 내용은 절대 지어내지 마세요.\n\n"
                     f"{feature_docs}\n\n"
                     "*** 답변 규칙 ***\n"
-                    "- 항상 존댓말(~습니다, ~해요)을 사용하세요.\n"
+                    + _SOFT_TONE_RULE +
                     "- 내부 함수 이름이나 코드는 언급하지 말고, 사용자가 실제로 어떤 말을 하면 되는지로 설명하세요.\n"
                     "- 답변 시작/끝에 따옴표(\") 절대 금지."
                 )
@@ -6284,7 +6524,7 @@ class AIWorker(QThread):
                     "create_event의 title 파라미터는 일정의 핵심 이름만 넣으세요 (예: '식사 약속', '팀 회의', '운동'). 사용자의 전체 문장을 넣지 마세요.\n"
                     "\n"
                     "*** 답변 규칙 ***\n"
-                    "- 항상 존댓말(~습니다, ~해요)을 사용하세요. 반말 금지.\n"
+                    + _SOFT_TONE_RULE +
                     "- 당신은 결과를 그냥 전달만 하는 게 아니라 사용자를 돕는 비서입니다. "
                     "점검/진단류 결과를 '모든 항목이 정상입니다'처럼 뭉뚱그리지 말고, "
                     "무엇을 확인했는지 → 항목별로 어땠는지 순서로 구체적으로 설명하고, "
@@ -6370,6 +6610,17 @@ class AIWorker(QThread):
             sys.stderr.write(f"   - content: {response.get('message', {}).get('content')[:100] if response.get('message', {}).get('content') else 'None'}\n")
             sys.stderr.flush()
 
+            # 2026-10-11 실제 앱(두 번 재현): "모레 오후 3시에 루미테스트 회의 일정 추가해줘"에 모델이 tool_calls 대신
+            # 본문에 '{"name": "create_event", ...깨진 제목}'을 썼다. 일정 등록은 제목·날짜·시각을 어차피 코드가
+            # 문장에서 다시 뽑아 덮어쓰므로, 그 셋을 문장에서 모두 뽑을 수 있으면 실제 호출로 바꿔 평소 경로로 보낸다.
+            if use_tools and not response.get('message', {}).get('tool_calls'):
+                _rebuilt = self._rebuild_faked_create_event(
+                    response.get('message', {}).get('content') or '',
+                    {t.get('function', {}).get('name') for t in ollama_tools}, func_map)
+                if _rebuilt:
+                    sys.stderr.write(f"   - 본문에 흉내 낸 일정 등록을 실제 호출로 바꿈: {_rebuilt}\n")
+                    response['message']['tool_calls'] = [_rebuilt]
+
             if response.get('message', {}).get('tool_calls'):
                 tool_results = []
                 # 이번 턴에서 확인이 필요한 위험한 동작을 전부 모아뒀다가 한꺼번에
@@ -6434,6 +6685,64 @@ class AIWorker(QThread):
                             and func_name != _file_route and _file_route in func_map):
                         func_name, args = _file_route, {}
 
+                    # 2026-10-11 실제 앱 테스트: "내일 일정 알려줘"에 LLM이 get_upcoming_events(days=1)를
+                    # 골라 "내일 하루"가 아니라 "지금부터 24시간"을 조회했다. 하루를 콕 집은 요청(오늘/내일/
+                    # 금요일/10월 20일 …)이고 기간 표현(부터/까지/동안 …)이 없으면 그 날짜 조회로 바꾼다.
+                    _BY_DATE = {'get_upcoming_events': 'get_events_by_date',
+                                'local_get_upcoming_events': 'local_get_events_by_date'}
+                    # "모레 일정 브리핑해줘" — 브리핑은 오늘/내일만 되므로 다른 날은 그 날짜 조회로 바꾼다
+                    if func_name in ('get_daily_briefing', 'local_get_daily_briefing'):
+                        _day = self._resolve_event_date(self.user_text)
+                        _target_fn = 'get_events_by_date' if func_name == 'get_daily_briefing' else 'local_get_events_by_date'
+                        _near = {(__import__('datetime').datetime.now() + __import__('datetime').timedelta(days=d)).strftime("%Y-%m-%d")
+                                 for d in (0, 1)}
+                        if _day and _day not in _near and _target_fn in func_map:
+                            func_name, args = _target_fn, {'date_str': _day}
+                    if (func_name in _BY_DATE and _BY_DATE[func_name] in func_map
+                            and not _DATE_RANGE_WORDS.search(self.user_text)):
+                        _day = self._resolve_event_date(self.user_text)
+                        if _day:
+                            func_name, args = _BY_DATE[func_name], {'date_str': _day}
+
+                    # 2026-10-11 실제 앱: "루미테스트 일정 찾아줘"에 모델이 날짜 조회(그것도 2024-03-16)를 골랐다.
+                    # 찾기/검색 요청에 날짜 표현이 없으면 제목 검색으로 바꾼다.
+                    _SEARCH = {'get_events_by_date': 'search_events', 'get_upcoming_events': 'search_events',
+                               'local_get_events_by_date': 'local_search_events',
+                               'local_get_upcoming_events': 'local_search_events'}
+                    if (func_name in _SEARCH and _SEARCH[func_name] in func_map
+                            and self._SEARCH_VERBS.search(self.user_text)
+                            and not self._DATE_WORDS.search(self.user_text)):
+                        _kw = self._extract_search_keyword(self.user_text)
+                        if _kw:
+                            func_name, args = _SEARCH[func_name], {'keyword': _kw}
+
+                    # 2026-10-11 실제 앱: "루미테스트 회의 일정 삭제해줘"에 모델이 event_id로 "루미테스트 회의 일정 ID"를
+                    # 넘겼다. id 형식이 아니면 끝에 붙은 "일정/ID" 같은 말을 떼서 제목으로 넘긴다 — 캘린더
+                    # 플러그인이 제목이 정확히 같은 일정 하나일 때만 그 일정을 쓴다(_resolve_event_id/_find_event).
+                    if func_name in ('update_event', 'local_update_event', 'delete_event', 'local_delete_event',
+                                     'delete_recurring_series', 'local_delete_recurring_series'):
+                        _eid = str(args.get('event_id') or '').strip()
+                        if _eid and not re.fullmatch(r"[A-Za-z0-9_\-]{8,}", _eid):
+                            # 목록 줄을 통째로 넘긴 경우("- 알바: 2026-10-13(화) 14:00 ~ …") — 앞 "- "와 ": 날짜…" 꼬리를 뗀다
+                            _eid = re.sub(r"^\s*[-•]\s*", "", _eid)
+                            _eid = re.sub(r"\s*:\s*\d{4}-\d{2}-\d{2}.*$", "", _eid).strip()
+                            _eid = re.sub(r"\s*(일정)?\s*(의)?\s*(ID|id|아이디)\s*$", "", _eid).strip()
+                            _eid = re.sub(r"\s*(반복\s*)?(일정)?\s*(시리즈|전체)?$", "", _eid).strip()
+                            _eid = re.sub(r"\s*반복$", "", _eid).strip()
+                            if _eid:
+                                args['event_id'] = _eid
+
+                    # 일정 수정도 날짜·시각을 코드로 맞춘다(2026-10-11 실제 앱: "모레 오후 5시부터 6시까지로 바꿔줘"가
+                    # 2024-03-16 18:00~18:00으로 넘어갔다). 날짜 표현이 둘 이상이면("내일 회의를 모레로")
+                    # 어느 쪽이 새 날짜인지 모르니 날짜는 모델 값을 그대로 둔다.
+                    if func_name in ('update_event', 'local_update_event'):
+                        if len(self._DATE_WORDS.findall(self.user_text)) == 1:
+                            _day = self._resolve_event_date(self.user_text)
+                            if _day:
+                                for _dt_key in ('start_datetime', 'end_datetime'):
+                                    if args.get(_dt_key):
+                                        args[_dt_key] = self._apply_resolved_date(args[_dt_key], _day)
+
                     _required_detect = _DETECTION_BEFORE_ACTION.get(func_name)
                     if _required_detect and any(d in _tool_call_names_this_turn for d in _required_detect):
                         # func_name별로 "무엇을 어떻게 다시 말해달라고 안내할지"가 다
@@ -6489,6 +6798,20 @@ class AIWorker(QThread):
                             for _dt_key in ('start_datetime', 'end_datetime'):
                                 if args.get(_dt_key):
                                     args[_dt_key] = self._apply_resolved_date(args[_dt_key], resolved_date)
+
+                    # 시각("오후 5시부터 6시까지")도 코드로 — 날짜는 위에서 맞춘 인자 값의 날짜를 그대로 쓴다
+                    if func_name in ('create_event', 'local_create_event', 'update_event', 'local_update_event',
+                                     'create_recurring_event', 'local_create_recurring_event'):
+                        _st, _et = self._resolve_event_times(self.user_text)
+                        _day_of = lambda v: str(v).strip().replace('T', ' ')[:10] if v else None
+                        _base = _day_of(args.get('start_datetime'))
+                        if _st and _base and re.fullmatch(r'\d{4}-\d{2}-\d{2}', _base):
+                            args['start_datetime'] = f"{_base} {_st}"
+                            if _et:
+                                args['end_datetime'] = f"{_base} {_et}"   # 시작보다 이르면 플러그인이 다음 날로
+                            elif args.get('end_datetime') and _day_of(args['end_datetime']) == _base \
+                                    and str(args['end_datetime']).replace('T', ' ')[11:16] <= _st:
+                                args.pop('end_datetime')   # 모델이 준 끝 시각이 새 시작보다 이르면 버린다(기본 길이 적용)
 
                     # ── 할 일 마감일(due_date, 2026-09-30) — create_event와
                     # 다르게, LLM이 due_date를 이미 채웠을 때만 그 "값"을
@@ -6778,11 +7101,7 @@ class AIWorker(QThread):
                     safe_reply = None
 
                 if safe_reply is not None:
-                    safe_reply = safe_reply.strip()
-                    if safe_reply.startswith('"') and safe_reply.endswith('"'):
-                        safe_reply = safe_reply[1:-1]
-                    if safe_reply.startswith("'") and safe_reply.endswith("'"):
-                        safe_reply = safe_reply[1:-1]
+                    safe_reply = _strip_wrapping_quotes(safe_reply.strip())
                     self.chat_history.append({'role': 'assistant', 'content': safe_reply})
                     self.response_ready.emit(f"🤖 로컬 비서: {safe_reply}")
 
@@ -6797,10 +7116,7 @@ class AIWorker(QThread):
                 clean_reply = response['message']['content'].strip()
 
             # 따옴표 제거
-            if clean_reply.startswith('"') and clean_reply.endswith('"'):
-                clean_reply = clean_reply[1:-1]
-            if clean_reply.startswith("'") and clean_reply.endswith("'"):
-                clean_reply = clean_reply[1:-1]
+            clean_reply = _strip_wrapping_quotes(clean_reply)
 
             # tool_calls 없이 모델이 함수 호출을 텍스트로 출력한 경우, 또는 애초에
             # 도구가 필요한 요청이었는데(use_tools=True) 실제 tool_calls가 하나도

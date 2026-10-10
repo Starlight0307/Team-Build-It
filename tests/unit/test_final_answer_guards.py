@@ -129,6 +129,20 @@ def test_unrelated_topic_leak_report_word_does_not_false_positive_as_port():
     assert not _looks_like_unrelated_topic_leak(result, raw)
 
 
+def test_unrelated_topic_leak_detects_port_talk_in_calendar_result():
+    """실제 앱 테스트(2026-10-11): 캘린더 목록 결과에 "캘린더"가 있다고 해서, 결과에 없는
+    SMB 포트 얘기를 지어낸 요약까지 통과시키면 안 된다."""
+    raw = "[📆 캘린더 목록]\n- hui@gmail.com (owner)\n- 대한민국의 휴일 (reader)"
+    result = "캘린더 목록을 확인했어요. 그런데 SMB포트 445는 확인해 볼게요."
+    assert _looks_like_unrelated_topic_leak(result, raw)
+
+
+def test_unrelated_topic_leak_allows_same_topic_in_calendar_result():
+    raw = "[📆 캘린더 목록]\n- hui@gmail.com (owner)"
+    result = "구글 캘린더가 하나 연결돼 있어요. 일정은 이 캘린더에 저장돼요."
+    assert not _looks_like_unrelated_topic_leak(result, raw)
+
+
 def test_unrelated_topic_leak_does_not_flag_when_neither_mentions_topic():
     raw = "중복 파일 그룹을 2개 찾았어요."
     result = "중복 파일 그룹이 2개 있네요."

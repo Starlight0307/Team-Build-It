@@ -66,9 +66,9 @@ def test_tasks_reply_clean():
 
 def test_tasks_reply_unknown_and_empty():
     assert (_build_scheduled_tasks_reply("[🗓️ 예약 작업 점검 결과]\n❔ 예약 작업 목록을 읽지 못해 확인하지 못했어요.")
-            == "예약 작업을 확인해봤는데, 예약 작업 목록을 읽지 못해 확인하지 못했어요.")
+            == "예약 작업을 살펴보니 예약 작업 목록을 읽지 못해 확인하지 못했어요.")
     assert (_build_scheduled_tasks_reply("[🗓️ 예약 작업 점검 결과]\n등록된 예약 작업이 없습니다.")
-            == "예약 작업을 확인해봤는데, 등록된 예약 작업이 없습니다.")
+            == "예약 작업을 살펴보니 등록된 예약 작업이 없습니다.")
 
 
 def test_tasks_reply_with_more_line():

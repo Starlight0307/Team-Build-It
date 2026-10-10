@@ -32,6 +32,8 @@ Agent 평가셋 — "Tool Selection" 케이스 목록.
 # 캘린더는 활성 백엔드(local/google)에 따라 노출되는 함수 이름이 달라서
 # 여기 적힌 이름은 conftest 쪽에서 실제 활성 백엔드를 보고 골라 쓴다.
 CALENDAR_UPCOMING = {"local": "local_get_upcoming_events", "google": "get_upcoming_events"}
+# 하루를 콕 집은 요청("오늘 일정")은 그 날짜 조회로 간다(2026-10-11 — core/ai_worker.py의 _BY_DATE 교체)
+CALENDAR_BY_DATE = {"local": "local_get_events_by_date", "google": "get_events_by_date"}
 
 TOOL_SELECTION_CASES = [
     # ── system_info ──
@@ -96,7 +98,8 @@ TOOL_SELECTION_CASES = [
     {"id": "iot_1", "text": "전등 켜줘", "expected": {"control_iot_device", "discover_iot_devices"}, "any_of": True},
 
     # ── calendar (백엔드에 따라 함수 이름이 갈림 — conftest에서 치환) ──
-    {"id": "calendar_1", "text": "오늘 일정 뭐 있어?", "expected": {"__CALENDAR_UPCOMING__"}},
+    {"id": "calendar_1", "text": "오늘 일정 뭐 있어?", "expected": {"__CALENDAR_BY_DATE__"}},
+    {"id": "calendar_2", "text": "이번주 일정 뭐 있어?", "expected": {"__CALENDAR_UPCOMING__"}},
 
     # ── 설명/방법 질문 — 도구를 아예 호출하면 안 되는 경우 ──
     {"id": "no_tool_1", "text": "정기 알림 사용법 알려줘", "expected": set()},

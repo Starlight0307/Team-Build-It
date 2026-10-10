@@ -127,7 +127,7 @@ def test_update_event_changes_title(isolated_local_calendar):
 def test_update_nonexistent_event_reports_not_found(isolated_local_calendar):
     set_current_user("test_user")
     result = local_update_event("존재하지않는id", title="새 제목")
-    assert "찾을 수 없습니다" in result
+    assert "찾을 수 없어요" in result
 
 
 def test_delete_event_removes_it(isolated_local_calendar):
@@ -147,7 +147,7 @@ def test_delete_event_removes_it(isolated_local_calendar):
 def test_delete_nonexistent_event_reports_not_found(isolated_local_calendar):
     set_current_user("test_user")
     result = local_delete_event("존재하지않는id")
-    assert "찾을 수 없습니다" in result
+    assert "찾을 수 없어요" in result
 
 
 # ── 사용자별 데이터 격리 ─────────────────────────────────────────────

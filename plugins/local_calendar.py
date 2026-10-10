@@ -302,7 +302,8 @@ def local_create_event(
     try:
         start = _parse_datetime(start_datetime, timezone)
         if end_datetime:
-            end = _parse_datetime(end_datetime, timezone)
+            end = _end_after_start(start, _parse_datetime(end_datetime, timezone))
+            end_datetime = datetime.fromisoformat(end).strftime("%Y-%m-%d %H:%M")
         else:
             end_dt = datetime.fromisoformat(start) + timedelta(hours=1)
             end = end_dt.isoformat()
@@ -351,7 +352,7 @@ def local_create_event(
         return "날짜 형식이 잘못되었습니다. 예: '2025-07-20 14:00'"
     except Exception as e:
         print(f"[내부 캘린더] 일정 등록 오류: {e}")
-        return "❌ 일정 등록에 실패했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정 등록에 실패했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -439,7 +440,7 @@ def local_get_upcoming_events(days=7, max_results: int = 10) -> str:
         return result.strip()
     except Exception as e:
         print(f"[내부 캘린더] 일정 조회 오류: {e}")
-        return "❌ 일정을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
 
 
 def local_get_events_by_date(date_str: str) -> str:
@@ -473,10 +474,10 @@ def local_get_events_by_date(date_str: str) -> str:
             result += _format_event_line(i, ev)
         return result.strip()
     except ValueError:
-        return "날짜 형식이 잘못되었습니다. 예: '2025-07-20'"
+        return "날짜 형식이 맞지 않아요. '2025-07-20'처럼 알려주세요."
     except Exception as e:
         print(f"[내부 캘린더] 일정 조회 오류: {e}")
-        return "❌ 일정을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
 
 
 def local_search_events(keyword: str, days_range: int = 30) -> str:
@@ -524,12 +525,32 @@ def local_search_events(keyword: str, days_range: int = 30) -> str:
         return result.strip()
     except Exception as e:
         print(f"[내부 캘린더] 일정 검색 오류: {e}")
-        return "❌ 일정을 검색하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정을 검색하지 못했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
 # ✏️ 일정 수정
 # ─────────────────────────────────────────────
+
+def _find_event(events: list, event_id: str, series: bool = False):
+    """id로 찾고, 없으면 제목이 정확히 같은 일정으로 찾는다 — 모델이 id 자리에 제목을 넘기는 경우
+    (구글 캘린더의 _resolve_event_id와 같은 이유). → (일정 또는 None, 못 찾은 이유 문장 또는 None)"""
+    event = next((e for e in events if e["id"] == event_id), None)
+    if event:
+        return event, None
+    title = (event_id or "").strip()
+    _norm = lambda v: " ".join((v or "").split())   # 띄어쓰기 차이는 같은 제목으로 본다
+    matches = [e for e in events if _norm(e.get("title")) == _norm(title)]
+    if series and matches and len({e.get("recurrence_group") for e in matches}) == 1 \
+            and matches[0].get("recurrence_group"):
+        return matches[0], None
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        return None, (f"❌ '{title}' 일정이 {len(matches)}개 있어서 어떤 건지 모르겠어요. "
+                      "먼저 일정을 검색한 뒤 어떤 일정인지 알려주세요.")
+    return None, None
+
 
 def local_update_event(
     event_id: str,
@@ -546,9 +567,10 @@ def local_update_event(
         return login_error
     try:
         events = _load_events()
-        event = next((e for e in events if e["id"] == event_id), None)
+        event, why = _find_event(events, event_id)
         if not event:
-            return "❌ 수정할 일정을 찾을 수 없습니다."
+            return why or "❌ 수정할 일정을 찾을 수 없어요."
+        event_id = event["id"]
 
         if title is not None:
             event["title"] = title
@@ -569,7 +591,7 @@ def local_update_event(
             # 남으면 새 시각에 대한 알림이 영원히 안 뜨는 버그가 되므로 초기화한다.
             event["reminder_fired"] = False
         if end_datetime:
-            event["end"] = _parse_datetime(end_datetime, timezone)
+            event["end"] = _end_after_start(event["start"], _parse_datetime(end_datetime, timezone))
 
         _save_events(events)
         return (
@@ -582,7 +604,7 @@ def local_update_event(
         return "날짜 형식이 잘못되었습니다. 예: '2025-07-20 14:00'"
     except Exception as e:
         print(f"[내부 캘린더] 일정 수정 오류: {e}")
-        return "❌ 일정 수정에 실패했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정 수정에 실패했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -596,9 +618,10 @@ def local_delete_event(event_id: str) -> str:
         return login_error
     try:
         events = _load_events()
-        event = next((e for e in events if e["id"] == event_id), None)
+        event, why = _find_event(events, event_id)
         if not event:
-            return "❌ 삭제할 일정을 찾을 수 없습니다."
+            return why or "❌ 삭제할 일정을 찾을 수 없어요."
+        event_id = event["id"]
 
         group_id = event.get("recurrence_group")
         events = [e for e in events if e["id"] != event_id]
@@ -618,7 +641,7 @@ def local_delete_event(event_id: str) -> str:
         return f"[🗑️ 일정 삭제 완료 (내부 캘린더)]\n제목 '{event['title']}' 일정이 삭제되었습니다.{hint}"
     except Exception as e:
         print(f"[내부 캘린더] 일정 삭제 오류: {e}")
-        return "❌ 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정 삭제에 실패했어요. 잠시 후 다시 시도해 주세요."
 
 
 def local_delete_recurring_series(event_id: str) -> str:
@@ -633,9 +656,10 @@ def local_delete_recurring_series(event_id: str) -> str:
         return login_error
     try:
         events = _load_events()
-        event = next((e for e in events if e["id"] == event_id), None)
+        event, why = _find_event(events, event_id, series=True)
         if not event:
-            return "❌ 삭제할 일정을 찾을 수 없습니다."
+            return why or "❌ 삭제할 일정을 찾을 수 없어요."
+        event_id = event["id"]
 
         group_id = event.get("recurrence_group")
         if not group_id:
@@ -650,7 +674,7 @@ def local_delete_recurring_series(event_id: str) -> str:
                 f"'{title}' 반복 일정 시리즈 전체({deleted_count}건)가 삭제되었습니다.")
     except Exception as e:
         print(f"[내부 캘린더] 반복 일정 시리즈 삭제 오류: {e}")
-        return "❌ 반복 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 반복 일정 삭제에 실패했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -741,7 +765,7 @@ def local_create_recurring_event(
         return "날짜 형식이 잘못되었습니다. 예: '2025-07-20 14:00'"
     except Exception as e:
         print(f"[내부 캘린더] 반복 일정 등록 오류: {e}")
-        return "❌ 반복 일정 등록에 실패했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 반복 일정 등록에 실패했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -793,7 +817,7 @@ def local_get_schedule_summary(days: int = 30) -> str:
         )
     except Exception as e:
         print(f"[내부 캘린더] 통계 분석 오류: {e}")
-        return "❌ 일정 통계를 분석하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정 통계를 분석하지 못했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -826,6 +850,15 @@ def local_get_daily_briefing(target: str = "today") -> str:
 # ─────────────────────────────────────────────
 # 🛠️ 내부 유틸리티
 # ─────────────────────────────────────────────
+
+def _end_after_start(start_iso: str, end_iso: str) -> str:
+    """종료가 시작과 같거나 이르면(하루 안쪽 차이) 다음 날로 본다 — "16시부터 00시까지".
+    구글 캘린더(plugins/calendar_tool.py)와 같은 규칙."""
+    s, e = datetime.fromisoformat(start_iso), datetime.fromisoformat(end_iso)
+    if timedelta(0) <= s - e < timedelta(days=1):
+        return (e + timedelta(days=1)).isoformat()
+    return end_iso
+
 
 def _parse_datetime(dt_str: str, timezone: str = DEFAULT_TIMEZONE) -> str:
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M"):

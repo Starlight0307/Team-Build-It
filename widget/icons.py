@@ -72,7 +72,10 @@ def icon_html(name: str, size: int = 16, white: bool = False) -> str:
     if not exists(name):
         return ""
     src = path(name, white).replace("\\", "/")   # 윈도우 경로도 리치 텍스트에서 읽히게
-    return f'<img src="{src}" width="{size}" height="{size}" style="vertical-align: middle;">'
+    # Qt 리치 텍스트의 "middle"은 그림 가운데를 글자 기준선 근처에 맞춰 아이콘이 글자보다 2~3px 아래로
+    # 처졌다(글자는 위로 떠 보임). "top"이면 줄 높이 안에서 아이콘·글자 가운데가 0.5px 안으로 맞는다
+    # (12~26px 아이콘 × 11~15px 글자로 직접 재서 확인, 2026-10-11).
+    return f'<img src="{src}" width="{size}" height="{size}" style="vertical-align: top;">'
 
 
 def label_html(name: str, text: str, size: int = 16, white: bool = False) -> str:

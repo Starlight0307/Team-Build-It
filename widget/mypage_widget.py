@@ -3,8 +3,8 @@ import re
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLabel, QPushButton, QLineEdit, QMessageBox,
                              QInputDialog, QScrollArea, QSizePolicy, QDialog,
-                             QGraphicsDropShadowEffect)
-from PyQt6.QtCore import pyqtSignal, Qt
+                             QGraphicsDropShadowEffect, QGridLayout)
+from PyQt6.QtCore import pyqtSignal, Qt, QThread
 from PyQt6.QtGui import QColor
 
 from widget.auth_style import DIALOG_QSS
@@ -150,15 +150,61 @@ def _validate_password(pw: str):
     return True, ""
 
 
+class GoogleConnectWorker(QThread):
+    """구글 연동/캘린더 연결 — 브라우저에서 끝날 때까지(최대 1분) 기다리므로 별도 스레드에서 실행."""
+    result_ready = pyqtSignal(bool, str)   # 성공 여부, 안내 문구
+
+    def __init__(self):
+        super().__init__()
+        import threading
+        self._cancel = threading.Event()
+
+    def cancel(self):
+        self._cancel.set()
+
+    def run(self):
+        from plugins.calendar_tool import connect_google_calendar
+        ok, msg = connect_google_calendar(self._cancel)
+        self.result_ready.emit(ok, msg)
+
+
+def _section(title: str, icon_name: str):
+    """제목(아이콘 + 글자)이 붙은 구역 상자 → (상자, 내용을 넣을 세로 레이아웃)."""
+    box = QFrame(); box.setObjectName("MPSection")
+    box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    lay = QVBoxLayout(box)
+    lay.setContentsMargins(20, 18, 20, 20); lay.setSpacing(10)
+    hdr = QLabel(icons.label_html(icon_name, title, 16)); hdr.setObjectName("MPSectionTitle")
+    lay.addWidget(hdr)
+    return box, lay
+
+
+def _button(text: str, icon_name: str = None, fn=None, name: str = "MPSave") -> QPushButton:
+    b = QPushButton((" " + text) if icon_name else text)
+    if icon_name:
+        b.setIcon(icons.icon(icon_name, white=(name in ("MPSave", "MPLogout"))))   # 진한 버튼 위는 흰 아이콘
+    b.setObjectName(name); b.setMinimumHeight(38)
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
+    if fn:
+        b.clicked.connect(fn)
+    return b
+
+
 class MyPageWidget(QWidget):
     logout_requested = pyqtSignal()
     import_guest_requested = pyqtSignal()   # 비로그인 때 쓰던 데이터 가져오기 (app_main이 처리)
     go_home           = pyqtSignal()
 
+    _TWO_COLUMN_MIN_WIDTH = 760   # 이보다 좁으면 구역을 한 줄로 쌓는다
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._username = None
         self._is_google = False
+        self._google_linked = False
+        self._connect_worker = None   # 스레드가 끝날 때(finished)까지 참조를 쥐고 있어야 한다
+        self._connecting = False
+        self._columns = 0
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
 
@@ -170,203 +216,169 @@ class MyPageWidget(QWidget):
         self.root.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.root.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         root_layout.addWidget(self.root)
+        rl = QVBoxLayout(self.root); rl.setContentsMargins(0, 0, 0, 0)
 
-        cl = QVBoxLayout(self.root)
-        cl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        cl.setContentsMargins(20, 20, 20, 20)
-
-        # 카드
-        self.card = QFrame(); self.card.setObjectName("MPCard")
-        self.card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.card.setFixedWidth(340)
-        sh = QGraphicsDropShadowEffect()
-        sh.setBlurRadius(28); sh.setOffset(0, 6); sh.setColor(QColor(0, 0, 0, 50))
-        self.card.setGraphicsEffect(sh)
-
-        card_outer = QVBoxLayout(self.card)
-        card_outer.setContentsMargins(0, 0, 0, 0)
-        card_outer.setSpacing(0)
-
-        scroll = QScrollArea()
+        # 창이 작으면 페이지 전체가 스크롤된다
+        scroll = QScrollArea(); scroll.setObjectName("MPScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setMaximumHeight(720)
-        card_outer.addWidget(scroll)
+        rl.addWidget(scroll)
 
-        inner = QFrame()
-        inner.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        L = QVBoxLayout(inner)
-        L.setContentsMargins(30, 30, 30, 30); L.setSpacing(0)
+        page = QWidget(); page.setObjectName("MPPage")
+        scroll.setWidget(page)
+        page_v = QVBoxLayout(page); page_v.setContentsMargins(28, 28, 28, 28)
+        outer = QHBoxLayout(); page_v.addLayout(outer); page_v.addStretch()   # 카드는 내용 높이만큼만
 
-        # 아바타 아이콘
-        avatar = QLabel()
-        avatar.setPixmap(icons.pixmap("user", 60))
+        # 카드 — 가로로 넓게(최대 980px) 펼치고 가운데 정렬
+        self.card = QFrame(); self.card.setObjectName("MPCard")
+        self.card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.card.setMaximumWidth(980)
+        sh = QGraphicsDropShadowEffect()
+        sh.setBlurRadius(28); sh.setOffset(0, 6); sh.setColor(QColor(0, 0, 0, 50))
+        self.card.setGraphicsEffect(sh)
+        outer.addStretch(); outer.addWidget(self.card, 100); outer.addStretch()
+
+        L = QVBoxLayout(self.card)
+        L.setContentsMargins(32, 28, 32, 24); L.setSpacing(20)
+
+        # ── 머리: 아바타 · 이름 · 계정 종류 | 저장된 대화 | 로그아웃 ──
+        head = QHBoxLayout(); head.setSpacing(16)
+        avatar = QLabel(); avatar.setObjectName("MPAvatar")
+        avatar.setPixmap(icons.pixmap("user", 34)); avatar.setFixedSize(64, 64)
         avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        avatar.setStyleSheet("background: transparent; border: none;")
-        L.addWidget(avatar)
-        L.addSpacing(14)
+        head.addWidget(avatar)
 
-        # 사용자 이름
-        self.lbl_username = QLabel("사용자")
-        self.lbl_username.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_username.setObjectName("MPName")
-        L.addWidget(self.lbl_username)
-        L.addSpacing(6)
+        name_col = QVBoxLayout(); name_col.setSpacing(4)
+        self.lbl_username = QLabel("사용자"); self.lbl_username.setObjectName("MPName")
+        self.lbl_account_type = QLabel(""); self.lbl_account_type.setObjectName("MPBadge")
+        self.lbl_account_type.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        name_col.addStretch(); name_col.addWidget(self.lbl_username)
+        name_col.addWidget(self.lbl_account_type); name_col.addStretch()
+        head.addLayout(name_col)
+        head.addStretch()
 
-        # 구분선
-        sep = QFrame(); sep.setObjectName("MPSep")
-        sep.setFrameShape(QFrame.Shape.HLine); sep.setFixedHeight(1)
-        L.addSpacing(16); L.addWidget(sep); L.addSpacing(16)
-
-        # 통계: 대화 세션 수
-        stat_row = QHBoxLayout()
         stat_box = QFrame(); stat_box.setObjectName("MPStatBox")
         stat_box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        stat_box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         stat_layout = QVBoxLayout(stat_box)
-        stat_layout.setContentsMargins(20, 14, 20, 14); stat_layout.setSpacing(4)
-
-        self.lbl_count = QLabel("0")
+        stat_layout.setContentsMargins(22, 10, 22, 10); stat_layout.setSpacing(2)
+        self.lbl_count = QLabel("0"); self.lbl_count.setObjectName("MPCount")
         self.lbl_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_count.setObjectName("MPCount")
-
-        count_label = QLabel("저장된 대화")
+        count_label = QLabel("저장된 대화"); count_label.setObjectName("MPCountSub")
         count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        count_label.setObjectName("MPCountSub")
+        stat_layout.addWidget(self.lbl_count); stat_layout.addWidget(count_label)
+        head.addWidget(stat_box)
 
-        stat_layout.addWidget(self.lbl_count)
-        stat_layout.addWidget(count_label)
-        stat_row.addWidget(stat_box)
-        L.addLayout(stat_row)
-        L.addSpacing(20)
+        self.btn_logout = _button("로그아웃", "log-out", self.logout_requested, "MPLogout")
+        self.btn_logout.setMinimumWidth(116); self.btn_logout.setMinimumHeight(42)
+        head.addWidget(self.btn_logout)
+        L.addLayout(head)
 
-        # 추가 정보 (구글 가입 계정은 휴대폰번호/생년월일이 비어있을 수 있어
-        # 여기서 채우거나 수정할 수 있게 함)
-        self.lbl_profile_hdr = QLabel("추가 정보")
-        self.lbl_profile_hdr.setObjectName("MPCountSub")
-        L.addWidget(self.lbl_profile_hdr)
-        L.addSpacing(6)
+        sep = QFrame(); sep.setObjectName("MPSep")
+        sep.setFrameShape(QFrame.Shape.HLine); sep.setFixedHeight(1)
+        L.addWidget(sep)
 
+        # ── 내 정보 (구글 가입 계정은 휴대폰번호/생년월일이 비어있을 수 있어 여기서 채운다) ──
+        self.sec_profile, lay = _section("내 정보", "user")
+        row = QHBoxLayout(); row.setSpacing(10)
         self.input_phone = QLineEdit()
         self.input_phone.setPlaceholderText("휴대폰번호 (예: 01012345678)")
         self.input_phone.setMaxLength(13)
         self.input_phone.textEdited.connect(self._on_phone_edited)
-        L.addWidget(self.input_phone)
-        L.addSpacing(8)
-
         self.input_birthday = QLineEdit()
         self.input_birthday.setPlaceholderText("생년월일 (예: 20000101)")
         self.input_birthday.setMaxLength(10)
         self.input_birthday.textEdited.connect(self._on_birthday_edited)
-        L.addWidget(self.input_birthday)
-        L.addSpacing(8)
+        row.addWidget(self.input_phone); row.addWidget(self.input_birthday)
+        lay.addLayout(row)
+        self.btn_save_profile = _button("정보 저장", fn=self._save_profile)
+        lay.addWidget(self.btn_save_profile)
 
-        self.btn_save_profile = QPushButton("정보 저장")
-        self.btn_save_profile.setObjectName("MPSave")
-        self.btn_save_profile.setMinimumHeight(36)
-        self.btn_save_profile.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_save_profile.clicked.connect(self._save_profile)
-        L.addWidget(self.btn_save_profile)
-        L.addSpacing(14)
+        # ── 구글 연동 (아이디/비밀번호 계정도 구글을 연결해 구글 로그인·캘린더를 쓸 수 있다) ──
+        self.sec_google, lay = _section("구글 연동", "calendar")
+        self.lbl_google_status = QLabel(""); self.lbl_google_status.setObjectName("MPStatus")
+        self.lbl_google_status.setWordWrap(True)
+        lay.addWidget(self.lbl_google_status)
+        self.btn_google = _button("구글 연동하기", "calendar", self._connect_google)
+        lay.addWidget(self.btn_google)
+        hint = QLabel("구글 캘린더 연결은 이 PC에 저장하지 않아요. 앱을 끄거나 로그아웃하면 끊기고, 최대 1시간 유지돼요.")
+        hint.setObjectName("MPHint"); hint.setWordWrap(True)
+        lay.addWidget(hint)
 
-        self.btn_memory = QPushButton(" 루미가 기억하는 것")
-        self.btn_memory.setIcon(icons.icon("brain"))
-        self.btn_memory.setObjectName("MPSave")
-        self.btn_memory.setMinimumHeight(36)
-        self.btn_memory.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_memory.clicked.connect(self._open_memory_dialog)
-        L.addWidget(self.btn_memory)
-        L.addSpacing(8)
-
-        self.btn_history = QPushButton(" 최근 로그인 기록")
-        self.btn_history.setIcon(icons.icon("history"))
-        self.btn_history.setObjectName("MPSave")
-        self.btn_history.setMinimumHeight(36)
-        self.btn_history.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_history.clicked.connect(self._show_login_history)
-        L.addWidget(self.btn_history)
-        L.addSpacing(8)
-
-        br = QHBoxLayout(); br.setSpacing(8)
-        self.btn_backup = QPushButton(" 내 데이터 백업")
-        self.btn_backup.setIcon(icons.icon("save"))
-        self.btn_restore = QPushButton(" 백업에서 복원")
-        self.btn_restore.setIcon(icons.icon("download"))
-        for b, fn in ((self.btn_backup, self._backup), (self.btn_restore, self._restore)):
-            b.setObjectName("MPSave"); b.setMinimumHeight(36)
-            b.setCursor(Qt.CursorShape.PointingHandCursor); b.clicked.connect(fn); br.addWidget(b)
-        L.addLayout(br)
-        L.addSpacing(8)
-
-        self.btn_import_guest = QPushButton(" 로그인 전에 쓰던 설정·기억 가져오기")
-        self.btn_import_guest.setIcon(icons.icon("folder-open"))
-        self.btn_import_guest.setObjectName("MPSave"); self.btn_import_guest.setMinimumHeight(36)
-        self.btn_import_guest.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_import_guest.clicked.connect(self._import_guest)
-        L.addWidget(self.btn_import_guest)
-        L.addSpacing(6)
+        # ── 데이터 관리 ──
+        self.sec_data, lay = _section("내 데이터", "hard-drive")
+        grid = QGridLayout(); grid.setSpacing(8)
+        self.btn_memory  = _button("루미가 기억하는 것", "brain", self._open_memory_dialog)
+        self.btn_history = _button("최근 로그인 기록", "history", self._show_login_history)
+        self.btn_backup  = _button("내 데이터 백업", "save", self._backup)
+        self.btn_restore = _button("백업에서 복원", "download", self._restore)
+        for i, b in enumerate((self.btn_memory, self.btn_history, self.btn_backup, self.btn_restore)):
+            grid.addWidget(b, i // 2, i % 2)
+        lay.addLayout(grid)
+        self.btn_import_guest = _button("로그인 전에 쓰던 설정·기억 가져오기", "folder-open", self._import_guest,
+                                        "MPGhost")
+        lay.addWidget(self.btn_import_guest)
         enc = QLabel(icons.label_html("lock", "대화기록은 이 컴퓨터에서 암호화되어 저장돼요.", 13))
-        enc.setWordWrap(True); enc.setStyleSheet("color: #888; font-size: 11px;")
-        L.addWidget(enc)
-        L.addSpacing(20)
+        enc.setObjectName("MPHint"); enc.setWordWrap(True)
+        lay.addWidget(enc)
 
-        # 비밀번호 변경 (구글 전용 계정은 비밀번호가 없어서 이 섹션 자체를 숨김)
-        self.pw_section = QFrame()
-        pw_lay = QVBoxLayout(self.pw_section)
-        pw_lay.setContentsMargins(0, 0, 0, 0); pw_lay.setSpacing(0)
-
-        self.lbl_pw_hdr = QLabel("비밀번호 변경")
-        self.lbl_pw_hdr.setObjectName("MPCountSub")
-        pw_lay.addWidget(self.lbl_pw_hdr)
-        pw_lay.addSpacing(6)
-
+        # ── 비밀번호 변경 (구글 전용 계정은 비밀번호가 없어서 이 구역 자체를 숨김) ──
+        self.pw_section, lay = _section("비밀번호 변경", "lock")
         self.input_current_pw = QLineEdit()
         self.input_current_pw.setPlaceholderText("현재 비밀번호")
         self.input_current_pw.setEchoMode(QLineEdit.EchoMode.Password)
-        pw_lay.addWidget(self.input_current_pw)
-        pw_lay.addSpacing(8)
-
+        lay.addWidget(self.input_current_pw)
+        row = QHBoxLayout(); row.setSpacing(10)
         self.input_new_pw = QLineEdit()
-        self.input_new_pw.setPlaceholderText("새 비밀번호 (영문·숫자·특수문자 포함 8~20자)")
+        self.input_new_pw.setPlaceholderText("새 비밀번호 (8~20자)")
+        self.input_new_pw.setToolTip("영문·숫자·특수문자를 모두 넣어 8~20자로 정해주세요.")
         self.input_new_pw.setEchoMode(QLineEdit.EchoMode.Password)
-        pw_lay.addWidget(self.input_new_pw)
-        pw_lay.addSpacing(8)
-
         self.input_new_pw2 = QLineEdit()
         self.input_new_pw2.setPlaceholderText("새 비밀번호 확인")
         self.input_new_pw2.setEchoMode(QLineEdit.EchoMode.Password)
-        pw_lay.addWidget(self.input_new_pw2)
-        pw_lay.addSpacing(8)
+        row.addWidget(self.input_new_pw); row.addWidget(self.input_new_pw2)
+        lay.addLayout(row)
+        self.btn_change_pw = _button("비밀번호 변경", fn=self._change_password)
+        lay.addWidget(self.btn_change_pw)
 
-        self.btn_change_pw = QPushButton("비밀번호 변경")
-        self.btn_change_pw.setObjectName("MPSave")
-        self.btn_change_pw.setMinimumHeight(36)
-        self.btn_change_pw.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_change_pw.clicked.connect(self._change_password)
-        pw_lay.addWidget(self.btn_change_pw)
-        pw_lay.addSpacing(20)
+        # 구역 배치(2열/1열)는 _arrange_sections가 창 폭에 맞춰 정한다
+        self.sections_grid = QGridLayout()
+        self.sections_grid.setHorizontalSpacing(16); self.sections_grid.setVerticalSpacing(16)
+        L.addLayout(self.sections_grid)
+        self._arrange_sections(2)
 
-        L.addWidget(self.pw_section)
-
-        # 로그아웃 버튼
-        self.btn_logout = QPushButton(" 로그아웃")
-        self.btn_logout.setIcon(icons.icon("log-out"))
-        self.btn_logout.setObjectName("MPLogout")
-        self.btn_logout.setMinimumHeight(42)
-        self.btn_logout.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_logout.clicked.connect(self.logout_requested)
-        L.addWidget(self.btn_logout)
-        L.addSpacing(10)
-
+        foot = QHBoxLayout(); foot.addStretch()
         self.btn_withdraw = QPushButton("회원 탈퇴")
         self.btn_withdraw.setObjectName("MPWithdraw")
         self.btn_withdraw.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_withdraw.clicked.connect(self._withdraw)
-        L.addWidget(self.btn_withdraw)
+        foot.addWidget(self.btn_withdraw)
+        L.addLayout(foot)
 
-        scroll.setWidget(inner)
-        cl.addWidget(self.card)
+    def _arrange_sections(self, columns: int):
+        """넓으면 왼쪽(내 정보·비밀번호) / 오른쪽(구글 연동·내 데이터) 2열, 좁으면 1열."""
+        if columns == self._columns:
+            return
+        self._columns = columns
+        g = self.sections_grid
+        for w in (self.sec_profile, self.pw_section, self.sec_google, self.sec_data):
+            g.removeWidget(w)
+        if columns == 2:
+            # 같은 행의 두 구역은 높이를 맞추지 않고 위쪽 정렬
+            g.addWidget(self.sec_profile, 0, 0, Qt.AlignmentFlag.AlignTop)
+            g.addWidget(self.pw_section,  1, 0, Qt.AlignmentFlag.AlignTop)
+            g.addWidget(self.sec_google,  0, 1, Qt.AlignmentFlag.AlignTop)
+            g.addWidget(self.sec_data,    1, 1, Qt.AlignmentFlag.AlignTop)
+            g.setColumnStretch(0, 1); g.setColumnStretch(1, 1)
+        else:
+            for i, w in enumerate((self.sec_profile, self.sec_google, self.sec_data, self.pw_section)):
+                g.addWidget(w, i, 0)
+            g.setColumnStretch(1, 0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._arrange_sections(2 if self.width() >= self._TWO_COLUMN_MIN_WIDTH else 1)
 
     def refresh(self, username: str):
         """로그인 후 호출 — 유저 정보 갱신"""
@@ -387,6 +399,63 @@ class MyPageWidget(QWidget):
         self.pw_section.setVisible(not self._is_google)
         for w in (self.input_current_pw, self.input_new_pw, self.input_new_pw2):
             w.clear()
+
+        from data.db import linked_login_providers
+        providers = linked_login_providers()
+        self._google_linked = self._is_google or bool(providers and "google" in providers)
+        self.lbl_account_type.setText(
+            "구글 계정" if self._is_google else
+            "Lumi 계정 · 구글 연동됨" if self._google_linked else "Lumi 계정")
+        self._update_google_status()
+
+    def _update_google_status(self):
+        from plugins.calendar_tool import google_calendar_status
+        state, minutes = google_calendar_status()
+        if state == "valid":
+            text = f"구글 캘린더 연결됨 · 약 {minutes}분 남음"
+            btn = "구글 캘린더 다시 연결"
+        elif self._google_linked:
+            text = ("구글 캘린더 연결 시간이 지났어요." if state == "expired"
+                    else "구글 계정이 연동돼 있어요. 캘린더를 쓰려면 연결해주세요.")
+            btn = "구글 캘린더 연결하기"
+        else:
+            text = "구글 계정을 연동하면 구글 로그인으로도 들어올 수 있고, 구글 캘린더를 쓸 수 있어요."
+            btn = "구글 연동하기"
+        self.lbl_google_status.setText(text)
+        if not self._connecting:
+            self.btn_google.setText(" " + btn)
+
+    def _connect_google(self):
+        if self._connect_worker is not None:   # 진행 중에 다시 누르면 취소(끝나는 중이면 무시)
+            if self._connecting:
+                self._connect_worker.cancel()
+            return
+        self._connecting = True
+        self._connect_worker = GoogleConnectWorker()
+        self._connect_worker.result_ready.connect(self._on_google_connected)
+        self._connect_worker.finished.connect(self._on_connect_thread_finished)
+        self.btn_google.setText(" 브라우저에서 진행 중… (누르면 취소)")
+        self._connect_worker.start()
+
+    def _on_connect_thread_finished(self):
+        # result_ready는 run()이 끝나기 전에 오므로, 참조는 스레드가 완전히 끝난 뒤에 놓는다
+        # (먼저 놓으면 "QThread: Destroyed while thread is still running"으로 앱이 죽는다)
+        self._connect_worker = None
+
+    def _on_google_connected(self, ok: bool, msg: str):
+        self._connecting = False
+        if ok:
+            QMessageBox.information(self, "구글 연동", msg)
+            if self._username:
+                self.refresh(self._username)   # 계정 종류(구글 연동됨) 표시도 갱신
+        else:
+            QMessageBox.warning(self, "구글 연동", msg)
+            self._update_google_status()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._username:
+            self._update_google_status()   # 남은 시간은 페이지를 열 때마다 새로 계산
 
     def _on_phone_edited(self, text: str):
         digits = re.sub(r"\D", "", text)[:11]
@@ -605,7 +674,10 @@ class MyPageWidget(QWidget):
             input_bg    = "#2F2959"
             input_brd   = "#3A3366"
             save_bg     = "#8B78EE"
-            save_hover  = "#3FB855"
+            save_hover  = "#9D8CF2"
+            section_bg  = "#231E42"
+            badge_bg    = "#3A3366"
+            hint_color  = "#8A8FA3"
         else:
             root_bg     = "#F3EEFF"
             card_bg     = "#FFFFFF"
@@ -622,11 +694,56 @@ class MyPageWidget(QWidget):
             input_brd   = "#E5E7EB"
             save_bg     = "#8B78EE"
             save_hover  = "#7A66E0"
+            section_bg  = "#FAF8FF"
+            badge_bg    = "#EEE9FF"
+            hint_color  = "#888888"
 
         self.setStyleSheet(f"""
-            QFrame#MPRoot {{
+            QFrame#MPRoot, QScrollArea#MPScroll, QWidget#MPPage {{
                 background-color: {root_bg};
                 border: none;
+            }}
+            QFrame#MPSection {{
+                background-color: {section_bg};
+                border: 1px solid {card_border};
+                border-radius: 12px;
+            }}
+            QLabel#MPSectionTitle {{
+                font-size: 14px;
+                font-weight: 700;
+                color: {name_color};
+            }}
+            QLabel#MPAvatar {{
+                background-color: {stat_bg};
+                border: 1px solid {stat_border};
+                border-radius: 32px;
+            }}
+            QLabel#MPBadge {{
+                background-color: {badge_bg};
+                color: {count_color};
+                border-radius: 9px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: 700;
+            }}
+            QLabel#MPStatus {{
+                font-size: 12px;
+                color: {name_color};
+            }}
+            QLabel#MPHint {{
+                font-size: 11px;
+                color: {hint_color};
+            }}
+            QPushButton#MPGhost {{
+                background: transparent;
+                color: {count_color};
+                border: 1px solid {count_color};
+                border-radius: 8px;
+                font-size: 12px;
+                font-weight: 700;
+            }}
+            QPushButton#MPGhost:hover {{
+                background-color: {badge_bg};
             }}
             QFrame#MPCard {{
                 background-color: {card_bg};

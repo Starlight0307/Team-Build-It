@@ -107,8 +107,12 @@ def _current_uid():
     서명 검증은 필요 없음 — 실제 신원 확인은 어차피 이 토큰을 그대로
     Supabase에 보내서 서버가 검증하고, 여기서는 PostgREST의
     'UPDATE에 WHERE 필요' 제약을 만족시킬 필터 값으로만 쓴다."""
+    return _uid_from_token(_session.get("access_token"))
+
+
+def _uid_from_token(token: str):
+    """access_token(JWT)의 sub 클레임(계정 uuid). 토큰이 없거나 형식이 다르면 None."""
     import base64
-    token = _session.get("access_token")
     if not token:
         return None
     try:
@@ -117,6 +121,21 @@ def _current_uid():
         payload = json.loads(base64.urlsafe_b64decode(payload_b64))
         return payload.get("sub")
     except Exception:
+        return None
+
+
+def linked_login_providers() -> list | None:
+    """지금 로그인한 계정에 연결된 로그인 수단 목록(예: ["email", "google"]). 서버에 닿지 못하면 None.
+    JWT 안의 값은 토큰을 새로 받기 전까지 갱신되지 않아서, 서버(/auth/v1/user)에 직접 묻는다."""
+    if not _session.get("access_token"):
+        return None
+    try:
+        resp = requests.get(f"{SUPABASE_URL}/auth/v1/user", headers=_session_headers(), timeout=10)
+        if resp.status_code != 200:
+            return None
+        return [i.get("provider") for i in resp.json().get("identities") or []]
+    except Exception as e:
+        print(f"[로그인 수단 조회 오류] {e}")
         return None
 
 

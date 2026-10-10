@@ -24,7 +24,10 @@ def _user():
 
 @pytest.fixture
 def exe_file(tmp_path):
-    p = tmp_path / "Temp" / "updater.exe"
+    # 임시 폴더에서 도는 프로그램처럼 보이게 한다 — Windows는 "\\temp\\", 맥/리눅스는 "/tmp/"가
+    # 의심 위치 표시(malware_detection.TEMP_DIR_MARKERS). 맥의 pytest 임시 폴더(/var/folders/…)는
+    # 둘 다 아니라서 예전엔 맥에서만 이 파일을 쓰는 테스트 3개가 실패했다.
+    p = tmp_path / ("Temp" if os.name == "nt" else "tmp") / "updater.exe"
     p.parent.mkdir()
     p.write_bytes(b"MZ original")
     return str(p)
@@ -296,7 +299,7 @@ def test_suspicious_process_reply_mentions_trusted():
 
     reply = _build_suspicious_process_reply(raw)
 
-    assert reply == ("지금 실행 중인 프로그램 10개를 확인해봤는데, 의심스러운 프로그램은 없었어요. "
+    assert reply == ("지금 실행 중인 프로그램 10개를 살펴보니 의심스러운 프로그램은 없었어요. "
                      "신뢰 목록에 있는 2개는 의심 항목에서 뺐어요.")
 
 

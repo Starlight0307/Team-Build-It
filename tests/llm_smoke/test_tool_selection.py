@@ -84,7 +84,7 @@ import pytest
 
 import calendar_feature.calendar_preference as calendar_preference
 from core.ai_worker import AIWorker, OLLAMA_MODEL
-from tests.llm_smoke.tool_selection_cases import TOOL_SELECTION_CASES, CALENDAR_UPCOMING
+from tests.llm_smoke.tool_selection_cases import TOOL_SELECTION_CASES, CALENDAR_UPCOMING, CALENDAR_BY_DATE
 
 pytestmark = pytest.mark.llm
 
@@ -234,12 +234,14 @@ def spied_installed_tools(qapp):
 
 
 def _resolve_expected(expected: set) -> set:
-    if "__CALENDAR_UPCOMING__" in expected:
-        backend = calendar_preference.get_active_calendar() or "local"
-        resolved = set(expected) - {"__CALENDAR_UPCOMING__"}
-        resolved.add(CALENDAR_UPCOMING.get(backend, CALENDAR_UPCOMING["local"]))
-        return resolved
-    return expected
+    backend = calendar_preference.get_active_calendar() or "local"
+    resolved = set(expected)
+    for placeholder, mapping in (("__CALENDAR_UPCOMING__", CALENDAR_UPCOMING),
+                                 ("__CALENDAR_BY_DATE__", CALENDAR_BY_DATE)):
+        if placeholder in resolved:
+            resolved.discard(placeholder)
+            resolved.add(mapping.get(backend, mapping["local"]))
+    return resolved
 
 
 def _run_case(case: dict, installed_tools: list, call_log: list) -> dict:

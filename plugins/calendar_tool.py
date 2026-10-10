@@ -2,8 +2,12 @@
 Google Calendar 플러그인
 ────────────────────────────────────────────────────────
 ● 로컬 AI에 연결해서 자연어로 구글 캘린더를 제어하는 플러그인
-● OAuth2 로그인 → 사용자별 토큰 로컬 저장 → 재사용 방식으로 동작
-● 최초 실행 시 브라우저가 열리고 본인 구글 계정으로 로그인하면 됨
+● 기본 방식: Lumi에 구글로 로그인하면 캘린더 권한도 같이 받는다
+  (auth/supabase_google_auth.py). 그 구글 토큰은 파일로 저장하지 않고
+  메모리에만 둔다 — 로그아웃·앱 종료 때 사라지고, 1시간 뒤 만료되면
+  "구글 캘린더 연결해줘"로 구글 로그인을 다시 하면 된다.
+  "로그인 유지"로 자동 로그인한 경우에도 구글 토큰은 없으므로 같은 방법으로 연결한다.
+● 예전 방식(아래 credentials.json + tokens/)은 구글 로그인 토큰이 없을 때만 쓴다.
 
 사전 준비 (개발자가 1번만)
 ────────────────────────────────────────────────────────
@@ -68,6 +72,77 @@ def set_current_user(user_id: str):
     """앱 로그인/로그아웃 시 호출하여 현재 사용자를 설정합니다."""
     global _current_user_id
     _current_user_id = user_id if user_id else "guest"
+    if _google_token["owner"] != _current_user_id:   # 로그아웃·계정 전환 → 다른 사람의 토큰은 버린다
+        clear_google_access_token()
+
+
+# ─────────────────────────────────────────────
+# 🔑 Lumi 구글 로그인으로 받은 캘린더 토큰 — 메모리에만 둔다(파일 저장 안 함)
+# ─────────────────────────────────────────────
+_google_token = {"owner": None, "token": None, "expires_at": 0.0}
+_TOKEN_EXPIRY_MARGIN = 60  # 초 — 만료 직전 토큰으로 호출하다 실패하지 않게 조금 일찍 만료로 본다
+
+LOGIN_NEEDED_MESSAGE = (
+    "[🔐 구글 캘린더 연결 필요]\n"
+    "구글 캘린더를 쓰려면 구글 계정 연결이 필요해요.\n"
+    "'구글 캘린더 연결해줘'라고 말씀하시거나 마이페이지의 [구글 연동하기]를 누르면 구글 로그인 창이 열려요."
+)
+LOGIN_EXPIRED_MESSAGE = (
+    "[🔐 구글 캘린더 연결 만료]\n"
+    "구글 캘린더 연결 시간(1시간)이 지났어요.\n"
+    "'구글 캘린더 연결해줘'라고 말씀하시거나 마이페이지의 [구글 연동하기]를 누르면 다시 연결돼요."
+)
+
+
+class CalendarLoginRequired(RuntimeError):
+    """구글 캘린더 토큰이 없거나 만료돼서 구글 로그인을 다시 해야 할 때."""
+
+
+def set_google_access_token(owner: str, token: str, expires_in: int = None):
+    """Lumi 구글 로그인으로 받은 구글 access token을 등록한다(owner = Lumi 아이디)."""
+    from auth.supabase_google_auth import GOOGLE_TOKEN_LIFETIME
+    import time
+    _google_token["owner"] = owner
+    _google_token["token"] = token
+    _google_token["expires_at"] = time.time() + (expires_in or GOOGLE_TOKEN_LIFETIME) - _TOKEN_EXPIRY_MARGIN
+
+
+def clear_google_access_token():
+    _google_token.update(owner=None, token=None, expires_at=0.0)
+
+
+def _google_token_state() -> str:
+    """현재 사용자 기준 메모리 토큰 상태: 'valid' / 'expired' / 'none'."""
+    import time
+    if not _google_token["token"] or _google_token["owner"] != _current_user_id:
+        return "none"
+    return "valid" if time.time() < _google_token["expires_at"] else "expired"
+
+
+def google_calendar_status() -> tuple[str, int]:
+    """마이페이지 표시용 — (상태 'valid'/'expired'/'none', 남은 분)."""
+    import time
+    state = _google_token_state()
+    minutes = max(0, int((_google_token["expires_at"] - time.time()) // 60)) if state == "valid" else 0
+    return state, minutes
+
+
+def _login_needed_message(e: Exception):
+    """구글 로그인을 다시 해야 하는 오류면 사용자 안내 문구를, 아니면 None을 돌려준다."""
+    if isinstance(e, CalendarLoginRequired):
+        return str(e)
+    status = getattr(getattr(e, "resp", None), "status", None)
+    if status == 401:   # 구글이 토큰을 거부(만료·취소)
+        clear_google_access_token()
+        return LOGIN_EXPIRED_MESSAGE
+    if status == 403 and "insufficient" in str(e).lower():   # 동의 화면에서 캘린더 권한을 빼고 로그인
+        clear_google_access_token()
+        return (
+            "[🔐 구글 캘린더 권한 필요]\n"
+            "구글 로그인 때 캘린더 권한이 허용되지 않았어요.\n"
+            "'구글 캘린더 연결해줘'라고 말씀하신 뒤, 구글 화면에서 캘린더 권한을 체크해주세요."
+        )
+    return None
 
 
 def _get_token_file(user_id: str = None) -> str:
@@ -314,7 +389,18 @@ TOOL_SCHEMAS = {
 
 def _get_service(user_id: str = None):
     _import_google()
+    state = _google_token_state() if user_id is None else "none"
+    if state == "valid":
+        return build("calendar", "v3", credentials=Credentials(token=_google_token["token"]),
+                     cache_discovery=False)
+    if state == "expired":
+        clear_google_access_token()
+        raise CalendarLoginRequired(LOGIN_EXPIRED_MESSAGE)
+
+    # 예전 방식 — credentials.json/저장된 토큰 파일이 있는 PC에서만 동작한다
     token_file = _get_token_file(user_id)
+    if not os.path.exists(token_file) and not os.path.exists(CREDENTIALS_FILE):
+        raise CalendarLoginRequired(LOGIN_NEEDED_MESSAGE)
     creds = None
 
     if os.path.exists(token_file):
@@ -340,6 +426,30 @@ def _get_service(user_id: str = None):
 
 def get_login_status() -> str:
     print("\n🔐 [캘린더] 로그인 상태 확인 중...")
+    state = _google_token_state()
+    if state != "none":
+        if state == "expired":
+            return f"[🔐 로그인 상태] (사용자: {_current_user_id})\n⚠️ 구글 캘린더 연결이 만료됐어요.\n\n" \
+                   "'구글 캘린더 연결해줘'라고 말씀하시면 다시 연결돼요."
+        import time
+        minutes = max(1, int((_google_token["expires_at"] - time.time()) // 60))
+        try:
+            service = _get_service()
+            primary = service.calendarList().get(calendarId="primary").execute()
+            email   = primary.get("id", "알 수 없음")
+        except Exception as e:
+            msg = _login_needed_message(e)
+            if msg:
+                return msg
+            print(f"[캘린더] 로그인 상태 확인 오류: {e}")
+            email = "확인 못 함"
+        return (
+            f"[🔐 로그인 상태] (사용자: {_current_user_id})\n"
+            f"✅ 구글 로그인으로 연결됨\n"
+            f"- 구글 계정: {email}\n"
+            f"- 남은 시간: 약 {minutes}분 (이 PC에 저장하지 않아요)"
+        )
+
     token_file = _get_token_file()
 
     if not os.path.exists(token_file):
@@ -368,14 +478,58 @@ def get_login_status() -> str:
         )
     except Exception as e:
         print(f"[캘린더] 로그인 상태 확인 오류: {e}")
-        return "[🔐 로그인 상태]\n⚠️ 로그인 상태를 확인하지 못했습니다. '구글 캘린더 연결해줘'라고 다시 시도해주세요."
+        return "[🔐 로그인 상태]\n⚠️ 로그인 상태를 확인하지 못했어요. '구글 캘린더 연결해줘'라고 다시 말씀해 주세요."
+
+
+def connect_google_calendar(cancel_event=None) -> tuple[bool, str]:
+    """지금 로그인한 Lumi 계정으로 구글 캘린더를 연결한다(토큰은 메모리에만 보관). → (성공 여부, 안내 문구)
+    - 구글 계정이 이미 연결된 계정: 구글 로그인을 다시 해서 캘린더 토큰만 받는다.
+      다른 구글 계정을 고르면 다른 Lumi 계정이 되는 셈이라 받지 않는다.
+    - 아이디/비밀번호 계정: 이 계정에 구글 계정을 연결한다(다음부터 구글 로그인으로도 들어올 수 있다).
+    구글 화면에서 끝날 때까지 기다리므로(최대 1분) UI 스레드에서 부르지 않는다."""
+    from auth.supabase_google_auth import (sign_in_with_google, link_google_to_current_account,
+                                           GoogleAlreadyLinkedElsewhere, LoginCancelled)
+    from data import db
+    if _current_user_id == "guest" or not db._current_uid():
+        return False, "❌ 구글 캘린더는 Lumi에 로그인한 뒤 연결할 수 있어요. 먼저 로그인해주세요."
+    owner = _current_user_id
+    try:
+        providers = db.linked_login_providers()
+        if providers is not None and "google" not in providers:
+            db._refresh_session_if_needed()
+            _access, _refresh, google_token = link_google_to_current_account(
+                db._session["access_token"], cancel_event=cancel_event)
+            done = "✅ 구글 계정을 연동했어요! 다음부터 구글 로그인으로도 이 계정에 들어올 수 있어요.\n"
+        else:
+            access_token, _refresh, google_token = sign_in_with_google(cancel_event)
+            if db._uid_from_token(access_token) != db._current_uid():
+                return False, ("❌ 지금 Lumi 계정에 연결된 구글 계정과 다른 계정이에요.\n"
+                               "연동해둔 구글 계정으로 다시 시도해주세요.")
+            done = "✅ 구글 캘린더 연결 완료!\n"
+    except GoogleAlreadyLinkedElsewhere as e:
+        return False, f"❌ {e}"
+    except LoginCancelled:
+        return False, "구글 연결을 취소했어요."
+    except TimeoutError:
+        return False, "❌ 구글 로그인 대기 시간(1분)이 지났어요. 다시 시도해주세요."
+    except Exception as e:
+        print(f"[캘린더] 구글 연결 오류: {e}")
+        return False, "❌ 구글 계정 연결에 실패했어요. 잠시 후 다시 시도해 주세요."
+
+    if not google_token:
+        return False, "❌ 구글 캘린더 권한을 받지 못했어요. 다시 시도해주세요."
+    set_google_access_token(owner, google_token)
+    return True, done + "캘린더 연결은 앱을 끄거나 로그아웃할 때까지, 최대 1시간 유지돼요(이 PC에 저장하지 않아요)."
 
 
 def setup_calendar_auth() -> str:
     print(f"\n🔐 [캘린더] {_current_user_id} 초기 인증 시작...")
 
+    if _current_user_id != "guest":
+        return connect_google_calendar()[1]
+
     if not os.path.exists(CREDENTIALS_FILE):
-        return "❌ 지금은 캘린더 기능을 사용할 수 없습니다. 앱 설정을 확인해주세요."
+        return "❌ 구글 캘린더는 Lumi에 로그인한 뒤 연결할 수 있어요. 먼저 로그인해주세요."
 
     try:
         _import_google()
@@ -387,12 +541,12 @@ def setup_calendar_auth() -> str:
             f.write(creds.to_json())
 
         return (
-            f"✅ 인증 성공! (사용자: {_current_user_id})\n"
-            "이제 모든 캘린더 기능을 사용할 수 있습니다."
+            f"✅ 연결됐어요! (사용자: {_current_user_id})\n"
+            "이제 모든 캘린더 기능을 쓸 수 있어요."
         )
     except Exception as e:
         print(f"[캘린더] 인증 오류: {e}")
-        return "❌ 구글 계정 연결에 실패했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 구글 계정 연결에 실패했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -461,7 +615,8 @@ def create_event(
             end      = end_dt.isoformat()
             end_datetime = end_dt.strftime("%Y-%m-%d %H:%M")
         else:
-            end = _parse_datetime(end_datetime, timezone)
+            end = _end_after_start(start, _parse_datetime(end_datetime, timezone))
+            end_datetime = datetime.fromisoformat(end).strftime("%Y-%m-%d %H:%M")
 
         color_names = {
             "1":"라벤더","2":"세이지","3":"포도","4":"플라밍고",
@@ -512,8 +667,11 @@ def create_event(
             f"{conflict_note}"
         )
     except Exception as e:
+        msg = _login_needed_message(e)
+        if msg:
+            return msg
         print(f"[캘린더] 일정 등록 오류: {e}")
-        return "❌ 일정 등록에 실패했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정 등록에 실패했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -557,8 +715,11 @@ def get_upcoming_events(days = 7, calendar_id: str = "primary", max_results: int
             result += f"   🆔 {eid}\n\n"
         return result.strip()
     except Exception as e:
+        msg = _login_needed_message(e)
+        if msg:
+            return msg
         print(f"[캘린더] 일정 조회 오류: {e}")
-        return "❌ 일정을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
 
 
 def get_upcoming_events_titles(days: int = 7, calendar_id: str = "primary", max_results: int = 3) -> list:
@@ -627,10 +788,13 @@ def get_events_by_date(date_str: str, calendar_id: str = "primary") -> str:
             result += f"   🆔 {eid}\n\n"
         return result.strip()
     except ValueError:
-        return "날짜 형식이 잘못되었습니다. 예: '2025-07-20'"
+        return "날짜 형식이 맞지 않아요. '2025-07-20'처럼 알려주세요."
     except Exception as e:
+        msg = _login_needed_message(e)
+        if msg:
+            return msg
         print(f"[캘린더] 일정 조회 오류: {e}")
-        return "❌ 일정을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
 
 
 def search_events(keyword: str, days_range: int = 30, calendar_id: str = "primary") -> str:
@@ -672,13 +836,48 @@ def search_events(keyword: str, days_range: int = 30, calendar_id: str = "primar
             result += f"{i}. {event.get('summary', '(제목 없음)')} | {_format_datetime(start_raw)} | 🆔 {event.get('id','')}\n"
         return result.strip()
     except Exception as e:
+        msg = _login_needed_message(e)
+        if msg:
+            return msg
         print(f"[캘린더] 일정 검색 오류: {e}")
-        return "❌ 일정을 검색하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정을 검색하지 못했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
 # ✏️ 일정 수정
 # ─────────────────────────────────────────────
+
+class EventLookupError(RuntimeError):
+    """event_id 자리에 들어온 값으로 일정을 특정하지 못했을 때(사용자에게 그대로 보여줄 문장)."""
+
+
+_GOOGLE_EVENT_ID = re.compile(r"^[a-v0-9_]{5,1024}$")   # 구글 일정 id는 base32hex 소문자(+회차 접미사 _)
+
+
+def _resolve_event_id(service, calendar_id: str, event_id: str, series: bool = False) -> str:
+    """모델이 id 대신 일정 제목("루미테스트 회의")을 넘기는 경우가 있다(2026-10-11 실제 앱 — 구글이 404).
+    id 형식이 아니면 최근 30일~앞으로 180일에서 제목이 정확히 같은 일정을 찾아 그 id를 쓴다.
+    하나일 때만 쓰고(반복 일정 전체 삭제는 같은 시리즈의 회차들이면 하나로 본다), 아니면 이유를 알린다."""
+    if _GOOGLE_EVENT_ID.match(event_id or ""):
+        return event_id
+    title = (event_id or "").strip()
+    now = datetime.now(ZoneInfo(DEFAULT_TIMEZONE))
+    items = service.events().list(
+        calendarId=calendar_id, q=title, singleEvents=True, maxResults=50,
+        timeMin=(now - timedelta(days=30)).isoformat(), timeMax=(now + timedelta(days=180)).isoformat(),
+    ).execute().get("items", [])
+    _norm = lambda v: " ".join((v or "").split())   # 띄어쓰기 차이는 같은 제목으로 본다
+    matches = [e for e in items if _norm(e.get("summary")) == _norm(title)]
+    if series and matches and len({e.get("recurringEventId") for e in matches}) == 1 \
+            and matches[0].get("recurringEventId"):
+        return matches[0]["recurringEventId"]
+    if len(matches) == 1:
+        return matches[0]["id"]
+    if not matches:
+        raise EventLookupError(f"'{title}' 일정을 찾지 못했어요. 일정 제목을 확인해 주세요.")
+    raise EventLookupError(f"'{title}' 일정이 {len(matches)}개 있어서 어떤 건지 모르겠어요. "
+                           "먼저 일정을 검색한 뒤 어떤 일정인지 알려주세요.")
+
 
 def update_event(
     event_id: str,
@@ -693,6 +892,7 @@ def update_event(
     print(f"\n✏️ [캘린더] 일정 수정 중: {event_id}")
     try:
         service = _get_service()
+        event_id = _resolve_event_id(service, calendar_id, event_id)
         event   = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
 
         if title:                   event["summary"]     = title
@@ -715,7 +915,11 @@ def update_event(
                     new_end = datetime.fromisoformat(new_start_iso) + timedelta(hours=1)
                     event["end"] = {"dateTime": new_end.isoformat(), "timeZone": timezone}
         if end_datetime:
-            event["end"] = {"dateTime": _parse_datetime(end_datetime, timezone), "timeZone": timezone}
+            start_iso = event["start"].get("dateTime")
+            end_iso   = _parse_datetime(end_datetime, timezone)
+            if start_iso:
+                end_iso = _end_after_start(start_iso, end_iso)
+            event["end"] = {"dateTime": end_iso, "timeZone": timezone}
 
         updated = service.events().update(calendarId=calendar_id, eventId=event_id, body=event).execute()
         return (
@@ -725,8 +929,13 @@ def update_event(
             f"- 종료: {updated['end'].get('dateTime', updated['end'].get('date'))}"
         )
     except Exception as e:
+        if isinstance(e, EventLookupError):
+            return f"❌ {e}"
+        msg = _login_needed_message(e)
+        if msg:
+            return msg
         print(f"[캘린더] 일정 수정 오류: {e}")
-        return "❌ 일정 수정에 실패했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정 수정에 실패했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -737,6 +946,7 @@ def delete_event(event_id: str, calendar_id: str = "primary") -> str:
     print(f"\n🗑️ [캘린더] 일정 삭제 중: {event_id}")
     try:
         service = _get_service()
+        event_id = _resolve_event_id(service, calendar_id, event_id)
         event   = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
         title   = event.get("summary", "(제목 없음)")
         # 구글 캘린더 API는 반복 일정의 개별 회차 id로 delete를 호출하면 그
@@ -751,8 +961,13 @@ def delete_event(event_id: str, calendar_id: str = "primary") -> str:
                     "전체 삭제를 원하시면 반복 일정 전체를 삭제해달라고 말씀해주세요)")
         return f"[🗑️ 일정 삭제 완료]\n제목 '{title}' 일정이 삭제되었습니다.{hint}"
     except Exception as e:
+        if isinstance(e, EventLookupError):
+            return f"❌ {e}"
+        msg = _login_needed_message(e)
+        if msg:
+            return msg
         print(f"[캘린더] 일정 삭제 오류: {e}")
-        return "❌ 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정 삭제에 실패했어요. 잠시 후 다시 시도해 주세요."
 
 
 def delete_recurring_series(event_id: str, calendar_id: str = "primary") -> str:
@@ -764,6 +979,7 @@ def delete_recurring_series(event_id: str, calendar_id: str = "primary") -> str:
     print(f"\n🗑️ [캘린더] 반복 일정 시리즈 삭제 중: {event_id}")
     try:
         service = _get_service()
+        event_id = _resolve_event_id(service, calendar_id, event_id, series=True)
         event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
         master_id = event.get("recurringEventId") or event_id
         master = service.events().get(calendarId=calendar_id, eventId=master_id).execute()
@@ -775,8 +991,13 @@ def delete_recurring_series(event_id: str, calendar_id: str = "primary") -> str:
         return (f"[🗑️ 반복 일정 시리즈 삭제 완료]\n"
                 f"'{title}' 반복 일정 시리즈 전체가 삭제되었습니다.")
     except Exception as e:
+        if isinstance(e, EventLookupError):
+            return f"❌ {e}"
+        msg = _login_needed_message(e)
+        if msg:
+            return msg
         print(f"[캘린더] 반복 일정 시리즈 삭제 오류: {e}")
-        return "❌ 반복 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 반복 일정 삭제에 실패했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -838,8 +1059,11 @@ def create_recurring_event(
             f"{conflict_note}"
         )
     except Exception as e:
+        msg = _login_needed_message(e)
+        if msg:
+            return msg
         print(f"[캘린더] 반복 일정 등록 오류: {e}")
-        return "❌ 반복 일정 등록에 실패했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 반복 일정 등록에 실패했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -865,8 +1089,11 @@ def get_calendar_list() -> str:
             )
         return output.strip()
     except Exception as e:
+        msg = _login_needed_message(e)
+        if msg:
+            return msg
         print(f"[캘린더] 목록 조회 오류: {e}")
-        return "❌ 캘린더 목록을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 캘린더 목록을 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -923,8 +1150,11 @@ def get_schedule_summary(days: int = 30, calendar_id: str = "primary") -> str:
             f"요일별: " + " / ".join(f"{d}({c})" for d, c in zip(weekday_names, weekday_count))
         )
     except Exception as e:
+        msg = _login_needed_message(e)
+        if msg:
+            return msg
         print(f"[캘린더] 통계 분석 오류: {e}")
-        return "❌ 일정 통계를 분석하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 일정 통계를 분석하지 못했어요. 잠시 후 다시 시도해 주세요."
 
 
 # ─────────────────────────────────────────────
@@ -1134,8 +1364,9 @@ def get_daily_briefing(target: str = "today", calendar_id: str = "primary") -> s
                 day = days[idx]
                 if day.get("precipitation_probability", 0) >= _BRIEFING_RAIN_THRESHOLD:
                     body += (
-                        f"\n\n☔ {label} {day['desc']} 예보가 있어요"
-                        f"(강수확률 {day['precipitation_probability']}%) — 우산을 챙기세요."
+                        # 예보 요약(desc)이 "맑음"인데 강수확률은 높은 날이 있어 "맑음 예보… 우산" 같은 어긋난
+                        # 문장이 됐다(2026-10-11) — 판단 근거인 강수확률만 말한다.
+                        f"\n\n☔ {label} 비 올 확률이 {day['precipitation_probability']}%예요 — 우산을 챙기세요."
                     )
                 body += _weather_scene_mention(day, label)
     except Exception as e:
@@ -1155,16 +1386,26 @@ def open_calendar_website() -> str:
     try:
         opened = webbrowser.open(url, new=2)
         if opened:
-            return f"[🌐 브라우저 열기]\n구글 캘린더 웹사이트를 기본 브라우저에서 열었습니다.\n{url}"
-        return f"❌ 브라우저를 열 수 없습니다. 직접 접속해주세요: {url}"
+            return f"[🌐 브라우저 열기]\n구글 캘린더 웹사이트를 기본 브라우저로 열었어요.\n{url}"
+        return f"❌ 브라우저를 열 수 없었어요. 아래 주소로 직접 들어가 주세요: {url}"
     except Exception as e:
         print(f"[캘린더] 브라우저 열기 오류: {e}")
-        return f"❌ 브라우저를 열지 못했습니다. 직접 접속해주세요: {url}"
+        return f"❌ 브라우저를 열지 못했어요. 아래 주소로 직접 들어가 주세요: {url}"
 
 
 # ─────────────────────────────────────────────
 # 🛠️ 내부 유틸리티
 # ─────────────────────────────────────────────
+
+def _end_after_start(start_iso: str, end_iso: str) -> str:
+    """종료가 시작과 같거나 이르면(하루 안쪽 차이) 다음 날로 본다 — "16시부터 00시까지",
+    "22시부터 새벽 2시까지"를 모델이 같은 날짜로 넘기면 구글이 "The specified time range is empty"로
+    거부한다(2026-10-11 실제 앱 테스트). 하루 넘게 어긋난 건 날짜를 잘못 받은 것이라 고치지 않는다."""
+    s, e = datetime.fromisoformat(start_iso), datetime.fromisoformat(end_iso)
+    if timedelta(0) <= s - e < timedelta(days=1):
+        return (e + timedelta(days=1)).isoformat()
+    return end_iso
+
 
 def _parse_datetime(dt_str: str, timezone: str = DEFAULT_TIMEZONE) -> str:
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M"):
