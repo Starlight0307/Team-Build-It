@@ -63,3 +63,39 @@ def test_app_key_export_from_other_computer_is_rejected(monkeypatch):
     monkeypatch.setattr(cc, "_fernet", Fernet(Fernet.generate_key()))   # 다른 PC의 키
     with pytest.raises(ValueError, match="이 컴퓨터"):
         cc.decrypt_export(raw)
+
+
+def test_account_key_export_opens_for_same_account_only(monkeypatch):
+    """로그인한 계정 키로 암호화 → 같은 계정이면 어느 PC에서든 열리고, 다른 계정/비로그인은 못 연다."""
+    from data import db
+    monkeypatch.setattr(db, "_current_uid", lambda: "uuid-of-alice")
+    raw = cc.encrypt_export("나: 비밀 이야기")
+    assert raw.startswith(cc.ACCOUNT_EXPORT_PREFIX) and "비밀" not in raw
+    assert cc.decrypt_export(raw) == "나: 비밀 이야기"
+    # 다른 PC(다른 앱 키)를 흉내 — 계정 키는 앱 키와 무관해서 그대로 열린다
+    from cryptography.fernet import Fernet
+    monkeypatch.setattr(cc, "_fernet", Fernet(Fernet.generate_key()))
+    assert cc.decrypt_export(raw) == "나: 비밀 이야기"
+    monkeypatch.setattr(db, "_current_uid", lambda: "uuid-of-bob")
+    with pytest.raises(ValueError, match="다른 계정"):
+        cc.decrypt_export(raw)
+    monkeypatch.setattr(db, "_current_uid", lambda: None)
+    with pytest.raises(ValueError, match="로그인"):
+        cc.decrypt_export(raw)
+
+
+def test_backup_made_on_one_pc_restores_on_another_with_same_account(tmp_path, monkeypatch):
+    from data import db, backup
+    monkeypatch.setattr(db, "_current_uid", lambda: "uuid-of-alice")
+    monkeypatch.setattr(db, "CHAT_LOG_DIR", str(tmp_path / "pc1_chats"))
+    monkeypatch.setattr(backup, "_settings_path", lambda u: str(tmp_path / "s1.json"))
+    monkeypatch.setattr(backup, "_memory_path", lambda u: str(tmp_path / "m1.json"))
+    db.save_chat_to_file("alice", "user", "PC1의 대화", session_id="s1", session_title="t")
+    bk = str(tmp_path / "b.lumibak")
+    backup.create_backup("alice", bk)
+    # 다른 PC: 다른 대화 폴더 + 다른 앱 키, 같은 계정으로 로그인
+    from cryptography.fernet import Fernet
+    monkeypatch.setattr(cc, "_fernet", Fernet(Fernet.generate_key()))
+    monkeypatch.setattr(db, "CHAT_LOG_DIR", str(tmp_path / "pc2_chats"))
+    assert backup.restore_backup("alice", bk) == {"chats": 1}
+    assert db.load_messages("alice", "s1")[0][1] == "PC1의 대화"

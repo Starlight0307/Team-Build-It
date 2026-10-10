@@ -50,7 +50,7 @@ def save_encrypted_export(parent, text: str, default_name: str) -> bool:
         QMessageBox.warning(parent, "내보내기", f"저장하지 못했어요.\n{e}")
         return False
     QMessageBox.information(parent, "내보내기", "암호화해서 저장했어요.\n"
-                            "파일을 열어도 내용이 보이지 않고, 이 컴퓨터의 루미에서만 열 수 있어요.\n"
+                            "파일을 열어도 내용이 보이지 않아요. 같은 계정으로 로그인한 루미에서는 다른 PC에서도 열 수 있어요.\n"
                             "열 때는 대화 기록 화면의 '암호화 파일 열기'를 쓰세요.")
     return True
 

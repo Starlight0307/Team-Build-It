@@ -105,16 +105,35 @@ def encrypt_with_password(text: str, password: str) -> str:
     return EXPORT_PREFIX + base64.urlsafe_b64encode(salt).decode("ascii") + ":" + token.decode("ascii")
 
 
-APP_EXPORT_PREFIX = "LUMIK1:"
+APP_EXPORT_PREFIX = "LUMIK1:"        # 이 컴퓨터의 앱 키 (로그인 안 한 상태에서 내보낸 파일)
+ACCOUNT_EXPORT_PREFIX = "LUMIA1:"    # 계정 키 (로그인한 계정으로 내보낸 파일 — 다른 PC에서도 같은 계정이면 열림)
+
+
+def _account_fernet():
+    """로그인한 계정(Supabase 계정 고유번호)에서 만든 암호 키. 같은 계정이면 어느 PC에서든 같은 키가 나오고,
+    다른 계정은 다른 키라서 열 수 없다. 로그인하지 않았으면 None."""
+    from data import db   # 지연 import — db가 이 모듈을 먼저 불러서 순환을 피한다
+    uid = db._current_uid()
+    if not uid or Fernet is None:
+        return None
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=b"lumi-export-v1",
+               info=b"account-export").derive(str(uid).encode("utf-8"))
+    return Fernet(base64.urlsafe_b64encode(key))
 
 
 def encrypt_export(text: str) -> str:
-    """내보내는 파일용 암호화 — 비밀번호를 묻지 않고 이 앱의 암호 키(대화기록과 같은 키)로 암호화한다.
-    파일을 그냥 열어서는 내용이 안 보이고, 이 컴퓨터의 루미에서만 열 수 있다."""
-    f = _get_fernet()
+    """내보내는 파일용 암호화 — 비밀번호를 묻지 않는다.
+    로그인한 상태면 계정 키로 암호화한다: 파일을 열어도 내용이 안 보이고, 같은 계정으로 로그인한 루미라면
+    다른 PC에서도 열린다(다른 계정은 못 연다). 로그인하지 않았으면 이 컴퓨터의 앱 키를 쓴다."""
+    f = _account_fernet()
+    prefix = ACCOUNT_EXPORT_PREFIX
+    if f is None:
+        f, prefix = _get_fernet(), APP_EXPORT_PREFIX
     if f is None:
         raise RuntimeError("cryptography 패키지가 없어 암호화해서 내보낼 수 없어요.")
-    return APP_EXPORT_PREFIX + f.encrypt(text.encode("utf-8")).decode("ascii")
+    return prefix + f.encrypt(text.encode("utf-8")).decode("ascii")
 
 
 def export_needs_password(raw: str) -> bool:
@@ -123,9 +142,17 @@ def export_needs_password(raw: str) -> bool:
 
 
 def decrypt_export(raw: str, password: str = None) -> str:
-    """내보낸 파일 내용을 푼다. 앱 키 방식(LUMIK1)은 비밀번호 없이, 예전 비밀번호 방식(LUMIX1)은 password로.
+    """내보낸 파일 내용을 푼다. 계정 키(LUMIA1)/앱 키(LUMIK1)는 비밀번호 없이, 예전 비밀번호 방식(LUMIX1)은 password로.
     형식이 다르거나 키/비밀번호가 맞지 않으면 ValueError."""
     raw = raw.strip()
+    if raw.startswith(ACCOUNT_EXPORT_PREFIX):
+        f = _account_fernet()
+        if f is None:
+            raise ValueError("이 파일은 계정으로 암호화돼 있어요. 만든 계정으로 로그인한 뒤 열어주세요.")
+        try:
+            return f.decrypt(raw[len(ACCOUNT_EXPORT_PREFIX):].encode("ascii")).decode("utf-8")
+        except InvalidToken:
+            raise ValueError("다른 계정으로 만든 파일이라 열 수 없어요. 만든 계정으로 로그인해주세요.")
     if raw.startswith(APP_EXPORT_PREFIX):
         f = _get_fernet()
         if f is None:
@@ -133,7 +160,7 @@ def decrypt_export(raw: str, password: str = None) -> str:
         try:
             return f.decrypt(raw[len(APP_EXPORT_PREFIX):].encode("ascii")).decode("utf-8")
         except InvalidToken:
-            raise ValueError("이 컴퓨터에서 만든 파일이 아니라서 열 수 없어요 (암호 키가 달라요).")
+            raise ValueError("이 컴퓨터에서 만든 파일이 아니라서 열 수 없어요 (로그인한 상태에서 내보낸 파일이 아니에요).")
     if raw.startswith(EXPORT_PREFIX):
         if not password:
             raise ValueError("이 파일은 비밀번호가 필요해요.")

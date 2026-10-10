@@ -432,7 +432,7 @@ class MyPageWidget(QWidget):
         try:
             info = create_backup(user, path)
             QMessageBox.information(self, "백업", f"대화 {info['chats']}개와 설정을 암호화해 저장했어요.\n"
-                                    "파일을 열어도 내용이 보이지 않고, 이 컴퓨터의 루미에서만 복원할 수 있어요.")
+                                    "파일을 열어도 내용이 보이지 않아요. 같은 계정으로 로그인한 루미라면 다른 PC에서도 복원할 수 있어요.")
         except Exception as e:
             QMessageBox.warning(self, "백업", f"백업하지 못했어요.\n{e}")
 

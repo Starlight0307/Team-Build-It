@@ -1,7 +1,7 @@
 """내 데이터 백업/복원 — 대화기록, 환경설정, 루미가 기억하는 것을 파일 하나로.
 
-백업 파일(.lumibak)은 비밀번호를 묻지 않고 이 앱의 암호 키로 암호화한다 — 파일을 열어도 내용이 보이지
-않고, 이 컴퓨터의 루미에서만 복원할 수 있다(다른 컴퓨터로 옮기려면 암호 키 파일도 같이 옮겨야 한다).
+백업 파일(.lumibak)은 비밀번호를 묻지 않고 로그인한 계정의 키로 암호화한다 — 파일을 열어도 내용이 보이지
+않고, 같은 계정으로 로그인한 루미라면 다른 PC에서도 복원할 수 있다(다른 계정은 못 연다).
 복원하면 같은 이름의 대화/설정은 덮어쓴다. 예전 비밀번호 방식 백업과 암호 없는 zip 백업도 복원은 된다.
 """
 import base64
@@ -12,7 +12,7 @@ import zipfile
 from datetime import datetime
 
 from data import db
-from data.chat_crypto import (APP_EXPORT_PREFIX, EXPORT_PREFIX, decrypt_export, encrypt_export,
+from data.chat_crypto import (ACCOUNT_EXPORT_PREFIX, APP_EXPORT_PREFIX, EXPORT_PREFIX, decrypt_export, encrypt_export,
                               encrypt_with_password)
 from core.user_context import safe_uid
 
@@ -73,7 +73,8 @@ def create_backup(user_id: str, path: str, password: str = None) -> dict:
 def _open_zip(path: str, password):
     with open(path, "rb") as f:
         raw = f.read()
-    if raw.startswith((APP_EXPORT_PREFIX.encode("ascii"), EXPORT_PREFIX.encode("ascii"))):
+    if raw.startswith((ACCOUNT_EXPORT_PREFIX.encode("ascii"), APP_EXPORT_PREFIX.encode("ascii"),
+                       EXPORT_PREFIX.encode("ascii"))):
         zip_bytes = base64.b64decode(decrypt_export(raw.decode("ascii"), password))
     else:
         zip_bytes = raw   # 예전 암호 없는 zip 백업
