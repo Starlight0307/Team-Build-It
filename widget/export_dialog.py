@@ -35,24 +35,22 @@ def ask_new_password(parent, what="내보낼 파일"):
 
 
 def save_encrypted_export(parent, text: str, default_name: str) -> bool:
-    """비밀번호를 정하고 text를 암호화해 .lumi 파일로 저장한다. 저장했으면 True."""
-    from data.chat_crypto import encrypt_with_password
+    """text를 암호화해 .lumi 파일로 저장한다(비밀번호는 묻지 않는다). 저장했으면 True."""
+    from data.chat_crypto import encrypt_export
     path, _ = QFileDialog.getSaveFileName(parent, "대화 내보내기", f"{default_name}.lumi", EXPORT_FILTER)
     if not path:
         return False
     if not path.lower().endswith(".lumi"):
         path += ".lumi"
-    pw = ask_new_password(parent)
-    if pw is None:
-        return False
     try:
-        data = encrypt_with_password(text, pw)
+        data = encrypt_export(text)
         with open(path, "w", encoding="utf-8") as f:
             f.write(data)
     except Exception as e:
         QMessageBox.warning(parent, "내보내기", f"저장하지 못했어요.\n{e}")
         return False
-    QMessageBox.information(parent, "내보내기", "비밀번호로 암호화해서 저장했어요.\n"
+    QMessageBox.information(parent, "내보내기", "암호화해서 저장했어요.\n"
+                            "파일을 열어도 내용이 보이지 않고, 이 컴퓨터의 루미에서만 열 수 있어요.\n"
                             "열 때는 대화 기록 화면의 '암호화 파일 열기'를 쓰세요.")
     return True
 
@@ -97,7 +95,7 @@ class _ViewerDialog(QDialog):
 
 def open_encrypted_export(parent, on_import=None) -> bool:
     """.lumi 파일을 골라 비밀번호로 열어 보여준다. on_import(text)를 주면 "대화 기록으로 가져오기" 버튼이 생긴다."""
-    from data.chat_crypto import decrypt_with_password
+    from data.chat_crypto import decrypt_export, export_needs_password
     path, _ = QFileDialog.getOpenFileName(parent, "암호화된 대화 열기", "", EXPORT_FILTER)
     if not path:
         return False
@@ -107,12 +105,14 @@ def open_encrypted_export(parent, on_import=None) -> bool:
     except OSError as e:
         QMessageBox.warning(parent, "열기", f"파일을 읽지 못했어요.\n{e}")
         return False
-    pw, ok = QInputDialog.getText(parent, "비밀번호", "파일을 내보낼 때 정한 비밀번호를 입력하세요.",
-                                  QLineEdit.EchoMode.Password)
-    if not ok:
-        return False
+    pw = None
+    if export_needs_password(raw):   # 예전 버전에서 비밀번호로 내보낸 파일만 비밀번호를 묻는다
+        pw, ok = QInputDialog.getText(parent, "비밀번호", "파일을 내보낼 때 정한 비밀번호를 입력하세요.",
+                                      QLineEdit.EchoMode.Password)
+        if not ok:
+            return False
     try:
-        text = decrypt_with_password(raw, pw)
+        text = decrypt_export(raw, pw)
     except ValueError as e:
         QMessageBox.warning(parent, "열기", str(e))
         return False

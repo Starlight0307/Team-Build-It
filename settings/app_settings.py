@@ -5,6 +5,7 @@ settings/app_settings.json에 저장한다. 사람/기기마다 다른 값이라
 올리지 않는다(.gitignore). 파일이 없거나 깨져 있으면 기본값으로 동작한다 —
 설정 파일 하나 때문에 앱이 안 켜지는 일이 없게.
 """
+from data.secure_store import secure_open
 import json
 import os
 
@@ -55,7 +56,7 @@ def _load() -> dict:
     if _cache is None:
         _cache = dict(DEFAULTS)
         try:
-            with open(_PATH, "r", encoding="utf-8") as f:
+            with secure_open(_PATH, "r", encoding="utf-8") as f:
                 saved = json.load(f)
             if isinstance(saved, dict):
                 _cache.update({k: v for k, v in saved.items() if k in DEFAULTS})
@@ -72,7 +73,7 @@ def set(key: str, value):
     data = _load()
     data[key] = value
     try:
-        with open(_PATH, "w", encoding="utf-8") as f:
+        with secure_open(_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except OSError as e:
         print(f"[환경설정] 저장 실패: {e}")

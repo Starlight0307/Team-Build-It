@@ -22,6 +22,7 @@ OverflowError 방어, 분류 길이 제한)을 그대로 재사용해서 두 "�
 함께 보여준다(get_budget_status가 이미 쓰는 "월초~현재" 날짜 필터링과 동일).
 """
 
+from data.secure_store import secure_open
 import os
 import json
 import time
@@ -82,7 +83,7 @@ def _income_file(user_id: str = None) -> str:
 
 def _load_income(user_id: str = None) -> list:
     try:
-        with open(_income_file(user_id), "r", encoding="utf-8") as f:
+        with secure_open(_income_file(user_id), "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
@@ -90,7 +91,7 @@ def _load_income(user_id: str = None) -> list:
 
 def _save_income(income: list, user_id: str = None):
     try:
-        with open(_income_file(user_id), "w", encoding="utf-8") as f:
+        with secure_open(_income_file(user_id), "w", encoding="utf-8") as f:
             json.dump(income, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[가계부] 수입 저장 오류: {e}")
@@ -98,7 +99,7 @@ def _save_income(income: list, user_id: str = None):
 
 def _load_budget(user_id: str = None) -> int | None:
     try:
-        with open(_budget_file(user_id), "r", encoding="utf-8") as f:
+        with secure_open(_budget_file(user_id), "r", encoding="utf-8") as f:
             data = json.load(f)
         return int(data.get("monthly_budget")) if isinstance(data, dict) else None
     except Exception:
@@ -107,7 +108,7 @@ def _load_budget(user_id: str = None) -> int | None:
 
 def _save_budget(amount: int, user_id: str = None):
     try:
-        with open(_budget_file(user_id), "w", encoding="utf-8") as f:
+        with secure_open(_budget_file(user_id), "w", encoding="utf-8") as f:
             json.dump({"monthly_budget": amount}, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[가계부] 예산 저장 오류: {e}")
@@ -115,7 +116,7 @@ def _save_budget(amount: int, user_id: str = None):
 
 def _load_expenses(user_id: str = None) -> list:
     try:
-        with open(_expenses_file(user_id), "r", encoding="utf-8") as f:
+        with secure_open(_expenses_file(user_id), "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
@@ -123,7 +124,7 @@ def _load_expenses(user_id: str = None) -> list:
 
 def _save_expenses(expenses: list, user_id: str = None):
     try:
-        with open(_expenses_file(user_id), "w", encoding="utf-8") as f:
+        with secure_open(_expenses_file(user_id), "w", encoding="utf-8") as f:
             json.dump(expenses, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[가계부] 저장 오류: {e}")

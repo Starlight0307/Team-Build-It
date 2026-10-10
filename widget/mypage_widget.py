@@ -423,19 +423,16 @@ class MyPageWidget(QWidget):
     def _backup(self):
         from PyQt6.QtWidgets import QFileDialog
         from data.backup import create_backup, default_backup_name, BACKUP_EXT
-        from widget.export_dialog import ask_new_password
         user = (self._username or "")
         path, _ = QFileDialog.getSaveFileName(self, "백업 저장", default_backup_name(user),
                                               f"루미 백업 (*{BACKUP_EXT})")
         if not path: return
         if not path.lower().endswith(BACKUP_EXT):
             path += BACKUP_EXT
-        pw = ask_new_password(self, "백업 파일")
-        if pw is None: return
         try:
-            info = create_backup(user, path, pw)
-            QMessageBox.information(self, "백업", f"대화 {info['chats']}개와 설정을 비밀번호로 암호화해 저장했어요.\n"
-                                    "비밀번호를 잊으면 복원할 수 없어요.")
+            info = create_backup(user, path)
+            QMessageBox.information(self, "백업", f"대화 {info['chats']}개와 설정을 암호화해 저장했어요.\n"
+                                    "파일을 열어도 내용이 보이지 않고, 이 컴퓨터의 루미에서만 복원할 수 있어요.")
         except Exception as e:
             QMessageBox.warning(self, "백업", f"백업하지 못했어요.\n{e}")
 
@@ -446,7 +443,7 @@ class MyPageWidget(QWidget):
                                               f"루미 백업 (*{BACKUP_EXT} *.zip)")
         if not path: return
         password = None
-        if is_encrypted_backup(path):
+        if is_encrypted_backup(path):   # 예전 버전에서 비밀번호로 만든 백업만 비밀번호를 묻는다
             password, ok = QInputDialog.getText(self, "백업 비밀번호", "백업할 때 정한 비밀번호를 입력하세요.",
                                                 QLineEdit.EchoMode.Password)
             if not ok: return

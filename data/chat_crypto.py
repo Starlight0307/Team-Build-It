@@ -105,6 +105,42 @@ def encrypt_with_password(text: str, password: str) -> str:
     return EXPORT_PREFIX + base64.urlsafe_b64encode(salt).decode("ascii") + ":" + token.decode("ascii")
 
 
+APP_EXPORT_PREFIX = "LUMIK1:"
+
+
+def encrypt_export(text: str) -> str:
+    """내보내는 파일용 암호화 — 비밀번호를 묻지 않고 이 앱의 암호 키(대화기록과 같은 키)로 암호화한다.
+    파일을 그냥 열어서는 내용이 안 보이고, 이 컴퓨터의 루미에서만 열 수 있다."""
+    f = _get_fernet()
+    if f is None:
+        raise RuntimeError("cryptography 패키지가 없어 암호화해서 내보낼 수 없어요.")
+    return APP_EXPORT_PREFIX + f.encrypt(text.encode("utf-8")).decode("ascii")
+
+
+def export_needs_password(raw: str) -> bool:
+    """예전(비밀번호 방식)으로 내보낸 파일이라 비밀번호가 필요한지."""
+    return raw.lstrip().startswith(EXPORT_PREFIX)
+
+
+def decrypt_export(raw: str, password: str = None) -> str:
+    """내보낸 파일 내용을 푼다. 앱 키 방식(LUMIK1)은 비밀번호 없이, 예전 비밀번호 방식(LUMIX1)은 password로.
+    형식이 다르거나 키/비밀번호가 맞지 않으면 ValueError."""
+    raw = raw.strip()
+    if raw.startswith(APP_EXPORT_PREFIX):
+        f = _get_fernet()
+        if f is None:
+            raise ValueError("cryptography 패키지가 없습니다.")
+        try:
+            return f.decrypt(raw[len(APP_EXPORT_PREFIX):].encode("ascii")).decode("utf-8")
+        except InvalidToken:
+            raise ValueError("이 컴퓨터에서 만든 파일이 아니라서 열 수 없어요 (암호 키가 달라요).")
+    if raw.startswith(EXPORT_PREFIX):
+        if not password:
+            raise ValueError("이 파일은 비밀번호가 필요해요.")
+        return decrypt_with_password(raw, password)
+    raise ValueError("루미에서 암호화해 내보낸 파일이 아니에요.")
+
+
 def is_export_encrypted(raw: str) -> bool:
     return raw.startswith(EXPORT_PREFIX)
 

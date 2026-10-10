@@ -10,6 +10,7 @@
   (겹치면 나중에 로드된 쪽이 조용히 덮어써버리는 구조적 문제가 있음).
 """
 
+from data.secure_store import secure_open
 import os
 import json
 import uuid
@@ -51,7 +52,7 @@ def _events_file(user_id: str = None) -> str:
 
 def _load_events(user_id: str = None) -> list:
     try:
-        with open(_events_file(user_id), "r", encoding="utf-8") as f:
+        with secure_open(_events_file(user_id), "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
@@ -59,7 +60,7 @@ def _load_events(user_id: str = None) -> list:
 
 def _save_events(events: list, user_id: str = None):
     try:
-        with open(_events_file(user_id), "w", encoding="utf-8") as f:
+        with secure_open(_events_file(user_id), "w", encoding="utf-8") as f:
             json.dump(events, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[내부 캘린더] 저장 오류: {e}")

@@ -1,3 +1,4 @@
+from data.secure_store import secure_open
 import json
 import os
 from datetime import datetime
@@ -37,7 +38,7 @@ def get_pref(namespace: str, key: str, max_age_days: float = None):
     """namespace 안에 저장된 key에 대한 값을 반환. 없거나 max_age_days보다
     오래됐으면 None. max_age_days를 생략하면 만료 없이 조회한다."""
     try:
-        with open(_FILE, "r", encoding="utf-8") as f:
+        with secure_open(_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         entry = data.get(namespace, {}).get(key.strip())
         if entry is None:
@@ -60,7 +61,7 @@ def save_pref(namespace: str, key: str, value) -> None:
     할 수 있게 한다."""
     try:
         try:
-            with open(_FILE, "r", encoding="utf-8") as f:
+            with secure_open(_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:
             data = {}
@@ -68,7 +69,7 @@ def save_pref(namespace: str, key: str, value) -> None:
             "value": value,
             "saved_at": datetime.now().isoformat(),
         }
-        with open(_FILE, "w", encoding="utf-8") as f:
+        with secure_open(_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
@@ -79,7 +80,7 @@ def list_all() -> dict:
     반환한다 (마이페이지의 "루미가 기억하는 것" 화면 등 조회 전용 용도).
     기존 함수는 하나도 안 건드리고 추가만 했다 — 기존 테스트에 영향 없음."""
     try:
-        with open(_FILE, "r", encoding="utf-8") as f:
+        with secure_open(_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -88,7 +89,7 @@ def list_all() -> dict:
 def delete_pref(namespace: str, key: str) -> None:
     """저장된 기억 중 항목 하나만 지운다 (namespace 전체가 아니라 key 하나)."""
     try:
-        with open(_FILE, "r", encoding="utf-8") as f:
+        with secure_open(_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         return
@@ -97,7 +98,7 @@ def delete_pref(namespace: str, key: str) -> None:
         if not data[namespace]:
             del data[namespace]
         try:
-            with open(_FILE, "w", encoding="utf-8") as f:
+            with secure_open(_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
@@ -115,12 +116,12 @@ def clear_preferences(namespace: str = None) -> None:
                 os.remove(_FILE)
             return
         try:
-            with open(_FILE, "r", encoding="utf-8") as f:
+            with secure_open(_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:
             return
         data.pop(namespace, None)
-        with open(_FILE, "w", encoding="utf-8") as f:
+        with secure_open(_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass

@@ -87,9 +87,18 @@ def test_never_saves_plaintext_without_crypto(chat_env, monkeypatch):
     assert not os.path.exists(path) or "비밀" not in open(path, encoding="utf-8").read()
 
 
-def test_backup_requires_password(chat_env):
-    with pytest.raises(ValueError):
-        backup.create_backup("alice", str(chat_env / "b.lumibak"), "")
+def test_backup_needs_no_password_but_is_encrypted(chat_env, monkeypatch):
+    monkeypatch.setattr(backup, "_settings_path", lambda u: str(chat_env / "s.json"))
+    monkeypatch.setattr(backup, "_memory_path", lambda u: str(chat_env / "m.json"))
+    db.save_chat_to_file("alice", "user", "비밀 백업 내용", session_id="s1", session_title="t")
+    bk = str(chat_env / "b.lumibak")
+    assert backup.create_backup("alice", bk) == {"chats": 1}            # 비밀번호 없이 만든다
+    raw = open(bk, encoding="utf-8").read()
+    assert raw.startswith("LUMIK1:") and "비밀" not in raw               # 그래도 파일을 열면 안 보인다
+    assert not backup.is_encrypted_backup(bk)                           # 복원할 때 비밀번호를 묻지 않는다
+    db.delete_session("alice", "s1")
+    assert backup.restore_backup("alice", bk) == {"chats": 1}
+    assert db.load_messages("alice", "s1")[0][1] == "비밀 백업 내용"
 
 
 def test_legacy_plain_zip_backup_still_restorable(chat_env, monkeypatch):

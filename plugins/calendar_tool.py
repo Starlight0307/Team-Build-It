@@ -27,10 +27,13 @@ tokens/
   token_{user_id}.json  ← 사용자별 자동 생성
 """
 
+import json
 import os
 import re
 import traceback
 import webbrowser
+
+from data.secure_store import secure_open, read_text
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional
@@ -315,7 +318,7 @@ def _get_service(user_id: str = None):
     creds = None
 
     if os.path.exists(token_file):
-        creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+        creds = Credentials.from_authorized_user_info(json.loads(read_text(token_file)), SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -329,7 +332,7 @@ def _get_service(user_id: str = None):
             flow  = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
 
-        with open(token_file, "w") as f:
+        with secure_open(token_file, "w") as f:   # 구글 로그인 토큰은 암호화해서 저장한다
             f.write(creds.to_json())
 
     return build("calendar", "v3", credentials=creds)
@@ -348,7 +351,7 @@ def get_login_status() -> str:
 
     try:
         _import_google()
-        creds   = Credentials.from_authorized_user_file(token_file, SCOPES)
+        creds   = Credentials.from_authorized_user_info(json.loads(read_text(token_file)), SCOPES)
         service = build("calendar", "v3", credentials=creds)
 
         calendar_list = service.calendarList().list().execute()
@@ -380,7 +383,7 @@ def setup_calendar_auth() -> str:
         flow  = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
         creds = flow.run_local_server(port=0)
 
-        with open(token_file, "w") as f:
+        with secure_open(token_file, "w") as f:   # 구글 로그인 토큰은 암호화해서 저장한다
             f.write(creds.to_json())
 
         return (

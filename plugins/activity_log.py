@@ -35,6 +35,7 @@ _MAX_ARG_VALUE_LENGTH로 자른다 — text_tools.summarize_text처럼 긴 원�
 통째로 받는 함수가 있어서, 자르지 않으면 로그 파일이 그 원문 크기만큼
 불필요하게 커진다.
 """
+from data.secure_store import secure_open
 import os
 import json
 import threading
@@ -129,7 +130,7 @@ def log_activity(func_name: str, args: dict, result: str) -> None:
     with _lock:
         os.makedirs(DATA_DIR, exist_ok=True)
         try:
-            with open(log_file, "r", encoding="utf-8") as f:
+            with secure_open(log_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
         except Exception:
             lines = []
@@ -137,7 +138,7 @@ def log_activity(func_name: str, args: dict, result: str) -> None:
         lines = lines[-_MAX_RETAINED_ENTRIES:]
         tmp = log_file + ".tmp"
         try:
-            with open(tmp, "w", encoding="utf-8") as f:
+            with secure_open(tmp, "w", encoding="utf-8") as f:
                 f.writelines(lines)
             os.replace(tmp, log_file)
         except Exception as e:
@@ -157,7 +158,7 @@ def list_recent_activity(limit: int = 10) -> str:
 
     with _lock:
         try:
-            with open(_log_file(user_id), "r", encoding="utf-8") as f:
+            with secure_open(_log_file(user_id), "r", encoding="utf-8") as f:
                 lines = f.readlines()
         except Exception:
             lines = []

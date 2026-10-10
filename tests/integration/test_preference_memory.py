@@ -9,6 +9,7 @@ I/O를 하므로 "통합 테스트"로 분류하되, OS 레벨 의존성(psutil/
 없어서 conftest.py의 isolated_preference_memory fixture로 실제 사용자
 데이터를 건드리지 않고 임시 파일에서 격리해 테스트한다.
 """
+from data.secure_store import secure_open
 import json
 from datetime import datetime, timedelta
 
@@ -55,11 +56,11 @@ def test_corrupted_json_file_does_not_crash(isolated_preference_memory):
 def _save_with_age(isolated_preference_memory, namespace, key, value, age_days):
     """저장 시각을 과거로 조작 — save_pref로 먼저 저장한 뒤 saved_at을 직접 덮어씀."""
     save_pref(namespace, key, value)
-    with open(isolated_preference_memory, "r", encoding="utf-8") as f:
+    with secure_open(isolated_preference_memory, "r", encoding="utf-8") as f:
         data = json.load(f)
     old_time = datetime.now() - timedelta(days=age_days)
     data[namespace][key]["saved_at"] = old_time.isoformat()
-    with open(isolated_preference_memory, "w", encoding="utf-8") as f:
+    with secure_open(isolated_preference_memory, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
 

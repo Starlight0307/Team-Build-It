@@ -1,3 +1,4 @@
+from data.secure_store import secure_open
 import json
 import os
 import re
@@ -8,7 +9,7 @@ _FILE = os.path.join(os.path.dirname(__file__), "event_duration_memory.json")
 def get_duration(title: str) -> int | None:
     """저장된 이벤트 제목에 대한 소요 시간(분) 반환. 없으면 None."""
     try:
-        with open(_FILE, "r", encoding="utf-8") as f:
+        with secure_open(_FILE, "r", encoding="utf-8") as f:
             return json.load(f).get(title.strip())
     except Exception:
         return None
@@ -18,12 +19,12 @@ def save_duration(title: str, minutes: int):
     """이벤트 제목과 소요 시간(분)을 저장."""
     try:
         try:
-            with open(_FILE, "r", encoding="utf-8") as f:
+            with secure_open(_FILE, "r", encoding="utf-8") as f:
                 mem = json.load(f)
         except Exception:
             mem = {}
         mem[title.strip()] = minutes
-        with open(_FILE, "w", encoding="utf-8") as f:
+        with secure_open(_FILE, "w", encoding="utf-8") as f:
             json.dump(mem, f, ensure_ascii=False, indent=2)
     except Exception:
         pass

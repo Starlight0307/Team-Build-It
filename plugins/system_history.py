@@ -67,6 +67,7 @@ QTimer.timeout으로 GUI 스레드에서 직접 실행되는 구조는 이 프�
 기술부채 범주로 남겨둔다(app_main.py의 트레이 기능 주석 참고) — 완전한
 해결은 QThread 분리이고 이번 기능 범위 밖이다.
 """
+from data.secure_store import secure_open
 import os
 import time
 import json
@@ -134,7 +135,7 @@ def _ensure_loaded():
     if _loaded:
         return
     try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        with secure_open(HISTORY_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         _history = data if isinstance(data, dict) else {}
     except FileNotFoundError:
@@ -161,7 +162,7 @@ def _flush(force: bool = False):
     os.makedirs(DATA_DIR, exist_ok=True)
     tmp = HISTORY_FILE + ".tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with secure_open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
         os.replace(tmp, HISTORY_FILE)
     except Exception as e:

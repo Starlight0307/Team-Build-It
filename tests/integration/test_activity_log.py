@@ -7,6 +7,7 @@ fixture)을 따른다. 핵심 검증: 게스트/미로그인은 기록도 조회
 로그인 사용자는 log_activity로 남긴 게 list_recent_activity로 최신순
 조회되며, 인자 값이 길면 잘리고, 최근 500건만 유지된다.
 """
+from data.secure_store import secure_open
 import plugins.activity_log as al
 from plugins.activity_log import log_activity, list_recent_activity
 
@@ -82,7 +83,7 @@ def test_list_recent_activity_handles_non_numeric_limit_gracefully(isolated_acti
 def test_log_activity_truncates_long_arg_values(isolated_activity_log):
     long_text = "가" * 1000
     log_activity("summarize_text", {"text": long_text}, "요약 결과")
-    with open(al._log_file(), "r", encoding="utf-8") as f:
+    with secure_open(al._log_file(), "r", encoding="utf-8") as f:
         import json
         entry = json.loads(f.readline())
     assert len(entry["args"]["text"]) < len(long_text)
@@ -92,7 +93,7 @@ def test_log_activity_truncates_long_arg_values(isolated_activity_log):
 def test_log_activity_truncates_long_result_preview(isolated_activity_log):
     long_result = "결과" * 500
     log_activity("summarize_text", {"text": "원문"}, long_result)
-    with open(al._log_file(), "r", encoding="utf-8") as f:
+    with secure_open(al._log_file(), "r", encoding="utf-8") as f:
         import json
         entry = json.loads(f.readline())
     assert len(entry["result_preview"]) <= 200
@@ -119,7 +120,7 @@ def test_log_activity_retains_only_max_entries(isolated_activity_log, monkeypatc
     monkeypatch.setattr(al, "_MAX_RETAINED_ENTRIES", 3)
     for i in range(5):
         log_activity(f"func_{i}", {}, "결과")
-    with open(al._log_file(), "r", encoding="utf-8") as f:
+    with secure_open(al._log_file(), "r", encoding="utf-8") as f:
         lines = f.readlines()
     assert len(lines) == 3
     # 오래된 것(func_0, func_1)이 버려지고 최신 3개만 남아야 함
@@ -158,7 +159,7 @@ def test_list_recent_activity_skips_corrupted_lines(isolated_activity_log):
     import os
     os.makedirs(al.DATA_DIR, exist_ok=True)
     log_activity("add_todo", {"text": "정상 항목"}, "결과")
-    with open(al._log_file(), "a", encoding="utf-8") as f:
+    with secure_open(al._log_file(), "a", encoding="utf-8") as f:
         f.write("이건 JSON이 아님\n")
     result = list_recent_activity()
     assert "add_todo" in result

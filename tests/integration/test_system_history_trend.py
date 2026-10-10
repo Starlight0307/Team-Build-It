@@ -8,6 +8,7 @@ tests/integration/test_app_usage_trend.py의 isolated_app_usage 픽스처를
 그대로 따른다(모듈 전역 DATA_DIR/HISTORY_FILE/_history/_loaded를 임시 경로로
 바꿔치기).
 """
+from data.secure_store import secure_open
 import os
 import json
 from datetime import datetime, timedelta
@@ -177,7 +178,7 @@ def test_flush_is_throttled_and_force_writes_immediately(isolated_history):
 
     sh._flush(force=True)
     assert os.path.exists(sh.HISTORY_FILE)
-    with open(sh.HISTORY_FILE, encoding="utf-8") as f:
+    with secure_open(sh.HISTORY_FILE, "r", encoding="utf-8") as f:
         saved = json.load(f)
     assert _day_key(0) in saved
 

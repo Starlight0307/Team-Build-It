@@ -134,6 +134,7 @@
        상태 때문에 거짓→참 전환을 잘못 판정하게 된다.
 """
 
+from data.secure_store import secure_open
 import os
 import json
 import uuid
@@ -623,14 +624,14 @@ def _log_action_execution(trigger_kind: str, trigger_id: str, label: str, action
     }
     with _action_log_lock:
         try:
-            with open(ACTION_LOG_FILE, "r", encoding="utf-8") as f:
+            with secure_open(ACTION_LOG_FILE, "r", encoding="utf-8") as f:
                 lines = f.readlines()
         except Exception:
             lines = []
         lines.append(json.dumps(entry, ensure_ascii=False) + "\n")
         lines = lines[-_ACTION_LOG_MAX_LINES:]
         try:
-            with open(ACTION_LOG_FILE, "w", encoding="utf-8") as f:
+            with secure_open(ACTION_LOG_FILE, "w", encoding="utf-8") as f:
                 f.writelines(lines)
         except Exception as e:
             print(f"[자동 실행 이력] 저장 오류: {e}")
@@ -648,7 +649,7 @@ def list_action_log(limit: int = 10) -> str:
 
     with _action_log_lock:
         try:
-            with open(ACTION_LOG_FILE, "r", encoding="utf-8") as f:
+            with secure_open(ACTION_LOG_FILE, "r", encoding="utf-8") as f:
                 lines = f.readlines()
         except Exception:
             lines = []
@@ -1408,7 +1409,7 @@ def _ensure_routines_loaded():
     if _routines_loaded:
         return
     try:
-        with open(ROUTINES_FILE, "r", encoding="utf-8") as f:
+        with secure_open(ROUTINES_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         _routines = data if isinstance(data, dict) else {}
     except Exception:
@@ -1418,7 +1419,7 @@ def _ensure_routines_loaded():
 
 def _save_routines():
     try:
-        with open(ROUTINES_FILE, "w", encoding="utf-8") as f:
+        with secure_open(ROUTINES_FILE, "w", encoding="utf-8") as f:
             json.dump(_routines, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[정기 알림] 저장 오류: {e}")
@@ -1573,7 +1574,7 @@ def _ensure_conditions_loaded():
     if _conditions_loaded:
         return
     try:
-        with open(CONDITIONS_FILE, "r", encoding="utf-8") as f:
+        with secure_open(CONDITIONS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         _conditions = data if isinstance(data, dict) else {}
     except Exception:
@@ -1583,7 +1584,7 @@ def _ensure_conditions_loaded():
 
 def _save_conditions():
     try:
-        with open(CONDITIONS_FILE, "w", encoding="utf-8") as f:
+        with secure_open(CONDITIONS_FILE, "w", encoding="utf-8") as f:
             json.dump(_conditions, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[조건부 알림] 저장 오류: {e}")

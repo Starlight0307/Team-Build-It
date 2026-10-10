@@ -46,6 +46,7 @@ LAST_TOP_PROCESSES가 세션 안에서만 유효한 것과 달리, 할 일 목�
 걸쳐 오래 남아있는 데이터라 이 위험이 더 크다). seq는 삭제해도 재사용하지
 않는다.
 """
+from data.secure_store import secure_open
 import os
 import json
 import uuid
@@ -95,7 +96,7 @@ def _todo_file(user_id: str = None) -> str:
 
 def _load(user_id: str = None) -> dict:
     try:
-        with open(_todo_file(user_id), "r", encoding="utf-8") as f:
+        with secure_open(_todo_file(user_id), "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict) and isinstance(data.get("items"), list):
             return data
@@ -106,7 +107,7 @@ def _load(user_id: str = None) -> dict:
 
 def _save(data: dict, user_id: str = None):
     try:
-        with open(_todo_file(user_id), "w", encoding="utf-8") as f:
+        with secure_open(_todo_file(user_id), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[할 일 목록] 저장 오류: {e}")

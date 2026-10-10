@@ -32,6 +32,7 @@ todo_list.py와 동일(대소문자만 무시, 공백/하이픈 등은 정규화
 (수정 API를 태그까지 늘리는 것보다, 메모 자체가 가벼운 데이터라 다시
 만드는 비용이 낮다고 판단).
 """
+from data.secure_store import secure_open
 import os
 import json
 from datetime import datetime
@@ -103,7 +104,7 @@ def _notes_file(user_id: str = None) -> str:
 
 def _load(user_id: str = None) -> dict:
     try:
-        with open(_notes_file(user_id), "r", encoding="utf-8") as f:
+        with secure_open(_notes_file(user_id), "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict) and isinstance(data.get("items"), list):
             return data
@@ -114,7 +115,7 @@ def _load(user_id: str = None) -> dict:
 
 def _save(data: dict, user_id: str = None):
     try:
-        with open(_notes_file(user_id), "w", encoding="utf-8") as f:
+        with secure_open(_notes_file(user_id), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[메모장] 저장 오류: {e}")

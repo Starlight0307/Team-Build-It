@@ -12,6 +12,7 @@
 ● 포그라운드 프로세스 조회는 ctypes(Windows API) + psutil(PID → 프로세스 이름)로 한다.
 """
 
+from data.secure_store import secure_open
 import os
 import json
 import atexit
@@ -185,7 +186,7 @@ def _ensure_loaded():
     if _loaded:
         return
     try:
-        with open(USAGE_FILE, "r", encoding="utf-8") as f:
+        with secure_open(USAGE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         _usage = data.get("usage", {}) if isinstance(data, dict) else {}
         _state["enabled"] = bool(data.get("enabled", False)) if isinstance(data, dict) else False
@@ -216,7 +217,7 @@ def _flush(force: bool = False):
         payload = {"enabled": _state["enabled"], "usage": _usage}
     tmp = USAGE_FILE + ".tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with secure_open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
         os.replace(tmp, USAGE_FILE)
     except Exception as e:
@@ -641,7 +642,7 @@ def _ensure_goals_loaded():
     if _goals_loaded:
         return
     try:
-        with open(GOALS_FILE, "r", encoding="utf-8") as f:
+        with secure_open(GOALS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         _goals = data if isinstance(data, dict) else {}
     except Exception:
@@ -651,7 +652,7 @@ def _ensure_goals_loaded():
 
 def _save_goals():
     try:
-        with open(GOALS_FILE, "w", encoding="utf-8") as f:
+        with secure_open(GOALS_FILE, "w", encoding="utf-8") as f:
             json.dump(_goals, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[앱 사용 통계] 목표 저장 오류: {e}")

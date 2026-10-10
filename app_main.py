@@ -3572,6 +3572,16 @@ if __name__ == "__main__":
         from data.db import encrypt_existing_chats
         storage_location.migrate_legacy()
         encrypt_existing_chats()
+        # 설정/기억/알림/할 일 등 나머지 로컬 기록도 평문으로 남은 게 있으면 암호화한다
+        from data.secure_store import encrypt_existing_records
+        root = storage_location.PROJECT_ROOT
+        encrypt_existing_records(extra_files=[os.path.join(root, *p) for p in (
+            ("settings", "app_settings.json"), ("core", "preference_memory.json"),
+            ("plugins", "reminder", "routines.json"), ("plugins", "reminder", "conditions.json"),
+            ("plugins", "reminder", "action_log.jsonl"), ("plugins", "app_usage", "usage.json"),
+            ("plugins", "app_usage", "goals.json"), ("calendar_feature", "event_duration_memory.json"),
+            ("data", ".session.json"))] + __import__("glob").glob(
+            os.path.join(root, "plugins", "tokens", "*.json")))   # 구글 캘린더 로그인 토큰도
     except Exception as e:
         print(f"[대화기록 위치 이전 오류] {e}")
     ex  = AssistantApp()

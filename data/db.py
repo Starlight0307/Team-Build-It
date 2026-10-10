@@ -21,6 +21,7 @@ DB 마스터 비밀번호와는 성격이 다릅니다. .env 설정이 더 이�
   {대화기록 폴더}/{user_id}/{session_id}.json
   대화기록 폴더는 앱 폴더 밖 — data/storage_location.py
 """
+from data.secure_store import secure_open
 import os
 import json
 from datetime import datetime
@@ -175,7 +176,7 @@ def record_login(user_id: str, method: str) -> None:
             except (KeyError, ValueError):
                 pass
         rows.insert(0, {"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "method": method})
-        with open(_login_history_path(user_id), "w", encoding="utf-8") as f:
+        with secure_open(_login_history_path(user_id), "w", encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False)
         _upload_login_event(method)   # 서버에도 남긴다 (서버에 저장하는 개인 정보는 이것뿐)
     except Exception as e:
@@ -243,7 +244,7 @@ def get_server_login_history(limit: int = 20):
 def get_login_history(user_id: str, limit: int = 20) -> list:
     """최근 로그인 기록 [{"time":..., "method":...}] 최신순."""
     try:
-        with open(_login_history_path(user_id), "r", encoding="utf-8") as f:
+        with secure_open(_login_history_path(user_id), "r", encoding="utf-8") as f:
             rows = json.load(f)
         return rows[:limit] if isinstance(rows, list) else []
     except Exception:
@@ -277,7 +278,7 @@ SESSION_FILE = os.path.join(PROJECT_ROOT, "data", ".session.json")
 
 def _persist_session():
     try:
-        with open(SESSION_FILE, "w", encoding="utf-8") as f:
+        with secure_open(SESSION_FILE, "w", encoding="utf-8") as f:
             json.dump({
                 "username": _session.get("username"),
                 "refresh_token": _session.get("refresh_token"),
@@ -301,7 +302,7 @@ def try_auto_login():
     if not os.path.exists(SESSION_FILE):
         return None
     try:
-        with open(SESSION_FILE, "r", encoding="utf-8") as f:
+        with secure_open(SESSION_FILE, "r", encoding="utf-8") as f:
             saved = json.load(f)
         refresh_token = saved.get("refresh_token")
         username = saved.get("username")
