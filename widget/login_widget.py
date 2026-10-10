@@ -72,6 +72,16 @@ class CheckBox(QCheckBox):
         p.end()
 
 
+def _pull_after_login(username: str) -> None:
+    """로그인 성공 직후, 앱이 이 계정 파일을 읽기 전에 서버의 내 데이터를 로컬에 반영한다
+    (새 PC에서도 설정/할 일/메모 등이 이어진다). 서버가 안 되면 조용히 로컬로만 시작."""
+    try:
+        from data.cloud_sync import pull_for_login
+        pull_for_login(username)
+    except Exception as e:
+        print(f"[동기화] 로그인 직후 가져오기 실패: {e}")
+
+
 class GoogleLoginWorker(QThread):
     """구글 로그인(OAuth) — 브라우저 인증이 끝날 때까지 블로킹되는 작업이라
     UI 스레드가 멈추지 않도록 별도 스레드에서 실행한다."""
@@ -92,6 +102,7 @@ class GoogleLoginWorker(QThread):
             from data.db import complete_google_login
             access_token, refresh_token = sign_in_with_google(self._cancel)
             username = complete_google_login(access_token, refresh_token, remember=self._remember)
+            _pull_after_login(username)
             self.result_ready.emit(True, username, "")
         except Exception as e:
             self.result_ready.emit(False, "", str(e))
@@ -108,6 +119,8 @@ class PasswordLoginWorker(QThread):
     def run(self):
         try:
             ok = verify_login(self._uid, self._pw, remember=self._remember)
+            if ok:
+                _pull_after_login(self._uid)
             self.result_ready.emit(bool(ok), "" if ok else "아이디 또는 비밀번호가 틀렸습니다.")
         except Exception as e:
             self.result_ready.emit(False, f"로그인 중 문제가 생겼어요: {e}")

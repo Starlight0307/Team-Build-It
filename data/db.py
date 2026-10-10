@@ -749,6 +749,7 @@ def delete_account(username: str, password: str) -> bool:
         )
         ok = resp.status_code < 400
         if ok:
+            _purge_cloud_documents(username)
             clear_session()
         return ok
     except Exception as e:
@@ -781,6 +782,17 @@ def _is_withdrawn(access_token: str) -> bool:
         return False
 
 
+def _purge_cloud_documents(username) -> None:
+    """탈퇴하는 계정이 서버에 올려둔 개인 데이터(user_documents)를 지운다. 실패해도 탈퇴는 계속한다."""
+    try:
+        from data import cloud_store, cloud_sync
+        cloud_store.SupabaseStore().delete_all()
+        if username:
+            cloud_sync.reset_state(username)
+    except Exception as e:
+        print(f"[탈퇴] 서버 데이터 삭제 실패(계정 대시보드에서 확인 필요): {e}")
+
+
 def delete_google_account() -> bool:
     """구글로 가입한 계정의 탈퇴 — 비밀번호가 없으므로 지금 로그인된 세션으로 처리한다
     (화면에서 "탈퇴"를 직접 입력해 확인받음). 계정에 withdrawn 표시를 남기고, 이후
@@ -795,6 +807,7 @@ def delete_google_account() -> bool:
         )
         ok = resp.status_code < 400
         if ok:
+            _purge_cloud_documents(_session.get("username"))
             clear_session()
         return ok
     except Exception as e:
