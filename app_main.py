@@ -62,6 +62,22 @@ from widget.history_widget import HistoryWidget
 from widget.mypage_widget import MyPageWidget
 
 
+class SyncNowWorker(QThread):
+    """"지금 동기화" — 네트워크 호출이라 백그라운드에서."""
+    done = pyqtSignal(dict)
+
+    def __init__(self, user):
+        super().__init__()
+        self._user = user
+
+    def run(self):
+        from data.cloud_sync import sync_now
+        try:
+            self.done.emit(sync_now(self._user))
+        except Exception as e:
+            self.done.emit({"pulled": 0, "pushed": 0, "skipped": 0, "error": str(e)})
+
+
 class AutoLoginWorker(QThread):
     """저장된 세션으로 자동 로그인 시도 (네트워크 호출이라 백그라운드에서)."""
     done = pyqtSignal(str)   # 성공한 아이디, 실패하면 빈 문자열
@@ -1252,6 +1268,7 @@ class AssistantApp(QWidget):
         self.mypage = MyPageWidget(self)                                        # index 5
         self.mypage.logout_requested.connect(self._handle_logout)
         self.mypage.import_guest_requested.connect(self._import_guest_data)
+        self.mypage.sync_requested.connect(self._sync_now)
         self.mypage.go_home.connect(self._go_home)
         self.stacked_widget.addWidget(self.mypage)
 
@@ -2145,6 +2162,32 @@ class AssistantApp(QWidget):
             self.skills_page.refresh()
         self._refresh_info_panels()   # 오늘 일정/할 일 패널에 이전 계정 내용이 남지 않게 다시 읽는다
         self._resume_usage_tracking()
+
+    def _sync_now(self):
+        """마이페이지 "지금 동기화" — 현재 상태를 파일로 저장(guest 전환)한 뒤 서버와 맞추고, 다시 이 계정으로 읽는다."""
+        uid = MOCK_USER.get("name")
+        if not MOCK_USER.get("logged_in") or not uid or getattr(self, "_sync_worker", None) is not None:
+            return
+        self.mypage.set_sync_busy(True)
+        _sync_calendar_user("guest")      # 메모리의 상태를 파일로 저장하고 비운다
+        self._sync_worker = SyncNowWorker(uid)
+        self._sync_worker.done.connect(lambda result, u=uid: self._on_sync_now_done(u, result))
+        self._sync_worker.start()
+
+    def _on_sync_now_done(self, uid, result):
+        worker, self._sync_worker = self._sync_worker, None
+        if worker is not None:
+            worker.deleteLater()
+        if MOCK_USER.get("logged_in") and MOCK_USER.get("name") == uid:
+            _sync_calendar_user(uid)       # 받아온 파일을 다시 읽는다
+            self._apply_user_settings()
+        self.mypage.set_sync_busy(False)
+        self.mypage.update_sync_label()
+        from data.cloud_sync import friendly_error
+        if result.get("error"):
+            self._show_toast("⚠️ " + friendly_error(result["error"]))
+        else:
+            self._show_toast(f"☁️ 동기화 완료 (올림 {result['pushed']} · 받음 {result['pulled']})")
 
     def _import_guest_data(self):
         """마이페이지 "로그인 전에 쓰던 설정·기억 가져오기" — 현재 계정 상태를 먼저 저장하고(guest로

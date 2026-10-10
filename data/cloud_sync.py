@@ -135,6 +135,62 @@ def _save_state(local_user: str, state: dict) -> None:
         print(f"[동기화] 상태 저장 오류: {e}")
 
 
+# ── 마지막 동기화 상태 (마이페이지에 보여준다) ──
+_LAST_KEY = "_last"
+
+
+def friendly_error(message) -> str:
+    """서버/네트워크 오류 메시지를 사용자가 이해할 수 있는 한 줄로."""
+    m = str(message or "")
+    low = m.lower()
+    if "pgrst205" in low or "user_documents" in low and ("404" in low or "not find" in low or "does not exist" in low):
+        return "서버에 동기화 테이블이 아직 없어요 (관리자가 006 SQL을 실행해야 해요)"
+    if "401" in low or "jwt" in low:
+        return "로그인이 만료됐어요. 다시 로그인해주세요"
+    if "403" in low or "row-level security" in low or "42501" in low:
+        return "서버가 접근을 거절했어요 (권한 설정 확인 필요)"
+    if any(w in low for w in ("connection", "timed out", "timeout", "max retries", "name resolution", "offline")):
+        return "인터넷 연결을 확인해주세요 (나중에 자동으로 다시 시도해요)"
+    if "다른 동기화" in m:
+        return "다른 동기화가 진행 중이에요"
+    return "동기화에 실패했어요 (" + m[:80] + ")"
+
+
+def get_last_status(local_user: str):
+    """마지막 동기화 결과 {"time": ISO, "ok": bool, "pulled": n, "pushed": n, "error": 메시지|None} 또는 None."""
+    last = _load_state(local_user).get(_LAST_KEY)
+    return last if isinstance(last, dict) else None
+
+
+def describe_status(status, now: datetime = None) -> str:
+    """get_last_status 결과를 한 줄 문구로."""
+    if not status:
+        return "아직 동기화한 적이 없어요"
+    try:
+        then = datetime.fromisoformat(status["time"])
+        secs = max(0, int(((now or datetime.now()) - then).total_seconds()))
+    except (KeyError, ValueError):
+        secs = None
+    if secs is None:
+        ago = ""
+    elif secs < 60:
+        ago = "방금 전"
+    elif secs < 3600:
+        ago = f"{secs // 60}분 전"
+    elif secs < 86400:
+        ago = f"{secs // 3600}시간 전"
+    else:
+        ago = f"{secs // 86400}일 전"
+    if status.get("ok"):
+        return f"마지막 동기화 {ago} · 올림 {status.get('pushed', 0)} · 받음 {status.get('pulled', 0)}".replace("  ", " ")
+    return f"동기화 실패 {ago}: {friendly_error(status.get('error'))}".replace("  ", " ")
+
+
+def _record_last(state: dict, result: dict) -> None:
+    state[_LAST_KEY] = {"time": datetime.now().isoformat(timespec="seconds"), "ok": result["error"] is None,
+                        "pulled": result["pulled"], "pushed": result["pushed"], "error": result["error"]}
+
+
 def reset_state(local_user: str) -> None:
     """동기화 기록을 지운다 (회원 탈퇴 때)."""
     try:
@@ -159,6 +215,7 @@ def sync(local_user: str, pull: bool = True, store=None, docs=None) -> dict:
     if not _sync_lock.acquire(blocking=False):
         result["error"] = "다른 동기화가 진행 중이에요."
         return result
+    state = {}
     try:
         docs = docs if docs is not None else docs_for(local_user)
         state = _load_state(local_user)
@@ -172,7 +229,7 @@ def sync(local_user: str, pull: bool = True, store=None, docs=None) -> dict:
 
         need_remote = pull or any(changed_locally(d) for d in docs)
         if not need_remote:
-            return result
+            return result   # 올릴 게 없으면 서버를 부르지도, 상태를 바꾸지도 않는다
         remote = store.fetch_all()
 
         for d in docs:
@@ -204,10 +261,12 @@ def sync(local_user: str, pull: bool = True, store=None, docs=None) -> dict:
                 new_hash = _write_doc(d, r["data"])
                 state[sid] = {"hash": new_hash, "remote_updated_at": r["updated_at"]}
                 result["pulled"] += 1
+        _record_last(state, result)
         _save_state(local_user, state)
     except Exception as e:   # CloudError 포함 — 오프라인이면 로컬로만 동작하고 다음에 다시 시도한다
         result["error"] = str(e)
         try:
+            _record_last(state, result)
             _save_state(local_user, state)   # 거기까지 성공한 건 기억해 둔다
         except Exception:
             pass
@@ -218,6 +277,12 @@ def sync(local_user: str, pull: bool = True, store=None, docs=None) -> dict:
 
 def pull_for_login(local_user: str) -> dict:
     """로그인 직후(모듈이 이 계정 파일을 읽기 전에) 서버 내용을 로컬에 반영하고 바뀐 로컬도 올린다."""
+    return sync(local_user, pull=True)
+
+
+def sync_now(local_user: str) -> dict:
+    """"지금 동기화" 버튼 — 서버와 양쪽으로 맞춘다. 호출하는 쪽이 먼저 모듈 상태를 파일로 저장해 두고
+    (계정 전환), 끝난 뒤 다시 읽어야 한다(app_main._sync_now 참고)."""
     return sync(local_user, pull=True)
 
 
