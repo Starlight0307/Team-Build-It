@@ -2,7 +2,7 @@
 
 txt로 그대로 내보내면 파일을 연 사람 누구에게나 대화 전체가 보이기 때문에,
 비밀번호를 정해서 `.lumi` 암호화 파일로만 저장한다(data/chat_crypto.py).
-이 파일은 앱의 "🔓 암호화 파일 열기"에서 비밀번호로 열고, 원하면 그때 txt로 따로 저장할 수 있다.
+이 파일은 앱의 "암호화 파일 열기"에서 열고, 원하면 그때 txt로 따로 저장할 수 있다.
 """
 from PyQt6.QtWidgets import (QDialog, QFileDialog, QInputDialog, QLineEdit, QMessageBox,
                              QPlainTextEdit, QPushButton, QVBoxLayout, QHBoxLayout)

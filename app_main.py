@@ -1514,7 +1514,7 @@ class AssistantApp(QWidget):
         for b in self.chat_bubbles:   # 대화 기록 화면의 내보내기와 같은 형식 — 나중에 가져오기가 가능하다
             lines += [f"[{now}] {'나' if b.is_user else 'LUMI'}", b._raw_text, ""]
         if save_encrypted_export(self, "\n".join(lines), f"루미_대화_{datetime.now():%Y%m%d_%H%M}"):
-            self._show_toast("🔒 암호화해서 저장했어요.")
+            self._show_toast("암호화해서 저장했어요.")
 
     def init_settings_page(self):
         page = QFrame()

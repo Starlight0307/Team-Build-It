@@ -34,7 +34,7 @@ class MemoryDialog(QDialog):
         L = QVBoxLayout(self)
 
         notice = QLabel(
-            "🔒 내 계정에만 저장된 기억이에요. 다른 계정에서는 보이지 않아요."
+            icons.label_html("lock", "내 계정에만 저장된 기억이에요. 다른 계정에서는 보이지 않아요.", 13)
         )
         notice.setWordWrap(True)
         notice.setStyleSheet("color: #888; font-size: 11px;")
@@ -279,7 +279,8 @@ class MyPageWidget(QWidget):
         L.addWidget(self.btn_memory)
         L.addSpacing(8)
 
-        self.btn_history = QPushButton("🕘 최근 로그인 기록")
+        self.btn_history = QPushButton(" 최근 로그인 기록")
+        self.btn_history.setIcon(icons.icon("history"))
         self.btn_history.setObjectName("MPSave")
         self.btn_history.setMinimumHeight(36)
         self.btn_history.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -288,21 +289,24 @@ class MyPageWidget(QWidget):
         L.addSpacing(8)
 
         br = QHBoxLayout(); br.setSpacing(8)
-        self.btn_backup = QPushButton("💾 내 데이터 백업")
-        self.btn_restore = QPushButton("📥 백업에서 복원")
+        self.btn_backup = QPushButton(" 내 데이터 백업")
+        self.btn_backup.setIcon(icons.icon("save"))
+        self.btn_restore = QPushButton(" 백업에서 복원")
+        self.btn_restore.setIcon(icons.icon("download"))
         for b, fn in ((self.btn_backup, self._backup), (self.btn_restore, self._restore)):
             b.setObjectName("MPSave"); b.setMinimumHeight(36)
             b.setCursor(Qt.CursorShape.PointingHandCursor); b.clicked.connect(fn); br.addWidget(b)
         L.addLayout(br)
         L.addSpacing(8)
 
-        self.btn_import_guest = QPushButton("📂 로그인 전에 쓰던 설정·기억 가져오기")
+        self.btn_import_guest = QPushButton(" 로그인 전에 쓰던 설정·기억 가져오기")
+        self.btn_import_guest.setIcon(icons.icon("folder-open"))
         self.btn_import_guest.setObjectName("MPSave"); self.btn_import_guest.setMinimumHeight(36)
         self.btn_import_guest.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_import_guest.clicked.connect(self._import_guest)
         L.addWidget(self.btn_import_guest)
         L.addSpacing(6)
-        enc = QLabel("🔒 대화기록은 이 컴퓨터에서 암호화되어 저장돼요.")
+        enc = QLabel(icons.label_html("lock", "대화기록은 이 컴퓨터에서 암호화되어 저장돼요.", 13))
         enc.setWordWrap(True); enc.setStyleSheet("color: #888; font-size: 11px;")
         L.addWidget(enc)
         L.addSpacing(20)

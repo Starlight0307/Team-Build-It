@@ -197,19 +197,23 @@ class HistoryWidget(QWidget):
         hf = QFrame(); hf.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True); hf.setFixedHeight(54)
         hl = QHBoxLayout(hf); hl.setContentsMargins(20, 0, 20, 0)
         self.title_lbl = QLabel(icons.label_html("history", "대화 기록", 22)); hl.addWidget(self.title_lbl); hl.addStretch()
+        # 이 화면의 기존 버튼(새로고침)과 같은 보라색 스타일 + 아이콘으로 맞춘다
+        btn_style = ("QPushButton { background-color: #8B78EE; color: white; font-weight: bold; "
+                     "border-radius: 6px; border: none; } "
+                     "QPushButton:disabled { background-color: rgba(139,120,238,90); color: rgba(255,255,255,150); }")
         self.action_btns = []
-        for text, handler in (("✏️ 이름 변경", self._rename_current),
-                              ("🔒 암호화 내보내기", self._export_current),
-                              ("🗑 삭제", self._delete_current)):
+        for text, icon_name, handler in ((" 이름 변경", "notebook-pen", self._rename_current),
+                                         (" 암호화 내보내기", "download", self._export_current),
+                                         (" 삭제", "trash-2", self._delete_current)):
             b = QPushButton(text); b.setFixedSize(130 if "암호화" in text else 96, 34); b.setEnabled(False)
+            b.setIcon(icons.icon(icon_name, white=True))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setStyleSheet("QPushButton { background-color: #E8E3FF; color: #4B3FA0; font-weight: bold; "
-                            "border-radius: 6px; border: none; } QPushButton:disabled { background-color: #D8D8E0; color: #9A9AA8; }")
+            b.setStyleSheet(btn_style)
             b.clicked.connect(handler); hl.addWidget(b); self.action_btns.append(b)
-        self.open_enc_btn = QPushButton("🔓 암호화 파일 열기"); self.open_enc_btn.setFixedSize(140, 34)
+        self.open_enc_btn = QPushButton(" 암호화 파일 열기"); self.open_enc_btn.setFixedSize(140, 34)
+        self.open_enc_btn.setIcon(icons.icon("folder-open", white=True))
         self.open_enc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.open_enc_btn.setStyleSheet("QPushButton { background-color: #E8E3FF; color: #4B3FA0; font-weight: bold; "
-                                        "border-radius: 6px; border: none; }")
+        self.open_enc_btn.setStyleSheet(btn_style)
         self.open_enc_btn.clicked.connect(self._open_encrypted_file); hl.addWidget(self.open_enc_btn)
         self.refresh_btn = QPushButton(" 새로고침"); self.refresh_btn.setFixedSize(110, 34)
         self.refresh_btn.setIcon(icons.icon("refresh-cw", white=True))
