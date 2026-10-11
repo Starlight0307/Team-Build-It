@@ -64,3 +64,12 @@ jobs:
       - name: Windows 자가 점검 (음성 구성요소 포함)
         if: always()
         run: python scripts/windows_selftest.py --voice
+
+      # 툴팁 점검이 찍은 실제 화면 캡처 — Actions 실행 페이지의 Artifacts에서 받을 수 있다
+      - name: 화면 캡처 올리기
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-screens-py${{ matrix.python }}
+          path: selftest_out/
+          if-no-files-found: ignore

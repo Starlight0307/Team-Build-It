@@ -7,6 +7,7 @@ macOS 명령(spctl, codesign, lsof …)의 출력은 _run을 바꿔치기해서 
 빌더)로 나오는지도 본다.
 """
 import plistlib
+import sys
 import types
 from datetime import datetime, timedelta, timezone
 
@@ -538,11 +539,12 @@ def _no_netstat_env(monkeypatch, admin_result):
         return None
 
     monkeypatch.setattr(ms, "_run", run)
-    monkeypatch.setattr(ms.os, "geteuid", lambda: 501)
+    monkeypatch.setattr(ms.os, "geteuid", lambda: 501, raising=False)   # Windows의 os에는 geteuid가 없다
     monkeypatch.setattr(ms.psutil, "net_if_addrs", lambda: {})
     return calls
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="Mac 관리자 암호 창(osascript)·/usr/sbin/lsof가 있는 Mac에서만 도는 경로")
 def test_admin_lsof_when_netstat_lacks_process_column(monkeypatch):
     calls = _no_netstat_env(monkeypatch, (0, LSOF_ALL, ""))
     ports = ms.listening_ports(probe_ports=[5900])
@@ -573,10 +575,11 @@ def test_startup_notice_never_asks_for_admin():
     assert seen == [False]
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="Mac 관리자 암호 창(osascript)·/usr/sbin/lsof가 있는 Mac에서만 도는 경로")
 def test_run_as_admin_quotes_arguments(monkeypatch):
     captured = []
     monkeypatch.setattr(ms, "_run", lambda args, timeout=15: captured.append(args) or (0, "ok", ""))
-    monkeypatch.setattr(ms.os, "geteuid", lambda: 501)
+    monkeypatch.setattr(ms.os, "geteuid", lambda: 501, raising=False)   # Windows의 os에는 geteuid가 없다
     assert ms.run_as_admin([ms._LSOF, "-x", "a b; rm -rf /"], '이유 "따옴표"') == (0, "ok", "")
     script = captured[0][2]
     assert "'a b; rm -rf /'" in script                 # 인자는 한 덩어리로 — 명령이 끼어들지 못한다

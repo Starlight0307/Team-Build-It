@@ -33,14 +33,21 @@ def isolated_weather_settings(monkeypatch):
     return store
 
 
+def _now():
+    """브리핑과 같은 시계(앱 기본 시간대, 한국 시간)로 날짜를 잡는다 — 컴퓨터 시간대(datetime.now())로
+    잡으면 UTC인 GitHub Windows 서버에서 한국 시간으로 자정이 넘은 뒤 하루가 어긋나 실패했다."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo(calendar_tool.DEFAULT_TIMEZONE))
+
+
 def _fake_events(date_str, calendar_id="primary"):
     return f"[📋 {date_str} 일정]\n일정이 없습니다."
 
 
 def test_briefing_includes_todo_due_today(monkeypatch, isolated_todo_list):
     monkeypatch.setattr(calendar_tool, "get_events_by_date", _fake_events)
-    from datetime import datetime
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _now().strftime("%Y-%m-%d")
     add_todo("우유 사기", due_date=today)
 
     result = get_daily_briefing("today")
@@ -51,8 +58,8 @@ def test_briefing_includes_todo_due_today(monkeypatch, isolated_todo_list):
 
 def test_briefing_includes_todo_due_tomorrow(monkeypatch, isolated_todo_list):
     monkeypatch.setattr(calendar_tool, "get_events_by_date", _fake_events)
-    from datetime import datetime, timedelta
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    from datetime import timedelta
+    tomorrow = (_now() + timedelta(days=1)).strftime("%Y-%m-%d")
     add_todo("보고서 제출", due_date=tomorrow)
 
     result = get_daily_briefing("tomorrow")
@@ -64,8 +71,8 @@ def test_briefing_includes_todo_due_tomorrow(monkeypatch, isolated_todo_list):
 def test_briefing_does_not_show_todo_due_other_day(monkeypatch, isolated_todo_list):
     """오늘 브리핑을 요청했는데 모레 마감인 할 일까지 섞여 보이면 안 된다."""
     monkeypatch.setattr(calendar_tool, "get_events_by_date", _fake_events)
-    from datetime import datetime, timedelta
-    day_after = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
+    from datetime import timedelta
+    day_after = (_now() + timedelta(days=2)).strftime("%Y-%m-%d")
     add_todo("모레 할 일", due_date=day_after)
 
     result = get_daily_briefing("today")
@@ -89,8 +96,7 @@ def test_completed_todo_due_today_is_not_shown(monkeypatch, isolated_todo_list):
     """완료 처리된 할 일은 마감일이 오늘이어도 브리핑에 나오면 안 된다."""
     from plugins.todo_list import complete_todo
     monkeypatch.setattr(calendar_tool, "get_events_by_date", _fake_events)
-    from datetime import datetime
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _now().strftime("%Y-%m-%d")
     add_todo("이미 끝낸 일", due_date=today)
     complete_todo("1")
 
@@ -118,8 +124,7 @@ def test_briefing_caps_todo_list_length(monkeypatch, isolated_todo_list):
     """할 일이 너무 많으면 상한(_BRIEFING_MAX_TODOS)을 넘는 개수는
     '...외 N개'로 요약해야 한다(list_todos의 기존 요약 정책과 같은 패턴)."""
     monkeypatch.setattr(calendar_tool, "get_events_by_date", _fake_events)
-    from datetime import datetime
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _now().strftime("%Y-%m-%d")
     for i in range(15):
         add_todo(f"할일{i}", due_date=today)
 
@@ -136,8 +141,7 @@ def test_briefing_never_mutates_todo_data(monkeypatch, isolated_todo_list):
     True로 바꾸는 부수효과 있는 폴링 함수)와 섞이지 않았는지 확인."""
     import plugins.todo_list as todo_list
     monkeypatch.setattr(calendar_tool, "get_events_by_date", _fake_events)
-    from datetime import datetime
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _now().strftime("%Y-%m-%d")
     add_todo("우유 사기", due_date=today)
 
     before = todo_list._load()

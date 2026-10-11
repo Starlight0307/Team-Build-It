@@ -141,7 +141,22 @@ def _location():
 @check("날씨 가져오기")
 def _weather():
     from core import weather
-    d = weather.fetch_weather("서울")
+    try:
+        d = weather.fetch_weather("서울")
+    except weather.WeatherError as e:
+        # 앱은 안내 문구만 보여주니, 점검에서는 실제 원인(예외·서버 응답)을 같이 남긴다
+        cause = e.__cause__
+        detail = f"{e} · 원인: {type(cause).__name__}: {cause}" if cause else str(e)
+        import requests
+        lat, lon = weather.KOREAN_CITIES["서울"]
+        try:
+            r = requests.get("https://api.open-meteo.com/v1/forecast", timeout=15, params={
+                "latitude": lat, "longitude": lon, "current": "temperature_2m"})
+            body = " ".join(r.text.split())[:300]
+            detail += f" · 직접 요청: HTTP {r.status_code} {body}"
+        except Exception as e2:
+            detail += f" · 직접 요청도 실패: {type(e2).__name__}: {e2}"
+        return "FAIL", detail
     return "PASS", f"{d['city']} {d['temp']}°C {d['desc']}"
 
 
@@ -339,6 +354,74 @@ def _ime_typing():
         return "PASS", detail
     finally:
         proc.kill()
+
+
+def _tooltip_shot(dark: bool):
+    """진짜 화면에 루미 툴팁을 띄우고 화면 캡처로 확인한다(offscreen 아님 — Windows가 그린 결과를 본다).
+    날씨 알약처럼 선택자 없는 반투명 스타일 위젯 위에서 띄운다: 예전엔 여기서 검은 상자만 떴다."""
+    os.environ.pop("QT_QPA_PLATFORM", None)
+    from PyQt6.QtCore import QEvent, QPoint, Qt
+    from PyQt6.QtGui import QColor, QHelpEvent
+    from PyQt6.QtWidgets import QApplication, QPushButton, QWidget
+    app = QApplication.instance() or QApplication(sys.argv)
+    from widget import lumi_dialog, lumi_tooltip
+    filt = lumi_tooltip.install(app)
+    lumi_dialog.set_dark(dark)
+    host_bg = "#1E1B3A" if dark else "#EEEAFB"
+    host = QWidget(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+    host.setStyleSheet(f"background-color: {host_bg};")
+    host.setGeometry(120, 120, 760, 260)
+    btn = QPushButton("19.2°C 서울", host)
+    btn.setStyleSheet("color: white; background-color: rgba(255,255,255,20); border-radius: 18px;")
+    btn.setGeometry(20, 20, 160, 36)
+    btn.setToolTip("누르면 자세한 날씨를 볼 수 있어요 · 지역은 환경설정 > 날씨에서 바꿔요")
+    host.show()
+    for _ in range(20):
+        app.processEvents(); time.sleep(0.03)
+    QApplication.sendEvent(btn, QHelpEvent(QEvent.Type.ToolTip, QPoint(30, 18), btn.mapToGlobal(QPoint(30, 18))))
+    for _ in range(25):   # 처음 뜨는 모습을 봐야 하니 오래 기다리지 않는다
+        app.processEvents(); time.sleep(0.02)
+    tip = filt.tip
+    if not tip.isVisible():
+        return "FAIL", "툴팁이 뜨지 않음"
+    g = tip.geometry()
+    shot = app.primaryScreen().grabWindow(0, g.x() - 6, g.y() - 6, g.width() + 12, g.height() + 12).toImage()
+    out_dir = os.path.join(ROOT, "selftest_out"); os.makedirs(out_dir, exist_ok=True)
+    shot.save(os.path.join(out_dir, f"tooltip_{'dark' if dark else 'light'}.png"))
+    r = shot.width() / (g.width() + 12)   # 화면 배율(DPI)
+
+    def px(x, y):   # 툴팁 기준 논리 좌표의 화면 색
+        return QColor(shot.pixel(int((x + 6) * r), int((y + 6) * r)))
+
+    def near(c, hexcolor, tol=40):
+        h = QColor(hexcolor)
+        return abs(c.red() - h.red()) + abs(c.green() - h.green()) + abs(c.blue() - h.blue()) <= tol
+
+    pal = lumi_dialog.palette(dark)
+    problems = []
+    card = px(g.width() - 4, g.height() // 2)   # 글자 없는 오른쪽 안쪽
+    if not near(card, pal["bg"]):
+        problems.append(f"카드 배경 {card.name()} (기대 {pal['bg']})")
+    corner = px(1, 1)   # 둥근 모서리 바깥 → 뒤의 창 색이 보여야 한다(검정/사각형 아님)
+    if not near(corner, host_bg):
+        problems.append(f"모서리 바깥 {corner.name()} (기대 {host_bg}: 각지거나 그림자)")
+    text_hits = sum(near(px(x, y), pal["text"], 120)
+                    for x in range(8, min(g.width() - 8, 300), 2) for y in range(6, g.height() - 6, 2))
+    if text_hits < 10:
+        problems.append(f"글자 픽셀 {text_hits}개 (글자가 안 보임)")
+    tip.hide(); host.close()
+    info = f"{g.width()}x{g.height()} · 배경 {card.name()} · 모서리 {corner.name()} · 글자 {text_hits}"
+    return ("FAIL", "; ".join(problems) + " · " + info) if problems else ("PASS", info)
+
+
+@check("루미 툴팁 — 다크 모드 (실제 화면 캡처)")
+def _tooltip_dark():
+    return _tooltip_shot(True)
+
+
+@check("루미 툴팁 — 라이트 모드 (실제 화면 캡처)")
+def _tooltip_light():
+    return _tooltip_shot(False)
 
 
 @check("Ollama 연결")

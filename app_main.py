@@ -78,6 +78,7 @@ from core import screen_agent, web_launcher, skills
 from core.skill_agent import SkillAgentWorker
 from widget.skills_widget import SkillsPage
 from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
+from widget import lumi_tooltip  # 마우스 올렸을 때 설명도 루미 모양으로(Windows 검은 툴팁 방지)
 
 
 # ==========================================
@@ -3659,6 +3660,7 @@ if __name__ == "__main__":
     # True라서 이걸 안 끄면 closeEvent에서 event.ignore()를 해도 소용없이
     # "보이는 최상위 창이 하나도 없다"는 이유로 앱이 그냥 종료돼버린다.
     app.setQuitOnLastWindowClosed(False)
+    lumi_tooltip.install(app)
     # 앱 폴더 안에 남은 예전 대화기록/암호 키를 앱 폴더 밖으로 옮기고(설치 파일에 대화가
     # 같이 묶여 들어가지 않게), 아직 평문인 대화 파일을 모든 계정에 대해 암호화한다.
     # 키를 옮기기 전에 암호화가 먼저 일어나면 새 키가 생겨 예전 대화를 못 여니
