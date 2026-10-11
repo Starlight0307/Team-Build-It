@@ -29,6 +29,8 @@ ICONS = [
     # 날씨
     "sun", "moon", "cloud-sun", "cloud-moon", "cloud", "cloud-fog", "cloud-drizzle", "cloud-rain",
     "cloud-snow", "cloud-lightning",
+    # 날씨 자세히 보기(widget/weather_detail.py)
+    "wind", "droplets", "eye", "gauge", "thermometer", "sunrise", "sunset", "umbrella", "leaf", "sun-dim",
     # 빠른 실행 카드/버튼 (플러그인)
     "rocket", "shopping-cart", "lock", "bug", "satellite", "house", "brush", "hard-drive", "wallet",
     "hourglass", "notebook-pen", "file-text", "folder-search", "receipt", "lightbulb", "chart-line",

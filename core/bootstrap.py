@@ -37,6 +37,7 @@ from importlib import metadata
 
 PROJECT_ROOT      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REQUIREMENTS_FILE = os.path.join(PROJECT_ROOT, "requirements.txt")
+MAC_REQUIREMENTS_FILE = os.path.join(PROJECT_ROOT, "requirements-mac.txt")   # macOS에서만 추가로 설치
 PROJECT_VENV      = os.path.join(PROJECT_ROOT, ".venv")
 MIN_PYTHON        = (3, 11)   # python-kasa 0.10.x가 3.11 이상 필요
 
@@ -267,7 +268,10 @@ def ensure_requirements() -> bool:
         return False
 
     try:
-        missing = find_missing(read_requirements())
+        reqs = read_requirements()
+        if sys.platform == "darwin":
+            reqs += read_requirements(MAC_REQUIREMENTS_FILE)
+        missing = find_missing(reqs)
     except UnsafeRequirementError as e:
         _show_error("requirements.txt에 자동 설치할 수 없는 형식의 줄이 있어 설치를 중단했습니다.\n"
                     "(URL이나 pip 옵션은 보안상 자동 설치하지 않습니다)\n\n" + str(e))

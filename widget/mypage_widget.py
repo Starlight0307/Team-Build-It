@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLabel, QPushButton, QLineEdit, QMessageBox,
                              QInputDialog, QScrollArea, QSizePolicy, QDialog,
                              QGraphicsDropShadowEffect, QGridLayout)
-from PyQt6.QtCore import pyqtSignal, Qt, QThread
+from PyQt6.QtCore import pyqtSignal, Qt, QThread, QSize
 from PyQt6.QtGui import QColor
 
 from widget.auth_style import DIALOG_QSS
@@ -12,6 +12,7 @@ from widget import icons
 
 from data.db import (count_sessions, get_user_profile, update_profile,
                      change_password, delete_account)
+from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
 
 _NAMESPACE_LABELS = {
     "kill_confirm": ("shield-check", "프로세스 종료 확인 이력"),
@@ -29,6 +30,7 @@ class MemoryDialog(QDialog):
         self.resize(420, 480)
         self._build_ui()
         self._reload()
+        lumi_dialog.wrap(self, "루미가 기억하는 것", "brain", 460)   # 앱 공통 루미 팝업 모양
 
     def _build_ui(self):
         L = QVBoxLayout(self)
@@ -37,7 +39,7 @@ class MemoryDialog(QDialog):
             icons.label_html("lock", "내 계정에만 저장된 기억이에요. 다른 계정에서는 보이지 않아요.", 13)
         )
         notice.setWordWrap(True)
-        notice.setStyleSheet("color: #888; font-size: 11px;")
+        notice.setObjectName("LinkHelp")
         L.addWidget(notice)
 
         self.scroll = QScrollArea()
@@ -56,12 +58,12 @@ class MemoryDialog(QDialog):
         L.addWidget(self.empty_lbl)
 
         btn_row = QHBoxLayout()
-        self.btn_clear_all = QPushButton("전체 삭제")
+        self.btn_clear_all = QPushButton("전체 삭제"); self.btn_clear_all.setObjectName("LumiDanger")
         self.btn_clear_all.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear_all.clicked.connect(self._clear_all)
         btn_row.addWidget(self.btn_clear_all)
         btn_row.addStretch()
-        btn_close = QPushButton("닫기")
+        btn_close = QPushButton("닫기"); btn_close.setObjectName("LinkGhost")
         btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_close.clicked.connect(self.accept)
         btn_row.addWidget(btn_close)
@@ -92,8 +94,8 @@ class MemoryDialog(QDialog):
                 lbl = QLabel(text[:60])
                 lbl.setStyleSheet("font-size: 11px;")
                 row_lay.addWidget(lbl, 1)
-                btn_del = QPushButton("✕")
-                btn_del.setFixedSize(22, 22)
+                btn_del = QPushButton("✕"); btn_del.setObjectName("LumiClose")   # 작은 둥근 버튼
+                btn_del.setFixedSize(28, 28)
                 btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn_del.clicked.connect(lambda _, n=namespace, k=key: self._delete_one(n, k))
                 row_lay.addWidget(btn_del)
@@ -105,7 +107,7 @@ class MemoryDialog(QDialog):
         self._reload()
 
     def _clear_all(self):
-        confirm = QMessageBox.warning(
+        confirm = lumi_dialog.warning(
             self, "전체 삭제", "저장된 기억을 전부 지울까요?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -150,24 +152,6 @@ def _validate_password(pw: str):
     return True, ""
 
 
-class GoogleConnectWorker(QThread):
-    """구글 연동/캘린더 연결 — 브라우저에서 끝날 때까지(최대 1분) 기다리므로 별도 스레드에서 실행."""
-    result_ready = pyqtSignal(bool, str)   # 성공 여부, 안내 문구
-
-    def __init__(self):
-        super().__init__()
-        import threading
-        self._cancel = threading.Event()
-
-    def cancel(self):
-        self._cancel.set()
-
-    def run(self):
-        from plugins.calendar_tool import connect_google_calendar
-        ok, msg = connect_google_calendar(self._cancel)
-        self.result_ready.emit(ok, msg)
-
-
 def _section(title: str, icon_name: str):
     """제목(아이콘 + 글자)이 붙은 구역 상자 → (상자, 내용을 넣을 세로 레이아웃)."""
     box = QFrame(); box.setObjectName("MPSection")
@@ -202,8 +186,7 @@ class MyPageWidget(QWidget):
         self._username = None
         self._is_google = False
         self._google_linked = False
-        self._connect_worker = None   # 스레드가 끝날 때(finished)까지 참조를 쥐고 있어야 한다
-        self._connecting = False
+        self._is_dark = False
         self._columns = 0
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
@@ -295,16 +278,13 @@ class MyPageWidget(QWidget):
         self.btn_save_profile = _button("정보 저장", fn=self._save_profile)
         lay.addWidget(self.btn_save_profile)
 
-        # ── 구글 연동 (아이디/비밀번호 계정도 구글을 연결해 구글 로그인·캘린더를 쓸 수 있다) ──
-        self.sec_google, lay = _section("구글 연동", "calendar")
-        self.lbl_google_status = QLabel(""); self.lbl_google_status.setObjectName("MPStatus")
-        self.lbl_google_status.setWordWrap(True)
-        lay.addWidget(self.lbl_google_status)
-        self.btn_google = _button("구글 연동하기", "calendar", self._connect_google)
-        lay.addWidget(self.btn_google)
-        hint = QLabel("구글 캘린더 연결은 이 PC에 저장하지 않아요. 앱을 끄거나 로그아웃하면 끊기고, 최대 1시간 유지돼요.")
-        hint.setObjectName("MPHint"); hint.setWordWrap(True)
-        lay.addWidget(hint)
+        # ── 계정 연동 — 버튼만 두고, 누르면 루미 스타일 팝업(widget/account_link_dialog.py)에서 연결한다 ──
+        self.sec_link, lay = _section("계정 연동", "calendar")
+        self.btn_google = QPushButton(" 구글 연동하기"); self.btn_apple = QPushButton(" 애플 연동하기")
+        for b, fn in ((self.btn_google, self._open_google_dialog), (self.btn_apple, self._open_apple_dialog)):
+            b.setObjectName("MPBrand"); b.setMinimumHeight(46); b.setIconSize(QSize(20, 20))
+            b.setCursor(Qt.CursorShape.PointingHandCursor); b.clicked.connect(fn)
+            lay.addWidget(b)
 
         # ── 데이터 관리 ──
         self.sec_data, lay = _section("내 데이터", "hard-drive")
@@ -345,6 +325,12 @@ class MyPageWidget(QWidget):
         # 구역 배치(2열/1열)는 _arrange_sections가 창 폭에 맞춰 정한다
         self.sections_grid = QGridLayout()
         self.sections_grid.setHorizontalSpacing(16); self.sections_grid.setVerticalSpacing(16)
+        # 두 열을 각각 세로 묶음으로 — 한 줄(행)에 높이를 맞추면 짧은 쪽 아래가 비어 보인다
+        self._cols = []
+        for _ in range(2):
+            col = QWidget()   # 스타일을 주지 않는다 — 선택자 없는 스타일은 안쪽 버튼 배경까지 지워버린다
+            v = QVBoxLayout(col); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(16)
+            self._cols.append((col, v))
         L.addLayout(self.sections_grid)
         self._arrange_sections(2)
 
@@ -357,23 +343,34 @@ class MyPageWidget(QWidget):
         L.addLayout(foot)
 
     def _arrange_sections(self, columns: int):
-        """넓으면 왼쪽(내 정보·비밀번호) / 오른쪽(구글 연동·내 데이터) 2열, 좁으면 1열."""
+        """넓으면 왼쪽(내 정보·비밀번호) / 오른쪽(계정 연동·내 데이터) 2열, 좁으면 1열."""
         if columns == self._columns:
             return
         self._columns = columns
         g = self.sections_grid
-        for w in (self.sec_profile, self.pw_section, self.sec_google, self.sec_data):
-            g.removeWidget(w)
+        (lcol, lv), (rcol, rv) = self._cols
+        for v in (lv, rv):
+            while v.count():
+                v.takeAt(0)
+        g.removeWidget(lcol); g.removeWidget(rcol)
         if columns == 2:
-            # 같은 행의 두 구역은 높이를 맞추지 않고 위쪽 정렬
-            g.addWidget(self.sec_profile, 0, 0, Qt.AlignmentFlag.AlignTop)
-            g.addWidget(self.pw_section,  1, 0, Qt.AlignmentFlag.AlignTop)
-            g.addWidget(self.sec_google,  0, 1, Qt.AlignmentFlag.AlignTop)
-            g.addWidget(self.sec_data,    1, 1, Qt.AlignmentFlag.AlignTop)
+            left = (self.sec_profile, self.pw_section)
+            right = (self.sec_link, self.sec_data)
+        else:   # 한 줄로 쌓을 때는 자주 쓰는 순서대로
+            left = (self.sec_profile, self.sec_link, self.sec_data, self.pw_section)
+            right = ()
+        for w in left:
+            lv.addWidget(w)
+        for w in right:
+            rv.addWidget(w)
+        lv.addStretch(1); rv.addStretch(1)
+        g.addWidget(lcol, 0, 0, Qt.AlignmentFlag.AlignTop)
+        if columns == 2:
+            rcol.show()
+            g.addWidget(rcol, 0, 1, Qt.AlignmentFlag.AlignTop)
             g.setColumnStretch(0, 1); g.setColumnStretch(1, 1)
         else:
-            for i, w in enumerate((self.sec_profile, self.sec_google, self.sec_data, self.pw_section)):
-                g.addWidget(w, i, 0)
+            rcol.hide()
             g.setColumnStretch(1, 0)
 
     def resizeEvent(self, event):
@@ -406,56 +403,44 @@ class MyPageWidget(QWidget):
         self.lbl_account_type.setText(
             "구글 계정" if self._is_google else
             "Lumi 계정 · 구글 연동됨" if self._google_linked else "Lumi 계정")
-        self._update_google_status()
+        self._update_link_buttons()
 
-    def _update_google_status(self):
+    def _update_link_buttons(self):
+        """버튼 글자로만 상태를 알린다 — 자세한 안내는 팝업에서."""
+        from plugins.calendar_tool import google_calendar_status, _current_user_id
+        from calendar_feature import apple_backend
+        from widget.account_link_dialog import brand_icon
+        state, _ = google_calendar_status()
+        self.btn_google.setText(" 구글 연동됨" if state == "valid" else " 구글 연동하기")
+        self.btn_apple.setText(" 애플 연동됨" if apple_backend.connected_account(_current_user_id) else " 애플 연동하기")
+        text_color = "#E8EAF0" if self._is_dark else "#221D40"
+        self.btn_google.setIcon(brand_icon("google", 20, text_color))
+        self.btn_apple.setIcon(brand_icon("apple", 20, text_color))
+
+    def _open_google_dialog(self):
         from plugins.calendar_tool import google_calendar_status
+        from widget.account_link_dialog import GoogleLinkDialog
         state, minutes = google_calendar_status()
-        if state == "valid":
-            text = f"구글 캘린더 연결됨 · 약 {minutes}분 남음"
-            btn = "구글 캘린더 다시 연결"
-        elif self._google_linked:
-            text = ("구글 캘린더 연결 시간이 지났어요." if state == "expired"
-                    else "구글 계정이 연동돼 있어요. 캘린더를 쓰려면 연결해주세요.")
-            btn = "구글 캘린더 연결하기"
+        dlg = GoogleLinkDialog(self, self._is_dark, self._google_linked, minutes if state == "valid" else 0)
+        dlg.exec()
+        if dlg.connected and self._username:
+            self.refresh(self._username)   # 계정 종류(구글 연동됨)·버튼 글자 갱신
         else:
-            text = "구글 계정을 연동하면 구글 로그인으로도 들어올 수 있고, 구글 캘린더를 쓸 수 있어요."
-            btn = "구글 연동하기"
-        self.lbl_google_status.setText(text)
-        if not self._connecting:
-            self.btn_google.setText(" " + btn)
+            self._update_link_buttons()
 
-    def _connect_google(self):
-        if self._connect_worker is not None:   # 진행 중에 다시 누르면 취소(끝나는 중이면 무시)
-            if self._connecting:
-                self._connect_worker.cancel()
-            return
-        self._connecting = True
-        self._connect_worker = GoogleConnectWorker()
-        self._connect_worker.result_ready.connect(self._on_google_connected)
-        self._connect_worker.finished.connect(self._on_connect_thread_finished)
-        self.btn_google.setText(" 브라우저에서 진행 중… (누르면 취소)")
-        self._connect_worker.start()
-
-    def _on_connect_thread_finished(self):
-        # result_ready는 run()이 끝나기 전에 오므로, 참조는 스레드가 완전히 끝난 뒤에 놓는다
-        # (먼저 놓으면 "QThread: Destroyed while thread is still running"으로 앱이 죽는다)
-        self._connect_worker = None
-
-    def _on_google_connected(self, ok: bool, msg: str):
-        self._connecting = False
-        if ok:
-            QMessageBox.information(self, "구글 연동", msg)
-            if self._username:
-                self.refresh(self._username)   # 계정 종류(구글 연동됨) 표시도 갱신
-        else:
-            QMessageBox.warning(self, "구글 연동", msg)
-            self._update_google_status()
+    def _open_apple_dialog(self):
+        from plugins.calendar_tool import _current_user_id
+        from calendar_feature import apple_backend
+        from widget.account_link_dialog import AppleLinkDialog
+        AppleLinkDialog(self, self._is_dark, _current_user_id,
+                        apple_backend.connected_account(_current_user_id),
+                        apple_backend.connected_kind(_current_user_id)).exec()
+        self._update_link_buttons()
 
     def showEvent(self, event):
         super().showEvent(event)
         if self._username:
-            self._update_google_status()   # 남은 시간은 페이지를 열 때마다 새로 계산
+            self._update_link_buttons()   # 연결 상태는 페이지를 열 때마다 새로
 
     def _on_phone_edited(self, text: str):
         digits = re.sub(r"\D", "", text)[:11]
@@ -479,14 +464,14 @@ class MyPageWidget(QWidget):
         lines = [f"{r.get('time', '')}   {r.get('method', '')}" + (f"   ({r['device']})" if r.get("device") else "")
                  for r in rows]
         text = f"{source}\n\n" + ("\n".join(lines) or "아직 로그인 기록이 없어요.")
-        QMessageBox.information(self, "최근 로그인 기록", text)
+        lumi_dialog.information(self, "최근 로그인 기록", text)
 
     def _import_guest(self):
         from data.local_data import guest_data_exists
         if not guest_data_exists():
-            QMessageBox.information(self, "가져오기", "로그인 전에 쓰던 설정이나 기억이 없어요.")
+            lumi_dialog.information(self, "가져오기", "로그인 전에 쓰던 설정이나 기억이 없어요.")
             return
-        r = QMessageBox.question(
+        r = lumi_dialog.question(
             self, "가져오기",
             "로그인하기 전에 이 컴퓨터에서 쓰던 설정, 루미 기억, 알림, 앱 사용 기록을\n"
             "이 계정으로 가져올까요? 같은 항목은 가져온 내용으로 덮어써져요.")
@@ -504,10 +489,10 @@ class MyPageWidget(QWidget):
             path += BACKUP_EXT
         try:
             info = create_backup(user, path)
-            QMessageBox.information(self, "백업", f"대화 {info['chats']}개와 설정을 암호화해 저장했어요.\n"
+            lumi_dialog.information(self, "백업", f"대화 {info['chats']}개와 설정을 암호화해 저장했어요.\n"
                                     "파일을 열어도 내용이 보이지 않아요. 같은 계정으로 로그인한 루미라면 다른 PC에서도 복원할 수 있어요.")
         except Exception as e:
-            QMessageBox.warning(self, "백업", f"백업하지 못했어요.\n{e}")
+            lumi_dialog.warning(self, "백업", f"백업하지 못했어요.\n{e}")
 
     def _restore(self):
         from PyQt6.QtWidgets import QFileDialog
@@ -517,17 +502,17 @@ class MyPageWidget(QWidget):
         if not path: return
         password = None
         if is_encrypted_backup(path):   # 예전 버전에서 비밀번호로 만든 백업만 비밀번호를 묻는다
-            password, ok = QInputDialog.getText(self, "백업 비밀번호", "백업할 때 정한 비밀번호를 입력하세요.",
+            password, ok = lumi_dialog.getText(self, "백업 비밀번호", "백업할 때 정한 비밀번호를 입력하세요.",
                                                 QLineEdit.EchoMode.Password)
             if not ok: return
-        r = QMessageBox.question(self, "복원", "같은 이름의 대화와 설정은 백업 내용으로 덮어써져요. 계속할까요?")
+        r = lumi_dialog.question(self, "복원", "같은 이름의 대화와 설정은 백업 내용으로 덮어써져요. 계속할까요?")
         if r != QMessageBox.StandardButton.Yes: return
         try:
             info = restore_backup((self._username or ""), path, password)
-            QMessageBox.information(self, "복원", f"대화 {info['chats']}개를 복원했어요.\n"
+            lumi_dialog.information(self, "복원", f"대화 {info['chats']}개를 복원했어요.\n"
                                     "설정은 다음 로그인부터 적용돼요.")
         except Exception as e:
-            QMessageBox.warning(self, "복원", f"복원하지 못했어요.\n{e}")
+            lumi_dialog.warning(self, "복원", f"복원하지 못했어요.\n{e}")
 
     def _open_memory_dialog(self):
         MemoryDialog(self).exec()
@@ -539,10 +524,10 @@ class MyPageWidget(QWidget):
         birthday = self.input_birthday.text().strip()
 
         if phone and len(phone) != 11:
-            QMessageBox.warning(self, "오류", "휴대폰번호는 11자리 숫자로 입력하세요.")
+            lumi_dialog.warning(self, "오류", "휴대폰번호는 11자리 숫자로 입력하세요.")
             return
         if birthday and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", birthday):
-            QMessageBox.warning(self, "오류", "생년월일은 YYYY-MM-DD 형식으로 입력하세요.")
+            lumi_dialog.warning(self, "오류", "생년월일은 YYYY-MM-DD 형식으로 입력하세요.")
             return
 
         try:
@@ -552,14 +537,14 @@ class MyPageWidget(QWidget):
                 birthday=birthday or None,
             )
         except Exception as e:
-            QMessageBox.warning(self, "오류", f"저장에 실패했습니다.\n{e}")
+            lumi_dialog.warning(self, "오류", f"저장에 실패했습니다.\n{e}")
             return
 
         if ok:
-            QMessageBox.information(self, "완료", "정보가 저장되었습니다.")
+            lumi_dialog.information(self, "완료", "정보가 저장되었습니다.")
             self.go_home.emit()
         else:
-            QMessageBox.warning(
+            lumi_dialog.warning(
                 self, "오류",
                 "저장에 실패했습니다. 로그인 세션이 만료되었을 수 있으니\n"
                 "로그아웃 후 다시 로그인해서 시도해주세요."
@@ -573,28 +558,28 @@ class MyPageWidget(QWidget):
         new2 = self.input_new_pw2.text()
 
         if not current or not new:
-            QMessageBox.warning(self, "오류", "현재 비밀번호와 새 비밀번호를 모두 입력하세요.")
+            lumi_dialog.warning(self, "오류", "현재 비밀번호와 새 비밀번호를 모두 입력하세요.")
             return
         ok, err = _validate_password(new)
         if not ok:
-            QMessageBox.warning(self, "오류", err)
+            lumi_dialog.warning(self, "오류", err)
             return
         if new != new2:
-            QMessageBox.warning(self, "오류", "새 비밀번호가 일치하지 않습니다.")
+            lumi_dialog.warning(self, "오류", "새 비밀번호가 일치하지 않습니다.")
             return
 
         try:
             success = change_password(self._username, current, new)
         except Exception as e:
-            QMessageBox.warning(self, "오류", f"비밀번호 변경에 실패했습니다.\n{e}")
+            lumi_dialog.warning(self, "오류", f"비밀번호 변경에 실패했습니다.\n{e}")
             return
 
         if success:
-            QMessageBox.information(self, "완료", "비밀번호가 변경되었습니다.")
+            lumi_dialog.information(self, "완료", "비밀번호가 변경되었습니다.")
             for w in (self.input_current_pw, self.input_new_pw, self.input_new_pw2):
                 w.clear()
         else:
-            QMessageBox.warning(self, "오류", "현재 비밀번호가 올바르지 않습니다.")
+            lumi_dialog.warning(self, "오류", "현재 비밀번호가 올바르지 않습니다.")
 
     def _withdraw(self):
         if not self._username:
@@ -603,7 +588,7 @@ class MyPageWidget(QWidget):
             self._withdraw_google()
             return
 
-        confirm = QMessageBox.warning(
+        confirm = lumi_dialog.warning(
             self, "회원 탈퇴",
             "정말 탈퇴하시겠어요? 이 계정으로는 다시 로그인할 수 없게 됩니다.\n"
             "이 컴퓨터에 저장된 대화기록, 설정, 기억도 함께 삭제돼요.\n"
@@ -614,7 +599,7 @@ class MyPageWidget(QWidget):
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
-        password, ok = QInputDialog.getText(
+        password, ok = lumi_dialog.getText(
             self, "본인 확인", "현재 비밀번호를 입력하세요:", QLineEdit.EchoMode.Password
         )
         if not ok or not password:
@@ -623,21 +608,21 @@ class MyPageWidget(QWidget):
         try:
             success = delete_account(self._username, password)
         except Exception as e:
-            QMessageBox.warning(self, "오류", f"탈퇴 처리에 실패했습니다.\n{e}")
+            lumi_dialog.warning(self, "오류", f"탈퇴 처리에 실패했습니다.\n{e}")
             return
 
         if success:
-            QMessageBox.information(self, "완료", "탈퇴가 완료되었습니다. 이용해주셔서 감사했습니다.")
+            lumi_dialog.information(self, "완료", "탈퇴가 완료되었습니다. 이용해주셔서 감사했습니다.")
             withdrawn_user = self._username
             self.logout_requested.emit()   # 로그아웃(저장소를 guest로 되돌림)이 끝난 뒤에 지운다
             from data.local_data import purge_user_data
             purge_user_data(withdrawn_user)
         else:
-            QMessageBox.warning(self, "오류", "비밀번호가 올바르지 않습니다.")
+            lumi_dialog.warning(self, "오류", "비밀번호가 올바르지 않습니다.")
 
     def _withdraw_google(self):
         """구글 가입 계정은 비밀번호가 없어서, 안내를 읽고 "탈퇴"를 직접 입력하면 처리한다."""
-        text, ok = QInputDialog.getText(
+        text, ok = lumi_dialog.getText(
             self, "회원 탈퇴",
             "정말 탈퇴하시겠어요? 이 구글 계정으로는 다시 로그인할 수 없게 되고,\n"
             "이 컴퓨터에 저장된 대화기록, 설정, 기억도 함께 삭제돼요.\n\n"
@@ -646,19 +631,20 @@ class MyPageWidget(QWidget):
         if not ok:
             return
         if text.strip() != "탈퇴":
-            QMessageBox.information(self, "회원 탈퇴", "'탈퇴'를 정확히 입력하지 않아 취소했어요.")
+            lumi_dialog.information(self, "회원 탈퇴", "'탈퇴'를 정확히 입력하지 않아 취소했어요.")
             return
         from data.db import delete_google_account
         if not delete_google_account():
-            QMessageBox.warning(self, "오류", "탈퇴 처리에 실패했습니다. 잠시 후 다시 시도해주세요.")
+            lumi_dialog.warning(self, "오류", "탈퇴 처리에 실패했습니다. 잠시 후 다시 시도해주세요.")
             return
-        QMessageBox.information(self, "완료", "탈퇴가 완료되었습니다. 이용해주셔서 감사했습니다.")
+        lumi_dialog.information(self, "완료", "탈퇴가 완료되었습니다. 이용해주셔서 감사했습니다.")
         withdrawn_user = self._username
         self.logout_requested.emit()
         from data.local_data import purge_user_data
         purge_user_data(withdrawn_user)
 
     def update_theme(self, is_dark: bool):
+        self._is_dark = is_dark
         if is_dark:
             root_bg     = "#1A1A1A"
             card_bg     = "#28224B"
@@ -733,6 +719,19 @@ class MyPageWidget(QWidget):
             QLabel#MPHint {{
                 font-size: 11px;
                 color: {hint_color};
+            }}
+            QPushButton#MPBrand {{
+                background-color: {input_bg};
+                color: {name_color};
+                border: 1.5px solid {input_brd};
+                border-radius: 12px;
+                font-size: 14px;
+                font-weight: 700;
+                text-align: center;
+            }}
+            QPushButton#MPBrand:hover {{
+                background-color: {badge_bg};
+                border-color: {count_color};
             }}
             QPushButton#MPGhost {{
                 background: transparent;
@@ -817,3 +816,4 @@ class MyPageWidget(QWidget):
                 color: {logout_bg};
             }}
         """ + DIALOG_QSS)
+        self._update_link_buttons()   # 애플 로고 색을 테마 글자색으로 다시 그린다

@@ -745,8 +745,7 @@ class RealtimeAlertsDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(14)
 
-        self.title_lbl = QLabel("🛰️ 실시간 감시 알림")
-        layout.addWidget(self.title_lbl)
+        # 제목 줄은 루미 팝업 틀(wrap)이 붙인다
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -769,22 +768,13 @@ class RealtimeAlertsDialog(QDialog):
         layout.addWidget(self.close_btn)
 
         self._apply_theme(is_dark)
+        from widget import lumi_dialog
+        lumi_dialog.wrap(self, "실시간 감시 알림", "satellite", 500)   # 앱 공통 루미 팝업 모양
 
     def _apply_theme(self, is_dark: bool):
-        if is_dark:
-            bg, card, tc, sc = "#1A1A1A", "#2D2D2D", "#FFFFFF", "#444444"
-        else:
-            bg, card, tc, sc = "#FFFFFF", "#F0F2F5", "#000000", "#E1E5EA"
-
-        self.setStyleSheet(f"QDialog {{ background-color: {bg}; }}")
-        self.title_lbl.setStyleSheet(
-            f"font-size: 18px; font-weight: bold; color: {tc}; background: transparent; border: none;"
-        )
-        self.scroll.setStyleSheet(f"background-color: {card}; border: 1px solid {sc}; border-radius: 8px;")
-        self.text_lbl.setStyleSheet(
-            f"color: {tc}; background: transparent; border: none; font-size: 13px; padding: 12px;"
-        )
-        self.close_btn.setStyleSheet(
-            "background-color: #8B78EE; color: white; font-weight: bold; "
-            "border-radius: 8px; border: none;"
-        )
+        from widget.lumi_dialog import palette
+        p = palette(is_dark)
+        self.scroll.setStyleSheet(f"QScrollArea {{ background-color: {p['input']}; border: 1.5px solid {p['border']}; "
+                                  f"border-radius: 12px; }} QScrollArea > QWidget > QWidget {{ background: transparent; }}")
+        self.text_lbl.setStyleSheet(f"color: {p['text']}; background: transparent; border: none; "
+                                    f"font-size: 13px; padding: 12px;")

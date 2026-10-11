@@ -94,7 +94,7 @@ def test_calendar_list_reply():
     raw = ("[📆 캘린더 목록] (총 2개)\n\n- a@gmail.com ⭐ 기본\n  ID: a@gmail.com\n  색상: #9a9cff | 권한: owner\n\n"
            "- 대한민국의 휴일 \n  ID: ko.south_korea#holiday@group.v.calendar.google.com\n  색상: #16a765 | 권한: reader")
     assert _build_calendar_list_reply(raw) == (
-        "구글 캘린더 2개가 연결돼 있어요.\n- a@gmail.com (기본 · 내 캘린더)\n- 대한민국의 휴일 (보기 전용)")
+        "캘린더 2개가 연결돼 있어요.\n- a@gmail.com (기본 · 내 캘린더)\n- 대한민국의 휴일 (보기 전용)")
 
 
 @pytest.mark.parametrize("text,leak", [('["get_login_status", "해드릴까요?"]', True), ("[중요] 내일 회의가 있어요", False)])
@@ -192,3 +192,13 @@ def test_faked_create_event_is_rebuilt_from_sentence():
     # 시각이 없으면(오전/오후를 모르면) 만들지 않는다
     assert AIWorker("모레 회의 일정 추가해줘", [], [])._rebuild_faked_create_event(
         '{"name": "create_event"}', {"create_event"}, {"create_event": print}) is None
+
+
+def test_update_drops_made_up_title_but_keeps_typed_one():
+    """실제 Mac 캘린더(2026-10-11): 시각만 바꾸라고 했는데 모델이 지어낸 제목으로 일정 이름이 깨졌다."""
+    w = AIWorker("루미테스트 회의를 모레 오후 5시부터 6시까지로 바꿔줘", [], [])
+    args = w._keep_only_typed_update_fields({"event_id": "X", "title": "고카캼카캸캱캰", "location": "",
+                                             "start_datetime": "2026-10-13 17:00"})
+    assert "title" not in args and args["start_datetime"] == "2026-10-13 17:00"
+    w2 = AIWorker("회의 제목을 팀 회의로 바꿔줘", [], [])
+    assert w2._keep_only_typed_update_fields({"event_id": "X", "title": "팀 회의"})["title"] == "팀 회의"

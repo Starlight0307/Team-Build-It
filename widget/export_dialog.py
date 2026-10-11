@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QDialog, QFileDialog, QInputDialog, QLineEdit, QMes
                              QPlainTextEdit, QPushButton, QVBoxLayout, QHBoxLayout)
 
 from widget.auth_style import DIALOG_QSS
+from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
 
 EXPORT_FILTER = "루미 암호화 대화 (*.lumi)"
 MIN_PASSWORD_LENGTH = 4
@@ -15,21 +16,21 @@ MIN_PASSWORD_LENGTH = 4
 
 def ask_new_password(parent, what="내보낼 파일"):
     """비밀번호를 두 번 받아 일치하면 돌려준다. 취소하거나 일치하지 않으면 None."""
-    pw, ok = QInputDialog.getText(
+    pw, ok = lumi_dialog.getText(
         parent, "암호화 비밀번호",
         f"{what}을 열 때 쓸 비밀번호를 정해주세요 ({MIN_PASSWORD_LENGTH}자 이상).\n"
         "잊어버리면 파일을 열 수 없어요.", QLineEdit.EchoMode.Password)
     if not ok:
         return None
     if len(pw) < MIN_PASSWORD_LENGTH:
-        QMessageBox.warning(parent, "암호화 비밀번호", f"비밀번호는 {MIN_PASSWORD_LENGTH}자 이상이어야 해요.")
+        lumi_dialog.warning(parent, "암호화 비밀번호", f"비밀번호는 {MIN_PASSWORD_LENGTH}자 이상이어야 해요.")
         return None
-    pw2, ok = QInputDialog.getText(parent, "암호화 비밀번호", "비밀번호를 한 번 더 입력해주세요.",
+    pw2, ok = lumi_dialog.getText(parent, "암호화 비밀번호", "비밀번호를 한 번 더 입력해주세요.",
                                    QLineEdit.EchoMode.Password)
     if not ok:
         return None
     if pw != pw2:
-        QMessageBox.warning(parent, "암호화 비밀번호", "두 비밀번호가 달라요. 다시 시도해주세요.")
+        lumi_dialog.warning(parent, "암호화 비밀번호", "두 비밀번호가 달라요. 다시 시도해주세요.")
         return None
     return pw
 
@@ -47,9 +48,9 @@ def save_encrypted_export(parent, text: str, default_name: str) -> bool:
         with open(path, "w", encoding="utf-8") as f:
             f.write(data)
     except Exception as e:
-        QMessageBox.warning(parent, "내보내기", f"저장하지 못했어요.\n{e}")
+        lumi_dialog.warning(parent, "내보내기", f"저장하지 못했어요.\n{e}")
         return False
-    QMessageBox.information(parent, "내보내기", "암호화해서 저장했어요.\n"
+    lumi_dialog.information(parent, "내보내기", "암호화해서 저장했어요.\n"
                             "파일을 열어도 내용이 보이지 않아요. 같은 계정으로 로그인한 루미에서는 다른 PC에서도 열 수 있어요.\n"
                             "열 때는 대화 기록 화면의 '암호화 파일 열기'를 쓰세요.")
     return True
@@ -67,20 +68,20 @@ class _ViewerDialog(QDialog):
         lay.addWidget(self.view)
         row = QHBoxLayout(); row.addStretch()
         save = QPushButton("txt로 저장 (암호화 해제됨)"); save.clicked.connect(self._save_plain)
-        close = QPushButton("닫기"); close.clicked.connect(self.accept)
+        close = QPushButton("닫기"); close.setObjectName("LinkGhost"); close.clicked.connect(self.accept)
         if on_import is not None:
             imp = QPushButton("대화 기록으로 가져오기"); imp.clicked.connect(self._import)
             row.addWidget(imp)
         row.addWidget(save); row.addWidget(close); lay.addLayout(row)
-        self.setStyleSheet(DIALOG_QSS + "QPlainTextEdit { background: #FFFFFF; color: #111111; }")
+        lumi_dialog.wrap(self, "암호화된 대화", "lock", 560)   # 앱 공통 루미 팝업 모양
 
     def _import(self):
         try:
             msg = self._on_import(self._text)
         except Exception as e:
-            QMessageBox.warning(self, "가져오기", str(e))
+            lumi_dialog.warning(self, "가져오기", str(e))
             return
-        QMessageBox.information(self, "가져오기", msg or "대화 기록으로 가져왔어요.")
+        lumi_dialog.information(self, "가져오기", msg or "대화 기록으로 가져왔어요.")
 
     def _save_plain(self):
         path, _ = QFileDialog.getSaveFileName(self, "txt로 저장", "대화.txt", "텍스트 파일 (*.txt)")
@@ -90,7 +91,7 @@ class _ViewerDialog(QDialog):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self._text)
         except OSError as e:
-            QMessageBox.warning(self, "저장", f"저장하지 못했어요.\n{e}")
+            lumi_dialog.warning(self, "저장", f"저장하지 못했어요.\n{e}")
 
 
 def open_encrypted_export(parent, on_import=None) -> bool:
@@ -103,18 +104,18 @@ def open_encrypted_export(parent, on_import=None) -> bool:
         with open(path, "r", encoding="utf-8") as f:
             raw = f.read()
     except OSError as e:
-        QMessageBox.warning(parent, "열기", f"파일을 읽지 못했어요.\n{e}")
+        lumi_dialog.warning(parent, "열기", f"파일을 읽지 못했어요.\n{e}")
         return False
     pw = None
     if export_needs_password(raw):   # 예전 버전에서 비밀번호로 내보낸 파일만 비밀번호를 묻는다
-        pw, ok = QInputDialog.getText(parent, "비밀번호", "파일을 내보낼 때 정한 비밀번호를 입력하세요.",
+        pw, ok = lumi_dialog.getText(parent, "비밀번호", "파일을 내보낼 때 정한 비밀번호를 입력하세요.",
                                       QLineEdit.EchoMode.Password)
         if not ok:
             return False
     try:
         text = decrypt_export(raw, pw)
     except ValueError as e:
-        QMessageBox.warning(parent, "열기", str(e))
+        lumi_dialog.warning(parent, "열기", str(e))
         return False
     _ViewerDialog(parent, text, on_import).exec()
     return True

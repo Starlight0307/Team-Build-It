@@ -21,6 +21,7 @@ from core import skills
 from settings import app_settings
 from settings.theme import get_palette
 from widget.widgets import ToggleSwitch
+from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
 
 
 class SkillInstallDialog(QDialog):
@@ -51,11 +52,13 @@ class SkillInstallDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         cancel, ok = QPushButton("취소"), QPushButton("설치")
+        cancel.setObjectName("LinkGhost")
         cancel.clicked.connect(self.reject)
         ok.clicked.connect(self.accept)
         row.addWidget(cancel)
         row.addWidget(ok)
         lay.addLayout(row)
+        lumi_dialog.wrap(self, f"스킬 설치 — {title}", "wand-sparkles", 640)   # 앱 공통 루미 팝업 모양
 
 
 class SkillsPage(QWidget):
@@ -227,13 +230,13 @@ class SkillsPage(QWidget):
             self.installed_box.addWidget(card)
 
     def _remove(self, skill):
-        reply = QMessageBox.question(self, "스킬 삭제", f"'{skill.name}' 스킬을 삭제할까요?")
+        reply = lumi_dialog.question(self, "스킬 삭제", f"'{skill.name}' 스킬을 삭제할까요?")
         if reply != QMessageBox.StandardButton.Yes:
             return
         try:
             skills.remove_skill(skill)
         except (OSError, ValueError) as e:
-            QMessageBox.warning(self, "스킬 삭제", str(e))
+            lumi_dialog.warning(self, "스킬 삭제", str(e))
         self.refresh()
 
     def _open_folder(self):
@@ -298,7 +301,7 @@ class SkillsPage(QWidget):
 
     def _confirm_install(self, payload):
         if isinstance(payload, str):
-            QMessageBox.warning(self, "스킬 설치", payload)
+            lumi_dialog.warning(self, "스킬 설치", payload)
             self._show_results_buttons_reset()
             return
         res, data = payload
@@ -323,7 +326,7 @@ class SkillsPage(QWidget):
             with open(path, "rb") as f:
                 data = f.read()
         except OSError as e:
-            QMessageBox.warning(self, "스킬 설치", f"파일을 읽지 못했어요: {e}")
+            lumi_dialog.warning(self, "스킬 설치", f"파일을 읽지 못했어요: {e}")
             return
         name = os.path.splitext(os.path.basename(path))[0]
         folder = "".join(c if (c.isalnum() and c.isascii()) or c in "._-" else "-" for c in name).strip(".-") or "skill"
@@ -337,7 +340,7 @@ class SkillsPage(QWidget):
                 preview = skills.parse_skill_md(md, tmp, "루미")
             problems = skills.check_requirements(preview)
         except Exception as e:
-            QMessageBox.warning(self, "스킬 설치", f"스킬 파일이 올바르지 않아요: {e}")
+            lumi_dialog.warning(self, "스킬 설치", f"스킬 파일이 올바르지 않아요: {e}")
             return
         warnings = list(extra_warnings) + [f"설치 후에도 바로 쓸 수 없어요 — {p}" for p in problems]
         scripts = [f for f in files if f.rsplit(".", 1)[-1].lower() in ("sh", "py", "js", "ps1", "bat", "cmd", "exe")]
@@ -349,10 +352,10 @@ class SkillsPage(QWidget):
         try:
             skills.install_zip(data, folder)
         except Exception as e:
-            QMessageBox.warning(self, "스킬 설치", f"설치하지 못했어요: {e}")
+            lumi_dialog.warning(self, "스킬 설치", f"설치하지 못했어요: {e}")
             return
         self.refresh()
-        QMessageBox.information(self, "스킬 설치", f"'{preview.name}' 스킬을 설치했어요.\n대화에서 ${preview.name} 으로 불러보세요.")
+        lumi_dialog.information(self, "스킬 설치", f"'{preview.name}' 스킬을 설치했어요.\n대화에서 ${preview.name} 으로 불러보세요.")
 
     # ── 테마 ──
     def update_theme(self, is_dark: bool):

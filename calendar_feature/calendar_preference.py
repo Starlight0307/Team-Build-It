@@ -11,7 +11,7 @@ _LEGACY_FILE = os.path.join(os.path.dirname(__file__), "calendar_preference.json
 
 # 기존 동작(구글 캘린더)을 그대로 유지하기 위한 기본값
 _DEFAULT_ACTIVE = "google"
-_VALID_VALUES   = ("google", "local")
+_VALID_VALUES   = ("google", "local", "apple")   # apple = iCloud(calendar_feature/apple_backend.py)
 
 
 def migrate_legacy_file():
@@ -29,23 +29,48 @@ def migrate_legacy_file():
         print(f"[캘린더 설정 위치 이전 오류] {e}")
 
 
-def get_active_calendar() -> str:
-    """현재 사용 중인 캘린더 백엔드를 반환. 'google' 또는 'local'."""
+def _read() -> dict:
     try:
         with open(_FILE, "r", encoding="utf-8") as f:
-            value = json.load(f).get("active")
-            return value if value in _VALID_VALUES else _DEFAULT_ACTIVE
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
     except Exception:
-        return _DEFAULT_ACTIVE
+        return {}
 
 
-def set_active_calendar(value: str):
-    """사용할 캘린더 백엔드를 저장. 'google' 또는 'local'만 허용."""
-    if value not in _VALID_VALUES:
-        return
+def _write(data: dict):
     try:
         os.makedirs(os.path.dirname(_FILE), exist_ok=True)
         with open(_FILE, "w", encoding="utf-8") as f:
-            json.dump({"active": value}, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+
+def get_active_calendar() -> str:
+    """현재 사용 중인 캘린더 백엔드를 반환. 'google' / 'local' / 'apple'."""
+    value = _read().get("active")
+    return value if value in _VALID_VALUES else _DEFAULT_ACTIVE
+
+
+def set_active_calendar(value: str):
+    """사용할 캘린더 백엔드를 저장. 'google' / 'local' / 'apple'만 허용(다른 항목은 그대로 둔다)."""
+    if value not in _VALID_VALUES:
+        return
+    data = _read(); data["active"] = value
+    _write(data)
+
+
+def get_apple_source():
+    """애플 캘린더를 'mac'(이 Mac의 캘린더)으로 연결했었는지 — 다음 실행 때 묻지 않고 다시 연결하려고.
+    iCloud 직접 연결은 암호가 필요해서 기억하지 않는다(None)."""
+    return _read().get("apple_source")
+
+
+def set_apple_source(value):
+    data = _read()
+    if value:
+        data["apple_source"] = value
+    else:
+        data.pop("apple_source", None)
+    _write(data)

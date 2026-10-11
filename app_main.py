@@ -77,6 +77,7 @@ from core.voice import (VoiceListener, Speaker, VoiceInstallWorker,
 from core import screen_agent, web_launcher, skills
 from core.skill_agent import SkillAgentWorker
 from widget.skills_widget import SkillsPage
+from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
 
 
 # ==========================================
@@ -798,14 +799,24 @@ class AssistantApp(QWidget):
         t = txt.replace(" ", "")
         has_local  = ("내부캘린더" in t) or ("로컬캘린더" in t)
         has_google = "구글캘린더" in t
+        has_apple  = ("애플캘린더" in t) or ("아이클라우드캘린더" in t) or ("icloud캘린더" in t.lower())
         has_verb   = any(v in t for v in self._CALENDAR_SWITCH_VERBS)
         is_status_query = (("무슨캘린더" in t) or ("어떤캘린더" in t)) and \
                            any(w in t for w in ("써", "쓰고", "사용", "쓰는", "쓰니", "뭐야", "뭐니"))
 
         if is_status_query:
             active = calendar_preference.get_active_calendar()
-            label  = "내부 캘린더" if active == "local" else "구글 캘린더"
+            label  = {"local": "내부 캘린더", "apple": "애플 캘린더"}.get(active, "구글 캘린더")
             self.display_ai_response(f"🤖 로컬 비서: 지금은 **{label}**를 쓰고 있어요.")
+            return True
+
+        if has_apple and has_verb and not has_local and not has_google:
+            calendar_preference.set_active_calendar("apple")
+            from plugins.calendar_tool import _current_user_id
+            from calendar_feature import apple_backend
+            tail = ("" if apple_backend.is_connected(_current_user_id) else
+                    " 아직 연결 전이라면 마이페이지의 [애플 캘린더 연결]에서 Apple ID와 앱 전용 암호를 넣어주세요.")
+            self.display_ai_response(f"🤖 로컬 비서: 이제부터 **애플 캘린더**를 쓸게요.{tail}")
             return True
 
         if has_local and has_verb and not has_google:
@@ -822,7 +833,7 @@ class AssistantApp(QWidget):
             )
             return True
 
-        if has_google and has_verb and not has_local:
+        if has_google and has_verb and not has_local and not has_apple:
             calendar_preference.set_active_calendar("google")
             self.display_ai_response("🤖 로컬 비서: 이제부터 **구글 캘린더**를 쓸게요.")
             return True
@@ -950,6 +961,7 @@ class AssistantApp(QWidget):
     def apply_theme(self):
         d = self.is_dark_mode
         p = get_palette(d)
+        lumi_dialog.set_dark(d)   # 앱 공통 팝업도 같은 테마로
         s = ui_scale.get_scale()   # 대화창(말풍선/카드/입력창/사이드바)에만 적용되는 배율
 
         # 실제 앱을 켜서 확인창을 직접 봤을 때 발견한 버그: 위 "QLabel { color: ... }"가
@@ -1132,7 +1144,7 @@ class AssistantApp(QWidget):
         # 넓을 때 버튼이 눌려 "대화" 글자가 잘리거나 창이 넓어지는 문제가 있었다. 레이아웃에는 가운데
         # 묶음 폭만큼 빈 자리(_top_center_gap)만 잡아둬서 서로 겹치지 않게 한다.
         def _group(parent=None):
-            w = QWidget(parent); w.setStyleSheet("background: transparent;")
+            w = QWidget(parent)   # 스타일 없이 — 선택자 없는 스타일은 안쪽 알약·버튼 배경까지 바꾼다
             lay = QHBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(8)
             return w, lay
         left_box, tb = _group()
@@ -1158,7 +1170,9 @@ class AssistantApp(QWidget):
         self.clock_pill = QLabel()
         center.addWidget(self.clock_pill)
         self.weather_pill = QLabel(icons.label_html("cloud-sun", "--°C"))
-        self.weather_pill.setToolTip("환경설정 > 날씨에서 지역을 바꿀 수 있어요")
+        self.weather_pill.setToolTip("누르면 자세한 날씨를 볼 수 있어요 · 지역은 환경설정 > 날씨에서 바꿔요")
+        self.weather_pill.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.weather_pill.mouseReleaseEvent = lambda e: self._open_weather_detail()
         center.addWidget(self.weather_pill)
         for _pill in (self.clock_pill, self.weather_pill):
             # 모서리 반지름(18px)의 두 배보다 낮으면 Qt가 둥근 모서리를 못 그리고 네모로 그린다
@@ -1242,6 +1256,7 @@ class AssistantApp(QWidget):
         self.stacked_widget.addWidget(self.mypage)
 
         self.calendar_page = CalendarWidget(lambda: MOCK_USER, self)            # index 6
+        self.calendar_page.events_changed.connect(self._refresh_info_panels)
         self.stacked_widget.addWidget(self.calendar_page)
 
         self.skills_page = SkillsPage(self)                                     # index 7
@@ -1289,8 +1304,11 @@ class AssistantApp(QWidget):
             detect_on_start=lambda: app_settings.get("weather_source") in ("os", "ip"))
         self.weather_panel.weather_ready.connect(self._on_weather)
         self.weather_panel.location_detected.connect(self._on_location_detected)
+        self.weather_panel.clicked.connect(self._open_weather_detail)
         self.today_panel   = TodayPanel(lambda: MOCK_USER)
         self.todo_panel    = TodoPanel(lambda: MOCK_USER)
+        self.today_panel.clicked.connect(lambda: self._go_to_page(6))   # 오늘 일정 → 캘린더 화면
+        self.todo_panel.clicked.connect(self._open_todo_dialog)
         self.session_panel = SessionPanel(self.stats_panel)
         self.info_panels = [self.stats_panel, self.weather_panel, self.today_panel,
                             self.todo_panel, self.session_panel]
@@ -1512,7 +1530,7 @@ class AssistantApp(QWidget):
             f"border-radius: 13px; padding: 4px 12px; font-size: 12px; font-weight: bold;")
 
     def _refresh_info_panels(self):
-        """대화로 일정/할 일이 바뀌었을 수 있으니 다시 읽는다 (로컬 파일이라 빠름)."""
+        """대화·캘린더 화면으로 일정/할 일이 바뀌었을 수 있으니 다시 읽는다(일정은 스레드에서)."""
         if hasattr(self, 'today_panel'):
             self.today_panel.refresh()
             self.todo_panel.refresh()
@@ -1852,10 +1870,10 @@ class AssistantApp(QWidget):
         try:
             info = db.set_chat_log_dir(folder)
         except ValueError as e:
-            QMessageBox.warning(self, "대화기록 저장 위치", str(e))
+            lumi_dialog.warning(self, "대화기록 저장 위치", str(e))
             return
         except OSError as e:
-            QMessageBox.warning(self, "대화기록 저장 위치", f"옮기지 못했어요.\n{e}")
+            lumi_dialog.warning(self, "대화기록 저장 위치", f"옮기지 못했어요.\n{e}")
             return
         self.chat_dir_desc.setText(info["path"])
         msg = f"대화 {info['moved']}개를 옮겼어요."
@@ -1876,7 +1894,35 @@ class AssistantApp(QWidget):
         self.weather_panel.refresh()
         self._show_toast(f"🌤️ 날씨 지역을 '{city}'(으)로 바꿨어요.")
 
+    def _go_to_page(self, idx: int):
+        """상단 메뉴 버튼을 누른 것과 똑같이 화면을 바꾼다(메뉴 강조·화면별 새로 읽기 포함)."""
+        btn = next((b for b, i in self._nav_stack_index.items() if i == idx), None)
+        if btn is not None:
+            btn.click()
+
+    def _open_todo_dialog(self):
+        """대시보드 "할 일"을 누르면 — 우선순위·추가·수정·삭제 창."""
+        if not MOCK_USER.get("logged_in"):
+            self._show_toast("🔒 로그인하면 할 일을 관리할 수 있어요.")
+            return
+        from widget.todo_dialog import TodoDialog
+        dlg = TodoDialog(self, dark=self.is_dark_mode)
+        dlg.changed.connect(self.todo_panel.refresh)
+        dlg.exec()
+
+    def _open_weather_detail(self):
+        """대시보드 날씨 패널·상단 날씨를 누르면 — 시간별·10일 예보와 자세한 날씨 창."""
+        from widget.weather_detail import WeatherDetailDialog
+        city, coords = self._weather_location()
+        if not city and not coords:
+            self._show_toast("📍 아직 날씨 지역을 찾는 중이에요. 잠시 후 다시 눌러 주세요.")
+            return
+        last = getattr(self, "_last_weather", None) or {}
+        hint = (last.get("icon_name"), last.get("is_day", True)) if last.get("icon_name") else None
+        WeatherDetailDialog(self, city, coords, dark=self.is_dark_mode, scene_hint=hint).exec()
+
     def _on_weather(self, data: dict):
+        self._last_weather = data     # 날씨 자세히 창이 열리자마자 맞는 배경을 깔 수 있게
         self.weather_pill.setText(icons.label_html(data.get("icon_name") or "cloud-sun",
                                                    f"{data['temp']:.1f}°C  {data['city']}"))
         if hasattr(self, 'weather_locate_btn') and not self.weather_locate_btn.isEnabled():
@@ -2243,6 +2289,7 @@ class AssistantApp(QWidget):
         self.stacked_widget.setCurrentIndex(idx)
         self.update_sidebar_ui()   # 선택된 메뉴 이름 펼치기
         if idx == 0:
+            self._refresh_info_panels()   # 다른 화면(캘린더 등)에서 바뀐 일정·할 일을 홈에 반영
             self.bottom_input_wrapper.show()
             if self.chat_main_layout.count() <= 2:
                 self.welcome_widget.show()
@@ -2472,18 +2519,13 @@ class AssistantApp(QWidget):
         worker.start()
 
     def _on_skill_confirm(self, payload: dict):
-        from PyQt6.QtWidgets import QMessageBox
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle("스킬이 명령을 실행하려고 해요")
         reason = f"\n이유: {payload['reason']}" if payload.get("reason") else ""
-        box.setText(f"'{payload['skill']}' 스킬이 이 컴퓨터에서 명령을 실행하려고 해요.{reason}\n\n"
-                    f"{payload['command']}\n\n실행할까요?")
-        once = box.addButton("실행", QMessageBox.ButtonRole.AcceptRole)
-        always = box.addButton("이 스킬은 계속 허용", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("취소", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        answer = "once" if box.clickedButton() is once else ("always" if box.clickedButton() is always else "no")
+        answer = lumi_dialog.choice(
+            self, "스킬이 명령을 실행하려고 해요",
+            f"'{payload['skill']}' 스킬이 이 컴퓨터에서 명령을 실행하려고 해요.{reason}\n\n"
+            f"{payload['command']}\n\n실행할까요?",
+            [("always", "이 스킬은 계속 허용", "ghost"), ("no", "취소", "ghost"), ("once", "실행", "primary")],
+            kind="warning") or "no"
         if self._skill_worker is not None:
             self._skill_worker.answer_confirm(answer)
 
@@ -2509,7 +2551,7 @@ class AssistantApp(QWidget):
         args        = payload['args']
         description = payload['description']
 
-        reply = QMessageBox.question(
+        reply = lumi_dialog.question(
             self,
             '작업 확인',
             f'{description}\n\n이 작업을 진행하시겠습니까?',
@@ -2912,7 +2954,7 @@ class AssistantApp(QWidget):
         missing = missing_voice_packages()
         if not missing:
             return True
-        reply = QMessageBox.question(
+        reply = lumi_dialog.question(
             self, "음성 대화 기능 설치",
             "음성 대화에 필요한 구성요소를 설치할까요? (처음 한 번만)\n\n"
             f"설치 항목: {', '.join(missing)}\n"
@@ -2935,7 +2977,7 @@ class AssistantApp(QWidget):
         self._voice_install_worker = None
         self._update_voice_buttons()
         if not ok:
-            QMessageBox.warning(self, "음성 기능 설치 실패",
+            lumi_dialog.warning(self, "음성 기능 설치 실패",
                                 "음성 구성요소를 설치하지 못했어요. 인터넷 연결을 확인해 주세요.\n"
                                 "(Intel Mac 등 일부 환경은 지원되지 않을 수 있어요)\n\n"
                                 f"--- 상세 내용 ---\n{output[-800:]}")
@@ -3122,7 +3164,7 @@ class AssistantApp(QWidget):
                    + "\n".join(f"· 개인정보 보호 및 보안 > {names[m]}" for m in missing)
                    + "\n\n루미를 실행한 프로그램(터미널, VS Code 또는 Python)을 목록에서 켜고, "
                      "루미를 다시 실행해 주세요.\n지금 설정을 열까요?")
-            reply = QMessageBox.question(self, "권한 필요", msg,
+            reply = lumi_dialog.question(self, "권한 필요", msg,
                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.Yes:
                 for m in missing:
@@ -3137,7 +3179,7 @@ class AssistantApp(QWidget):
             if self._screen_pull_worker is not None:
                 self._show_toast("⏬ 화면 인식 모델을 내려받는 중이에요. 잠시만 기다려주세요.")
                 return
-            reply = QMessageBox.question(
+            reply = lumi_dialog.question(
                 self, "화면 인식 모델 설치",
                 f"화면을 보려면 로컬 비전 모델({screen_agent.SCREEN_MODEL}, 약 6GB)이 필요해요.\n"
                 "지금 내려받을까요? (처음 한 번만, 화면은 인터넷으로 보내지 않고 이 컴퓨터에서만 처리해요)",
@@ -3243,13 +3285,9 @@ class AssistantApp(QWidget):
             self._screen_overlay.set_step(n, total, desc)
 
     def _on_screen_confirm(self, desc: str):
-        from PyQt6.QtWidgets import QMessageBox
-        box = QMessageBox(QMessageBox.Icon.Warning, "루미 — 이 동작을 할까요?",
-                          f"되돌리기 어려울 수 있는 동작이에요.\n\n{desc}",
-                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        box.setDefaultButton(QMessageBox.StandardButton.No)
-        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        ok = box.exec() == QMessageBox.StandardButton.Yes
+        ok = lumi_dialog.choice(
+            self, "루미 — 이 동작을 할까요?", f"되돌리기 어려울 수 있는 동작이에요.\n\n{desc}",
+            [("no", "아니요", "ghost"), ("yes", "예", "danger")], kind="warning", on_top=True) == "yes"
         if self._screen_worker is not None:
             self._screen_worker.answer_confirm(ok)
 
@@ -3456,7 +3494,7 @@ class AssistantApp(QWidget):
         from PyQt6.QtWidgets import QMessageBox
 
         # 확인 대화상자
-        reply = QMessageBox.question(
+        reply = lumi_dialog.question(
             self,
             '프로그램 종료 확인',
             f'"{process_name}" 프로그램을 종료하시겠습니까?\n\n경고: 중요한 시스템 프로그램을 종료하면 컴퓨터가 불안정해질 수 있습니다.',

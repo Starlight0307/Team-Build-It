@@ -64,6 +64,20 @@ _current_user_id: str = "guest"
 # 치환한다 — 안 그러면 텍스트 안의 개행이 "다음 항목 줄"처럼 보여 목록 파싱이
 # 깨질 수 있다.
 _MAX_TEXT_LENGTH = 200
+
+# 우선순위(할 일 창에서 고른다) — 예전 항목에는 없으니 "보통"으로 본다
+PRIORITIES = ("high", "medium", "low")
+PRIORITY_LABELS = {"high": "높음", "medium": "보통", "low": "낮음"}
+
+
+def priority_of(item: dict) -> str:
+    p = item.get("priority")
+    return p if p in PRIORITIES else "medium"
+
+
+def sort_key(item: dict):
+    """할 일 창·대시보드 순서 — 우선순위(높음 먼저) → 마감일(빠른 것, 없으면 뒤) → 추가한 순서."""
+    return (PRIORITIES.index(priority_of(item)), item.get("due_date") or "9999-99-99", item.get("seq", 0))
 # 2026-09-29 ChatGPT 1라운드 검수 지적: 완료 항목을 지우지 않고 계속 보관하는
 # 설계라(의도적 — 사용자가 명시적으로 delete_todo를 해야만 지워짐, 자동 정리는
 # 오히려 위험하다고 판단) 시간이 지나면 list_todos(특히 "all")의 출력이 계속
@@ -276,7 +290,7 @@ def _advance_date(d, repeat_rule: str, anchor_day: int = None):
     raise ValueError(f"알 수 없는 반복 주기: {repeat_rule!r}")
 
 
-def add_todo(text: str, due_date: str = "", repeat_rule: str = "") -> str:
+def add_todo(text: str, due_date: str = "", repeat_rule: str = "", priority: str = "") -> str:
     print(f"\n✅ [할 일 목록] 추가: {text} (마감: {due_date or '없음'}, 반복: {repeat_rule or '없음'})")
     login_error = _require_login()
     if login_error:
@@ -316,6 +330,9 @@ def add_todo(text: str, due_date: str = "", repeat_rule: str = "") -> str:
         # 추측 대신 거부하고 다시 말해달라고 하는 쪽을 일관되게 택해왔다.
         return "⚠️ 반복 할 일은 언제부터 시작할지(마감일)도 함께 알려주세요."
     repeat_rule = repeat_rule or None
+    priority = (priority or "").strip().lower() or "medium"
+    if priority not in PRIORITIES:
+        return "⚠️ 우선순위는 높음/보통/낮음 중 하나로 골라주세요."
     # ChatGPT 검수 지적(2026-10-01, P1): monthly 반복은 "원래 며칠에
     # 고정된 반복인지"를 별도로 기억해둬야 월말 자르기가 누적되지 않는다
     # (_advance_date 문서 참고) — 처음 등록한 due_date의 day를 anchor로
@@ -329,7 +346,7 @@ def add_todo(text: str, due_date: str = "", repeat_rule: str = "") -> str:
         "seq": seq, "text": text, "done": False,
         "created_at": datetime.now().isoformat(timespec="seconds"), "completed_at": None,
         "due_date": due_date, "due_reminder_fired": False, "repeat_rule": repeat_rule,
-        "repeat_anchor_day": repeat_anchor_day,
+        "repeat_anchor_day": repeat_anchor_day, "priority": priority,
     })
     data["next_seq"] = seq + 1
     _save(data)
@@ -496,6 +513,7 @@ def complete_todo(item: str) -> str:
                 "created_at": datetime.now().isoformat(timespec="seconds"), "completed_at": None,
                 "due_date": next_due.strftime("%Y-%m-%d"), "due_reminder_fired": False,
                 "repeat_rule": found["repeat_rule"], "repeat_anchor_day": anchor_day,
+                "priority": priority_of(found),
             })
             data["next_seq"] = next_seq + 1
             label = _REPEAT_LABELS.get(found["repeat_rule"], found["repeat_rule"])
@@ -530,6 +548,47 @@ def reopen_todo(item: str) -> str:
     found["completed_at"] = None
     _save(data)
     return f"[✅ 할 일 완료 취소]\n'{found['text']}'을(를) 다시 미완료로 되돌렸어요."
+
+
+def update_todo(seq: int, text: str = None, due_date: str = None, priority: str = None) -> str:
+    """할 일 창의 [수정] — 바꿀 것만 넘긴다(None이면 그대로, due_date=""이면 마감일을 지움).
+    검증은 add_todo와 같다. 성공하면 "[✅ 할 일 수정]…", 실패하면 "⚠️…"."""
+    login_error = _require_login()
+    if login_error:
+        return login_error
+    data = _load()
+    found = next((t for t in data["items"] if t["seq"] == seq), None)
+    if found is None:
+        return f"⚠️ {seq}번 할 일을 찾을 수 없어요."
+    if text is not None:
+        text = text.strip().replace("\n", " ").replace("\r", " ")
+        if not text:
+            return "⚠️ 할 일 내용을 비워둘 수는 없어요."
+        if len(text) > _MAX_TEXT_LENGTH:
+            return f"⚠️ 할 일 내용이 너무 길어요({len(text)}자, 최대 {_MAX_TEXT_LENGTH}자)."
+    if due_date is not None:
+        due_date = due_date.strip()
+        if due_date:
+            try:
+                datetime.strptime(due_date, "%Y-%m-%d")
+            except ValueError:
+                return "⚠️ 마감일이 올바르지 않습니다. 'YYYY-MM-DD' 형식의 실제 날짜를 입력해주세요."
+        elif found.get("repeat_rule"):
+            return "⚠️ 반복 할 일은 마감일을 지울 수 없어요. 반복이 필요 없으면 지우고 새로 추가해 주세요."
+    if priority is not None and priority not in PRIORITIES:
+        return "⚠️ 우선순위는 높음/보통/낮음 중 하나로 골라주세요."
+    if text is not None:
+        found["text"] = text
+    if due_date is not None:
+        if due_date != (found.get("due_date") or ""):
+            found["due_reminder_fired"] = False      # 마감일이 바뀌면 마감 알림을 다시 받는다
+        found["due_date"] = due_date or None
+        if found.get("repeat_rule") == "monthly" and due_date:
+            found["repeat_anchor_day"] = int(due_date.split("-")[2])
+    if priority is not None:
+        found["priority"] = priority
+    _save(data)
+    return f"[✅ 할 일 수정]\n'{found['text']}'을(를) 수정했어요."
 
 
 def delete_todo(item: str) -> str:

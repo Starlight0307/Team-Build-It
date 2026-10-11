@@ -258,6 +258,7 @@ class WeatherPanel(Panel):
     # 자동으로 찾은 위치 {"name", "lat", "lon", "source", "on_start"} — on_start는 시작할 때 조용히 다시 찾은 것
     location_detected = pyqtSignal(dict)
     _result = pyqtSignal(object)           # 스레드 → 메인 스레드 (dict 또는 오류 문장)
+    clicked = pyqtSignal()                 # 패널을 누르면 날씨 자세히 보기(widget/weather_detail.py)
 
     def __init__(self, get_location, parent=None, detect_on_start=None):
         super().__init__("cloud-sun", "날씨", parent)
@@ -290,6 +291,14 @@ class WeatherPanel(Panel):
         self._timer.timeout.connect(self.refresh)
         self._timer.start(30 * 60 * 1000)
         QTimer.singleShot(500, self.refresh)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("누르면 시간별·10일 예보와 자세한 날씨를 볼 수 있어요")
+
+    def mouseReleaseEvent(self, e):
+        # 새로고침 버튼은 자기가 클릭을 받으므로 여기로 오지 않는다
+        if e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(e)
 
     def detect_and_refresh(self):
         """현재 위치를 다시 찾아서 날씨를 갱신 (환경설정 "내 위치 찾기")."""
@@ -368,15 +377,25 @@ class WeatherPanel(Panel):
 
 
 class _ListPanel(Panel):
-    """항목 몇 개를 줄로 보여주는 패널 (일정, 할 일)."""
+    """항목 몇 개를 줄로 보여주는 패널 (일정, 할 일). 누르면 clicked — 앱이 캘린더·할 일 창을 연다."""
     MAX_ROWS = 4
+    clicked = pyqtSignal()
 
-    def __init__(self, icon, title, empty_text, parent=None):
+    def __init__(self, icon, title, empty_text, parent=None, tooltip=""):
         super().__init__(icon, title, parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        if tooltip:
+            self.setToolTip(tooltip)
         self.add_header_button("", "새로고침", self.refresh, icon="refresh-cw")
         self._empty_text = empty_text
         self._rows = []
         self._p = None
+
+    def mouseReleaseEvent(self, e):
+        # 새로고침 버튼은 자기가 클릭을 받으므로 여기로 오지 않는다
+        if e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(e)
 
     def _set_rows(self, rows, empty_text=None):
         for w in self._rows:
@@ -430,34 +449,86 @@ class _ListPanel(Panel):
 
 
 class TodayPanel(_ListPanel):
-    """오늘 일정 (루미 내부 캘린더)."""
+    """오늘 일정 — 연결된 캘린더(구글·애플, 둘 다 없으면 루미 내부 캘린더)에서 읽는다.
+    캘린더 화면과 같은 창구(calendar_feature/calendar_sources.py)를 써서 내용이 똑같다.
+    구글·iCloud는 네트워크라 스레드에서 읽고, 5분마다 + 대화·캘린더 화면에서 바뀔 때 다시 읽는다."""
+    _result = pyqtSignal(int, object)      # (요청 번호, 줄 목록 또는 안내 문장)
 
     def __init__(self, get_user, parent=None):
-        super().__init__("calendar-days", "오늘 일정", "오늘은 등록된 일정이 없어요.", parent)
+        super().__init__("calendar-days", "오늘 일정", "오늘은 등록된 일정이 없어요.", parent,
+                         tooltip="누르면 캘린더로 이동해요")
         self._get_user = get_user
+        self._seq = 0
+        self._result.connect(self._apply)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.refresh)
+        self._timer.start(5 * 60 * 1000)
         self.refresh()
 
     def refresh(self):
-        if not self._get_user().get("logged_in"):
+        user = self._get_user()
+        if not user.get("logged_in"):
+            self._seq += 1
             return self._set_rows([], "로그인하면 오늘 일정을 보여드려요.")
+        self._seq += 1
+        seq, owner = self._seq, user.get("name")
+        threading.Thread(target=lambda: self._result.emit(seq, self._load(owner)), daemon=True).start()
+
+    @staticmethod
+    def _load(owner):
+        """(시각, 제목) 줄 목록. 연결된 캘린더를 모두 읽어 시간순으로 합친다."""
+        from datetime import timedelta
         try:
-            from plugins.local_calendar import get_all_events
-            today = datetime.now().strftime("%Y-%m-%d")
-            events = [e for e in get_all_events() if str(e.get("start", "")).startswith(today)]
-        except Exception:
-            events = []
+            from calendar_feature.calendar_sources import TZ, connected_sources
+            sources = connected_sources(owner)
+        except Exception as e:
+            print(f"[오늘 일정] 캘린더 확인 오류: {e}")
+            return "일정을 불러오지 못했어요."
+        start = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        events, failed = [], []
+        for src in sources:
+            try:
+                for ev in src.events_between(owner, start, end):
+                    events.append((src.label, ev))
+            except Exception as e:
+                print(f"[오늘 일정] {src.label} 읽기 오류: {type(e).__name__}: {e}")
+                failed.append(src.label)
+        if failed and not events:
+            return f"{', '.join(failed)} 캘린더를 읽지 못했어요. 새로고침해 주세요."
+
+        def key(item):
+            s = item[1]["start"]
+            return (isinstance(s, datetime), s if isinstance(s, datetime) else start)
+        many = len(sources) > 1
         rows = []
-        for e in events:
-            start = str(e.get("start", ""))
-            rows.append((start[11:16] or "종일", e.get("title") or e.get("summary") or "(제목 없음)"))
-        self._set_rows(rows)
+        for label, ev in sorted(events, key=key):
+            s = ev["start"]
+            if ev.get("all_day") or not isinstance(s, datetime):
+                when = "종일"
+            elif s < start:
+                when = "어제부터"      # 어제 밤에 시작해 오늘까지 이어지는 일정
+            else:
+                when = f"{s:%H:%M}"
+            title = ev.get("title") or "(제목 없음)"
+            rows.append((when, f"{title} · {label}" if many else title))
+        return rows
+
+    def _apply(self, seq, result):
+        if seq != self._seq:
+            return   # 그 사이 다시 읽기 시작했거나 로그아웃 — 늦게 온 결과는 버린다
+        if isinstance(result, str):
+            self._set_rows([], result)
+        else:
+            self._set_rows(result)
 
 
 class TodoPanel(_ListPanel):
     """할 일 (완료 안 한 것만)."""
 
     def __init__(self, get_user, parent=None):
-        super().__init__("list-todo", "할 일", "남은 할 일이 없어요.", parent)
+        super().__init__("list-todo", "할 일", "남은 할 일이 없어요.", parent,
+                         tooltip="누르면 할 일 창이 열려요 — 우선순위를 정하고 추가·수정·삭제할 수 있어요")
         self._get_user = get_user
         self.refresh()
 
@@ -466,10 +537,13 @@ class TodoPanel(_ListPanel):
             return self._set_rows([], "로그인하면 할 일 목록을 보여드려요.")
         try:
             from plugins import todo_list
-            items = [i for i in todo_list._load().get("items", []) if not i.get("done")]
+            items = sorted([i for i in todo_list._load().get("items", []) if not i.get("done")],
+                           key=todo_list.sort_key)   # 할 일 창과 같은 순서(우선순위 → 마감일)
+            high = {i["seq"] for i in items if todo_list.priority_of(i) == "high"}
         except Exception:
-            items = []
-        self._set_rows([(f"{i.get('seq', '·')}", i.get("text", "")) for i in items])
+            items, high = [], set()
+        self._set_rows([(f"{i.get('seq', '·')}", ("❗ " if i.get("seq") in high else "") + i.get("text", ""))
+                        for i in items])
 
 
 class SessionPanel(Panel):

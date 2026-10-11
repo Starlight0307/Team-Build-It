@@ -68,12 +68,40 @@ DEFAULT_TIMEZONE    = "Asia/Seoul"
 _current_user_id: str = "guest"
 
 
+def _apple_active() -> bool:
+    """활성 캘린더가 애플(iCloud)인가 — calendar_feature/apple_backend.py가 같은 이름의 함수를 갖고 있다."""
+    try:
+        from calendar_feature import calendar_preference
+        return calendar_preference.get_active_calendar() == "apple"
+    except Exception:
+        return False
+
+
+def _apple_call(fn: str, *args):
+    from calendar_feature import apple_backend as ab
+    try:
+        return getattr(ab, fn)(_current_user_id, *args)
+    except ab.AppleNotConnected as e:
+        return [] if fn == "get_upcoming_events_titles" else str(e)
+    except ab.AppleEventNotFound as e:
+        return f"❌ {e}"
+    except Exception as e:
+        print(f"[애플 캘린더] {fn} 오류: {type(e).__name__}: {e}")
+        return [] if fn == "get_upcoming_events_titles" else "❌ 애플 캘린더 작업에 실패했어요. 잠시 후 다시 시도해 주세요."
+
+
 def set_current_user(user_id: str):
     """앱 로그인/로그아웃 시 호출하여 현재 사용자를 설정합니다."""
     global _current_user_id
     _current_user_id = user_id if user_id else "guest"
     if _google_token["owner"] != _current_user_id:   # 로그아웃·계정 전환 → 다른 사람의 토큰은 버린다
         clear_google_access_token()
+    try:
+        from calendar_feature import apple_backend
+        if apple_backend._session["owner"] not in (None, _current_user_id):
+            apple_backend.disconnect()
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────
@@ -425,6 +453,8 @@ def _get_service(user_id: str = None):
 
 
 def get_login_status() -> str:
+    if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
+        return _apple_call('get_login_status')
     print("\n🔐 [캘린더] 로그인 상태 확인 중...")
     state = _google_token_state()
     if state != "none":
@@ -524,6 +554,9 @@ def connect_google_calendar(cancel_event=None) -> tuple[bool, str]:
 
 def setup_calendar_auth() -> str:
     print(f"\n🔐 [캘린더] {_current_user_id} 초기 인증 시작...")
+    if _apple_active():   # 애플은 앱 전용 암호가 필요하다 — 대화 기록에 남지 않게 채팅으로는 받지 않는다
+        return ("애플 캘린더는 마이페이지의 [애플 캘린더 연결]에서 Apple ID와 앱 전용 암호를 넣어 연결해요. "
+                "암호는 채팅으로 보내지 마세요.")
 
     if _current_user_id != "guest":
         return connect_google_calendar()[1]
@@ -600,6 +633,8 @@ def create_event(
     reminder_minutes: int = 30,
     color: str = ""
 ) -> str:
+    if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
+        return _apple_call('create_event', title, start_datetime, end_datetime, description, location, reminder_minutes)
     print(f"\n📅 [캘린더] 일정 등록 중: {title}")
     # local_calendar 재검증(ChatGPT 지적)에서 나온 것과 같은 우려 — 구글
     # 캘린더 API의 reminders.overrides[].minutes는 정수를 기대하는데,
@@ -679,6 +714,8 @@ def create_event(
 # ─────────────────────────────────────────────
 
 def get_upcoming_events(days = 7, calendar_id: str = "primary", max_results: int = 10) -> str:
+    if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
+        return _apple_call('get_upcoming_events', days, max_results)
     days = int(days)
     print(f"\n📋 [캘린더] 향후 {days}일 일정 조회 중...")
     try:
@@ -730,6 +767,8 @@ def get_upcoming_events_titles(days: int = 7, calendar_id: str = "primary", max_
     AI 도구 호출로는 절대 불릴 수 없다. 인증 안 됐거나 오류가 나면 빈
     리스트(local_calendar 쪽과 동일하게 "일정 없음"과 구분하지 않고 호출하는
     쪽이 건너뛰게 함)."""
+    if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
+        return _apple_call('get_upcoming_events_titles', days, max_results)
     try:
         service = _get_service()
         tz  = ZoneInfo(DEFAULT_TIMEZONE)
@@ -755,6 +794,8 @@ def get_upcoming_events_titles(days: int = 7, calendar_id: str = "primary", max_
 
 
 def get_events_by_date(date_str: str, calendar_id: str = "primary") -> str:
+    if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
+        return _apple_call('get_events_by_date', date_str)
     print(f"\n📋 [캘린더] {date_str} 일정 조회 중...")
     try:
         service = _get_service()
@@ -814,6 +855,8 @@ def search_events(keyword: str, days_range: int = 30, calendar_id: str = "primar
             return (f"'{keyword}'는 제품명입니다. "
                    f"가격을 검색하시려면 '얼마', '가격', '최저가' 등의 키워드와 함께 질문해주세요.")
 
+    if _apple_active():
+        return _apple_call('search_events', keyword, days_range)
     try:
         service = _get_service()
         tz  = ZoneInfo(DEFAULT_TIMEZONE)
@@ -889,6 +932,8 @@ def update_event(
     calendar_id: str = "primary",
     timezone: str = DEFAULT_TIMEZONE
 ) -> str:
+    if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
+        return _apple_call('update_event', event_id, title, start_datetime, end_datetime, description, location)
     print(f"\n✏️ [캘린더] 일정 수정 중: {event_id}")
     try:
         service = _get_service()
@@ -943,6 +988,8 @@ def update_event(
 # ─────────────────────────────────────────────
 
 def delete_event(event_id: str, calendar_id: str = "primary") -> str:
+    if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
+        return _apple_call('delete_event', event_id)
     print(f"\n🗑️ [캘린더] 일정 삭제 중: {event_id}")
     try:
         service = _get_service()
@@ -976,6 +1023,8 @@ def delete_recurring_series(event_id: str, calendar_id: str = "primary") -> str:
     회차(recurringEventId로 master를 가리킴)' 구조로 관리하므로, 넘어온
     id가 개별 회차면 recurringEventId를 따라가 master를 찾고, master의
     id를 삭제하면 API가 모든 회차를 한꺼번에 정리해준다."""
+    if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
+        return _apple_call('delete_recurring_series', event_id)
     print(f"\n🗑️ [캘린더] 반복 일정 시리즈 삭제 중: {event_id}")
     try:
         service = _get_service()
@@ -1015,6 +1064,8 @@ def create_recurring_event(
     calendar_id: str = "primary",
     timezone: str = DEFAULT_TIMEZONE
 ) -> str:
+    if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
+        return _apple_call('create_recurring_event', title, start_datetime, end_datetime, recurrence_type, recurrence_count, description, location)
     print(f"\n🔁 [캘린더] 반복 일정 등록 중: {title}")
     if recurrence_type.upper() not in ("DAILY", "WEEKLY", "MONTHLY", "YEARLY"):
         return "반복 주기는 매일/매주/매월/매년 중 하나로 말씀해주세요."
@@ -1071,6 +1122,8 @@ def create_recurring_event(
 # ─────────────────────────────────────────────
 
 def get_calendar_list() -> str:
+    if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
+        return _apple_call('get_calendar_list')
     print("\n📆 [캘린더] 캘린더 목록 조회 중...")
     try:
         service   = _get_service()
@@ -1101,6 +1154,8 @@ def get_calendar_list() -> str:
 # ─────────────────────────────────────────────
 
 def get_schedule_summary(days: int = 30, calendar_id: str = "primary") -> str:
+    if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
+        return _apple_call('get_schedule_summary', days)
     days = int(days)  # local_calendar 재검증에서 발견한 것과 같은 패턴 — 명시 변환
     print(f"\n📊 [캘린더] 최근 {days}일 일정 분석 중...")
     try:
@@ -1382,11 +1437,12 @@ def get_daily_briefing(target: str = "today", calendar_id: str = "primary") -> s
 
 def open_calendar_website() -> str:
     print("\n🌐 [캘린더] 웹사이트 여는 중...")
-    url = "https://calendar.google.com/"
+    url = "https://www.icloud.com/calendar/" if _apple_active() else "https://calendar.google.com/"
     try:
         opened = webbrowser.open(url, new=2)
         if opened:
-            return f"[🌐 브라우저 열기]\n구글 캘린더 웹사이트를 기본 브라우저로 열었어요.\n{url}"
+            name = "애플(iCloud)" if _apple_active() else "구글"
+            return f"[🌐 브라우저 열기]\n{name} 캘린더 웹사이트를 기본 브라우저로 열었어요.\n{url}"
         return f"❌ 브라우저를 열 수 없었어요. 아래 주소로 직접 들어가 주세요: {url}"
     except Exception as e:
         print(f"[캘린더] 브라우저 열기 오류: {e}")

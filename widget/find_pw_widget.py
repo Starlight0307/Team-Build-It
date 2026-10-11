@@ -5,6 +5,7 @@ from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
 from PyQt6.QtGui import QColor
 
 from data.db import request_password_reset, verify_reset_code, apply_new_password
+from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
 
 EMAIL_AUTH_AVAILABLE = True  # Supabase가 직접 코드 발송을 처리 (항상 사용 가능)
 
@@ -288,11 +289,11 @@ class FindPwWidget(QWidget):
         pw2 = self.input_pw2.text()
 
         if not uid or not eml or not pw:
-            QMessageBox.warning(self, "오류", "모든 항목을 입력하세요."); return
+            lumi_dialog.warning(self, "오류", "모든 항목을 입력하세요."); return
 
         # 이메일 인증 확인
         if EMAIL_AUTH_AVAILABLE and not self._email_verified:
-            QMessageBox.warning(self, "본인 인증 필요",
+            lumi_dialog.warning(self, "본인 인증 필요",
                                 "이메일 인증을 먼저 완료하세요.\n"
                                 "'인증코드 발송' 버튼을 눌러 인증을 진행하세요.")
             return
@@ -307,10 +308,10 @@ class FindPwWidget(QWidget):
         self.msg_pw2.setText("")
 
         if apply_new_password(self._reset_token, pw):
-            QMessageBox.information(self, "완료", "비밀번호가 재설정되었습니다!")
+            lumi_dialog.information(self, "완료", "비밀번호가 재설정되었습니다!")
             self._go_back()
         else:
-            QMessageBox.warning(self, "실패", "비밀번호 변경에 실패했습니다. 인증코드부터 다시 시도해주세요.")
+            lumi_dialog.warning(self, "실패", "비밀번호 변경에 실패했습니다. 인증코드부터 다시 시도해주세요.")
 
     def _val_pw(self, pw):
         if not (8 <= len(pw) <= 20): return False, "8~20자로 입력하세요."

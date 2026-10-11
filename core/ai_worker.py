@@ -368,13 +368,22 @@ def _describe_remove_lumi_firewall_rule(a: dict, func_map: dict) -> str:
     return desc + "\n\n※ Windows 관리자 승인 창이 뜹니다."
 
 
+def _active_calendar_label() -> str:
+    """삭제 확인창에 쓸 캘린더 이름 — 구글 이름의 도구(delete_event)가 애플 캘린더 일정도 지운다."""
+    try:
+        from calendar_feature import calendar_preference
+        return "애플 캘린더" if calendar_preference.get_active_calendar() == "apple" else "구글 캘린더"
+    except Exception:
+        return "캘린더"
+
+
 _DANGEROUS_FUNCS = {
     "kill_process":             lambda a, fm: f"'{a.get('process_name_or_number', '')}' 프로세스 강제 종료" + _repeat_kill_hint(a.get('process_name_or_number', '')),
     "manage_firewall":          lambda a, fm: f"방화벽 규칙 변경 (포트 {a.get('port', '?')}/{a.get('protocol', 'tcp')}, 동작: {a.get('action', '?')})",
     "block_suspicious_process": _describe_block_suspicious_process,
-    "delete_event":             lambda a, fm: "구글 캘린더 일정 삭제 (되돌릴 수 없음)",
+    "delete_event":             lambda a, fm: f"{_active_calendar_label()} 일정 삭제 (되돌릴 수 없음)",
     "local_delete_event":       lambda a, fm: "내부 캘린더 일정 삭제 (되돌릴 수 없음)",
-    "delete_recurring_series":       lambda a, fm: "구글 캘린더 반복 일정 시리즈 전체 삭제 (모든 회차, 되돌릴 수 없음)",
+    "delete_recurring_series":       lambda a, fm: f"{_active_calendar_label()} 반복 일정 시리즈 전체 삭제 (모든 회차, 되돌릴 수 없음)",
     "local_delete_recurring_series": lambda a, fm: "내부 캘린더 반복 일정 시리즈 전체 삭제 (모든 회차, 되돌릴 수 없음)",
     "clean_temp_files": _describe_clean_temp_files,
     "delete_duplicate_files": _describe_delete_duplicate_files,
@@ -3851,7 +3860,7 @@ def _build_firewall_tool_reply(raw_results: str):
 # "해드릴까요?"]' 같은 조각이나 반말 되묻기("~뭐라고 적혀있었죠?")를 만들었다. 둘 다 calendar_tool이
 # 정해진 형식으로 돌려주므로 코드로 문장을 만든다.
 _GOOGLE_STATUS_HEADER = re.compile(r"^\[🔐 로그인 상태\] \(사용자: [^)]*\)\n")
-_GOOGLE_ACCOUNT_LINE = re.compile(r"^- 구글 계정: (.+)$", re.MULTILINE)
+_GOOGLE_ACCOUNT_LINE = re.compile(r"^- (?P<kind>구글|애플) 계정: (?P<account>.+)$", re.MULTILINE)
 _GOOGLE_MINUTES_LINE = re.compile(r"^- 남은 시간: 약 (\d+)분", re.MULTILINE)
 
 
@@ -3863,6 +3872,8 @@ def _build_calendar_login_status_reply(raw_results: str):
         return None
     body = _GOOGLE_STATUS_HEADER.sub("", text, count=1)
     if "로그인되지 않은 상태" in body:
+        if "애플" in body:
+            return "아직 애플 캘린더가 연결되지 않았어요. 마이페이지의 [애플 캘린더 연결]에서 연결할 수 있어요."
         return ("아직 구글 캘린더가 연결되지 않았어요. '구글 캘린더 연결해줘'라고 말씀하시거나 "
                 "마이페이지의 [구글 연동하기]를 누르면 연결할 수 있어요.")
     if "만료" in body:
@@ -3872,7 +3883,12 @@ def _build_calendar_login_status_reply(raw_results: str):
     if "✅" not in body or not account:
         return None
     minutes = _GOOGLE_MINUTES_LINE.search(body)
-    reply = f"구글 캘린더에 연결돼 있어요. 연결된 구글 계정은 {account.group(1).strip()}이에요."
+    kind = account.group("kind")
+    name = account.group('account').strip()
+    last = name[-1:]
+    # 받침이 없는 한글로 끝나면 "예요"("이 Mac의 캘린더예요"), 그 밖에는 "이에요"
+    ending = "예요" if "가" <= last <= "힣" and (ord(last) - 0xAC00) % 28 == 0 else "이에요"
+    reply = f"{kind} 캘린더에 연결돼 있어요. 연결된 {kind} 계정은 {name}{ending}."
     if minutes:
         reply += f" 앞으로 약 {minutes.group(1)}분 동안 연결이 유지돼요."
     return reply
@@ -3895,7 +3911,7 @@ def _build_calendar_list_reply(raw_results: str):
     items = list(_CALENDAR_LIST_ITEM.finditer(text[m.end():]))
     if len(items) != int(m.group("count")):
         return None
-    lines = [f"구글 캘린더 {len(items)}개가 연결돼 있어요."]
+    lines = [f"캘린더 {len(items)}개가 연결돼 있어요."]
     for it in items:
         tags = (["기본"] if it.group("primary") else []) + [_CALENDAR_ROLE_LABELS.get(it.group("role"), it.group("role"))]
         lines.append(f"- {it.group('name').strip()} ({' · '.join(tags)})")
@@ -4060,7 +4076,7 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
         print(f"[AI 워커] 브리핑 - 캘린더 백엔드 확인 오류: {e}")
         active_calendar = None
 
-    if active_calendar == 'google':
+    if active_calendar in ('google', 'apple'):   # 애플은 구글과 같은 함수 이름(calendar_tool이 넘김)
         calendar_func_name = 'get_daily_briefing'
     elif active_calendar == 'local':
         calendar_func_name = 'local_get_daily_briefing'
@@ -4417,7 +4433,7 @@ def _build_calendar_file_search(func_map: dict, get_active_calendar) -> str:
         print(f"[AI 워커] 캘린더+파일 검색 - 캘린더 백엔드 확인 오류: {e}")
         return ""
 
-    if active_calendar == 'google':
+    if active_calendar in ('google', 'apple'):   # 애플은 구글과 같은 함수 이름(calendar_tool이 넘김)
         titles_func_name = 'get_upcoming_events_titles'
     elif active_calendar == 'local':
         titles_func_name = 'local_get_upcoming_events_titles'
@@ -5143,6 +5159,15 @@ class AIWorker(QThread):
         t = re.sub(r'[을를에이가은는으로도]\s*$', '', t.strip())
         t = t.strip()
         return t if len(t) >= 2 else ""
+
+    def _keep_only_typed_update_fields(self, args: dict) -> dict:
+        """일정 수정 인자에서 제목·장소·메모는 사용자가 문장에 실제로 쓴 값만 남긴다(모델이 지어낸 값 버림)."""
+        args = dict(args)
+        for key in ('title', 'description', 'location'):
+            value = str(args.get(key) or '').strip()
+            if value and value not in self.user_text:
+                args.pop(key, None)
+        return args
 
     def _rebuild_faked_create_event(self, content: str, exposed: set, func_map: dict):
         """모델이 일정 등록을 본문 JSON으로 흉내만 냈을 때, 사용자 문장에서 제목·날짜·시작 시각을 모두
@@ -6402,7 +6427,7 @@ class AIWorker(QThread):
             # 노출하지 않는다 (구조적 필터 — 위 상수 설명 참고)
             active_calendar = calendar_preference.get_active_calendar()
             hidden_calendar_funcs = (
-                _LOCAL_CALENDAR_CRUD_FUNCS if active_calendar == "google" else _GOOGLE_CALENDAR_CRUD_FUNCS
+                _LOCAL_CALENDAR_CRUD_FUNCS if active_calendar in ("google", "apple") else _GOOGLE_CALENDAR_CRUD_FUNCS
             )
 
             # 메시지에 "실시간/감시/모니터링/백그라운드" 언급이 없으면 실시간 감시
@@ -6736,6 +6761,10 @@ class AIWorker(QThread):
                     # 2024-03-16 18:00~18:00으로 넘어갔다). 날짜 표현이 둘 이상이면("내일 회의를 모레로")
                     # 어느 쪽이 새 날짜인지 모르니 날짜는 모델 값을 그대로 둔다.
                     if func_name in ('update_event', 'local_update_event'):
+                        # 2026-10-11 실제 Mac 캘린더: "루미테스트 회의를 모레 오후 5시부터 6시까지로 바꿔줘"에 모델이
+                        # title로 "고카캼카캸캱캰…"을 지어내 넘겨 실제 일정 제목이 깨졌다. 수정 요청에서 제목·장소·메모는
+                        # 사용자가 실제로 쓴 말일 때만 바꾼다("제목을 팀회의로 바꿔줘" → "팀회의"는 문장에 있으니 유지).
+                        args = self._keep_only_typed_update_fields(args)
                         if len(self._DATE_WORDS.findall(self.user_text)) == 1:
                             _day = self._resolve_event_date(self.user_text)
                             if _day:

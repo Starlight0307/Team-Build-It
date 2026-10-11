@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from settings.config import PLUGIN_DIR, TOOL_SCHEMAS
 from core.plugins_registry import AVAILABLE_PLUGINS
+from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
 
 # ==========================================
 # 🔌 플러그인 로더
@@ -97,7 +98,7 @@ def download_and_install_plugin(
     if btn.text() == "설치됨":
         return
 
-    reply = QMessageBox.question(
+    reply = lumi_dialog.question(
         parent_widget,
         "플러그인 설치 확인",
         f"'{f_name}' 기능을 추가하시겠습니까?\n설치 시 외부 라이브러리 다운로드가 진행될 수 있습니다.",
@@ -129,7 +130,7 @@ def download_and_install_plugin(
         expected_hash = plugin_info.get("sha256")
         actual_hash = hashlib.sha256(res.content).hexdigest()
         if expected_hash and actual_hash != expected_hash:
-            QMessageBox.critical(
+            lumi_dialog.critical(
                 parent_widget, "설치 거부",
                 f"'{f_name}' 플러그인의 내용이 등록된 것과 다릅니다 (무결성 검증 실패).\n"
                 "원본 저장소가 변경되었을 수 있어 안전을 위해 설치를 중단합니다."
@@ -170,9 +171,9 @@ def download_and_install_plugin(
             "background-color: transparent; color: gray; "
             "border: 1px solid gray; border-radius: 4px; font-weight: bold;"
         )
-        QMessageBox.information(parent_widget, "완료", f"'{f_name}' 플러그인이 성공적으로 설치되었습니다.")
+        lumi_dialog.information(parent_widget, "완료", f"'{f_name}' 플러그인이 성공적으로 설치되었습니다.")
 
     except Exception as e:
         print(f"[플러그인 설치 오류] {m_name}: {e}")
-        QMessageBox.critical(parent_widget, "오류", f"'{f_name}' 기능 설치에 실패했습니다. 인터넷 연결을 확인하고 잠시 후 다시 시도해주세요.")
+        lumi_dialog.critical(parent_widget, "오류", f"'{f_name}' 기능 설치에 실패했습니다. 인터넷 연결을 확인하고 잠시 후 다시 시도해주세요.")
         btn.setText("설치"); btn.setEnabled(True)

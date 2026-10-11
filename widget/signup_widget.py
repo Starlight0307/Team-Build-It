@@ -6,6 +6,7 @@ from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
 from PyQt6.QtGui import QColor
 
 from data.db import user_exists_by_username, user_exists_by_email, register_user
+from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
 
 try:
     from auth.email_auth import request_code, confirm_code
@@ -416,17 +417,17 @@ class SignupWidget(QWidget):
         self.msg_pw2.setText("")
 
         if not name:
-            QMessageBox.warning(self, "오류", "이름을 입력하세요."); return
+            lumi_dialog.warning(self, "오류", "이름을 입력하세요."); return
         if not phone or not phone.isdigit() or len(phone) != 11:
-            QMessageBox.warning(self, "오류", "휴대폰번호는 '-' 제외 11자리 숫자로 입력하세요."); return
+            lumi_dialog.warning(self, "오류", "휴대폰번호는 '-' 제외 11자리 숫자로 입력하세요."); return
         if not email or "." not in email.split("@")[-1]:
-            QMessageBox.warning(self, "오류", "올바른 이메일 주소를 입력하세요."); return
+            lumi_dialog.warning(self, "오류", "올바른 이메일 주소를 입력하세요."); return
         if yr == "년도" or mo == "월" or dy == "일":
-            QMessageBox.warning(self, "오류", "생년월일을 선택하세요."); return
+            lumi_dialog.warning(self, "오류", "생년월일을 선택하세요."); return
 
         # 이메일 인증 필수 확인
         if EMAIL_AUTH_AVAILABLE and not self._email_verified:
-            QMessageBox.warning(self, "이메일 인증 필요",
+            lumi_dialog.warning(self, "이메일 인증 필요",
                                 "이메일 인증을 완료한 후 가입하세요.\n"
                                 "'인증코드 발송' 버튼을 눌러 인증을 진행하세요.")
             return
@@ -434,12 +435,12 @@ class SignupWidget(QWidget):
         if user_exists_by_username(uid):
             self._set_msg(self.msg_id, "이미 사용 중인 아이디입니다."); return
         if user_exists_by_email(email):
-            QMessageBox.warning(self, "오류", "이미 사용 중인 이메일입니다."); return
+            lumi_dialog.warning(self, "오류", "이미 사용 중인 이메일입니다."); return
 
         birthday = f"{yr}-{int(mo):02d}-{int(dy):02d}"
         register_user(uid, pw, email, name, phone, birthday)
 
-        QMessageBox.information(self, "가입 완료", "회원가입이 완료되었습니다!")
+        lumi_dialog.information(self, "가입 완료", "회원가입이 완료되었습니다!")
         self.clear_fields()
         self.signup_success.emit()
 

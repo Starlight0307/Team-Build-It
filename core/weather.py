@@ -259,6 +259,7 @@ def fetch_weather(city: str, coords: tuple = None) -> dict:
         "desc": desc,
         "icon": day_icon if cur.get("is_day", 1) else night_icon,
         "icon_name": _icon_name(day_icon, night_icon, cur.get("is_day", 1)),
+        "is_day": bool(cur.get("is_day", 1)),
     }
 
 
@@ -315,3 +316,134 @@ def fetch_forecast(city: str, coords: tuple = None, days: int = 7) -> list:
         raise
     except Exception as e:
         raise WeatherError("날씨 예보를 가져오지 못했어요. 인터넷 연결을 확인해 주세요.") from e
+
+
+# ─────────────────────────────────────────────
+# 날씨 자세히 보기(widget/weather_detail.py) — 아이폰 날씨 앱처럼 한 화면에 필요한 값을 한 번에
+# ─────────────────────────────────────────────
+
+_SYNODIC = 29.530588853                      # 삭망월(일)
+_NEW_MOON_REF = 947182440.0                  # 2000-01-06 18:14 UTC 신월(유닉스 시각)
+_MOON_PHASES = (("신월", 1.0), ("초승달", 6.4), ("상현달", 8.4), ("차가는 달", 13.8), ("보름달", 15.8),
+                ("기우는 달", 21.1), ("하현달", 23.1), ("그믐달", 28.5), ("신월", 99))
+
+
+def moon_phase(when=None) -> dict:
+    """달 모양(인터넷 없이 계산) — {"name", "age"(일), "illumination"(0~1), "waxing", "next_full", "next_new"}."""
+    from datetime import datetime, timedelta, timezone
+    when = when or datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    age = ((when.timestamp() - _NEW_MOON_REF) / 86400) % _SYNODIC
+    name = next(n for n, limit in _MOON_PHASES if age < limit)
+    to_full = (_SYNODIC / 2 - age) % _SYNODIC
+    to_new = _SYNODIC - age
+    if to_new < _SYNODIC - _MOON_PHASES[-2][1]:   # 이미 신월 구간이면 다음 신월은 한 달 뒤
+        to_new += _SYNODIC
+    return {"name": name, "age": age, "illumination": (1 - math.cos(2 * math.pi * age / _SYNODIC)) / 2,
+            "waxing": age < _SYNODIC / 2,
+            "next_full": (when + timedelta(days=to_full)).astimezone().date(),
+            "next_new": (when + timedelta(days=to_new)).astimezone().date()}
+
+
+def uv_level(uv) -> str:
+    if uv is None:
+        return "-"
+    return "낮음" if uv < 3 else "보통" if uv < 6 else "높음" if uv < 8 else "매우 높음" if uv < 11 else "위험"
+
+
+def air_grade(pm10, pm25) -> tuple:
+    """환경부 기준 미세먼지·초미세먼지 등급 중 나쁜 쪽 → (등급, 0~3)."""
+    def g(v, cuts):
+        return 0 if v is None else next((i for i, c in enumerate(cuts) if v <= c), 3)
+    level = max(g(pm10, (30, 80, 150)), g(pm25, (15, 35, 75)))
+    return ("좋음", "보통", "나쁨", "매우 나쁨")[level], level
+
+
+def wind_direction_name(deg) -> str:
+    if deg is None:
+        return ""
+    names = ("북", "북동", "동", "남동", "남", "남서", "서", "북서")
+    return names[int((deg % 360 + 22.5) // 45) % 8] + "풍"
+
+
+def fetch_weather_detail(city: str, coords: tuple = None) -> dict:
+    """자세한 날씨 — 현재, 24시간, 10일, 대기질, 해·달. 실패하면 WeatherError.
+    대기질(별도 서버)은 실패해도 나머지는 보여준다(air=None)."""
+    from datetime import datetime
+    try:
+        lat, lon, name = (coords[0], coords[1], city) if coords else locate(city)
+        resp = requests.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": lat, "longitude": lon, "timezone": "auto", "wind_speed_unit": "ms",
+            "forecast_days": 10, "past_days": 1,
+            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,"
+                       "wind_direction_10m,wind_gusts_10m,is_day,pressure_msl,precipitation,dew_point_2m,"
+                       "visibility,uv_index",
+            "hourly": "temperature_2m,weather_code,precipitation_probability,is_day,pressure_msl",
+            "daily": "weather_code,temperature_2m_max,temperature_2m_min,temperature_2m_mean,precipitation_sum,"
+                     "precipitation_probability_max,sunrise,sunset,uv_index_max",
+        }, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        raw = resp.json()
+        cur, hourly, daily = raw["current"], raw["hourly"], raw["daily"]
+
+        now = datetime.fromisoformat(cur["time"])
+        code = int(cur.get("weather_code", -1))
+        desc, day_icon, night_icon = _WMO.get(code, ("알 수 없음", "🌡️", "🌡️"))
+
+        days = []
+        for i, d in enumerate(daily["time"]):
+            c = int(daily["weather_code"][i] if daily["weather_code"][i] is not None else -1)
+            dd, di, dn = _WMO.get(c, ("알 수 없음", "🌡️", "🌡️"))
+            days.append({"date": d, "desc": dd, "icon_name": _icon_name(di, dn, 1),
+                         "max": daily["temperature_2m_max"][i], "min": daily["temperature_2m_min"][i],
+                         "mean": daily["temperature_2m_mean"][i], "rain_sum": daily["precipitation_sum"][i],
+                         "rain_prob": daily["precipitation_probability_max"][i],
+                         "sunrise": daily["sunrise"][i], "sunset": daily["sunset"][i],
+                         "uv_max": daily["uv_index_max"][i]})
+        today_key = now.date().isoformat()
+        ti = next((i for i, d in enumerate(days) if d["date"] == today_key), 1)
+        yesterday, upcoming = (days[ti - 1] if ti > 0 else None), days[ti:]
+
+        hours, pressures = [], []
+        for i, t in enumerate(hourly["time"]):
+            ht = datetime.fromisoformat(t)
+            if ht.replace(minute=0) < now.replace(minute=0):
+                pressures.append(hourly["pressure_msl"][i])
+                continue
+            if len(hours) >= 24:
+                break
+            c = int(hourly["weather_code"][i] if hourly["weather_code"][i] is not None else -1)
+            hd, hi, hn = _WMO.get(c, ("알 수 없음", "🌡️", "🌡️"))
+            hours.append({"time": t, "temp": hourly["temperature_2m"][i], "rain_prob": hourly["precipitation_probability"][i],
+                          "icon_name": _icon_name(hi, hn, hourly["is_day"][i]), "desc": hd})
+        # 기압이 3시간 전보다 1hPa 넘게 바뀌었으면 오르는/내리는 중
+        trend = 0
+        if len(pressures) >= 3 and cur.get("pressure_msl") is not None and pressures[-3] is not None:
+            diff = cur["pressure_msl"] - pressures[-3]
+            trend = 1 if diff > 1 else -1 if diff < -1 else 0
+    except WeatherError:
+        raise
+    except Exception as e:
+        raise WeatherError("자세한 날씨를 가져오지 못했어요. 인터넷 연결을 확인해 주세요.") from e
+
+    air = None
+    try:
+        a = requests.get("https://air-quality-api.open-meteo.com/v1/air-quality", params={
+            "latitude": lat, "longitude": lon, "timezone": "auto", "current": "pm10,pm2_5,us_aqi",
+        }, timeout=_TIMEOUT).json()["current"]
+        grade, level = air_grade(a.get("pm10"), a.get("pm2_5"))
+        air = {"pm10": a.get("pm10"), "pm25": a.get("pm2_5"), "aqi": a.get("us_aqi"), "grade": grade, "level": level}
+    except Exception:
+        pass
+
+    return {
+        "city": name, "time": cur["time"], "is_day": bool(cur.get("is_day", 1)),
+        "temp": cur.get("temperature_2m"), "feels": cur.get("apparent_temperature"),
+        "humidity": cur.get("relative_humidity_2m"), "dew_point": cur.get("dew_point_2m"),
+        "wind": cur.get("wind_speed_10m"), "wind_gust": cur.get("wind_gusts_10m"),
+        "wind_dir": cur.get("wind_direction_10m"), "pressure": cur.get("pressure_msl"), "pressure_trend": trend,
+        "visibility": cur.get("visibility"), "uv": cur.get("uv_index"), "precipitation": cur.get("precipitation"),
+        "desc": desc, "icon_name": _icon_name(day_icon, night_icon, cur.get("is_day", 1)),
+        "hours": hours, "days": upcoming, "yesterday": yesterday, "air": air, "moon": moon_phase(),
+    }
