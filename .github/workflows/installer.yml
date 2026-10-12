@@ -49,6 +49,7 @@ jobs:
           --icon installer/lumi.ico
           --add-binary "installer/uv.exe;."
           --add-data "installer/lumi.ico;."
+          --add-data "installer/lumi_installer.py;."
           installer/lumi_installer.py
 
       - name: 설치 파일 올리기
@@ -115,14 +116,41 @@ jobs:
             "바탕화면 바로가기"  = Test-Path "$desktop\Lumi.lnk"
             "시작 메뉴 바로가기" = Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Lumi.lnk"
             "앱 및 기능 등록"    = Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Lumi"
+            "업데이트 실행기"    = Test-Path "$root\launcher\lumi_installer.py"
+            "실행기 uv"          = Test-Path "$root\launcher\uv.exe"
+            "설치 버전 기록"     = Test-Path "$root\update.json"
           }
           $checks.GetEnumerator() | ForEach-Object { "{0,-20} {1}" -f $_.Key, $_.Value }
           $tags = Invoke-RestMethod http://127.0.0.1:11434/api/tags
           "Ollama 모델: " + (($tags.models | ForEach-Object { $_.name }) -join ", ")
           $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut("$desktop\Lumi.lnk")
           "바로가기 → $($lnk.TargetPath) $($lnk.Arguments) (작업 폴더 $($lnk.WorkingDirectory))"
+          "설치 버전: " + (Get-Content "$root\update.json" -Raw)
           if ($checks.Values -contains $false) { throw "빠진 항목이 있음" }
+          if ($lnk.Arguments -notmatch "--launch") { throw "바로가기가 업데이트 실행기를 거치지 않음" }
           if (-not ($tags.models.name -match "^llama3\.1")) { throw "모델 없음" }
+
+      # 예전 버전이 설치된 것처럼 꾸미고 실행기를 돌려 → 최신 버전으로 바뀌는지
+      - name: 자동 업데이트
+        shell: pwsh
+        run: |
+          $root = "$env:LOCALAPPDATA\Programs\Lumi"
+          $latest = (Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/commits/main" -Headers @{Accept = "application/vnd.github.sha"}).Trim()
+          '{"sha": "0000000000000000000000000000000000000000"}' | Set-Content "$root\update.json" -Encoding utf8
+          "x" | Set-Content "$root\app\app_main.py.bak-check"
+          Set-Content "$root\app\app_main.py" "# 예전 버전 흉내" -Encoding utf8
+          $p = Start-Process "$root\venv\Scripts\python.exe" -ArgumentList "`"$root\launcher\lumi_installer.py`"", "--launch", "--no-ui", "--no-start" -PassThru -Wait
+          Get-Content "$root\launcher\update.log" -Encoding utf8
+          $now = (Get-Content "$root\update.json" -Raw | ConvertFrom-Json).sha
+          "종료 코드 $($p.ExitCode) · 최신 $latest · 설치됨 $now"
+          if ($p.ExitCode -ne 0 -or $now -ne $latest) { throw "업데이트 안 됨" }
+          if ((Get-Content "$root\app\app_main.py" -Raw) -match "예전 버전 흉내") { throw "코드가 바뀌지 않음" }
+          if (-not (Test-Path "$root\app\app_main.py.bak-check")) { throw "앱 폴더의 다른 파일이 지워짐" }
+          # 이미 최신이면 아무것도 받지 않고 바로 끝나야 한다
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $p = Start-Process "$root\venv\Scripts\python.exe" -ArgumentList "`"$root\launcher\lumi_installer.py`"", "--launch", "--no-ui", "--no-start" -PassThru -Wait
+          "최신일 때 실행기 시간: $([math]::Round($sw.Elapsed.TotalSeconds, 1))초"
+          Get-Content "$root\launcher\update.log" -Encoding utf8 | Select-Object -Last 1
 
       # 설치된 환경 그대로 루미 앱 화면을 띄워 본다 (offscreen) + 실제로 바로가기 대상 실행
       - name: 설치된 루미 실행
@@ -133,7 +161,9 @@ jobs:
           & "$root\venv\Scripts\python.exe" scripts\windows_selftest.py --only 3
           if ($LASTEXITCODE -ne 0) { throw "앱 화면 점검 실패" }
           Pop-Location
-          $p = Start-Process "$root\venv\Scripts\pythonw.exe" -ArgumentList "app_main.py" -WorkingDirectory "$root\app" -PassThru
+          # 바로가기와 똑같이 — 업데이트 실행기를 거쳐 루미를 켠다
+          $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut("$([Environment]::GetFolderPath('Desktop'))\Lumi.lnk")
+          Start-Process $lnk.TargetPath -ArgumentList $lnk.Arguments -WorkingDirectory $lnk.WorkingDirectory
           Start-Sleep 40
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds

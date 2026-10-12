@@ -15,6 +15,12 @@ r"""
   python\ uv가 받은 Python
 대화기록 등 개인 기록은 원래대로 %LOCALAPPDATA%\Lumi에 있고, 제거할 때도 지우지 않는다.
 
+자동 업데이트:
+  바로가기는 루미를 바로 켜지 않고 launcher\lumi_installer.py --launch(이 파일의 복사본)를 먼저 실행한다.
+  GitHub main의 최신 커밋을 확인해 설치된 것(update.json)과 다르면 새 코드를 받아 덮어쓰고,
+  requirements.txt가 바뀌었으면 구성요소도 맞춘 뒤 루미를 켠다. 인터넷이 안 되거나 실패하면 있던 버전으로 켠다.
+  launcher\no-auto-update 파일이 있으면 업데이트하지 않는다.
+
 실행:
   LumiSetup.exe                    설치 화면
   LumiSetup.exe --uninstall        제거 화면 ('앱 및 기능'에서 제거를 누르면 이걸로 실행된다)
@@ -36,6 +42,9 @@ import zipfile
 APP_NAME = "Lumi"
 PUBLISHER = "Team Build It"
 REPO_ZIP_URL = "https://codeload.github.com/Starlight0307/Team-Build-It/zip/refs/heads/main"
+# 최신 커밋 번호(40자)만 받는다 — 로그인 없이 IP당 시간당 60번까지라 실행할 때 한 번이면 충분하다
+LATEST_COMMIT_API = "https://api.github.com/repos/Starlight0307/Team-Build-It/commits/main"
+CODE_ZIP_AT = "https://codeload.github.com/Starlight0307/Team-Build-It/zip/{sha}"
 OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
 OLLAMA_API = "http://127.0.0.1:11434"
 PYTHON_VERSION = "3.11"
@@ -87,6 +96,9 @@ def paths(install_dir: str) -> dict:
         "cache": os.path.join(install_dir, "cache"),
         "icon": os.path.join(install_dir, "lumi.ico"),
         "setup": os.path.join(install_dir, "LumiSetup.exe"),
+        "launcher": os.path.join(install_dir, "launcher"),
+        "launcher_py": os.path.join(install_dir, "launcher", "lumi_installer.py"),
+        "state": os.path.join(install_dir, "update.json"),
     }
 
 
@@ -130,6 +142,53 @@ def safe_extract(zip_path: str, dest: str) -> int:
     return len(plan)
 
 
+def parse_commit_sha(text: str) -> str:
+    """GitHub가 돌려준 커밋 번호가 40자리 16진수일 때만 받아들인다(아니면 빈 문자열)."""
+    text = (text or "").strip().lower()
+    return text if re.fullmatch(r"[0-9a-f]{40}", text) else ""
+
+
+def latest_commit_sha(timeout: float = 4) -> str:
+    """GitHub main의 최신 커밋 번호. 인터넷이 안 되거나 막히면 빈 문자열."""
+    req = urllib.request.Request(LATEST_COMMIT_API, headers={
+        "User-Agent": USER_AGENT, "Accept": "application/vnd.github.sha"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return parse_commit_sha(resp.read(200).decode("ascii", "replace"))
+    except Exception:
+        return ""
+
+
+def read_state(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_state(path: str, sha: str):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"sha": sha, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}, f)
+    os.replace(tmp, path)
+
+
+def file_digest(path: str) -> str:
+    import hashlib
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def needs_update(latest: str, state: dict) -> bool:
+    """최신 커밋을 알아냈고 설치된 것과 다를 때만 업데이트한다."""
+    return bool(latest) and latest != state.get("sha")
+
+
 def clean_child_env(extra: dict = None) -> dict:
     """설치 프로그램(PyInstaller)이 넣은 환경 변수를 빼고 자식 프로세스에 넘긴다
     — 그대로 넘기면 루미가 설치 프로그램 안에 묶인 Qt/파이썬을 잘못 집을 수 있다."""
@@ -140,12 +199,12 @@ def clean_child_env(extra: dict = None) -> dict:
 
 
 def bundled_uv() -> str:
-    """설치 파일에 같이 묶인 uv.exe (개발 중에는 LUMI_UV 또는 PATH의 uv)."""
-    base = getattr(sys, "_MEIPASS", None)
-    if base:
-        p = os.path.join(base, "uv.exe" if IS_WIN else "uv")
-        if os.path.isfile(p):
-            return p
+    """설치 파일에 같이 묶인 uv.exe — 업데이트 실행기(launcher 폴더)로 돌 때는 옆에 복사해 둔 uv.exe
+    (개발 중에는 LUMI_UV 또는 PATH의 uv)."""
+    name = "uv.exe" if IS_WIN else "uv"
+    for base in (getattr(sys, "_MEIPASS", None), os.path.dirname(os.path.abspath(__file__))):
+        if base and os.path.isfile(os.path.join(base, name)):
+            return os.path.join(base, name)
     return os.environ.get("LUMI_UV") or shutil.which("uv") or ""
 
 
@@ -299,17 +358,22 @@ class Installer:
             raise InstallError("전용 파이썬 환경을 만들지 못했어요.")
 
     def step_code(self):
+        # 커밋 번호로 받아야 자동 업데이트가 "지금 설치된 것"을 정확히 안다(모르면 첫 실행 때 한 번 더 받는다)
+        sha = latest_commit_sha(timeout=10)
         tmp = tempfile.mkdtemp(prefix="lumi-setup-")
         try:
             z = os.path.join(tmp, "lumi.zip")
-            self._download(REPO_ZIP_URL, z, "루미")
+            self._download(CODE_ZIP_AT.format(sha=sha) if sha else REPO_ZIP_URL, z, "루미")
             self.on_progress(None)
             self.on_detail("파일 푸는 중")
             os.makedirs(self.p["app"], exist_ok=True)
             n = safe_extract(z, self.p["app"])
-            self.on_log(f"파일 {n}개 설치")
+            self.on_log(f"파일 {n}개 설치 ({sha[:7] or '커밋 번호 모름'})")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+        if sha:
+            write_state(self.p["state"], sha)
+        self._install_launcher()
         cfg = os.path.join(self.p["app"], "settings", "config.py")
         try:
             with open(cfg, encoding="utf-8") as f:
@@ -321,14 +385,98 @@ class Installer:
             shutil.copyfile(icon, self.p["icon"])
 
     def step_packages(self):
-        uv = bundled_uv()
-        req = os.path.join(self.p["app"], "requirements.txt")
         self.on_progress(None)
         self.on_detail("구성요소 설치 중 — 처음엔 몇 분 걸릴 수 있어요")
+        self._install_requirements(os.path.join(self.p["app"], "requirements.txt"))
+
+    def _install_requirements(self, req: str):
         # 설치 파일(wheel)만 — 소스 빌드는 임의 코드를 실행하므로 앱의 자동 설치와 같은 규칙을 지킨다
-        self._run([uv, "pip", "install", "--python", self.p["python"], "--only-binary", ":all:", "-r", req],
-                  env=self._uv_env(), what="구성요소 설치")
-        shutil.rmtree(self.p["cache"], ignore_errors=True)   # 받은 설치 파일 캐시는 지워 용량을 돌려준다
+        uv = bundled_uv()
+        if uv:
+            self._run([uv, "pip", "install", "--python", self.p["python"], "--only-binary", ":all:", "-r", req],
+                      env=self._uv_env(), what="구성요소 설치")
+            shutil.rmtree(self.p["cache"], ignore_errors=True)   # 받은 설치 파일 캐시는 지워 용량을 돌려준다
+        else:   # uv를 못 찾으면 전용 환경의 pip로
+            self._run([self.p["python"], "-m", "pip", "install", "--disable-pip-version-check",
+                       "--only-binary", ":all:", "-r", req], what="구성요소 설치")
+
+    def _install_launcher(self):
+        """업데이트 실행기 = 이 파일 + uv를 설치 폴더의 launcher\에 복사한다(바로가기가 이걸 실행한다)."""
+        os.makedirs(self.p["launcher"], exist_ok=True)
+        src = bundled_file("lumi_installer.py")
+        if src and os.path.abspath(src) != os.path.abspath(self.p["launcher_py"]):
+            shutil.copyfile(src, self.p["launcher_py"])
+        uv = bundled_uv()
+        dst_uv = os.path.join(self.p["launcher"], os.path.basename(uv)) if uv else ""
+        if uv and os.path.abspath(uv) != os.path.abspath(dst_uv):
+            try:
+                shutil.copyfile(uv, dst_uv)
+            except OSError as e:   # 실행 중이라 잠겨 있으면 있던 것을 쓴다
+                self.on_log(f"uv 복사 실패: {e}")
+
+    # ── 자동 업데이트 ──
+    def update_to(self, sha: str):
+        """GitHub의 sha 커밋으로 루미 코드를 바꾼다. 받기·풀기·구성요소 설치가 모두 끝난 뒤에야 덮어쓰므로
+        중간에 실패하면 있던 코드가 그대로 남는다."""
+        tmp = tempfile.mkdtemp(prefix="lumi-update-")
+        try:
+            z = os.path.join(tmp, "lumi.zip")
+            self.on_detail("새 버전 받는 중")
+            self._download(CODE_ZIP_AT.format(sha=sha), z, "새 버전")
+            stage = os.path.join(tmp, "stage")
+            self.on_progress(None)
+            self.on_detail("파일 푸는 중")
+            n = safe_extract(z, stage)
+            new_req = os.path.join(stage, "requirements.txt")
+            if file_digest(new_req) != file_digest(os.path.join(self.p["app"], "requirements.txt")):
+                self.on_detail("구성요소 맞추는 중 — 조금 걸릴 수 있어요")
+                self._install_requirements(new_req)
+            self._check()
+            self.on_detail("파일 바꾸는 중")
+            # 덮어쓰기만 한다 — 앱 폴더 안의 개인 파일(.env·email_config.py·토큰·스킬)은 남는다
+            shutil.copytree(stage, self.p["app"], dirs_exist_ok=True)
+            self.on_log(f"파일 {n}개 업데이트 → {sha[:7]}")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        write_state(self.p["state"], sha)
+        self._refresh_launcher()
+
+    def _refresh_launcher(self):
+        """새 코드에 든 설치 프로그램으로 실행기도 바꾼다 — 문법 오류가 있으면 바꾸지 않는다(다음 실행이 막히지 않게)."""
+        import py_compile
+        src = os.path.join(self.p["app"], "installer", "lumi_installer.py")
+        if not os.path.isfile(src) or file_digest(src) == file_digest(self.p["launcher_py"]):
+            return
+        with open(src, encoding="utf-8", errors="replace") as f:
+            if "def run_launch(" not in f.read():   # 업데이트 기능이 없는 예전 설치 프로그램 → 바로가기가 깨진다
+                self.on_log("새 코드의 설치 프로그램에 업데이트 실행 기능이 없어 실행기를 바꾸지 않음")
+                return
+        try:
+            py_compile.compile(src, cfile=os.path.join(tempfile.mkdtemp(prefix="lumi-pyc-"), "x.pyc"), doraise=True)
+        except py_compile.PyCompileError as e:
+            self.on_log(f"새 실행기에 오류가 있어 바꾸지 않음: {e}")
+            return
+        os.makedirs(self.p["launcher"], exist_ok=True)
+        tmp = self.p["launcher_py"] + ".new"
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, self.p["launcher_py"])
+        self.on_log("업데이트 실행기도 새 버전으로 바꿈")
+
+    def lumi_running(self) -> bool:
+        """이 설치 폴더의 루미가 이미 켜져 있나 — 켜져 있으면 파일을 바꾸지 않는다."""
+        try:
+            import psutil
+        except ImportError:
+            return False
+        exes = {os.path.normcase(os.path.abspath(self.p[k])) for k in ("python", "pythonw")}
+        for proc in psutil.process_iter(["exe", "cmdline"]):
+            try:
+                exe = os.path.normcase(os.path.abspath(proc.info["exe"] or ""))
+                if exe in exes and any(str(c).endswith("app_main.py") for c in proc.info["cmdline"] or []):
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _ollama_exe(self) -> str:
         cands = [shutil.which("ollama") or ""]
@@ -447,10 +595,11 @@ class Installer:
         ps = ("$w = New-Object -ComObject WScript.Shell; "
               "foreach ($p in $env:LUMI_LNKS.Split('|')) { "
               "  $d = Split-Path -Parent $p; if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null }; "
-              "  $s = $w.CreateShortcut($p); $s.TargetPath = $env:LUMI_TARGET; $s.Arguments = 'app_main.py'; "
+              "  $s = $w.CreateShortcut($p); $s.TargetPath = $env:LUMI_TARGET; $s.Arguments = $env:LUMI_ARGS; "
               "  $s.WorkingDirectory = $env:LUMI_WORKDIR; $s.Description = '루미 — 내 컴퓨터 AI 비서'; "
               "  if (Test-Path $env:LUMI_ICON) { $s.IconLocation = $env:LUMI_ICON }; $s.Save() }")
         env = clean_child_env({"LUMI_LNKS": "|".join(self._shortcut_targets()), "LUMI_TARGET": self.p["pythonw"],
+                               "LUMI_ARGS": shortcut_arguments(self.p),
                                "LUMI_WORKDIR": self.p["app"], "LUMI_ICON": self.p["icon"]})
         self._run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], env=_powershell_env(env),
                   what="바로가기 만들기")
@@ -523,6 +672,13 @@ class Installer:
                              close_fds=True)
         else:
             _rm(root)
+
+
+def shortcut_arguments(p: dict) -> str:
+    """바로가기 인자 — 업데이트 실행기를 거쳐 루미를 켠다(실행기가 없으면 예전처럼 바로)."""
+    if os.path.isfile(p["launcher_py"]):
+        return f'"{p["launcher_py"]}" --launch'
+    return "app_main.py"
 
 
 def uninstall_cleanup_command(root: str) -> str:
@@ -1101,8 +1257,160 @@ def run_silent(argv) -> int:
     return 0
 
 
+def _launch_root(argv) -> str:
+    if "--dir" in argv:
+        return argv[argv.index("--dir") + 1]
+    here = os.path.dirname(os.path.abspath(__file__))
+    # 설치 폴더의 launcher\ 안에서 돌면 그 위가 설치 폴더
+    return os.path.dirname(here) if os.path.basename(here).lower() == "launcher" else default_install_dir()
+
+
+def run_launch(argv) -> int:
+    """바로가기가 실행하는 곳 — 새 버전이 있으면 업데이트하고 루미를 켠다.
+    어떤 이유로든 업데이트가 안 되면 있던 버전으로 켠다(루미가 안 켜지는 일은 없게)."""
+    root = _launch_root(argv)
+    p = paths(root)
+    log_path = os.path.join(p["launcher"], "update.log")
+
+    def log(text):
+        try:
+            os.makedirs(p["launcher"], exist_ok=True)
+            if os.path.isfile(log_path) and os.path.getsize(log_path) > 200_000:
+                os.replace(log_path, log_path + ".old")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text + "\n")
+        except OSError:
+            pass
+
+    inst = Installer(root, on_log=log)
+    no_ui = "--no-ui" in argv
+    launch = (lambda: None) if "--no-start" in argv else inst.launch
+    if os.path.exists(os.path.join(p["launcher"], "no-auto-update")) or os.environ.get("LUMI_NO_AUTO_UPDATE"):
+        log("자동 업데이트 꺼짐")
+        launch(); return 0
+    if inst.lumi_running():
+        log("루미가 이미 켜져 있어 업데이트하지 않음")
+        launch(); return 0
+    sha = latest_commit_sha()
+    state = read_state(p["state"])
+    if not needs_update(sha, state):
+        log(f"최신 버전 {state.get('sha', '')[:7]}" if sha else "최신 버전 확인 실패 — 있던 버전으로 실행")
+        launch(); return 0
+    log(f"업데이트 {state.get('sha', '없음')[:7]} → {sha[:7]}")
+    if no_ui:
+        try:
+            inst.update_to(sha)
+            code = 0
+        except Exception as e:
+            log(f"업데이트 실패: {type(e).__name__}: {e}")
+            code = 1
+        launch()
+        return code
+    return _update_gui(inst, sha, log, launch)
+
+
+def _update_gui(inst, sha, log, launch) -> int:
+    """업데이트하는 동안 작은 루미 카드를 띄운다."""
+    from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
+    from PyQt6.QtGui import QGuiApplication, QIcon
+    from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
+                                 QProgressBar, QVBoxLayout, QWidget)
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    try:
+        dark = QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
+    except AttributeError:
+        dark = False
+    P = ({"card": "#241F45", "border": "#3D3570", "text": "#EEF0F6", "sub": "#A9AEC2", "track": "#352E63"}
+         if dark else {"card": "#FFFFFF", "border": "#E2D9FA", "text": "#2E2A4F", "sub": "#6B6890", "track": "#ECE6FD"})
+    FONT = "'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif"
+
+    class Sig(QObject):
+        detail = pyqtSignal(str)
+        progress = pyqtSignal(object)
+        done = pyqtSignal(str)
+
+    sig = Sig()
+    inst.on_detail = sig.detail.emit
+    inst.on_progress = sig.progress.emit
+
+    class Worker(QThread):
+        def run(self):
+            try:
+                inst.update_to(sha)
+                sig.done.emit("")
+            except Exception as e:
+                log(f"업데이트 실패: {type(e).__name__}: {e}")
+                sig.done.emit(str(e).splitlines()[0] if str(e) else type(e).__name__)
+
+    win = QWidget(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+    win.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    win.setWindowTitle("Lumi 업데이트")
+    icon_path = os.path.join(inst.p["root"], "lumi.ico")
+    if os.path.isfile(icon_path):
+        win.setWindowIcon(QIcon(icon_path))
+    outer = QVBoxLayout(win); outer.setContentsMargins(18, 18, 18, 18)
+    card = QFrame(); card.setObjectName("card")
+    card.setStyleSheet(f"QFrame#card {{ background: {P['card']}; border: 1px solid {P['border']}; border-radius: 18px; }}"
+                       f"QLabel {{ font-family: {FONT}; background: transparent; }}")
+    sh = QGraphicsDropShadowEffect(); sh.setBlurRadius(24); sh.setOffset(0, 4)
+    from PyQt6.QtGui import QColor
+    sh.setColor(QColor(0, 0, 0, 70)); card.setGraphicsEffect(sh)
+    outer.addWidget(card)
+    lay = QVBoxLayout(card); lay.setContentsMargins(22, 20, 22, 20); lay.setSpacing(10)
+    head = QHBoxLayout(); head.setSpacing(12)
+    logo = QLabel(); logo.setPixmap(sparkle_pixmap(36)); logo.setFixedSize(36, 36)
+    title = QLabel("루미를 새 버전으로 바꾸는 중이에요")
+    title.setStyleSheet(f"color: {P['text']}; font-size: 15px; font-weight: 700;")
+    head.addWidget(logo); head.addWidget(title, 1)
+    lay.addLayout(head)
+    detail = QLabel("새 버전 확인함"); detail.setStyleSheet(f"color: {P['sub']}; font-size: 12px;")
+    lay.addWidget(detail)
+    bar = QProgressBar(); bar.setTextVisible(False); bar.setFixedHeight(6); bar.setRange(0, 0)
+    bar.setStyleSheet(f"QProgressBar {{ background: {P['track']}; border: none; border-radius: 3px; }}"
+                      f"QProgressBar::chunk {{ border-radius: 3px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+                      f" stop:0 {LUMI_PURPLE}, stop:1 {LUMI_BLUE}); }}")
+    lay.addWidget(bar)
+    win.resize(420, 150)
+    screen = QGuiApplication.primaryScreen()
+    if screen is not None:
+        g = screen.availableGeometry()
+        win.move(g.center().x() - win.width() // 2, g.center().y() - win.height() // 2)
+
+    def on_progress(frac):
+        if frac is None:
+            bar.setRange(0, 0)
+        else:
+            bar.setRange(0, 1000); bar.setValue(int(frac * 1000))
+
+    result = {"code": 0}
+
+    def on_done(err):
+        bar.setRange(0, 1000); bar.setValue(1000)
+        if err:
+            result["code"] = 1
+            title.setText("업데이트하지 못했어요")
+            detail.setText("지금 있는 버전으로 루미를 켤게요")
+        else:
+            title.setText("새 버전으로 바꿨어요")
+            detail.setText("루미를 켜는 중이에요")
+        launch()
+        QTimer.singleShot(1800 if err else 900, app.quit)
+
+    sig.detail.connect(lambda t: detail.setText(t) if t else None)
+    sig.progress.connect(on_progress)
+    sig.done.connect(on_done)
+    worker = Worker()
+    win.show()
+    worker.start()
+    app.exec()
+    worker.wait(5000)
+    return result["code"]
+
+
 def main(argv=None):
     argv = list(sys.argv if argv is None else argv)
+    if "--launch" in argv:
+        return run_launch(argv)
     if "--silent" in argv:
         # PyInstaller --windowed 실행 파일은 표준 출력이 없다 → 로그 파일로 남긴다
         if sys.stdout is None:

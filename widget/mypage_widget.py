@@ -13,7 +13,7 @@ from widget import icons
 from data.db import (count_sessions, get_user_profile, update_profile,
                      change_password, delete_account)
 from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
-from settings.version import APP_VERSION
+from settings.version import version_text
 
 _NAMESPACE_LABELS = {
     "kill_confirm": ("shield-check", "프로세스 종료 확인 이력"),
@@ -337,7 +337,7 @@ class MyPageWidget(QWidget):
 
         # ── 맨 아래: 왼쪽 버전 | 오른쪽 회원 탈퇴 ──
         foot = QHBoxLayout()
-        self.lbl_version = QLabel(f"Lumi 버전 {APP_VERSION}")
+        self.lbl_version = QLabel(version_text())
         self.lbl_version.setObjectName("MPHint")
         self.lbl_version.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)   # 문의할 때 복사
         foot.addWidget(self.lbl_version, 0, Qt.AlignmentFlag.AlignVCenter)

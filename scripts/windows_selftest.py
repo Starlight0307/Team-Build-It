@@ -27,6 +27,9 @@ os.chdir(ROOT)
 IS_WIN = sys.platform == "win32"
 IN_CI = bool(os.environ.get("GITHUB_ACTIONS"))
 RESULTS = []   # (이름, "PASS"/"FAIL"/"SKIP"/"INFO", 설명)
+# 점검에서 만든 루미 창은 끝까지 지우지 않는다 — 함수가 끝나며 파이썬이 창을 지우면 아직 도는
+# 백그라운드 스레드 때문에 가끔 access violation으로 죽는다(앱은 os._exit로 끝내서 이 문제가 없다)
+_KEEP_ALIVE = []
 
 
 def check(name):
@@ -39,6 +42,7 @@ def check(name):
                 status, detail = "FAIL", f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=3)}"
             RESULTS.append((name, status, f"{detail} ({time.time() - t:.1f}s)"))
             print(f"[{status}] {name} — {detail.splitlines()[0] if detail else ''}", flush=True)
+        run.check_name = name
         CHECKS.append(run)
         return fn
     return deco
@@ -429,6 +433,78 @@ def _tooltip_light():
     return _tooltip_shot(False)
 
 
+@check("루미 툴팁 — 실제 마우스 올리기 (루미 메인 창)")
+def _tooltip_hover():
+    """이벤트를 직접 보내지 않고 진짜 마우스 커서를 버튼 위에 올려 Qt가 툴팁을 띄우게 한다.
+    어떤 이벤트에서 툴팁이 닫혔는지도 기록해 결과에 담는다."""
+    os.environ.pop("QT_QPA_PLATFORM", None)
+    from PyQt6.QtCore import QEvent, QPoint
+    from PyQt6.QtGui import QCursor
+    from widget import lumi_icon
+    lumi_icon.set_windows_app_id()
+    from settings import app_settings
+    app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    from widget import lumi_tooltip
+    filt = lumi_tooltip.install(app)   # app_main.__main__과 같은 순서
+    log = []
+    orig_filter, orig_hide = filt.eventFilter, filt.hide_tip
+
+    def spy_filter(obj, ev):
+        t = ev.type()
+        if t == QEvent.Type.ToolTip:
+            log.append(f"ToolTip→{type(obj).__name__}('{obj.toolTip()[:12] if hasattr(obj, 'toolTip') else ''}')")
+        spy_filter.last = (t, obj)
+        return orig_filter(obj, ev)
+
+    def spy_hide():
+        t, obj = getattr(spy_filter, "last", (None, None))
+        log.append(f"닫힘←{t.name if t is not None else '?'}/{type(obj).__name__}")
+        orig_hide()
+    filt.eventFilter, filt.hide_tip = spy_filter, spy_hide
+    app.removeEventFilter(filt); app.installEventFilter(filt)
+    import app_main
+    w = app_main.AssistantApp()
+    w.resize(1200, 760); w.move(40, 40)
+    w.show(); w.raise_(); w.activateWindow()
+    for _ in range(60):
+        app.processEvents(); time.sleep(0.03)
+    out_dir = os.path.join(ROOT, "selftest_out"); os.makedirs(out_dir, exist_ok=True)
+    results = []
+    for name, target in (("날씨", w.weather_pill), ("메뉴", list(w.nav_info)[1]), ("오브", w.orb)):
+        if not target.isVisible():
+            results.append(f"{name}: 안 보임"); continue
+        QCursor.setPos(w.mapToGlobal(QPoint(5, 300)))   # 먼저 빈 곳으로
+        for _ in range(20):
+            app.processEvents(); time.sleep(0.02)
+        log.clear()
+        c = target.mapToGlobal(target.rect().center())
+        QCursor.setPos(c.x() - 3, c.y())
+        for _ in range(5):
+            app.processEvents(); time.sleep(0.02)
+        QCursor.setPos(c)   # 실제 이동처럼 두 번에 나눠 움직인다
+        seen = False
+        for _ in range(125):   # 2.5초
+            app.processEvents(); time.sleep(0.02)
+            seen = seen or filt.tip.isVisible()
+        if filt.tip.isVisible():
+            g = filt.tip.geometry()
+            app.primaryScreen().grabWindow(0, g.x() - 6, g.y() - 6, g.width() + 12, g.height() + 12).save(
+                os.path.join(out_dir, f"hover_{name}.png"))
+        app.primaryScreen().grabWindow(0, 0, 0, 1280, 820).save(os.path.join(out_dir, f"hover_{name}_screen.png"))
+        results.append(f"{name}: 지금 보임={filt.tip.isVisible()} 한번이라도={seen} [{' '.join(log[:8])}]")
+    w.shutdown_background_work(); w.hide()
+    _KEEP_ALIVE.append(w)
+    try:
+        os.remove(app_settings._PATH)
+    except OSError:
+        pass
+    ok = all("지금 보임=True" in r for r in results)
+    return ("PASS" if ok else "FAIL"), " · ".join(results)
+
+
 @check("창 제목·아이콘 (실제 Windows 창 — pythonw 대신 Lumi)")
 def _title_icon():
     if not IS_WIN:
@@ -465,6 +541,7 @@ def _title_icon():
     app.primaryScreen().grabWindow(0, fg.x(), fg.y(), fg.width(), 120).save(
         os.path.join(out_dir, "window_titlebar.png"))
     w.shutdown_background_work(); w.close()
+    _KEEP_ALIVE.append(w)
     try:
         os.remove(app_settings._PATH)
     except OSError:
@@ -513,8 +590,12 @@ def _run_one(index: int):
     import json
     CHECKS[index]()
     name, status, detail = RESULTS[-1]
-    print("RESULT " + json.dumps({"name": name, "status": status, "detail": detail}, ensure_ascii=False),
-          flush=True)
+    line = "RESULT " + json.dumps({"name": name, "status": status, "detail": detail}, ensure_ascii=False)
+    if os.environ.get("LUMI_SELFTEST_OUT"):   # pythonw처럼 출력 창이 없을 때는 파일로
+        with open(os.environ["LUMI_SELFTEST_OUT"], "w", encoding="utf-8") as f:
+            f.write(line + "\n")
+    if sys.stdout is not None:
+        print(line, flush=True)
     sys.stdout.flush()
     os._exit(0)
 
@@ -524,11 +605,20 @@ def main():
     나머지 점검은 계속하고, 죽은 점검은 오류 출력 끝부분을 결과에 담는다.
     (GitHub Actions 첫 실행에서 결과를 남기기도 전에 프로세스가 죽어 원인을 볼 수 없었다)"""
     import json
+    if sys.stderr is None:   # pythonw: 네이티브 오류로 죽으면 어디서 죽었는지 파일로 남긴다
+        import faulthandler
+        os.makedirs(os.path.join(ROOT, "selftest_out"), exist_ok=True)
+        main._fault = open(os.path.join(ROOT, "selftest_out", "fault.txt"), "w", encoding="utf-8")
+        faulthandler.enable(main._fault, all_threads=True)
     voice = "--voice" in sys.argv
     if voice:
         _voice_checks()
     if "--only" in sys.argv:
-        return _run_one(int(sys.argv[sys.argv.index("--only") + 1]))
+        key = sys.argv[sys.argv.index("--only") + 1]
+        if not key.isdigit():   # 이름 일부로도 고를 수 있다: --only 실제 마우스
+            CHECKS[:] = [c for c in CHECKS if key in c.check_name]
+            key = "0"
+        return _run_one(int(key))
     if "--ime-target" in sys.argv:
         i = sys.argv.index("--ime-target")
         return _ime_target(float(sys.argv[i + 1]), sys.argv[i + 2])
