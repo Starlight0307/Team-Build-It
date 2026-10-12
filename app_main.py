@@ -1176,6 +1176,8 @@ class AssistantApp(QWidget):
         tb.addStretch(1)
         self.clock_pill = QLabel()
         center.addWidget(self.clock_pill)
+        self._clock_probe = QLabel()   # 화면에 띄우지 않고 시계 글자 폭만 재는 용도(_center_top_bar)
+        self._clock_probe.setMinimumHeight(36)
         self.weather_pill = QLabel(icons.label_html("cloud-sun", "--°C"))
         self.weather_pill.setToolTip("누르면 자세한 날씨를 볼 수 있어요 · 지역은 환경설정 > 날씨에서 바꿔요")
         self.weather_pill.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1484,7 +1486,33 @@ class AssistantApp(QWidget):
         top, left, center, right = getattr(self, "_top_groups", (None,) * 4)
         if top is None:
             return
+        # 남는 자리에 맞춰 시계 형식을 고른다(긴 형식 → 짧은 형식). 창 폭만 보고 고르던 때는 선택된 메뉴
+        # 이름("환경설정")이 길어 자리가 모자라면 레이아웃이 메뉴 버튼을 눌러 "환경·"처럼 잘렸다(Windows에서 실제로 발생).
+        # 짧은 형식도 안 들어가면 짧은 형식 그대로 둔다 — 비워둔 자리(_top_center_gap)와 버튼 최소 폭 때문에
+        # 창이 그보다 좁아지지 않는다.
+        m = top.contentsMargins()
+        room = (self.top_bar.width() - m.left() - m.right() - left.sizeHint().width()
+                - right.sizeHint().width() - 4 * top.spacing())
+        # 후보 글자 폭은 화면에 없는 같은 모양의 라벨로 잰다 — 진짜 시계에 긴 글자 → 짧은 글자를 번갈아 넣으면
+        # 매초 상단 바가 다시 배치되어, 마우스를 올려둔 날씨 알약의 툴팁이 뜨기 전에 계속 취소됐다
+        center.layout().invalidate()   # 숨겨져 있던 동안 바뀐 글자 폭도 다시 잰다(안 하면 예전 폭으로 그려 메뉴와 겹친다)
         hint = center.sizeHint()
+        texts = getattr(self, "_clock_texts", None)
+        if texts:
+            probe = self._clock_probe
+            if probe.styleSheet() != self.clock_pill.styleSheet():
+                probe.setStyleSheet(self.clock_pill.styleSheet())
+            # 재는 라벨은 창 밖이라 글꼴이 몇 px 다르게 잡힌다 → 지금 시계 글자로 차이를 재서 빼준다
+            probe.setText(self.clock_pill.text())
+            others = hint.width() - probe.sizeHint().width()
+            for html in (icons.label_html("clock", t) for t in texts):
+                probe.setText(html)
+                if others + probe.sizeHint().width() <= room:
+                    break
+            if self.clock_pill.text() != html:
+                self.clock_pill.setText(html)
+                center.layout().invalidate()
+                hint = center.sizeHint()
         gap_w = hint.width() + 2 * top.spacing()
         if self._top_center_gap.sizeHint().width() != gap_w:   # 가운데 묶음 폭만큼 레이아웃에 자리를 비워둔다
             self._top_center_gap.changeSize(gap_w, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
@@ -1503,11 +1531,11 @@ class AssistantApp(QWidget):
         ampm = "오전" if now.hour < 12 else "오후"
         hour = now.hour % 12 or 12
         weekday = "월화수목금토일"[now.weekday()]
-        if self.width() >= 1300:
-            text = f"{ampm} {hour}:{now:%M:%S}   |   {now.year}년 {now.month}월 {now.day}일 ({weekday})"
-        else:   # 좁은 창에서는 연도·초를 빼서 상단 메뉴 버튼이 눌리지 않게 한다
-            text = f"{ampm} {hour}:{now:%M}  ·  {now.month}월 {now.day}일 ({weekday})"
-        self.clock_pill.setText(icons.label_html("clock", text))
+        # 넓으면 연도·초까지, 자리가 모자라면 짧게 — 어느 쪽을 쓸지는 _center_top_bar가 남는 자리를 보고 고른다
+        self._clock_texts = (
+            f"{ampm} {hour}:{now:%M:%S}   |   {now.year}년 {now.month}월 {now.day}일 ({weekday})",
+            f"{ampm} {hour}:{now:%M}  ·  {now.month}월 {now.day}일 ({weekday})",
+        )
         self._center_top_bar()   # 프로필 이름·연결 상태 글자가 바뀌어 묶음 폭이 달라져도 가운데를 유지
 
     def _check_ollama(self):
@@ -1600,20 +1628,17 @@ class AssistantApp(QWidget):
         # 맞춰야 카드와 왼쪽 줄이 맞는다.
         outer.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
-        # 제목은 스크롤 밖에 고정한다 — 내용만 스크롤되고, 위쪽 가장자리에서 흐려지며 사라진다
-        # (예전엔 스크롤하면 글자가 상단 메뉴 바로 아래에서 반쯤 잘린 채로 보였다)
+        # 제목도 내용과 함께 스크롤된다 — 위에 고정해 두었더니 스크롤할 때 제목만 멈춰 있어 답답해 보였다.
+        # 위쪽 가장자리에서 흐려지는 띠(ScrollTopFade)가 있어 상단 메뉴 바로 아래에서 반쯤 잘린 글자는 안 보인다.
         self.settings_title    = QLabel("환경설정")
         self.settings_subtitle = QLabel("루미의 화면과 음성 동작을 원하는 대로 바꿀 수 있어요.")
-        settings_header = QWidget()
-        hl = QVBoxLayout(settings_header)
-        hl.setContentsMargins(48, 28, 48, 12)
-        hl.setSpacing(6)
-        hl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         for _w in (self.settings_title, self.settings_subtitle):
             _w.setMaximumWidth(760)
             _w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            hl.addWidget(_w)
-        outer.setContentsMargins(48, 20, 48, 32)
+        outer.addWidget(self.settings_title)
+        outer.addSpacing(6)
+        outer.addWidget(self.settings_subtitle)
+        outer.addSpacing(28)
 
         # 테마 요소 모음 — _apply_settings_theme()에서 한꺼번에 색을 입힌다
         self._settings_cards, self._settings_sections = [], []
@@ -1762,13 +1787,7 @@ class AssistantApp(QWidget):
         # 위쪽 가장자리에서 내용이 배경 속으로 흐려지며 사라진다(색은 _apply_settings_theme에서)
         self.settings_fade = ScrollTopFade(settings_scroll, 32)
         self.settings_scroll = settings_scroll
-        settings_container = QWidget()
-        cl = QVBoxLayout(settings_container)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(0)
-        cl.addWidget(settings_header)
-        cl.addWidget(settings_scroll, 1)
-        self.stacked_widget.addWidget(settings_container)
+        self.stacked_widget.addWidget(settings_scroll)
 
     # ── 루미 버전 / 업데이트 ──
     _UPDATE_CHECK_INTERVAL = 600   # 환경설정을 열 때 자동 확인은 10분에 한 번만
@@ -2475,6 +2494,10 @@ class AssistantApp(QWidget):
         # 대화 아이콘에 실시간 감시 미확인 알림 뱃지 표시
         if self._unread_alert_count > 0:
             self.btn_chat.setText(self.btn_chat.text() + f"  🔴{self._unread_alert_count}")
+        # 이름이 펼쳐진 버튼이 레이아웃에 눌려 잘리지 않게, 지금 글자가 다 들어가는 폭 아래로 줄지 않게 한다
+        for btn in self.nav_info:
+            btn.setMinimumWidth(0)
+            btn.setMinimumWidth(btn.sizeHint().width())
 
         logged_in = MOCK_USER["logged_in"]
         p = get_palette(self.is_dark_mode)

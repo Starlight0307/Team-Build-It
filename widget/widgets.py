@@ -797,6 +797,10 @@ class ScrollTopFade(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         scroll_area.installEventFilter(self)
+        # 보이는 영역(viewport)의 크기는 스크롤 영역보다 늦게 바뀐다 — 그것도 지켜봐야 띠가 폭 전체를 덮는다
+        # 창이 닫히며 지워지는 중에도 이벤트가 오므로, 여기서 viewport()를 다시 부르지 않고 미리 잡아둔다
+        self._viewport = scroll_area.viewport()
+        self._viewport.installEventFilter(self)
         self._place()
 
     def set_colors(self, top_left: str, bottom_right: str):
@@ -805,7 +809,7 @@ class ScrollTopFade(QWidget):
         self.update()
 
     def eventFilter(self, obj, ev):
-        if obj is self._scroll and ev.type() in (ev.Type.Resize, ev.Type.Show):
+        if (obj is self._scroll or obj is self._viewport) and ev.type() in (ev.Type.Resize, ev.Type.Show):
             self._place()
         return False
 
