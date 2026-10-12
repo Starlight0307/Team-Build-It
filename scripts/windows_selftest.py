@@ -551,7 +551,7 @@ def _settings_clip():
         bad = clipped_labels(inner)
         results.append(f"폭 {width}: 잘림 {len(bad)}개" + (" " + "; ".join(f"'{t}' {a}→{b}" for t, a, b in bad[:8]) if bad else ""))
     # 실제 화면 그대로(스크롤바 포함) — 조금 내려서 스크롤바 손잡이가 보이게
-    page = w.stacked_widget.currentWidget()
+    page = getattr(w, "settings_scroll", None) or w.stacked_widget.currentWidget()
     if hasattr(page, "verticalScrollBar"):
         page.verticalScrollBar().setValue(page.verticalScrollBar().maximum() // 2)
         for _ in range(10):

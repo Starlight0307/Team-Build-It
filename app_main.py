@@ -38,9 +38,9 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QLabel,
                              QScrollArea, QFrame,
                              QSplitter, QSizePolicy, QSpacerItem,
-                             QSystemTrayIcon, QMenu)
+                             QSystemTrayIcon, QMenu, QGraphicsOpacityEffect)
 from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal
-from PyQt6.QtGui import QShortcut, QKeySequence, QIcon
+from PyQt6.QtGui import QShortcut, QKeySequence, QIcon, QLinearGradient, QColor, QBrush
 
 from settings.config import MOCK_USER
 from settings import app_settings
@@ -1600,15 +1600,20 @@ class AssistantApp(QWidget):
         # 맞춰야 카드와 왼쪽 줄이 맞는다.
         outer.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
+        # 제목은 스크롤 밖에 고정한다 — 내용만 스크롤되고, 위쪽 가장자리에서 흐려지며 사라진다
+        # (예전엔 스크롤하면 글자가 상단 메뉴 바로 아래에서 반쯤 잘린 채로 보였다)
         self.settings_title    = QLabel("환경설정")
         self.settings_subtitle = QLabel("루미의 화면과 음성 동작을 원하는 대로 바꿀 수 있어요.")
+        settings_header = QWidget()
+        hl = QVBoxLayout(settings_header)
+        hl.setContentsMargins(48, 28, 48, 12)
+        hl.setSpacing(6)
+        hl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         for _w in (self.settings_title, self.settings_subtitle):
             _w.setMaximumWidth(760)
             _w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        outer.addWidget(self.settings_title)
-        outer.addSpacing(6)
-        outer.addWidget(self.settings_subtitle)
-        outer.addSpacing(28)
+            hl.addWidget(_w)
+        outer.setContentsMargins(48, 20, 48, 32)
 
         # 테마 요소 모음 — _apply_settings_theme()에서 한꺼번에 색을 입힌다
         self._settings_cards, self._settings_sections = [], []
@@ -1754,7 +1759,23 @@ class AssistantApp(QWidget):
         settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         settings_scroll.viewport().setAutoFillBackground(False)
         settings_scroll.setWidget(page)
-        self.stacked_widget.addWidget(settings_scroll)
+        # 위쪽 40px에서 내용이 투명 → 불투명으로 — 배경색과 상관없이 자연스럽게 사라진다
+        fade = QGraphicsOpacityEffect(settings_scroll.viewport())
+        fade.setOpacity(1.0)   # 기본값 0.7이면 화면 전체가 흐려진다
+        mask = QLinearGradient(0, 0, 0, 40)
+        mask.setColorAt(0, QColor(0, 0, 0, 0))
+        mask.setColorAt(0.45, QColor(0, 0, 0, 0))
+        mask.setColorAt(1, QColor(0, 0, 0, 255))
+        fade.setOpacityMask(QBrush(mask))
+        settings_scroll.viewport().setGraphicsEffect(fade)
+        self.settings_scroll = settings_scroll
+        settings_container = QWidget()
+        cl = QVBoxLayout(settings_container)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
+        cl.addWidget(settings_header)
+        cl.addWidget(settings_scroll, 1)
+        self.stacked_widget.addWidget(settings_container)
 
     # ── 루미 버전 / 업데이트 ──
     _UPDATE_CHECK_INTERVAL = 600   # 환경설정을 열 때 자동 확인은 10분에 한 번만
