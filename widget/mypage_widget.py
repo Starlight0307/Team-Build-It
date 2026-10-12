@@ -13,7 +13,7 @@ from widget import icons
 from data.db import (count_sessions, get_user_profile, update_profile,
                      change_password, delete_account)
 from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
-from settings.version import version_text
+from settings import version as app_version
 
 _NAMESPACE_LABELS = {
     "kill_confirm": ("shield-check", "프로세스 종료 확인 이력"),
@@ -173,6 +173,17 @@ def _button(text: str, icon_name: str = None, fn=None, name: str = "MPSave") -> 
     if fn:
         b.clicked.connect(fn)
     return b
+
+
+class _UpdateCheckWorker(QThread):
+    """GitHub에 새 버전이 있는지 물어본다(화면이 멈추지 않게 따로)."""
+    found = pyqtSignal(str)
+
+    def run(self):
+        try:
+            self.found.emit(app_version.check_update())
+        except Exception:
+            self.found.emit("")
 
 
 class MyPageWidget(QWidget):
@@ -335,13 +346,20 @@ class MyPageWidget(QWidget):
         L.addLayout(self.sections_grid)
         self._arrange_sections(2)
 
-        # ── 맨 아래: 왼쪽 버전 | 오른쪽 회원 탈퇴 ──
-        foot = QHBoxLayout()
-        self.lbl_version = QLabel(version_text())
+        # ── 맨 아래: 왼쪽 버전(+ 새 버전 알림) | 오른쪽 회원 탈퇴 ──
+        foot = QHBoxLayout(); foot.setSpacing(10)
+        self.lbl_version = QLabel(app_version.version_text())
         self.lbl_version.setObjectName("MPHint")
         self.lbl_version.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)   # 문의할 때 복사
         foot.addWidget(self.lbl_version, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_new_version = QLabel("")
+        self.lbl_new_version.setObjectName("MPNewVersion")
+        self.lbl_new_version.setToolTip("루미를 종료했다가 다시 켜면 자동으로 업데이트돼요")
+        self.lbl_new_version.hide()
+        foot.addWidget(self.lbl_new_version, 0, Qt.AlignmentFlag.AlignVCenter)
         foot.addStretch()
+        self._update_worker = None
+        self._update_checked_at = 0.0
         self.btn_withdraw = QPushButton("회원 탈퇴")
         self.btn_withdraw.setObjectName("MPWithdraw")
         self.btn_withdraw.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -384,9 +402,33 @@ class MyPageWidget(QWidget):
         super().resizeEvent(event)
         self._arrange_sections(2 if self.width() >= self._TWO_COLUMN_MIN_WIDTH else 1)
 
+    _UPDATE_CHECK_INTERVAL = 600   # 마이페이지를 열 때마다 묻지 않고 10분에 한 번만
+
+    def check_for_update(self):
+        """새 버전 확인을 시작한다 — 결과는 오른쪽 초록 글씨로."""
+        import time
+        if self._update_worker is not None or time.time() - self._update_checked_at < self._UPDATE_CHECK_INTERVAL:
+            return
+        self._update_checked_at = time.time()
+        w = _UpdateCheckWorker(self)
+        w.found.connect(self._show_update_notice)
+        w.finished.connect(self._on_update_worker_finished)
+        self._update_worker = w   # 끝날 때까지 참조를 쥐고 있어야 스레드가 도중에 지워지지 않는다
+        w.start()
+
+    def _on_update_worker_finished(self):
+        w, self._update_worker = self._update_worker, None
+        if w is not None:
+            w.deleteLater()
+
+    def _show_update_notice(self, text: str):
+        self.lbl_new_version.setText(text)
+        self.lbl_new_version.setVisible(bool(text))
+
     def refresh(self, username: str):
         """로그인 후 호출 — 유저 정보 갱신"""
         self._username = username
+        self.check_for_update()
         self.lbl_username.setText(username)
         self.lbl_count.setText(str(count_sessions(username)))
 
@@ -652,6 +694,7 @@ class MyPageWidget(QWidget):
 
     def update_theme(self, is_dark: bool):
         self._is_dark = is_dark
+        new_ver_color = "#4ADE80" if is_dark else "#16A34A"   # 새 버전 알림(초록)
         if is_dark:
             root_bg     = "#1A1A1A"
             card_bg     = "#28224B"
@@ -726,6 +769,11 @@ class MyPageWidget(QWidget):
             QLabel#MPHint {{
                 font-size: 11px;
                 color: {hint_color};
+            }}
+            QLabel#MPNewVersion {{
+                font-size: 11px;
+                font-weight: 700;
+                color: {new_ver_color};
             }}
             QPushButton#MPBrand {{
                 background-color: {input_bg};
