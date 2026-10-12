@@ -1295,6 +1295,17 @@ def _launch_root(argv) -> str:
     return os.path.dirname(here) if os.path.basename(here).lower() == "launcher" else default_install_dir()
 
 
+def _wait_for_exit(pid: int, timeout: float):
+    try:
+        import psutil
+    except ImportError:
+        time.sleep(3)
+        return
+    end = time.time() + timeout
+    while time.time() < end and psutil.pid_exists(pid):
+        time.sleep(0.3)
+
+
 def run_launch(argv) -> int:
     """바로가기가 실행하는 곳 — 새 버전이 있으면 업데이트하고 루미를 켠다.
     어떤 이유로든 업데이트가 안 되면 있던 버전으로 켠다(루미가 안 켜지는 일은 없게)."""
@@ -1313,6 +1324,9 @@ def run_launch(argv) -> int:
             pass
 
     inst = Installer(root, on_log=log)
+    if "--wait-pid" in argv:
+        # 루미의 [지금 업데이트] — 그 루미가 완전히 꺼질 때까지 기다린 뒤 업데이트한다(최대 20초)
+        _wait_for_exit(int(argv[argv.index("--wait-pid") + 1]), 20)
     no_ui = "--no-ui" in argv
     launch = (lambda: None) if "--no-start" in argv else inst.launch
     if os.path.exists(os.path.join(p["launcher"], "no-auto-update")) or os.environ.get("LUMI_NO_AUTO_UPDATE"):

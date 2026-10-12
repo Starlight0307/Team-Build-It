@@ -114,3 +114,14 @@ def check_update(timeout: float = 5) -> str:
     if not state:
         return ""
     return update_notice(state, latest_release_version(timeout), latest_commit_sha(timeout))
+
+
+def update_now_command(pid: int) -> list:
+    """[지금 업데이트] — 설치 폴더의 업데이트 실행기를 띄울 명령. 실행기는 이 루미(pid)가 꺼지길 기다렸다가
+    새 버전을 받아 다시 켠다. 설치 프로그램 없이(개발 중) 실행하면 []."""
+    root = os.path.dirname(_PROJECT_ROOT)
+    pythonw = os.path.join(root, "venv", "Scripts", "pythonw.exe")
+    launcher = os.path.join(root, "launcher", "lumi_installer.py")
+    if not (installed_state() and os.path.isfile(pythonw) and os.path.isfile(launcher)):
+        return []
+    return [pythonw, launcher, "--launch", "--wait-pid", str(int(pid))]

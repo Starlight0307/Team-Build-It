@@ -56,12 +56,34 @@ def test_git_head_short(tmp_path):
     assert version._git_head_short(str(tmp_path)) == "aaaaaaa"
 
 
-def test_mypage_shows_version_and_green_notice(qapp, monkeypatch):
-    from widget.mypage_widget import MyPageWidget
-    w = MyPageWidget()
-    assert w.lbl_version.text().startswith("Lumi")
-    assert w.lbl_new_version.isHidden()
-    w._show_update_notice("새로운 버전 1.2.0")
-    assert not w.lbl_new_version.isHidden() and w.lbl_new_version.text() == "새로운 버전 1.2.0"
-    w._show_update_notice("")
-    assert w.lbl_new_version.isHidden()
+def test_update_now_command_only_when_installed(tmp_path, monkeypatch):
+    monkeypatch.setattr(version, "installed_state", lambda *a: {})
+    assert version.update_now_command(123) == []                        # 개발 중
+    root = tmp_path / "Lumi"
+    (root / "venv" / "Scripts").mkdir(parents=True)
+    (root / "launcher").mkdir()
+    (root / "venv" / "Scripts" / "pythonw.exe").write_text("")
+    (root / "launcher" / "lumi_installer.py").write_text("")
+    monkeypatch.setattr(version, "_PROJECT_ROOT", str(root / "app"))
+    monkeypatch.setattr(version, "installed_state", lambda *a: {"sha": SHA_A, "version": "1.1.0"})
+    cmd = version.update_now_command(123)
+    assert cmd[1:] == [str(root / "launcher" / "lumi_installer.py"), "--launch", "--wait-pid", "123"]
+
+
+def test_settings_page_version_and_update_button(qapp, monkeypatch, tmp_path):
+    from settings import app_settings
+    monkeypatch.setattr(app_settings, "_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(version, "installed_state", lambda *a: {"sha": SHA_A, "version": "1.1.0"})
+    import app_main
+    w = app_main.AssistantApp()
+    try:
+        assert "Lumi 버전 1.1.0 · aaaaaaa" in w.version_desc.text()
+        w._on_update_checked("새로운 버전 1.2.0", manual=True)
+        assert "새로운 버전 1.2.0" in w.version_desc.text()
+        assert w.update_check_btn.text().strip() == "지금 업데이트"
+        w._on_update_checked("", manual=True)
+        assert "최신 버전이에요" in w.version_desc.text()
+        assert w.update_check_btn.text().strip() == "업데이트 확인"
+    finally:
+        w.shutdown_background_work()
+        w.close()

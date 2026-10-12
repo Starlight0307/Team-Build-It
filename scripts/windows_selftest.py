@@ -505,6 +505,61 @@ def _tooltip_hover():
     return ("PASS" if ok else "FAIL"), " · ".join(results)
 
 
+def clipped_labels(root) -> list:
+    """root 안에서 글자가 잘린 QLabel·QPushButton 목록 — (글자, 실제 크기, 필요한 크기).
+    줄바꿈 글자는 폭에 맞는 높이(heightForWidth)보다 낮으면, 한 줄 글자는 필요한 폭보다 좁으면 잘린 것."""
+    from PyQt6.QtWidgets import QLabel, QPushButton
+    out = []
+    for w in root.findChildren(QLabel) + root.findChildren(QPushButton):
+        if not w.isVisibleTo(root) or w.width() <= 1:
+            continue
+        text = (w.text() or "").strip()
+        if not text or text.startswith("<img"):
+            continue
+        hint = w.sizeHint()
+        if isinstance(w, QLabel) and w.wordWrap():
+            need = w.heightForWidth(w.width())
+            if need > w.height() + 1:
+                out.append((text[:40], f"{w.width()}x{w.height()}", f"높이 {need}"))
+        elif hint.width() > w.width() + 1 or hint.height() > w.height() + 1:
+            out.append((text[:40], f"{w.width()}x{w.height()}", f"{hint.width()}x{hint.height()}"))
+    return out
+
+
+@check("환경설정 글자 잘림 (실제 Windows 글꼴)")
+def _settings_clip():
+    os.environ.pop("QT_QPA_PLATFORM", None)
+    from settings import app_settings
+    app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication(sys.argv)
+    from widget import lumi_tooltip
+    lumi_tooltip.install(app)
+    import app_main
+    w = app_main.AssistantApp()
+    out_dir = os.path.join(ROOT, "selftest_out"); os.makedirs(out_dir, exist_ok=True)
+    w.show()
+    w.btn_settings.click()
+    results = []
+    for width in (1320, 1100, 900):
+        w.resize(width, 860)
+        for _ in range(30):
+            app.processEvents(); time.sleep(0.02)
+        page = w.stacked_widget.currentWidget()
+        inner = page.widget() if hasattr(page, "widget") and page.widget() else page
+        inner.grab().save(os.path.join(out_dir, f"settings_{width}.png"))
+        bad = clipped_labels(inner)
+        results.append(f"폭 {width}: 잘림 {len(bad)}개" + (" " + "; ".join(f"'{t}' {a}→{b}" for t, a, b in bad[:8]) if bad else ""))
+    w.shutdown_background_work(); w.hide()
+    _KEEP_ALIVE.append(w)
+    try:
+        os.remove(app_settings._PATH)
+    except OSError:
+        pass
+    ok = all(": 잘림 0개" in r for r in results)
+    return ("PASS" if ok else "FAIL"), " · ".join(results)
+
+
 @check("창 제목·아이콘 (실제 Windows 창 — pythonw 대신 Lumi)")
 def _title_icon():
     if not IS_WIN:

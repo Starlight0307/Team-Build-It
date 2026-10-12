@@ -1723,6 +1723,23 @@ class AssistantApp(QWidget):
         self._settings_cards.append(self.widget_editor_card)
         outer.addWidget(self.widget_editor_card)
         self._rebuild_widget_editor()
+        outer.addSpacing(18)
+
+        # 루미 버전 + [업데이트 확인] — 새 버전이 있으면 설명 줄에 초록 글씨로, 버튼은 [지금 업데이트]로 바뀐다
+        from settings import version as _version
+        self.update_check_btn = QPushButton(" 업데이트 확인")
+        self.update_check_btn.setIcon(icons.icon("refresh-cw"))
+        self.update_check_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_check_btn.clicked.connect(self._on_update_button)
+        outer.addWidget(self._make_settings_card("정보", icon="sparkles", rows=[
+            ("루미 버전", _version.version_text(), self.update_check_btn),
+        ]))
+        self.version_desc = self._settings_descs[-1]
+        self.version_desc.setTextFormat(Qt.TextFormat.RichText)
+        self.version_desc.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)   # 문의할 때 복사
+        self._update_notice = ""          # "새로운 버전 1.2.0" / "새로운 업데이트" / ""
+        self._update_worker = None
+        self._update_checked_at = 0.0
 
         outer.addStretch()
         # 항목이 늘어나 창이 작으면 넘칠 수 있어 스크롤되게 한다
@@ -1733,6 +1750,82 @@ class AssistantApp(QWidget):
         settings_scroll.viewport().setAutoFillBackground(False)
         settings_scroll.setWidget(page)
         self.stacked_widget.addWidget(settings_scroll)
+
+    # ── 루미 버전 / 업데이트 ──
+    _UPDATE_CHECK_INTERVAL = 600   # 환경설정을 열 때 자동 확인은 10분에 한 번만
+
+    def _render_version_desc(self, status: str = ""):
+        """설명 줄 = 버전 + (초록) 새 버전 알림 또는 (회색) 확인 결과."""
+        from settings import version as _version
+        import html
+        p = get_palette(self.is_dark_mode)
+        text = html.escape(_version.version_text())
+        if self._update_notice:
+            green = "#4ADE80" if self.is_dark_mode else "#16A34A"
+            text += f'&nbsp;&nbsp;<span style="color:{green}; font-weight:700;">{html.escape(self._update_notice)}</span>'
+        elif status:
+            text += f'&nbsp;&nbsp;<span style="color:{p["tc2"]};">— {html.escape(status)}</span>'
+        self.version_desc.setText(text)
+
+    def _check_for_update(self, manual: bool = False):
+        import time
+        if self._update_worker is not None:
+            return
+        if not manual and time.time() - self._update_checked_at < self._UPDATE_CHECK_INTERVAL:
+            return
+        self._update_checked_at = time.time()
+        if manual:
+            self.update_check_btn.setEnabled(False)
+            self.update_check_btn.setText(" 확인 중...")
+        from settings import version as _version
+        w = UpdateCheckWorker(_version.check_update)   # check_update는 실패해도 ''를 돌려준다
+        w.result_ready.connect(lambda notice, m=manual: self._on_update_checked(notice, m))
+        w.finished.connect(self._on_update_worker_done)
+        self._update_worker = w   # 끝날 때까지 참조를 쥐고 있어야 스레드가 도중에 지워지지 않는다
+        w.start()
+
+    def _on_update_worker_done(self):
+        w, self._update_worker = self._update_worker, None
+        if w is not None:
+            w.deleteLater()
+
+    def _on_update_checked(self, notice, manual: bool):
+        from settings import version as _version
+        self._update_notice = notice if isinstance(notice, str) else ""
+        installed = bool(_version.installed_state())
+        self.update_check_btn.setEnabled(True)
+        if self._update_notice and installed:
+            self.update_check_btn.setText(" 지금 업데이트")
+            self.update_check_btn.setToolTip("루미를 껐다가 새 버전으로 다시 켜요")
+        else:
+            self.update_check_btn.setText(" 업데이트 확인")
+            self.update_check_btn.setToolTip("")
+        status = ""
+        if manual and not self._update_notice:
+            status = ("최신 버전이에요" if installed else
+                      "개발 버전은 git pull로 받아요")
+        self._render_version_desc(status)
+
+    def _on_update_button(self):
+        from settings import version as _version
+        if not self._update_notice:
+            self._check_for_update(manual=True)
+            return
+        cmd = _version.update_now_command(os.getpid())
+        if not cmd:
+            self._check_for_update(manual=True)
+            return
+        if not lumi_dialog.question(self, "지금 업데이트",
+                                    f"{self._update_notice}을(를) 받을게요.\n루미를 껐다가 새 버전으로 다시 켜요. 진행할까요?"):
+            return
+        import subprocess
+        try:
+            subprocess.Popen(cmd, cwd=os.path.dirname(cmd[1]), close_fds=True,
+                             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+        except OSError as e:
+            lumi_dialog.warning(self, "업데이트", f"업데이트를 시작하지 못했어요.\n{e}")
+            return
+        self._quit_app()
 
     # ── 홈 화면 위젯 편집 ──
     def _widget_order(self) -> list:
@@ -2004,11 +2097,13 @@ class AssistantApp(QWidget):
             f"QLineEdit {{ background-color: {p['ib']}; color: {p['tc']}; border: 1px solid {p['ibrd']}; "
             f"border-radius: 15px; padding: 5px 14px; font-size: 13px; }}"
             f"QLineEdit:focus {{ border-color: {p['accent']}; }}")
-        for _b in (self.weather_locate_btn, self.chat_dir_btn):
+        for _b in (self.weather_locate_btn, self.chat_dir_btn, self.update_check_btn):
             _b.setStyleSheet(
                 f"QPushButton {{ background-color: {p['pb']}; color: {p['tc']}; border: 1px solid {p['pbrd']}; "
                 f"border-radius: 13px; padding: 6px 14px; font-size: 13px; font-weight: bold; }}"
-                f"QPushButton:hover {{ border-color: {p['accent']}; }}")
+                f"QPushButton:hover {{ border-color: {p['accent']}; }}"
+                f"QPushButton:disabled {{ color: {p['tc2']}; }}")
+        self._render_version_desc()   # 새 버전 알림 초록색도 테마에 맞게
         self.widget_reset_btn.setStyleSheet(
             f"QPushButton {{ background-color: {p['pb']}; color: {p['tc2']}; border: 1px solid {p['pbrd']}; "
             f"border-radius: 12px; padding: 5px 12px; font-size: 12px; }}"
@@ -2301,6 +2396,8 @@ class AssistantApp(QWidget):
             self.bottom_input_wrapper.hide()
         if idx == 2:
             self.history_page.load_sessions()
+        if idx == 3:
+            self._check_for_update()   # 환경설정을 열면 새 버전이 있는지 조용히 확인(10분에 한 번)
         if idx == 6:
             self.calendar_page.load_events()
         if idx == 7:
