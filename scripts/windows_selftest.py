@@ -550,6 +550,19 @@ def _settings_clip():
         inner.grab().save(os.path.join(out_dir, f"settings_{width}.png"))
         bad = clipped_labels(inner)
         results.append(f"폭 {width}: 잘림 {len(bad)}개" + (" " + "; ".join(f"'{t}' {a}→{b}" for t, a, b in bad[:8]) if bad else ""))
+    # 실제 화면 그대로(스크롤바 포함) — 조금 내려서 스크롤바 손잡이가 보이게
+    page = w.stacked_widget.currentWidget()
+    if hasattr(page, "verticalScrollBar"):
+        page.verticalScrollBar().setValue(page.verticalScrollBar().maximum() // 2)
+        for _ in range(10):
+            app.processEvents(); time.sleep(0.02)
+        page.verticalScrollBar().grab().save(os.path.join(out_dir, "settings_scrollbar.png"))
+    w.move(0, 0); w.raise_(); w.activateWindow()
+    for _ in range(30):
+        app.processEvents(); time.sleep(0.02)
+    fg = w.frameGeometry()
+    app.primaryScreen().grabWindow(0, fg.x(), fg.y(), fg.width(), fg.height()).save(
+        os.path.join(out_dir, "settings_screen.png"))
     w.shutdown_background_work(); w.hide()
     _KEEP_ALIVE.append(w)
     try:

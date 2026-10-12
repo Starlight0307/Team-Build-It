@@ -784,4 +784,5 @@ class WeatherDetailDialog(QDialog):
             QScrollBar:horizontal {{ background: transparent; height: 6px; border: none; }}
             QScrollBar::handle:horizontal {{ background: {p['border']}; border-radius: 3px; min-width: 30px; }}
             QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0px; }}
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
         """

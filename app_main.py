@@ -988,9 +988,14 @@ class AssistantApp(QWidget):
             QPushButton {{ outline: none; }}
             QScrollArea {{ background-color: transparent; border: none; }}
             QScrollBar:vertical {{ border: none; background: transparent; width: 8px; border-radius: 4px; }}
-            QScrollBar::handle:vertical {{ background: {p['gc']}; border-radius: 4px; }}
+            QScrollBar::handle:vertical {{ background: {p['gc']}; border-radius: 4px; min-height: 30px; }}
             QScrollBar::handle:vertical:hover {{ background: {p['accent']}; }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+            QScrollBar:horizontal {{ border: none; background: transparent; height: 8px; }}
+            QScrollBar::handle:horizontal {{ background: {p['gc']}; border-radius: 4px; min-width: 30px; }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0px; }}
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
         """)
         # 앱 전체 파스텔 그라데이션 — objectName으로 이 위젯 하나에만 칠한다
         # (그냥 "QWidget {..}"로 주면 안쪽 모든 위젯이 제각각 그라데이션을 다시 칠한다)

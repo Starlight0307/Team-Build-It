@@ -44,6 +44,7 @@ def get_stylesheet(is_dark: bool) -> str:
             background: {brd}; border-radius: 2px; min-height: 20px;
         }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
         QFrame#Sep  {{ background-color: {brd}; max-height: 1px; border: none; }}
         QLabel      {{ background: transparent; border: none; color: {text}; }}
         QLabel#H1   {{ font-size: 17px; font-weight: 700; color: {text}; }}
