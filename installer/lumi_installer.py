@@ -45,6 +45,8 @@ REPO_ZIP_URL = "https://codeload.github.com/Starlight0307/Team-Build-It/zip/refs
 # 최신 커밋 번호(40자)만 받는다 — 로그인 없이 IP당 시간당 60번까지라 실행할 때 한 번이면 충분하다
 LATEST_COMMIT_API = "https://api.github.com/repos/Starlight0307/Team-Build-It/commits/main"
 CODE_ZIP_AT = "https://codeload.github.com/Starlight0307/Team-Build-It/zip/{sha}"
+# 마이페이지에 보여줄 버전 번호 — 코드를 받을 때의 최신 GitHub Release(v1.1.0 → "1.1.0")
+LATEST_RELEASE_API = "https://api.github.com/repos/Starlight0307/Team-Build-It/releases/latest"
 OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
 OLLAMA_API = "http://127.0.0.1:11434"
 PYTHON_VERSION = "3.11"
@@ -159,6 +161,34 @@ def latest_commit_sha(timeout: float = 4) -> str:
         return ""
 
 
+def parse_release_version(tag) -> str:
+    m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", str(tag or "").strip())
+    return ".".join(str(int(x)) for x in m.groups()) if m else ""
+
+
+def latest_release_version(timeout: float = 4) -> str:
+    """최신 GitHub Release 번호("1.1.0"). 없거나 인터넷이 안 되면 빈 문자열."""
+    req = urllib.request.Request(LATEST_RELEASE_API, headers={
+        "User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return parse_release_version(json.loads(resp.read(200_000).decode("utf-8", "replace")).get("tag_name"))
+    except Exception:
+        return ""
+
+
+def fetch_latest(timeout: float = 4) -> tuple:
+    """(최신 커밋, 최신 Release 번호)를 동시에 물어본다 — 실행할 때 기다리는 시간을 줄이려고."""
+    out = {}
+    ts = [threading.Thread(target=lambda: out.__setitem__("sha", latest_commit_sha(timeout)), daemon=True),
+          threading.Thread(target=lambda: out.__setitem__("ver", latest_release_version(timeout)), daemon=True)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(timeout + 1)
+    return out.get("sha", ""), out.get("ver", "")
+
+
 def read_state(path: str) -> dict:
     try:
         with open(path, encoding="utf-8") as f:
@@ -168,10 +198,10 @@ def read_state(path: str) -> dict:
         return {}
 
 
-def write_state(path: str, sha: str):
+def write_state(path: str, sha: str, version: str = ""):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"sha": sha, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}, f)
+        json.dump({"sha": sha, "version": version, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}, f)
     os.replace(tmp, path)
 
 
@@ -359,7 +389,7 @@ class Installer:
 
     def step_code(self):
         # 커밋 번호로 받아야 자동 업데이트가 "지금 설치된 것"을 정확히 안다(모르면 첫 실행 때 한 번 더 받는다)
-        sha = latest_commit_sha(timeout=10)
+        sha, version = fetch_latest(timeout=10)
         tmp = tempfile.mkdtemp(prefix="lumi-setup-")
         try:
             z = os.path.join(tmp, "lumi.zip")
@@ -372,7 +402,7 @@ class Installer:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         if sha:
-            write_state(self.p["state"], sha)
+            write_state(self.p["state"], sha, version)
         self._install_launcher()
         cfg = os.path.join(self.p["app"], "settings", "config.py")
         try:
@@ -415,7 +445,7 @@ class Installer:
                 self.on_log(f"uv 복사 실패: {e}")
 
     # ── 자동 업데이트 ──
-    def update_to(self, sha: str):
+    def update_to(self, sha: str, version: str = ""):
         """GitHub의 sha 커밋으로 루미 코드를 바꾼다. 받기·풀기·구성요소 설치가 모두 끝난 뒤에야 덮어쓰므로
         중간에 실패하면 있던 코드가 그대로 남는다."""
         tmp = tempfile.mkdtemp(prefix="lumi-update-")
@@ -438,7 +468,7 @@ class Installer:
             self.on_log(f"파일 {n}개 업데이트 → {sha[:7]}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
-        write_state(self.p["state"], sha)
+        write_state(self.p["state"], sha, version)
         self._refresh_launcher()
 
     def _refresh_launcher(self):
@@ -1291,25 +1321,29 @@ def run_launch(argv) -> int:
     if inst.lumi_running():
         log("루미가 이미 켜져 있어 업데이트하지 않음")
         launch(); return 0
-    sha = latest_commit_sha()
+    sha, version = fetch_latest()
     state = read_state(p["state"])
     if not needs_update(sha, state):
-        log(f"최신 버전 {state.get('sha', '')[:7]}" if sha else "최신 버전 확인 실패 — 있던 버전으로 실행")
+        if sha and version and version != state.get("version"):
+            # 코드는 그대로인데 Release만 새로 나왔다 → 버전 번호만 바꿔 적는다
+            write_state(p["state"], sha, version)
+            log(f"버전 번호 {state.get('version') or '없음'} → {version}")
+        log(f"최신 버전 {version or '-'} · {state.get('sha', '')[:7]}" if sha else "최신 버전 확인 실패 — 있던 버전으로 실행")
         launch(); return 0
-    log(f"업데이트 {state.get('sha', '없음')[:7]} → {sha[:7]}")
+    log(f"업데이트 {state.get('sha', '없음')[:7]} → {sha[:7]} (버전 {version or '-'})")
     if no_ui:
         try:
-            inst.update_to(sha)
+            inst.update_to(sha, version)
             code = 0
         except Exception as e:
             log(f"업데이트 실패: {type(e).__name__}: {e}")
             code = 1
         launch()
         return code
-    return _update_gui(inst, sha, log, launch)
+    return _update_gui(inst, sha, version, log, launch)
 
 
-def _update_gui(inst, sha, log, launch) -> int:
+def _update_gui(inst, sha, version, log, launch) -> int:
     """업데이트하는 동안 작은 루미 카드를 띄운다."""
     from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
     from PyQt6.QtGui import QGuiApplication, QIcon
@@ -1336,7 +1370,7 @@ def _update_gui(inst, sha, log, launch) -> int:
     class Worker(QThread):
         def run(self):
             try:
-                inst.update_to(sha)
+                inst.update_to(sha, version)
                 sig.done.emit("")
             except Exception as e:
                 log(f"업데이트 실패: {type(e).__name__}: {e}")
@@ -1359,7 +1393,7 @@ def _update_gui(inst, sha, log, launch) -> int:
     lay = QVBoxLayout(card); lay.setContentsMargins(22, 20, 22, 20); lay.setSpacing(10)
     head = QHBoxLayout(); head.setSpacing(12)
     logo = QLabel(); logo.setPixmap(sparkle_pixmap(36)); logo.setFixedSize(36, 36)
-    title = QLabel("루미를 새 버전으로 바꾸는 중이에요")
+    title = QLabel(f"루미 {version} 버전으로 바꾸는 중이에요" if version else "루미를 새 버전으로 바꾸는 중이에요")
     title.setStyleSheet(f"color: {P['text']}; font-size: 15px; font-weight: 700;")
     head.addWidget(logo); head.addWidget(title, 1)
     lay.addLayout(head)

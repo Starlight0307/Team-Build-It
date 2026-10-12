@@ -146,6 +146,10 @@ jobs:
           if ($p.ExitCode -ne 0 -or $now -ne $latest) { throw "업데이트 안 됨" }
           if ((Get-Content "$root\app\app_main.py" -Raw) -match "예전 버전 흉내") { throw "코드가 바뀌지 않음" }
           if (-not (Test-Path "$root\app\app_main.py.bak-check")) { throw "앱 폴더의 다른 파일이 지워짐" }
+          $rel = (Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/latest").tag_name -replace '^v', ''
+          $ver = (Get-Content "$root\update.json" -Raw | ConvertFrom-Json).version
+          "최신 Release $rel · 기록된 버전 $ver"
+          if ($ver -ne $rel) { throw "버전 번호가 기록되지 않음" }
           # 이미 최신이면 아무것도 받지 않고 바로 끝나야 한다
           $sw = [Diagnostics.Stopwatch]::StartNew()
           $p = Start-Process "$root\venv\Scripts\python.exe" -ArgumentList "`"$root\launcher\lumi_installer.py`"", "--launch", "--no-ui", "--no-start" -PassThru -Wait

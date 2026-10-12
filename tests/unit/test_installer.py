@@ -164,12 +164,13 @@ def test_update_to_overwrites_code_keeps_personal_files(tmp_path, monkeypatch):
         {"app_main.py": "new", "requirements.txt": "PyQt6==6.11.0\n", "widget/x.py": "x"}))
     installs = []
     monkeypatch.setattr(li.Installer, "_install_requirements", lambda self, req: installs.append(req))
-    li.Installer(str(root)).update_to(SHA_B)
+    li.Installer(str(root)).update_to(SHA_B, "1.2.0")
     assert (root / "app" / "app_main.py").read_text() == "new"
     assert (root / "app" / "widget" / "x.py").read_text() == "x"
     assert (root / "app" / ".env").read_text() == "SECRET=1"
     assert installs == []                          # requirements가 같으면 구성요소는 건드리지 않는다
     assert li.read_state(str(root / "update.json"))["sha"] == SHA_B
+    assert li.read_state(str(root / "update.json"))["version"] == "1.2.0"
 
 
 def test_update_to_installs_requirements_when_changed(tmp_path, monkeypatch):
@@ -226,9 +227,9 @@ def test_shortcut_goes_through_launcher_when_present(tmp_path):
 def test_run_launch_starts_app_without_update_when_offline(tmp_path, monkeypatch):
     root = _installed(tmp_path)
     started, updated = [], []
-    monkeypatch.setattr(li, "latest_commit_sha", lambda timeout=4: "")
+    monkeypatch.setattr(li, "fetch_latest", lambda timeout=4: ("", ""))
     monkeypatch.setattr(li.Installer, "launch", lambda self: started.append(1))
-    monkeypatch.setattr(li.Installer, "update_to", lambda self, sha: updated.append(sha))
+    monkeypatch.setattr(li.Installer, "update_to", lambda self, sha, version="": updated.append(sha))
     monkeypatch.setattr(li.Installer, "lumi_running", lambda self: False)
     assert li.run_launch(["x", "--launch", "--dir", str(root), "--no-ui"]) == 0
     assert started == [1] and updated == []
@@ -238,20 +239,39 @@ def test_run_launch_updates_then_starts(tmp_path, monkeypatch):
     root = _installed(tmp_path)
     li.write_state(str(root / "update.json"), SHA_A)
     calls = []
-    monkeypatch.setattr(li, "latest_commit_sha", lambda timeout=4: SHA_B)
+    monkeypatch.setattr(li, "fetch_latest", lambda timeout=4: (SHA_B, "1.2.0"))
     monkeypatch.setattr(li.Installer, "launch", lambda self: calls.append("launch"))
-    monkeypatch.setattr(li.Installer, "update_to", lambda self, sha: calls.append(sha))
+    monkeypatch.setattr(li.Installer, "update_to", lambda self, sha, version="": calls.append((sha, version)))
     monkeypatch.setattr(li.Installer, "lumi_running", lambda self: False)
     assert li.run_launch(["x", "--launch", "--dir", str(root), "--no-ui"]) == 0
-    assert calls == [SHA_B, "launch"]
+    assert calls == [(SHA_B, "1.2.0"), "launch"]
+
+
+def test_run_launch_relabels_version_when_only_release_changed(tmp_path, monkeypatch):
+    root = _installed(tmp_path)
+    li.write_state(str(root / "update.json"), SHA_A, "1.1.0")
+    monkeypatch.setattr(li, "fetch_latest", lambda timeout=4: (SHA_A, "1.2.0"))
+    monkeypatch.setattr(li.Installer, "launch", lambda self: None)
+    monkeypatch.setattr(li.Installer, "update_to", lambda self, sha, version="": pytest.fail("코드는 같다"))
+    monkeypatch.setattr(li.Installer, "lumi_running", lambda self: False)
+    li.run_launch(["x", "--launch", "--dir", str(root), "--no-ui"])
+    assert li.read_state(str(root / "update.json")) | {"updated_at": ""} == {
+        "sha": SHA_A, "version": "1.2.0", "updated_at": ""}
+
+
+def test_parse_release_version():
+    assert li.parse_release_version("v1.10.0") == "1.10.0"
+    assert li.parse_release_version("1.2.3") == "1.2.3"
+    assert li.parse_release_version("nightly") == ""
+    assert li.parse_release_version(None) == ""
 
 
 def test_run_launch_skips_update_when_running_or_disabled(tmp_path, monkeypatch):
     root = _installed(tmp_path)
     calls = []
-    monkeypatch.setattr(li, "latest_commit_sha", lambda timeout=4: SHA_B)
+    monkeypatch.setattr(li, "fetch_latest", lambda timeout=4: (SHA_B, "1.2.0"))
     monkeypatch.setattr(li.Installer, "launch", lambda self: calls.append("launch"))
-    monkeypatch.setattr(li.Installer, "update_to", lambda self, sha: calls.append(sha))
+    monkeypatch.setattr(li.Installer, "update_to", lambda self, sha, version="": calls.append(sha))
     monkeypatch.setattr(li.Installer, "lumi_running", lambda self: True)
     li.run_launch(["x", "--launch", "--dir", str(root), "--no-ui"])
     assert calls == ["launch"]
