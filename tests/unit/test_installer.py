@@ -216,6 +216,15 @@ def test_refresh_launcher_skips_broken_new_launcher(tmp_path):
     assert (root / "launcher" / "lumi_installer.py").read_text() == new
 
 
+def test_requirements_text_ignores_line_endings(tmp_path):
+    a, b = tmp_path / "a.txt", tmp_path / "b.txt"
+    a.write_bytes(b"PyQt6==6.11.0\r\nrequests==2.32.5\r\n")
+    b.write_bytes(b"PyQt6==6.11.0\nrequests==2.32.5\n\n")
+    assert li.requirements_text(str(a)) == li.requirements_text(str(b))
+    b.write_bytes(b"PyQt6==6.12.0\nrequests==2.32.5\n")
+    assert li.requirements_text(str(a)) != li.requirements_text(str(b))
+
+
 def test_shortcut_goes_through_launcher_when_present(tmp_path):
     p = li.paths(str(tmp_path))
     assert li.shortcut_arguments(p) == "app_main.py"

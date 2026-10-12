@@ -38,9 +38,9 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QLabel,
                              QScrollArea, QFrame,
                              QSplitter, QSizePolicy, QSpacerItem,
-                             QSystemTrayIcon, QMenu, QGraphicsOpacityEffect)
+                             QSystemTrayIcon, QMenu)
 from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal
-from PyQt6.QtGui import QShortcut, QKeySequence, QIcon, QLinearGradient, QColor, QBrush
+from PyQt6.QtGui import QShortcut, QKeySequence, QIcon
 
 from settings.config import MOCK_USER
 from settings import app_settings
@@ -52,7 +52,7 @@ from core.plugin_manager import load_existing_plugins, download_and_install_plug
 from core.plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
 from widget.widgets import (CommandCard, MessageBubble, TypingIndicator, FlowLayout,
                             ResponsiveCardRow, NotificationToast, RealtimeAlertsDialog,
-                            AutoSizeStackedWidget, ToggleSwitch, AgentOverlay)
+                            AutoSizeStackedWidget, ToggleSwitch, AgentOverlay, ScrollTopFade)
 from widget.marketplace import PluginMarketplaceWidget
 from widget import icons
 from widget.dashboard import (Panel, SystemStatsPanel, WeatherPanel, TodayPanel, TodoPanel,
@@ -1712,8 +1712,8 @@ class AssistantApp(QWidget):
         wel.setContentsMargins(24, 20, 24, 16)
         wel.setSpacing(0)
         head = QHBoxLayout()
-        editor_title = QLabel(icons.label_html("layout-grid", "홈 화면 위젯", 16))
-        head.addWidget(editor_title)
+        editor_title_box, editor_title = self._icon_label("layout-grid", "홈 화면 위젯", 16)
+        head.addWidget(editor_title_box)
         head.addStretch()
         self.widget_reset_btn = QPushButton("기본값으로 되돌리기")
         self.widget_reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1759,15 +1759,8 @@ class AssistantApp(QWidget):
         settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         settings_scroll.viewport().setAutoFillBackground(False)
         settings_scroll.setWidget(page)
-        # 위쪽 40px에서 내용이 투명 → 불투명으로 — 배경색과 상관없이 자연스럽게 사라진다
-        fade = QGraphicsOpacityEffect(settings_scroll.viewport())
-        fade.setOpacity(1.0)   # 기본값 0.7이면 화면 전체가 흐려진다
-        mask = QLinearGradient(0, 0, 0, 40)
-        mask.setColorAt(0, QColor(0, 0, 0, 0))
-        mask.setColorAt(0.45, QColor(0, 0, 0, 0))
-        mask.setColorAt(1, QColor(0, 0, 0, 255))
-        fade.setOpacityMask(QBrush(mask))
-        settings_scroll.viewport().setGraphicsEffect(fade)
+        # 위쪽 가장자리에서 내용이 배경 속으로 흐려지며 사라진다(색은 _apply_settings_theme에서)
+        self.settings_fade = ScrollTopFade(settings_scroll, 32)
         self.settings_scroll = settings_scroll
         settings_container = QWidget()
         cl = QVBoxLayout(settings_container)
@@ -1923,12 +1916,13 @@ class AssistantApp(QWidget):
             rl.setSpacing(10)
             texts = QVBoxLayout()
             texts.setSpacing(3)
-            t, d = QLabel(icons.label_html(icon, name, 18)), QLabel(desc)
+            t_box, t = self._icon_label(icon, name, 18)
+            d = QLabel(desc)
             d.setWordWrap(True)
             # border: none — 카드(QFrame) 테두리 스타일이 QLabel(QFrame의 자식 클래스)에 번지지 않게
-            t.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {p['tc']}; background: transparent; border: none;")
-            d.setStyleSheet(f"font-size: 13px; color: {p['tc2']}; background: transparent; border: none;")
-            texts.addWidget(t)
+            t.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {p['tc']}; background: transparent; border: none; padding: 2px 0px;")
+            d.setStyleSheet(f"font-size: 13px; color: {p['tc2']}; background: transparent; border: none; padding: 2px 0px;")
+            texts.addWidget(t_box)
             texts.addWidget(d)
             rl.addLayout(texts, 1)
             up, down = QPushButton("▲"), QPushButton("▼")
@@ -2051,6 +2045,25 @@ class AssistantApp(QWidget):
             self.weather_locate_btn.setEnabled(True)
             self.weather_locate_btn.setText(" 내 위치 찾기")
 
+    @staticmethod
+    def _icon_label(icon_name: str, text: str, icon_size: int):
+        """아이콘 그림과 글자를 각각 다른 QLabel로 나란히 → (묶음, 글자 QLabel).
+        한 리치 텍스트(<img> + 글자)에 넣으면 Windows(맑은 고딕)에서 줄 높이가 아이콘 기준으로 잡혀
+        글자 윗부분이 잘렸다(환경설정 > 홈 화면 위젯 목록에서 실제로 발생)."""
+        box = QWidget()   # 스타일을 주지 않는다 — 선택자 없는 스타일은 안쪽까지 번진다
+        hl = QHBoxLayout(box)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(8)
+        ic = QLabel()
+        ic.setPixmap(icons.pixmap(icon_name, icon_size))
+        ic.setFixedSize(icon_size, icon_size)
+        ic.setStyleSheet("background: transparent; border: none;")
+        tx = QLabel(text)
+        hl.addWidget(ic, 0, Qt.AlignmentFlag.AlignVCenter)
+        hl.addWidget(tx, 0, Qt.AlignmentFlag.AlignVCenter)
+        hl.addStretch()
+        return box, tx
+
     def _make_settings_card(self, section: str, rows: list, icon: str = None) -> QFrame:
         """제목 + (설명, 스위치) 줄들로 이루어진 설정 카드."""
         card = QFrame()
@@ -2061,8 +2074,12 @@ class AssistantApp(QWidget):
         cl.setContentsMargins(24, 20, 24, 12)
         cl.setSpacing(0)
 
-        header = QLabel(icons.label_html(icon, section, 16) if icon else section)
-        cl.addWidget(header)
+        if icon and icons.exists(icon):
+            header_box, header = self._icon_label(icon, section, 16)
+            cl.addWidget(header_box)
+        else:
+            header = QLabel(section)
+            cl.addWidget(header)
         cl.addSpacing(8)
         self._settings_sections.append(header)
 
@@ -2076,7 +2093,7 @@ class AssistantApp(QWidget):
             row.setContentsMargins(0, 14, 0, 14)
             row.setSpacing(24)
             texts = QVBoxLayout()
-            texts.setSpacing(4)
+            texts.setSpacing(6)
             t, d = QLabel(title), QLabel(desc)
             d.setWordWrap(True)
             texts.addWidget(t)
@@ -2093,20 +2110,26 @@ class AssistantApp(QWidget):
 
     def _apply_settings_theme(self, p: dict):
         self.settings_title.setStyleSheet(
-            f"font-size: 26px; font-weight: 800; color: {p['tc']}; background: transparent; border: none;")
+            f"font-size: 26px; font-weight: 800; color: {p['tc']}; background: transparent; border: none; padding: 2px 0px;")
         self.settings_subtitle.setStyleSheet(
-            f"font-size: 14px; color: {p['tc2']}; background: transparent; border: none;")
+            f"font-size: 14px; color: {p['tc2']}; background: transparent; border: none; padding: 2px 0px;")
         for card in self._settings_cards:
             card.setStyleSheet(
                 f"QFrame {{ background-color: {p['card']}; border: 1px solid {p['card_brd']}; border-radius: 22px; }}")
+        # padding 2px — Windows 맑은 고딕은 한글 획이 글꼴 높이 위아래로 살짝 넘쳐서 딱 맞는 높이면 잘린다
         for lbl in self._settings_sections:
             lbl.setStyleSheet(
-                f"font-size: 13px; font-weight: bold; color: {p['tc2']}; background: transparent; border: none;")
+                f"font-size: 13px; font-weight: bold; color: {p['tc2']}; background: transparent; border: none; "
+                f"padding: 2px 0px;")
         for lbl in self._settings_titles:
             lbl.setStyleSheet(
-                f"font-size: 15px; font-weight: bold; color: {p['tc']}; background: transparent; border: none;")
+                f"font-size: 15px; font-weight: bold; color: {p['tc']}; background: transparent; border: none; "
+                f"padding: 2px 0px;")
         for lbl in self._settings_descs:
-            lbl.setStyleSheet(f"font-size: 13px; color: {p['tc2']}; background: transparent; border: none;")
+            lbl.setStyleSheet(f"font-size: 13px; color: {p['tc2']}; background: transparent; border: none; "
+                              f"padding: 2px 0px;")
+        dark = self.is_dark_mode
+        self.settings_fade.set_colors(*(("#1D1836", "#132640") if dark else ("#F1EAFF", "#E4F1FF")))   # theme.bg_grad
         for line in self._settings_dividers:
             line.setStyleSheet(f"background-color: {p['card_brd']}; border: none;")
         for sw in (self.switch_dark, self.switch_voice_reply):
@@ -2326,6 +2349,7 @@ class AssistantApp(QWidget):
         self.weather_location_desc.setText(self._weather_location_text())
         self.voice_words_input.setText(app_settings.get("voice_words") or "")
         self._apply_widget_layout()
+        self._rebuild_widget_editor()   # 환경설정의 위젯 목록도 이 계정의 순서·보이기로(안 하면 예전 목록이 남아 저장 안 된 것처럼 보였다)
         self._sync_voice_model_buttons()
         self.weather_panel.reload()   # 지역이 없으면 refresh가 알아서 현재 위치를 찾는다
         if hasattr(self, "skills_page"):

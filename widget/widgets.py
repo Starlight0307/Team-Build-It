@@ -778,3 +778,58 @@ class RealtimeAlertsDialog(QDialog):
                                   f"border-radius: 12px; }} QScrollArea > QWidget > QWidget {{ background: transparent; }}")
         self.text_lbl.setStyleSheet(f"color: {p['text']}; background: transparent; border: none; "
                                     f"font-size: 13px; padding: 12px;")
+
+
+# ─────────────────────────────────────────────
+# 🌫️ 스크롤 위쪽 가장자리 흐림 — 스크롤된 글자가 칼로 자른 듯 끊겨 보이지 않게
+# ─────────────────────────────────────────────
+class ScrollTopFade(QWidget):
+    """스크롤 영역 위쪽에 겹쳐 놓는 얇은 띠. 그 자리의 앱 배경(대각선 그라데이션)을 똑같이 칠하되
+    위는 불투명 → 아래는 투명이라, 내용이 위로 올라가며 배경 속으로 스며들듯 사라진다.
+    QGraphicsOpacityEffect는 화면을 통째로 그림으로 만들어 다시 그려서 Windows에서 스크롤할 때
+    글자 위아래가 잘려 보였다 — 이 띠는 자기 영역만 칠한다."""
+
+    def __init__(self, scroll_area, height: int = 32):
+        super().__init__(scroll_area)
+        self._scroll = scroll_area
+        self._h = height
+        self._colors = ("#F1EAFF", "#E4F1FF")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        scroll_area.installEventFilter(self)
+        self._place()
+
+    def set_colors(self, top_left: str, bottom_right: str):
+        """앱 배경 그라데이션의 시작·끝 색(settings.theme의 bg_grad와 같게)."""
+        self._colors = (top_left, bottom_right)
+        self.update()
+
+    def eventFilter(self, obj, ev):
+        if obj is self._scroll and ev.type() in (ev.Type.Resize, ev.Type.Show):
+            self._place()
+        return False
+
+    def _place(self):
+        vp = self._scroll.viewport().geometry()
+        self.setGeometry(vp.x(), vp.y(), vp.width(), self._h)
+        self.raise_()
+
+    def paintEvent(self, _ev):
+        root = self.window()
+        off = self.mapTo(root, QPoint(0, 0))
+        bg = QLinearGradient(-off.x(), -off.y(), root.width() - off.x(), root.height() - off.y())
+        bg.setColorAt(0, QColor(self._colors[0]))
+        bg.setColorAt(1, QColor(self._colors[1]))
+        from PyQt6.QtGui import QImage
+        img = QImage(self.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.transparent)
+        p = QPainter(img)
+        p.fillRect(img.rect(), bg)
+        alpha = QLinearGradient(0, 0, 0, self.height())
+        alpha.setColorAt(0, QColor(0, 0, 0, 255))
+        alpha.setColorAt(0.35, QColor(0, 0, 0, 230))
+        alpha.setColorAt(1, QColor(0, 0, 0, 0))
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        p.fillRect(img.rect(), alpha)
+        p.end()
+        QPainter(self).drawImage(0, 0, img)

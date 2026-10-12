@@ -214,6 +214,15 @@ def file_digest(path: str) -> str:
         return ""
 
 
+def requirements_text(path: str) -> str:
+    """requirements.txt 내용 비교용 — 줄 끝(CRLF/LF)·빈 줄·앞뒤 공백 차이는 같은 것으로 본다."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return "\n".join(l.strip() for l in f.read().splitlines() if l.strip())
+    except OSError:
+        return ""
+
+
 def needs_update(latest: str, state: dict) -> bool:
     """최신 커밋을 알아냈고 설치된 것과 다를 때만 업데이트한다."""
     return bool(latest) and latest != state.get("sha")
@@ -458,7 +467,7 @@ class Installer:
             self.on_detail("파일 푸는 중")
             n = safe_extract(z, stage)
             new_req = os.path.join(stage, "requirements.txt")
-            if file_digest(new_req) != file_digest(os.path.join(self.p["app"], "requirements.txt")):
+            if requirements_text(new_req) != requirements_text(os.path.join(self.p["app"], "requirements.txt")):
                 self.on_detail("구성요소 맞추는 중 — 조금 걸릴 수 있어요")
                 self._install_requirements(new_req)
             self._check()
