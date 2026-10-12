@@ -529,6 +529,7 @@ def clipped_labels(root) -> list:
 @check("환경설정 글자 잘림 (실제 Windows 글꼴)")
 def _settings_clip():
     os.environ.pop("QT_QPA_PLATFORM", None)
+    from PyQt6.QtCore import Qt
     from settings import app_settings
     app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
     from PyQt6.QtWidgets import QApplication
@@ -557,6 +558,26 @@ def _settings_clip():
         for _ in range(10):
             app.processEvents(); time.sleep(0.02)
         page.verticalScrollBar().grab().save(os.path.join(out_dir, "settings_scrollbar.png"))
+        w.widget_editor_card.grab().save(os.path.join(out_dir, "settings_widget_editor.png"))
+        # 사용자가 휠로 내리듯 조금씩 스크롤하며 실제 화면을 찍는다(부분 다시 그리기에서 글자가 깨지는지)
+        from PyQt6.QtCore import QPoint, QPointF
+        from PyQt6.QtGui import QWheelEvent
+        page.verticalScrollBar().setValue(0)
+        w.move(0, 0); w.raise_(); w.activateWindow()
+        for _ in range(20):
+            app.processEvents(); time.sleep(0.02)
+        vp = page.viewport()
+        for i in range(12):
+            pos = QPointF(200, 200)
+            ev = QWheelEvent(pos, QPointF(vp.mapToGlobal(QPoint(200, 200))), QPoint(0, 0), QPoint(0, -40),
+                             Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+            QApplication.sendEvent(vp, ev)
+            for _ in range(4):
+                app.processEvents(); time.sleep(0.02)
+            if i in (3, 7, 11):
+                fg = w.frameGeometry()
+                app.primaryScreen().grabWindow(0, 0, 0, min(fg.width(), 1024), min(fg.height(), 740)).save(
+                    os.path.join(out_dir, f"settings_wheel_{i}.png"))
     w.move(0, 0); w.raise_(); w.activateWindow()
     for _ in range(30):
         app.processEvents(); time.sleep(0.02)
