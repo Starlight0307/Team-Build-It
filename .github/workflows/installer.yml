@@ -1,0 +1,169 @@
+# 루미 설치 프로그램(LumiSetup.exe) 만들기 + 진짜 Windows에서 설치·실행·제거까지 해보기.
+# installer-test 브랜치에 푸시하거나, GitHub의 Actions 탭에서 직접 실행(workflow_dispatch)할 수 있다.
+# 만들어진 LumiSetup.exe와 화면 캡처는 실행 페이지의 Artifacts에서 받는다.
+name: Windows installer
+
+on:
+  push:
+    branches: [installer-test]
+  workflow_dispatch:
+
+env:
+  UV_VERSION: "0.12.17"
+  # https://github.com/astral-sh/uv/releases/download/0.12.17/uv-x86_64-pc-windows-msvc.zip 의 sha256
+  UV_SHA256: "a252121d5b59398fcb137c6ea448176459a44010f33f67e0072305a637119ca7"
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: 빌드 도구 설치
+        run: "python -m pip install --only-binary=:all: pyinstaller==6.22.3 PyQt6==6.11.0 pillow==12.3.0"
+
+      # 설치 프로그램 안에 같이 묶을 uv — 버전을 고정하고 받은 파일의 sha256을 확인한다
+      - name: uv 받기 (해시 확인)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/astral-sh/uv/releases/download/$env:UV_VERSION/uv-x86_64-pc-windows-msvc.zip"
+          Invoke-WebRequest $url -OutFile uv.zip
+          $h = (Get-FileHash uv.zip -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne $env:UV_SHA256) { throw "uv 해시 불일치: $h" }
+          Expand-Archive uv.zip -DestinationPath uvdist
+          Copy-Item uvdist\uv.exe installer\uv.exe
+
+      - name: 아이콘 만들기
+        run: python installer/make_icon.py
+
+      - name: LumiSetup.exe 만들기
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name LumiSetup
+          --icon installer/lumi.ico
+          --add-binary "installer/uv.exe;."
+          --add-data "installer/lumi.ico;."
+          installer/lumi_installer.py
+
+      - name: 설치 파일 올리기
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumiSetup
+          path: dist/LumiSetup.exe
+
+      # 실제 Windows 화면에서 설치 화면이 어떻게 보이는지 (설치는 흉내만) — 다크/라이트
+      - name: 설치 화면 캡처
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force shots | Out-Null
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Shot($name) {
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("shots\$name.png"); $g.Dispose(); $bmp.Dispose()
+          }
+          foreach ($mode in @("--dark", "--light")) {
+            $p = Start-Process dist\LumiSetup.exe -ArgumentList "--demo", $mode -PassThru
+            Start-Sleep 15; Shot "setup_welcome$mode"
+            Stop-Process -Id $p.Id -Force; Start-Sleep 1
+            $p = Start-Process dist\LumiSetup.exe -ArgumentList "--demo", $mode, "--autostart" -PassThru
+            Start-Sleep 7; Shot "setup_progress$mode"
+            Start-Sleep 6; Shot "setup_done$mode"
+            Stop-Process -Id $p.Id -Force; Start-Sleep 1
+          }
+
+      # 진짜 설치 — Python·루미·구성요소·Ollama·모델·바로가기 전부
+      - name: 실제 설치 (화면 없이)
+        shell: pwsh
+        run: |
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $log = "$env:TEMP\lumi-setup.log"
+          Remove-Item $log -ErrorAction SilentlyContinue
+          $p = Start-Process dist\LumiSetup.exe -ArgumentList "--silent" -PassThru
+          # 설치 로그를 실시간으로 보여준다 (멈추면 어디서 멈췄는지 바로 보이게), 최대 40분
+          $shown = 0
+          while (-not $p.HasExited) {
+            Start-Sleep 5
+            if (Test-Path $log) {
+              $lines = @(Get-Content $log -Encoding utf8)
+              if ($lines.Count -gt $shown) { $lines[$shown..($lines.Count - 1)] | ForEach-Object { "[$([int]$sw.Elapsed.TotalSeconds)s] $_" }; $shown = $lines.Count }
+            }
+            if ($sw.Elapsed.TotalMinutes -gt 40) { Stop-Process -Id $p.Id -Force; throw "40분 넘게 끝나지 않음" }
+          }
+          $lines = @(Get-Content $log -Encoding utf8)
+          if ($lines.Count -gt $shown) { $lines[$shown..($lines.Count - 1)] }
+          "걸린 시간: $([int]$sw.Elapsed.TotalMinutes)분 / 종료 코드: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "설치 실패" }
+
+      - name: 설치 결과 확인
+        shell: pwsh
+        run: |
+          $root = "$env:LOCALAPPDATA\Programs\Lumi"
+          $desktop = [Environment]::GetFolderPath("Desktop")
+          $checks = [ordered]@{
+            "app_main.py"        = Test-Path "$root\app\app_main.py"
+            "venv pythonw"       = Test-Path "$root\venv\Scripts\pythonw.exe"
+            "아이콘"             = Test-Path "$root\lumi.ico"
+            "제거용 설치 파일"   = Test-Path "$root\LumiSetup.exe"
+            "바탕화면 바로가기"  = Test-Path "$desktop\Lumi.lnk"
+            "시작 메뉴 바로가기" = Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Lumi.lnk"
+            "앱 및 기능 등록"    = Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Lumi"
+          }
+          $checks.GetEnumerator() | ForEach-Object { "{0,-20} {1}" -f $_.Key, $_.Value }
+          $tags = Invoke-RestMethod http://127.0.0.1:11434/api/tags
+          "Ollama 모델: " + (($tags.models | ForEach-Object { $_.name }) -join ", ")
+          $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut("$desktop\Lumi.lnk")
+          "바로가기 → $($lnk.TargetPath) $($lnk.Arguments) (작업 폴더 $($lnk.WorkingDirectory))"
+          if ($checks.Values -contains $false) { throw "빠진 항목이 있음" }
+          if (-not ($tags.models.name -match "^llama3\.1")) { throw "모델 없음" }
+
+      # 설치된 환경 그대로 루미 앱 화면을 띄워 본다 (offscreen) + 실제로 바로가기 대상 실행
+      - name: 설치된 루미 실행
+        shell: pwsh
+        run: |
+          $root = "$env:LOCALAPPDATA\Programs\Lumi"
+          Push-Location "$root\app"
+          & "$root\venv\Scripts\python.exe" scripts\windows_selftest.py --only 3
+          if ($LASTEXITCODE -ne 0) { throw "앱 화면 점검 실패" }
+          Pop-Location
+          $p = Start-Process "$root\venv\Scripts\pythonw.exe" -ArgumentList "app_main.py" -WorkingDirectory "$root\app" -PassThru
+          Start-Sleep 40
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("shots\lumi_running.png")
+          $alive = Get-Process -Name pythonw -ErrorAction SilentlyContinue
+          "실행 중인 pythonw: $($alive.Count)개"
+          Get-Process -Name pythonw, python -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (-not $alive) { throw "루미가 켜진 뒤 바로 꺼짐" }
+
+      - name: 제거 (화면 없이)
+        shell: pwsh
+        run: |
+          $root = "$env:LOCALAPPDATA\Programs\Lumi"
+          $p = Start-Process "$root\LumiSetup.exe" -ArgumentList "--uninstall", "--silent" -Wait -PassThru
+          Start-Sleep 15
+          Get-Content "$env:TEMP\lumi-setup.log"
+          $left = [ordered]@{
+            "설치 폴더"         = Test-Path $root
+            "바탕화면 바로가기" = Test-Path "$([Environment]::GetFolderPath('Desktop'))\Lumi.lnk"
+            "앱 및 기능 등록"   = Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Lumi"
+          }
+          $left.GetEnumerator() | ForEach-Object { "{0,-18} 남아 있음={1}" -f $_.Key, $_.Value }
+          if ($p.ExitCode -ne 0 -or ($left.Values -contains $true)) { throw "제거 실패" }
+
+      - name: 화면 캡처 올리기
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-screens
+          path: shots/
+          if-no-files-found: ignore

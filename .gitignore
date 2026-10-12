@@ -80,3 +80,8 @@ calendar_feature/event_duration_memory.json
 lumi_backup_*.zip
 *.lumibak
 selftest_out/
+installer/uv.exe
+installer/lumi.ico
+build/
+dist/
+*.spec

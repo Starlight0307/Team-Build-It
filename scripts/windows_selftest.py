@@ -94,13 +94,18 @@ def _app():
     w.btn_chat.click()
     app.processEvents()
     info = f"페이지 {w.stacked_widget.count()}개, 위젯 {len(w.info_panels)}개"
+    bad = []
+    if w.windowTitle() != "Lumi":
+        bad.append(f"창 제목 '{w.windowTitle()}'")
+    if w.windowIcon().isNull():
+        bad.append("창 아이콘 없음")
     w.shutdown_background_work()
     w.close()
     try:
         os.remove(app_settings._PATH)
     except OSError:
         pass
-    return "PASS", info
+    return ("FAIL", "; ".join(bad) + " · " + info) if bad else ("PASS", info)
 
 
 @check("음성 출력 (PowerShell System.Speech 스크립트)")
@@ -422,6 +427,57 @@ def _tooltip_dark():
 @check("루미 툴팁 — 라이트 모드 (실제 화면 캡처)")
 def _tooltip_light():
     return _tooltip_shot(False)
+
+
+@check("창 제목·아이콘 (실제 Windows 창 — pythonw 대신 Lumi)")
+def _title_icon():
+    if not IS_WIN:
+        return "SKIP", "Windows 전용"
+    os.environ.pop("QT_QPA_PLATFORM", None)
+    import ctypes
+    from ctypes import wintypes
+    from widget import lumi_icon
+    lumi_icon.set_windows_app_id()   # app_main과 같은 순서: QApplication보다 먼저
+    from settings import app_settings
+    app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setApplicationName(lumi_icon.APP_NAME)
+    app.setWindowIcon(lumi_icon.app_icon())
+    import app_main
+    w = app_main.AssistantApp()
+    w.resize(1000, 700); w.move(80, 60)
+    w.show()
+    for _ in range(40):
+        app.processEvents(); time.sleep(0.03)
+    hwnd = int(w.winId())
+    u32 = ctypes.windll.user32
+    buf = ctypes.create_unicode_buffer(256)
+    u32.GetWindowTextW(hwnd, buf, 256)
+    u32.SendMessageW.restype = ctypes.c_void_p
+    u32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    small = u32.SendMessageW(hwnd, 0x007F, 0, 0)   # WM_GETICON, ICON_SMALL — 제목줄·작업 표시줄 아이콘
+    big = u32.SendMessageW(hwnd, 0x007F, 1, 0)     # ICON_BIG — Alt+Tab 아이콘
+    app_id = ctypes.c_wchar_p()
+    ctypes.windll.shell32.GetCurrentProcessExplicitAppUserModelID(ctypes.byref(app_id))
+    fg = w.frameGeometry()   # 제목줄까지 포함해서 캡처
+    out_dir = os.path.join(ROOT, "selftest_out"); os.makedirs(out_dir, exist_ok=True)
+    app.primaryScreen().grabWindow(0, fg.x(), fg.y(), fg.width(), 120).save(
+        os.path.join(out_dir, "window_titlebar.png"))
+    w.shutdown_background_work(); w.close()
+    try:
+        os.remove(app_settings._PATH)
+    except OSError:
+        pass
+    problems = []
+    if buf.value != "Lumi":
+        problems.append(f"창 제목 '{buf.value}'")
+    if not small or not big:
+        problems.append(f"창 아이콘 없음 (small={small}, big={big})")
+    if app_id.value != lumi_icon.WINDOWS_APP_ID:
+        problems.append(f"작업 표시줄 ID '{app_id.value}'")
+    info = f"제목 '{buf.value}' · 아이콘 small/big 있음={bool(small)}/{bool(big)} · 작업 표시줄 ID '{app_id.value}'"
+    return ("FAIL", "; ".join(problems) + " · " + info) if problems else ("PASS", info)
 
 
 @check("Ollama 연결")

@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QPushButton, QLabel,
                              QScrollArea, QFrame,
                              QSplitter, QSizePolicy, QSpacerItem,
-                             QSystemTrayIcon, QMenu, QStyle)
+                             QSystemTrayIcon, QMenu)
 from PyQt6.QtCore import Qt, QSize, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QShortcut, QKeySequence, QIcon
 
@@ -79,6 +79,7 @@ from core.skill_agent import SkillAgentWorker
 from widget.skills_widget import SkillsPage
 from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
 from widget import lumi_tooltip  # 마우스 올렸을 때 설명도 루미 모양으로(Windows 검은 툴팁 방지)
+from widget import lumi_icon  # 창·작업 표시줄·트레이의 루미 로고
 
 
 # ==========================================
@@ -246,6 +247,9 @@ DEFAULT_WIDGET_ORDER = list(DASHBOARD_WIDGETS)
 class AssistantApp(QWidget):
     def __init__(self):
         super().__init__()
+        # 제목이 없으면 Windows는 실행 파일 이름("pythonw")을 창 제목으로 보여준다
+        self.setWindowTitle(lumi_icon.APP_NAME)
+        self.setWindowIcon(lumi_icon.app_icon())
         self.is_dark_mode           = bool(app_settings.get("dark_mode"))
         self.chat_history           = []
         self.chat_bubbles           = []
@@ -363,10 +367,7 @@ class AssistantApp(QWidget):
             self.tray_icon = None  # 트레이가 없는 환경(일부 리눅스 등)에서는 조용히 건너뜀
             return
 
-        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
-        self.setWindowIcon(icon)
-
-        self.tray_icon = QSystemTrayIcon(icon, self)
+        self.tray_icon = QSystemTrayIcon(lumi_icon.app_icon(), self)
         self.tray_icon.setToolTip("LUMI 로컬 비서")
 
         menu = QMenu()
@@ -3655,7 +3656,10 @@ class AssistantApp(QWidget):
 
 
 if __name__ == "__main__":
+    lumi_icon.set_windows_app_id()   # QApplication보다 먼저 — 작업 표시줄에 파이썬 대신 루미 아이콘
     app = QApplication(sys.argv)
+    app.setApplicationName(lumi_icon.APP_NAME)
+    app.setWindowIcon(lumi_icon.app_icon())   # 팝업 등 모든 창의 기본 아이콘
     # 창을 닫아도(트레이로 숨김) 프로세스가 종료되지 않게 한다 — Qt 기본값은
     # True라서 이걸 안 끄면 closeEvent에서 event.ignore()를 해도 소용없이
     # "보이는 최상위 창이 하나도 없다"는 이유로 앱이 그냥 종료돼버린다.
