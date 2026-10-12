@@ -33,10 +33,32 @@ from core.preference_memory import get_pref, save_pref
 # OLLAMA_MODEL`로 쓰던 기존 코드(tests/llm_smoke/ 등)는 그대로 동작한다.
 
 
+_ERROR_LOG_MAX_BYTES = 512 * 1024
+
+
+def _log_error_trace(e: Exception):
+    """설치본은 콘솔 없이(pythonw) 돌아서 print()한 오류 원인이 어디에도 남지 않았다 — 실제로
+    "요청을 처리하는 중 문제가 발생했습니다"만 뜨고 원인을 찾을 수 없었다(2026-10-13).
+    %LOCALAPPDATA%/Lumi/logs/ai_errors.log 에 스택트레이스를 남긴다(이 컴퓨터에만, 512KB 넘으면 새로 시작)."""
+    try:
+        import traceback
+        from data.storage_location import app_data_dir
+        log_dir = os.path.join(app_data_dir(), "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        path = os.path.join(log_dir, "ai_errors.log")
+        mode = "w" if os.path.exists(path) and os.path.getsize(path) > _ERROR_LOG_MAX_BYTES else "a"
+        with open(path, mode, encoding="utf-8") as f:
+            f.write(f"===== {datetime.now():%Y-%m-%d %H:%M:%S} {type(e).__name__}: {e}\n")
+            f.write("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+    except Exception:
+        pass   # 기록 실패가 원래 오류 안내를 막으면 안 된다
+
+
 def _diagnose_error(e: Exception) -> str:
     """예외 종류를 보고 사용자가 이해하기 쉬운 원인 설명과 해결 방법을 만든다.
     내부 코드/스택트레이스는 절대 포함하지 않음 — 원본은 호출하는 쪽에서
-    print()로 콘솔에만 남기고, 여기서는 화면에 보여줄 안내문만 반환한다."""
+    print()로 콘솔에 남기고 _log_error_trace로 파일에도 남긴다. 여기서는 화면에 보여줄 안내문만 반환한다."""
+    _log_error_trace(e)
     if isinstance(e, ConnectionError):
         return (
             "⚠️ AI 모델(Ollama)에 연결하지 못했습니다.\n\n"
@@ -3939,7 +3961,23 @@ def _build_calendar_delete_reply(raw_results: str):
     return None
 
 
+# 현재 날씨 — 실제 앱 테스트(2026-10-13)에서 LLM이 요약하며 "해당 날짜의 현재 날씨는 …로 나타났습니다."
+# 뒤에 시스템 프롬프트의 "오늘 날짜: … 내일: … 모레: …"를 그대로 베껴 붙였다. 결과가 고정 형식이라 바로 문장으로 만든다.
+_CURRENT_WEATHER = re.compile(
+    r"^\[(?P<icon>\S+) (?P<city>.+) 현재 날씨\]\n(?P<desc>.+), (?P<temp>-?\d+)°C \(체감 (?P<feels>-?\d+)°C\)\n"
+    r"습도 (?P<hum>\d+)%, 바람 (?P<wind>[\d.]+)m/s$")
+
+
+def _build_current_weather_reply(raw_results: str):
+    m = _CURRENT_WEATHER.match(raw_results.strip())
+    if not m:
+        return None
+    return (f"{m.group('icon')} 지금 {m.group('city')}은(는) {m.group('desc')}, {m.group('temp')}°C예요 "
+            f"(체감 {m.group('feels')}°C). 습도는 {m.group('hum')}%, 바람은 {m.group('wind')}m/s로 불고 있어요.")
+
+
 _DETERMINISTIC_REPLY_BUILDERS = (
+    _build_current_weather_reply,
     _build_score_report_reply,
     _build_realtime_status_reply,
     _build_realtime_stop_reply,
@@ -6042,6 +6080,9 @@ class AIWorker(QThread):
                         r'얼마\s*\??',
                         r'가격은?',
                         r'가격이',
+                        # "아이폰 16 최저가 검색해줘" → 검색어에 "검색해줘"가 남던 문제
+                        r'(검색|조회|비교)\s*(좀\s*)?(해\s*줘|해\s*주세요|해\s*줄래|해\s*봐)\.?',
+                        r'(좀\s*)?(찾아|알려)\s*(줘|주세요|줄래|봐)\.?',
                         r'이\s*어떻게\s*[돼되]\s*\??',
                         r'가\s*어떻게\s*[돼되]\s*\??',
                         r'\?+',
@@ -6157,12 +6198,65 @@ class AIWorker(QThread):
                     self.response_ready.emit(f"🤖 로컬 비서: {reply}")
                     return
 
+            # ── 빠른 감지 1.7: "5분 타이머 맞춰줘" → set_timer 바로 실행 ──
+            # 실제 앱 테스트(2026-10-13)에서 llama3.1이 set_timer를 호출하지 않고 함수 정의를 글로 출력해
+            # "요청을 확인/처리하지 못했어요"만 나왔다. 시간이 하나뿐인 단순 타이머 요청은 LLM을 거치지 않는다.
+            timer_match = re.fullmatch(
+                r'\s*(?:(\d+(?:\.\d+)?)\s*시간)?\s*(?:(\d+(?:\.\d+)?)\s*분)?\s*(?:(\d+)\s*초)?\s*(?:짜리\s*|뒤에?\s*|후에?\s*)?'
+                r'타이머\s*(?:좀\s*)?(?:맞춰|설정해|켜|시작해|걸어)\s*(?:줘|주세요|줄래)?[.!?\s]*',
+                self.user_text)
+            if timer_match and any(timer_match.groups()):
+                func_map = {f.__name__: f for f in self.installed_tools}
+                if 'set_timer' in func_map:
+                    h, m, s = (float(g) if g else 0.0 for g in timer_match.groups())
+                    minutes = h * 60 + m + s / 60
+                    try:
+                        self.status_update.emit("⏱️  타이머 설정 중")
+                        result = str(func_map['set_timer'](minutes=minutes))
+                        result = re.sub(r'^\[⏱️ 타이머 설정 완료\]\n', '⏱️ ', result)   # 플러그인 머리말 대신 문장으로
+                        self.response_ready.emit(f"🤖 로컬 비서: {result}")
+                    except Exception as e:
+                        print(f"[AI 워커] 타이머 설정 오류: {e}")
+                        self.response_ready.emit(_diagnose_error(e))
+                    return
+
+            # ── 빠른 감지 1.8: "이번 달 지출 내역 알려줘" → list_purchases 바로 실행 ──
+            # 실제 앱 테스트(2026-10-13)에서 LLM이 get_budget_status를 골라, 예산이 없으면
+            # "아직 설정된 예산이 없어요"만 나오고 지출 내역은 보여주지 않았다.
+            _t = self.user_text.replace(" ", "")
+            if ('지출' in _t and any(kw in _t for kw in ('내역', '목록', '리스트'))
+                    and not any(kw in _t for kw in ('예산', '삭제', '지워', '수정', '고쳐', '추가', '넘으면'))):
+                func_map = {f.__name__: f for f in self.installed_tools}
+                if 'list_purchases' in func_map:
+                    if '이번달' in _t:
+                        days = datetime.now().day
+                    elif '지난주' in _t or '이번주' in _t or '일주일' in _t:
+                        days = 7
+                    else:
+                        days = 30
+                    try:
+                        self.status_update.emit("📊  지출 내역 조회 중")
+                        raw = str(func_map['list_purchases'](days=days))
+                        reply = _build_deterministic_reply(raw) or raw
+                        self.response_ready.emit(f"🤖 로컬 비서: {reply}")
+                    except Exception as e:
+                        print(f"[AI 워커] 지출 내역 조회 오류: {e}")
+                        self.response_ready.emit(_diagnose_error(e))
+                    return
+
             # ── 빠른 감지 2: 시스템 상태/성능 관련 요청 직접 감지 ──
             system_keywords = ['컴퓨터 상태', '시스템 상태', 'pc 상태']
             slow_keywords = ['느려', '느린', '무거', '버벅', '렉', '끊겨', '느리']
 
             has_system_status = any(kw in text_lower for kw in system_keywords)
             has_slow = any(kw in text_lower for kw in slow_keywords) and '컴' in text_lower
+            # "CPU 많이 쓰는 프로그램 알려줘" — 실제 앱 테스트(2026-10-13)에서 LLM이 조건부 알림 목록
+            # (list_conditions)을 불렀다. CPU + '많이/높은/먹는' 류 조회는 바로 상위 프로세스를 보여준다.
+            # "CPU 80% 넘으면 알려줘" 같은 조건 설정(넘으면/이상/되면)은 제외해 LLM에 맡긴다.
+            if ('cpu' in text_lower
+                    and any(kw in text_lower for kw in ('많이', '높은', '먹는', '잡아먹', '차지', '상위', '순위'))
+                    and not any(kw in text_lower for kw in ('넘으면', '넘어가면', '이상이면', '되면', '%'))):
+                has_slow = True
 
             # "느려" 키워드 → CPU 상위 프로세스 표시
             if has_slow:

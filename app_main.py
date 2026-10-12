@@ -934,14 +934,12 @@ class AssistantApp(QWidget):
             )
             return True
 
-        # 진짜 못 알아들으면 맥락 없는 LLM 호출로 넘기지 않고(할루시네이션 방지),
-        # 명확히 취소 안내 후 사용자가 다시 요청하도록 함
+        # 주기 답이 아니면 감시 시작만 취소하고, 이 메시지는 새 요청으로 평소처럼 처리한다.
+        # 예전엔 여기서 메시지를 삼켜서, 선택지를 받은 뒤 "아이폰 최저가 검색해줘"처럼
+        # 다른 요청을 하면 "이해하지 못했습니다"만 나오고 요청이 사라졌다.
         self.pending_realtime_preset = False
-        self.display_ai_response(
-            "🤖 로컬 비서: 죄송해요, 이해하지 못했습니다. 실시간 감시 시작을 취소했으니 "
-            "다시 '실시간 감시 시작해줘'라고 말씀해주세요."
-        )
-        return True
+        self._show_toast("실시간 감시 시작은 취소했어요. 다시 하려면 '실시간 감시 시작해줘'라고 말씀해주세요.")
+        return False
 
     def _start_realtime_with(self, startup_s: int, process_s: int, label: str) -> bool:
         func = next((f for f in self.installed_tools if f.__name__ == 'start_realtime_monitor'), None)
