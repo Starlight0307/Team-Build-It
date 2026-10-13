@@ -3976,7 +3976,22 @@ def _build_current_weather_reply(raw_results: str):
             f"(체감 {m.group('feels')}°C). 습도는 {m.group('hum')}%, 바람은 {m.group('wind')}m/s로 불고 있어요.")
 
 
+# 캘린더 연결이 필요/만료 — 2026-10-13 실제 앱 점검: "내일 일정 있어?"에 LLM이 이 안내를
+# "👋 사용자의 요청을 확인했어요. … 애플 연 동하기 …"처럼 이상하게 고쳐 썼다. 정해진 안내라 그대로 보여준다.
+_CONNECTION_NEEDED = re.compile(r"연결이 필요해요|연결 시간\(1시간\)이 지났어요")
+
+
+def _build_connection_needed_reply(raw_results: str):
+    if not _CONNECTION_NEEDED.search(raw_results or ""):
+        return None
+    lines = [ln.strip() for ln in raw_results.strip().splitlines()]
+    body = [ln for ln in lines if ln and not ln.startswith("[") and not ln.startswith("현재 시각")
+            and not set(ln) <= set("─-=")]
+    return " ".join(body) or None
+
+
 _DETERMINISTIC_REPLY_BUILDERS = (
+    _build_connection_needed_reply,
     _build_current_weather_reply,
     _build_score_report_reply,
     _build_realtime_status_reply,
@@ -5125,12 +5140,20 @@ class AIWorker(QThread):
     # 그 패턴만 제외하고 나머지("어떻게 해", "어떻게 하는지" 등)는 설명 요청으로 인정
     _HOW_STATUS_IDIOM = ("어떻게돼", "어떻게되", "어떻게됐")
 
+    # "설명해"만으로는 기능 사용법 질문인지 알 수 없다 — 2026-10-13 실제 앱 점검: "F1이 뭔지 설명해줘"가
+    # 기능 설명 모드로 가서 "F1은 CPU 상위 5개 프로세스를 보여주는 기능이에요"라고 지어냈다.
+    # 앱/기능 이야기(아래 단어)이거나 도구 키워드가 있을 때만 기능 설명으로 본다.
+    _FEATURE_CONTEXT_HINTS = ("기능", "루미", "앱", "어플", "사용", "쓰는", "하는법", "설정", "플러그인")
+
     def _is_explanation_request(self) -> bool:
         text = self.user_text.replace(" ", "")
         if any(kw in text for kw in self._HOW_STATUS_IDIOM):
             return False
-        if any(kw in text for kw in self._EXPLANATION_KEYWORDS):
+        if any(kw in text for kw in ("방법", "사용법")):
             return True
+        if "설명해" in text:
+            return (any(kw in text for kw in self._FEATURE_CONTEXT_HINTS)
+                    or any(kw in self.user_text.lower() for kw in self._TOOL_KEYWORDS))
         return "어떻게" in text
 
     def _extract_event_title(self, text: str) -> str:
@@ -5643,6 +5666,9 @@ class AIWorker(QThread):
             return False
         return len(text) <= 15 and any(kw in text for kw in self._DECLINE_KEYWORDS)
 
+    _ACK_ONLY = re.compile(r'^(?:좋아요?|좋네|응+|웅|어+|네+|넵|예|그래요?|알겠어요?|알겠습니다|오케이|오키|ㅇㅋ|ok|okay|'
+                           r'고마워요?|고맙습니다|감사해요|감사합니다|땡큐|ㄱㅅ|ㅇㅇ)[!.~ ]*$', re.IGNORECASE)
+
     def _keyword_search_text(self) -> str:
         """키워드 매칭에 쓸 텍스트를 만든다. "응, 445번 막아줘"처럼 짧은
         후속 대답은 그 자체엔 도구 관련 단어가 없는 경우가 많아서 — 실측해보니
@@ -5655,7 +5681,13 @@ class AIWorker(QThread):
         if len(self.user_text.strip()) <= 20 and not self._is_decline_reply():
             for msg in reversed(self.chat_history):
                 if msg.get('role') == 'assistant':
-                    text = text + ' ' + str(msg.get('content', '')).lower()
+                    prev = str(msg.get('content', ''))
+                    # "좋아/응/고마워"처럼 맞장구만 한 경우는 직전 답이 질문·제안("~할까요?")일 때만 이어서 본다.
+                    # 2026-10-13 실제 앱 점검: 날씨 답 뒤 "좋아"에 날씨를 다시 조회해 "어느 지역 날씨인지
+                    # 알려주세요"라고 했다. "응, 막아줘"처럼 제안에 답하는 경우는 그대로 이어서 본다.
+                    if self._ACK_ONLY.match(self.user_text.strip()) and not ('?' in prev or '까요' in prev):
+                        break
+                    text = text + ' ' + prev.lower()
                     break
                 if msg.get('role') == 'user':
                     break
@@ -5666,6 +5698,17 @@ class AIWorker(QThread):
         if self._file_filter_route() is not None:
             return True
         text = self._keyword_search_text()
+        return any(kw in text for kw in self._TOOL_KEYWORDS)
+
+    def _user_text_needs_tools(self) -> bool:
+        """_needs_tools와 같지만 직전 AI 답변은 보지 않고 사용자 문장만 본다.
+        2026-10-13 실제 앱 점검: "고마워", "100 곱하기 37은?"처럼 20자 이하 짧은 말은 직전 AI 답변까지
+        키워드를 훑어서(_keyword_search_text) 도구 요청으로 분류됐고, 모델이 그냥 말로 답하면
+        "방금 요청을 정확하게 확인/처리하지 못했어요"로 바뀌어 사용자에게는 오류처럼 보였다.
+        사용자 문장 자체에 도구 단서가 없을 때는 도구 없이 다시 물어 평범하게 답하게 한다(run() 참고)."""
+        if self._file_filter_route() is not None:
+            return True
+        text = self.user_text.lower()
         return any(kw in text for kw in self._TOOL_KEYWORDS)
 
     def _file_filter_route(self):
@@ -6111,6 +6154,13 @@ class AIWorker(QThread):
                     try:
                         tool_result = func_map['search_product_price'](query=query)
 
+                        # 결과 없음/오류 안내는 그대로 보여준다 — 2026-10-13 실제 앱 점검: 다나와가 빈 결과를 준 날
+                        # 이 안내를 아래 LLM 요약에 넘겼더니, 요약 지시문에 있는 내부 표시
+                        # "[💡 … — 이미 계산됨]"을 답변에 그대로 베껴 붙였다.
+                        if '🛒' not in tool_result:
+                            self.response_ready.emit(f"🤖 로컬 비서: {tool_result}")
+                            return
+
                         # 가격 검색 결과 원본 전달 (재검색이면 안내 문구를 앞에 덧붙임)
                         if '🛒' in tool_result:
                             self.price_result.emit(_track_price_search(query) + tool_result)
@@ -6219,6 +6269,59 @@ class AIWorker(QThread):
                         print(f"[AI 워커] 타이머 설정 오류: {e}")
                         self.response_ready.emit(_diagnose_error(e))
                     return
+
+            # ── 빠른 감지 1.74: "좋아/응/고마워"처럼 맞장구만 할 때 ──
+            # 직전 답이 질문·제안이 아니면 할 일이 없으므로 정해진 짧은 대답을 한다.
+            # 2026-10-13 실제 앱 점검: LLM에 맡기면 "그럼 다른 일어나 볼게요!" 같은 어색한 문장이 나왔다.
+            # (직전 답이 "~할까요?"면 승낙/거절로 처리돼야 하므로 여기서 가로채지 않는다)
+            if self._ACK_ONLY.match(self.user_text.strip()):
+                prev = next((str(m.get('content', '')) for m in reversed(self.chat_history)
+                             if m.get('role') == 'assistant'), '')
+                if not ('?' in prev or '까요' in prev):
+                    thanks = any(k in self.user_text for k in ('고마', '감사', '땡큐', 'ㄱㅅ'))
+                    reply = ("천만에요! 더 필요한 게 있으면 언제든 말씀해 주세요." if thanks
+                             else "좋아요! 더 필요한 게 있으면 말씀해 주세요.")
+                    self.chat_history.append({'role': 'user', 'content': self.user_text})
+                    self.chat_history.append({'role': 'assistant', 'content': reply})
+                    self.response_ready.emit(f"🤖 로컬 비서: {reply}")
+                    return
+
+            # ── 빠른 감지 1.75: "영어로 '안녕하세요' 번역해줘" → translate_text 바로 실행 ──
+            # 2026-10-13 실제 앱 점검: llama3.1이 translate_text(text='안녕해세요', target_language='입해의')처럼
+            # 인자를 망가뜨려 원문이 그대로 나왔다. 언어와 원문이 문장에 분명히 있으면 LLM을 거치지 않는다.
+            _lang = r'(?P<lang>영어|한국어|일본어|중국어|프랑스어|독일어|스페인어|베트남어|태국어|러시아어|이탈리아어|포르투갈어)'
+            tr_match = (re.fullmatch(_lang + r'\s*로\s*[\'"“‘](?P<t1>.+?)[\'"”’]\s*(?:을|를)?\s*(?:좀\s*)?번역\s*해\s*(?:줘|주세요|줄래)[.!?\s]*',
+                                     self.user_text.strip())
+                        or re.fullmatch(r'[\'"“‘](?P<t1>.+?)[\'"”’]\s*(?:을|를)?\s*' + _lang
+                                        + r'\s*로\s*(?:좀\s*)?번역\s*해\s*(?:줘|주세요|줄래)[.!?\s]*', self.user_text.strip()))
+            if tr_match:
+                func_map = {f.__name__: f for f in self.installed_tools}
+                if 'translate_text' in func_map:
+                    try:
+                        self.status_update.emit("📄  텍스트 번역 중")
+                        result = str(func_map['translate_text'](text=tr_match.group('t1'), target_language=tr_match.group('lang')))
+                        self.response_ready.emit(f"🤖 로컬 비서: {result}")
+                    except Exception as e:
+                        print(f"[AI 워커] 번역 오류: {e}")
+                        self.response_ready.emit(_diagnose_error(e))
+                    return
+
+            # ── 빠른 감지 1.76: 뉴스·환율 — 이 기능을 가진 플러그인이 없으면 솔직하게 안내 ──
+            # 2026-10-13 실제 앱 점검: "오늘 뉴스 알려줘"에 일정 브리핑, "환율 알려줘"에 조건부 알림 목록을
+            # 불러 엉뚱한 답을 했다(해당 도구가 없어서 비슷해 보이는 걸 고름).
+            _no_feature = None
+            _asks_info = any(k in self.user_text for k in ('알려', '보여', '어때', '얼마', '뭐야', '있어', '정리', '브리핑'))
+            if not _asks_info or any(k in self.user_text for k in ('열어', '켜줘', '실행', '사이트')):
+                pass
+            elif '뉴스' in self.user_text and not any(n in {f.__name__ for f in self.installed_tools} for n in ('get_news', 'get_latest_news')):
+                _no_feature = "뉴스"
+            elif '환율' in self.user_text and not any(n in {f.__name__ for f in self.installed_tools} for n in ('get_exchange_rate', 'convert_currency')):
+                _no_feature = "환율"
+            if _no_feature:
+                self.response_ready.emit(
+                    f"🤖 로컬 비서: 아직 {_no_feature} 정보를 가져오는 기능은 없어요. "
+                    "지금은 날씨, 일정, 할 일, 가계부, 가격 검색, PC 점검 같은 걸 도와드릴 수 있어요.")
+                return
 
             # ── 빠른 감지 1.8: "이번 달 지출 내역 알려줘" → list_purchases 바로 실행 ──
             # 실제 앱 테스트(2026-10-13)에서 LLM이 get_budget_status를 골라, 예산이 없으면
@@ -6651,6 +6754,8 @@ class AIWorker(QThread):
                     "- 번호를 매기거나 딱딱한 소제목을 달지 말고, 자연스러운 대화체 문장으로 이어서 답하세요. "
                     "문장마다 줄바꿈을 넣어 뚝뚝 끊어 보이게 하지 마세요.\n"
                     "- 함수 호출 코드를 그대로 출력하지 마세요.\n"
+                    "- 개념 설명·상식·계산·인사처럼 함수가 필요 없는 질문은 함수나 도구 이야기를 하지 말고, "
+                    "일반 지식으로 바로 답하세요 (예: 'F1이 뭐야?' → 자동차 경주 Formula 1 설명).\n"
                     "- 답변 시작/끝에 따옴표(\") 절대 금지.\n"
                     "- 결과에 없는 내용은 지어내지 마세요."
                 )
@@ -7304,6 +7409,21 @@ class AIWorker(QThread):
                             print(f"[AI 워커] 흉내낸 함수 호출 복구 실행 오류: {tool_err}")
                     # has_required_arg인 경우는 아래 '확인/처리하지 못했다'는
                     # 공통 안내 메시지로 처리한다 (executed는 False로 남겨둠).
+
+                if not executed and tool_calls_missing_when_expected and not self._user_text_needs_tools():
+                    # 사용자 문장에는 도구 단서가 없고 직전 답변 때문에만 도구 요청으로 분류된 경우
+                    # ("고마워", "100 곱하기 37은?") — 확인 결과를 지어낼 위험이 있는 요청이 아니므로
+                    # 도구 없이 평소 대화처럼 다시 묻는다(위 _user_text_needs_tools 설명 참고).
+                    sys.stderr.write("   - 사용자 문장에 도구 단서 없음 → 도구 없이 다시 질문\n")
+                    try:
+                        plain = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=self.chat_history,
+                                            options={'temperature': 0.7, 'num_predict': _MAX_REPLY_TOKENS})
+                        plain_reply = _strip_wrapping_quotes((plain["message"]["content"] or "").strip())
+                        if plain_reply and not _looks_like_json_leak(plain_reply):
+                            clean_reply = plain_reply
+                            executed = True
+                    except Exception as plain_err:
+                        print(f"[AI 워커] 도구 없이 다시 질문 오류: {plain_err}")
 
                 if not executed:
                     if tool_calls_missing_when_expected:

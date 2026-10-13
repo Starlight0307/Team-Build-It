@@ -530,9 +530,14 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
 
     try:
         products = _fetch_products_html(search_query)
+        if not products:
+            # 다나와가 가끔 빈 페이지를 준다(2026-10-13 같은 검색어가 몇 분 사이에 됐다 안 됐다 함) — 한 번만 다시 시도
+            time.sleep(1.0)
+            products = _fetch_products_html(search_query)
 
         if not products:
-            return f"'{search_query}'에 대한 검색 결과가 없습니다."
+            return (f"'{search_query}'에 대한 검색 결과를 가져오지 못했어요. "
+                    "상품 이름을 조금 바꾸거나 잠시 뒤 다시 검색해 주세요.")
 
         results = []
         results.append(f"╔══════════════════════════════════════════════════════╗")
