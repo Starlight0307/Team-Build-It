@@ -350,3 +350,11 @@ def test_step_runtime_installs_and_failure_does_not_stop_setup(tmp_path, monkeyp
     li.Installer(str(tmp_path / "Lumi"), on_detail=details.append).step_runtime()   # 예외 없이 끝난다
     assert calls == [("vc_redist.x64.exe", ["/install", "/quiet", "/norestart"], (0, 1638, 3010))]
     assert "음성 기능" in details[-1]
+
+def test_api_headers_token_only_when_set(monkeypatch):
+    """GitHub API 인증은 LUMI_GITHUB_TOKEN이 있을 때(테스트 서버)만 — 보통 사용자 PC는 그대로."""
+    monkeypatch.delenv("LUMI_GITHUB_TOKEN", raising=False)
+    assert "Authorization" not in li.api_headers("x")
+    monkeypatch.setenv("LUMI_GITHUB_TOKEN", " abc ")
+    h = li.api_headers("application/vnd.github.sha")
+    assert h["Authorization"] == "Bearer abc" and h["Accept"] == "application/vnd.github.sha"

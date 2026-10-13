@@ -163,10 +163,19 @@ def parse_commit_sha(text: str) -> str:
     return text if re.fullmatch(r"[0-9a-f]{40}", text) else ""
 
 
+def api_headers(accept: str) -> dict:
+    """GitHub API 요청 헤더. 인증 없이는 IP당 시간당 60번까지라, 여러 PC가 IP 하나를 같이 쓰는
+    테스트 서버(GitHub Actions)에서는 LUMI_GITHUB_TOKEN이 있으면 그걸 붙인다 — 보통 사용자 PC엔 없다."""
+    h = {"User-Agent": USER_AGENT, "Accept": accept}
+    token = os.environ.get("LUMI_GITHUB_TOKEN", "").strip()
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
+
+
 def latest_commit_sha(timeout: float = 4) -> str:
     """GitHub main의 최신 커밋 번호. 인터넷이 안 되거나 막히면 빈 문자열."""
-    req = urllib.request.Request(LATEST_COMMIT_API, headers={
-        "User-Agent": USER_AGENT, "Accept": "application/vnd.github.sha"})
+    req = urllib.request.Request(LATEST_COMMIT_API, headers=api_headers("application/vnd.github.sha"))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return parse_commit_sha(resp.read(200).decode("ascii", "replace"))
@@ -181,8 +190,7 @@ def parse_release_version(tag) -> str:
 
 def latest_release_version(timeout: float = 4) -> str:
     """최신 GitHub Release 번호("1.1.0"). 없거나 인터넷이 안 되면 빈 문자열."""
-    req = urllib.request.Request(LATEST_RELEASE_API, headers={
-        "User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"})
+    req = urllib.request.Request(LATEST_RELEASE_API, headers=api_headers("application/vnd.github+json"))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return parse_release_version(json.loads(resp.read(200_000).decode("utf-8", "replace")).get("tag_name"))

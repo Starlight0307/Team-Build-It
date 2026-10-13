@@ -14,6 +14,8 @@ env:
   UV_SHA256: "a252121d5b59398fcb137c6ea448176459a44010f33f67e0072305a637119ca7"
   PYTHONUTF8: "1"
   PYTHONIOENCODING: utf-8
+  # 테스트 서버들은 IP 하나를 같이 써서 인증 없는 GitHub API 한도(시간당 60번)에 자주 걸린다
+  LUMI_GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   build-and-test:
@@ -135,7 +137,7 @@ jobs:
         shell: pwsh
         run: |
           $root = "$env:LOCALAPPDATA\Programs\Lumi"
-          $latest = (Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/commits/main" -Headers @{Accept = "application/vnd.github.sha"}).Trim()
+          $latest = (Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/commits/main" -Headers @{Accept = "application/vnd.github.sha"; Authorization = "Bearer $env:LUMI_GITHUB_TOKEN"}).Trim()
           '{"sha": "0000000000000000000000000000000000000000"}' | Set-Content "$root\update.json" -Encoding utf8
           "x" | Set-Content "$root\app\app_main.py.bak-check"
           Set-Content "$root\app\app_main.py" "# 예전 버전 흉내" -Encoding utf8
@@ -146,7 +148,7 @@ jobs:
           if ($p.ExitCode -ne 0 -or $now -ne $latest) { throw "업데이트 안 됨" }
           if ((Get-Content "$root\app\app_main.py" -Raw) -match "예전 버전 흉내") { throw "코드가 바뀌지 않음" }
           if (-not (Test-Path "$root\app\app_main.py.bak-check")) { throw "앱 폴더의 다른 파일이 지워짐" }
-          $rel = (Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/latest").tag_name -replace '^v', ''
+          $rel = (Invoke-RestMethod "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/latest" -Headers @{Authorization = "Bearer $env:LUMI_GITHUB_TOKEN"}).tag_name -replace '^v', ''
           $ver = (Get-Content "$root\update.json" -Raw | ConvertFrom-Json).version
           "최신 Release $rel · 기록된 버전 $ver"
           if ($ver -ne $rel) { throw "버전 번호가 기록되지 않음" }
