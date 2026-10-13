@@ -162,6 +162,7 @@ AVAILABLE_PLUGINS = [
             "get_listening_ports", "check_firewall_status", "enable_windows_firewall",
             "block_risky_open_ports", "preview_risky_open_ports", "block_program_internet",
             "list_lumi_firewall_rules", "remove_lumi_firewall_rule",
+            "check_web_redirection", "check_wifi_security",
         ],
         "module_name": "network_security",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/network_security.py",
@@ -184,9 +185,9 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "시스템 보안 점검",
-        "desc": "Windows 업데이트 상태, 공유 폴더 권한, 로그인 실패 이력 확인",
+        "desc": "Windows 업데이트 상태, 공유 폴더 권한, 로그인 실패 이력, 보안 설정(UAC·원격 데스크톱·SMBv1·BitLocker) 확인",
         "func_names": [
-            "check_update_status", "scan_shared_folders", "get_login_failures",
+            "check_update_status", "scan_shared_folders", "get_login_failures", "check_security_settings",
             "get_system_security_report",
             "restrict_shared_folder_permission",
         ],

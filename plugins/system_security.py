@@ -25,6 +25,18 @@ TOOL_SCHEMAS = {
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
+    "check_security_settings": {
+        "type": "function",
+        "function": {
+            "name": "check_security_settings",
+            "description": (
+                "Windows 핵심 보안 설정을 확인합니다: 사용자 계정 컨트롤(UAC), 원격 데스크톱, SMBv1(오래된 파일 공유), "
+                "드라이브 암호화(BitLocker). '보안 설정 확인해줘', 'UAC 켜져 있어?', '원격 데스크톱 꺼져 있어?', "
+                "'비트로커 켜져 있어?', 'SMB1 확인해줘'에 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
     "scan_shared_folders": {
         "type": "function",
         "function": {
@@ -161,7 +173,9 @@ def check_update_status() -> str:
         elif days_since > 14:
             return CheckResult(header + "⚠️ 2주 이상 업데이트가 없었습니다. 업데이트 확인을 권장합니다.", warning=1)
         else:
-            return CheckResult(header + "✅ 최근에 업데이트가 적용되었습니다.")
+            return CheckResult(header + "✅ 최근에 업데이트가 적용되었습니다.\n"
+                               "ℹ️ 마지막 설치일 기준이에요 — 지금 받을 업데이트가 남아 있는지는 확인하지 않았어요"
+                               "(설정 > Windows Update에서 확인할 수 있어요).")
 
     except subprocess.TimeoutExpired:
         return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
@@ -454,7 +468,213 @@ def _score_report(title: str, checks, kind: str = None) -> str:
             if unknown else "")
     return (f"{title}\n점수: {score}/100 ({grade})\n\n"
             "항목별 상태:\n" + "\n".join(f"  {s}" for s in sections) +
-            "\n\n※ 상세 내용이 필요한 항목은 개별로 다시 요청하세요." + note + history)
+            "\n\n※ 상세 내용이 필요한 항목은 개별로 다시 요청하세요." + note +
+            # 점수가 '안전 보증'으로 들리지 않게 범위를 밝힌다(2026-10-13)
+            "\n※ 점수는 루미가 확인한 항목만 반영해요 — 백신 검사나 전문 보안 점검을 대신하지는 않아요." + history)
+
+
+# ─────────────────────────────────────────────
+# 🔐 Windows 보안 설정 점검 (4단계, 2026-10-13) — UAC · 원격 데스크톱 · SMBv1 · BitLocker
+# ─────────────────────────────────────────────
+# 모두 관리자 권한 없이 읽는다(레지스트리 + Shell + SMB 설정). 값이 없으면 Windows 기본값으로 보고, 읽다가 오류가
+# 나거나 알려진 값이 아니면 ❔(확인하지 못함)로 남긴다 — 못 읽은 것을 ✅로 보이지 않게(ChatGPT 검수 4-2 1차).
+
+_MISSING = object()
+
+
+def _reg_value(path: str, name: str, hive=None):
+    """HKLM(기본) 레지스트리 값 → 값 / _MISSING(키·값 없음) / None(읽기 오류)."""
+    try:
+        import winreg
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(hive if hive is not None else winreg.HKEY_LOCAL_MACHINE, path) as key:
+            return winreg.QueryValueEx(key, name)[0]
+    except FileNotFoundError:
+        return _MISSING
+    except OSError:
+        return None
+
+
+def _known_int(value, default, allowed):
+    """레지스트리 정수 값 — 없으면 default, 정수이고 allowed 안에 있으면 그 값, 그 밖(읽기 오류·모르는 값)은 None."""
+    if value is _MISSING:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value in allowed else None
+
+
+_UAC_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+
+
+def _check_uac(add):
+    lua = _known_int(_reg_value(_UAC_KEY, "EnableLUA"), 1, {0, 1})                            # 기본 1 = 켜짐
+    consent = _known_int(_reg_value(_UAC_KEY, "ConsentPromptBehaviorAdmin"), 5, set(range(6)))  # 기본 5
+    if lua is None:
+        add("unknown", "사용자 계정 컨트롤(UAC) 설정을 확인하지 못했어요")
+    elif lua == 0:
+        add("critical", "사용자 계정 컨트롤(UAC)이 꺼져 있어요 — 프로그램이 묻지 않고 관리자 권한을 얻을 수 있어요. "
+                        "설정 > 사용자 계정 컨트롤 설정 변경에서 켜 주세요(재부팅 필요).")
+    elif consent is None:
+        add("unknown", "UAC는 켜져 있지만 관리자 승인 방식 설정을 확인하지 못했어요")
+    elif consent == 0:
+        add("warning", "UAC는 켜져 있지만 관리자 권한이 필요할 때 묻지 않고 바로 허용해요. 'UAC 설정 변경'에서 "
+                       "기본값(알림 표시)으로 올려 주세요.")
+    else:
+        add("ok", "사용자 계정 컨트롤(UAC) 켜짐 — 관리자 권한이 필요하면 승인을 받아요")
+
+
+_RDP_KEY = r"SYSTEM\CurrentControlSet\Control\Terminal Server"
+
+
+def _check_remote_desktop(add):
+    deny = _known_int(_reg_value(_RDP_KEY, "fDenyTSConnections"), 1, {0, 1})               # 기본 1 = 거부
+    if deny is None:
+        add("unknown", "원격 데스크톱 설정을 확인하지 못했어요")
+    elif deny == 1:
+        add("ok", "원격 데스크톱 꺼짐")
+    else:
+        nla = _known_int(_reg_value(_RDP_KEY + r"\WinStations\RDP-Tcp", "UserAuthentication"), 1, {0, 1})
+        if nla == 0:
+            add("critical", "원격 데스크톱이 켜져 있고, 접속 전 사용자 확인(NLA)이 꺼져 있어요 — 비밀번호 대입 공격에 "
+                            "약해요. 쓰지 않으면 설정 > 시스템 > 원격 데스크톱에서 꺼 주세요.")
+        else:
+            add("warning", "원격 데스크톱이 켜져 있어요 — 다른 컴퓨터에서 이 PC에 로그인할 수 있어요. 쓰지 않으면 "
+                           "설정 > 시스템 > 원격 데스크톱에서 꺼 주세요.")
+            if nla is None:
+                add("unknown", "원격 데스크톱의 접속 전 사용자 확인(NLA) 설정을 확인하지 못했어요")
+
+
+def _smb1_server_setting():
+    """Get-SmbServerConfiguration의 EnableSMB1Protocol(관리자 권한 불필요) — True/False, 못 읽으면 None."""
+    try:
+        proc = _run_powershell("(Get-SmbServerConfiguration -ErrorAction Stop).EnableSMB1Protocol", timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = (proc.stdout or "").strip().lower()
+    return {"true": True, "false": False}.get(value) if proc.returncode == 0 else None
+
+
+def _driver_exists(name: str):
+    """System32\\drivers 안 파일이 있으면 True, 없으면 False, 확인하지 못하면(접근 오류 등) None.
+    os.path.isfile은 접근 오류도 False로 돌려줘서 '없음'과 구분하지 못한다 — os.stat으로 나눈다(ChatGPT 검수 4-2 4차)."""
+    import stat
+    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    if not root:
+        return None
+    try:
+        return stat.S_ISREG(os.stat(os.path.join(root, "System32", "drivers", name)).st_mode)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+
+
+def _check_smb1(add):
+    """SMBv1(오래된 파일 공유 방식, 워너크라이 랜섬웨어가 퍼진 통로). Windows 10 1709 이후 기본으로 설치되지 않는다.
+    서버와 클라이언트를 따로 판정해 모두 보고한다 — 한쪽을 확인하지 못해도 다른 쪽의 확인된 위험은 그대로 알린다
+    (ChatGPT 검수 4-2 4차).
+    서버: SMBv1 서버 드라이버(srv.sys)가 설치돼 있고 SMB 서버 설정(EnableSMB1Protocol)이 켜져 있으면 동작한다.
+    클라이언트: SMBv1 클라이언트 드라이버(mrxsmb10.sys)가 설치돼 있고 그 서비스가 '사용 안 함'(Start=4)이 아니면
+    쓰일 수 있다. (srv2.sys·mrxsmb.sys는 SMB2/3용이라 보지 않는다.)"""
+    findings = []
+    # 서버
+    server_driver = _driver_exists("srv.sys")
+    if server_driver is None:
+        findings.append(("unknown", "SMBv1 서버 구성 요소가 설치돼 있는지 확인하지 못했어요"))
+    elif server_driver:
+        setting = _smb1_server_setting()
+        if setting is None:
+            findings.append(("unknown", "SMBv1 서버 구성 요소가 설치돼 있는데, 켜져 있는지 확인하지 못했어요"))
+        elif setting:
+            findings.append(("critical", "SMBv1 파일 공유 서버가 켜져 있어요 — 워너크라이 같은 랜섬웨어가 퍼진 오래된 "
+                                         "방식이에요. 'Windows 기능 켜기/끄기'에서 'SMB 1.0/CIFS 파일 공유 지원'을 꺼 주세요."))
+    # 클라이언트
+    client_driver = _driver_exists("mrxsmb10.sys")
+    if client_driver is None:
+        findings.append(("unknown", "SMBv1 클라이언트 구성 요소가 설치돼 있는지 확인하지 못했어요"))
+    elif client_driver:
+        start = _known_int(_reg_value(r"SYSTEM\CurrentControlSet\Services\mrxsmb10", "Start"), None, set(range(5)))
+        if start is None:
+            findings.append(("unknown", "SMBv1 클라이언트 구성 요소가 설치돼 있는데, 사용하도록 설정돼 있는지 확인하지 "
+                                        "못했어요"))
+        elif start != 4:
+            # Start는 '시작 설정'이지 지금 실행 중이라는 뜻은 아니다 — 문구도 그만큼만 말한다
+            findings.append(("warning", "SMBv1 파일 공유(클라이언트) 구성 요소가 설치돼 있고 '사용 안 함'으로 설정돼 "
+                                        "있지 않아요 — 오래된 NAS·프린터를 쓰는 게 아니면 'Windows 기능 켜기/끄기'에서 "
+                                        "'SMB 1.0/CIFS 파일 공유 지원'을 꺼 주세요."))
+    if findings:
+        for severity, text in findings:
+            add(severity, text)
+    else:
+        add("ok", "SMBv1(오래된 파일 공유 방식) 꺼짐")
+
+
+# Shell 속성 System.Volume.BitLockerProtection 값 — 1 켜짐, 2 꺼짐, 3 암호화 중, 4 해제 중, 5 일시 중지, 6 켜짐(잠김)
+_BITLOCKER_STATES = {1: "on", 2: "off", 3: "progress", 4: "decrypting", 5: "paused", 6: "on"}
+
+
+def _bitlocker_state():
+    """시스템 드라이브 BitLocker 상태 — 'on'/'off'/'progress'/'decrypting'/'paused', 지원 안 함·확인 불가면 None.
+    관리자 권한 없이 읽히는 Shell 속성을 쓴다(manage-bde·Get-BitLockerVolume은 관리자 권한 필요)."""
+    if os.name != "nt":
+        return None
+    try:
+        proc = _run_powershell(
+            "$d = (New-Object -ComObject Shell.Application).NameSpace(17).ParseName($env:SystemDrive); "
+            "if ($d) { [string]$d.ExtendedProperty('System.Volume.BitLockerProtection') }", timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if getattr(proc, "returncode", 1) != 0:          # 실패한 명령의 출력은 상태로 쓰지 않는다(ChatGPT 검수 4-2 2차)
+        return None
+    value = (proc.stdout or "").strip()
+    return _BITLOCKER_STATES.get(int(value)) if value.isdigit() else None
+
+
+def _check_bitlocker(add):
+    state = _bitlocker_state()
+    if state == "on":
+        add("ok", "시스템 드라이브 암호화(BitLocker) 켜짐 — PC를 잃어버려도 파일을 꺼내 보기 어려워요")
+    elif state == "progress":
+        add("ok", "시스템 드라이브 암호화(BitLocker)를 진행하고 있어요")
+    elif state == "paused":
+        add("warning", "시스템 드라이브 암호화(BitLocker)가 일시 중지돼 있어요 — 지금은 암호화 보호가 꺼진 상태예요. "
+                       "제어판 > BitLocker 드라이브 암호화에서 '보호 다시 시작'을 눌러 주세요.")
+    elif state == "decrypting":
+        add("warning", "시스템 드라이브 암호화(BitLocker)를 해제하는 중이에요 — 끝나면 암호화가 없는 상태가 돼요. "
+                       "직접 해제한 게 아니라면 제어판 > BitLocker 드라이브 암호화를 확인해 주세요.")
+    elif state == "off":
+        add("warning", "시스템 드라이브가 암호화(BitLocker)돼 있지 않아요 — 노트북을 잃어버리면 파일을 꺼내 볼 수 "
+                       "있어요. 설정 > 개인 정보 및 보안 > 장치 암호화(또는 BitLocker)에서 켤 수 있어요.")
+    else:
+        add("unknown", "이 PC에서는 드라이브 암호화 상태를 확인할 수 없어요(Windows Home 등). 설정 > 개인 정보 및 "
+                       "보안 > 장치 암호화가 있으면 거기서 확인해 주세요.")
+
+
+def check_security_settings() -> str:
+    """Windows 핵심 보안 설정 — UAC, 원격 데스크톱, SMBv1, 드라이브 암호화(BitLocker)."""
+    print("\n[시스템 보안] Windows 보안 설정 확인 중...")
+    title = "[🔐 Windows 보안 설정]"
+    if mac_security.is_mac() or platform.system() != "Windows":
+        return CheckResult(f"{title}\n{UNKNOWN_MARK} 이 점검은 Windows 전용이에요.", unknown=1)
+    counts = {"critical": 0, "warning": 0, "unknown": 0}
+    lines = []
+    marks = {"critical": "🚨", "warning": "⚠️", "unknown": UNKNOWN_MARK, "ok": "✅"}
+
+    def add(severity, text):
+        if severity in counts:
+            counts[severity] += 1
+        lines.append(f"{marks[severity]} {text}")
+
+    for check in (_check_uac, _check_remote_desktop, _check_smb1, _check_bitlocker):
+        try:
+            check(add)
+        except Exception as e:                      # 한 항목 오류가 나머지를 막지 않게
+            print(f"[시스템 보안] {getattr(check, '__name__', '점검')} 오류: {e}")
+            add("unknown", "일부 설정을 확인하지 못했어요")
+    return CheckResult(f"{title}\n" + "\n".join(lines), **counts)
 
 
 def get_system_security_report() -> str:
@@ -464,4 +684,7 @@ def get_system_security_report() -> str:
         ("공유 폴더",        scan_shared_folders),
         ("로그인 실패 이력", get_login_failures),
     ]
+    if not mac_security.is_mac():
+        # 4단계: UAC·원격 데스크톱·SMBv1·드라이브 암호화 (Windows 전용)
+        checks.append(("보안 설정", check_security_settings))
     return _score_report("[🖥️ 시스템 보안 종합 리포트]", checks, kind="system")

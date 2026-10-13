@@ -18,7 +18,7 @@ def _report(lines, score=100):
 def test_unknown_item_is_not_called_normal():
     reply = _build_score_report_reply(_report(["✅ Windows 업데이트", "✅ 공유 폴더", "❔ 로그인 실패 이력"]))
 
-    assert "로그인 실패 이력는 권한 부족 등으로 확인하지 못해서" in reply
+    assert "로그인 실패 이력는 확인하지 못해서 점수에 넣지 않았어요" in reply and "권한 부족" not in reply
     assert "모두 정상" not in reply
     assert "Windows 업데이트, 공유 폴더는 정상이에요." in reply
 
@@ -34,7 +34,7 @@ def test_risky_and_unknown_together():
     reply = _build_score_report_reply(_report(["🚨 Windows 업데이트", "✅ 공유 폴더", "❔ 로그인 실패 이력"], score=92))
 
     assert "Windows 업데이트 쪽에 위험 표시" in reply
-    assert "로그인 실패 이력는 권한 부족 등으로 확인하지 못해서" in reply
+    assert "로그인 실패 이력는 확인하지 못해서 점수에 넣지 않았어요" in reply and "권한 부족" not in reply
     assert reply.endswith("자세히 봐드릴까요?")
 
 
@@ -95,3 +95,15 @@ def test_startup_reply_mentions_unresolved_shortcut():
 
     assert reply is not None
     assert "❔ 표시 1개는 바로가기가 실제로 무엇을 실행하는지 확인하지 못했어요" in reply
+
+
+def test_extra_notices_are_passed_through():
+    """기록 파일 손상·기록 실패·신뢰 목록을 못 읽음 같은 안내를 요약에서 빠뜨리지 않는다(2026-10-13)."""
+    from core.ai_worker import _build_score_report_reply
+    raw = ("[🦠 악성코드 탐지 종합 리포트]\n점수: 100/100 (🟢 안전)\n\n항목별 상태:\n  ✅ 백신 상태\n\n"
+           "※ 상세 내용이 필요한 항목은 개별로 다시 요청하세요.\n"
+           "※ 지난 점검 기록 파일이 손상돼 새로 시작했어요 이번 결과부터 다시 비교해요.\n"
+           "※ 신뢰 목록 파일이 손상돼 읽지 못했어요 — 지금은 신뢰 예외 없이 모두 점검해요.")
+    reply = _build_score_report_reply(raw)
+    assert "지난 점검 기록 파일이 손상돼" in reply and "신뢰 목록 파일이 손상돼" in reply
+    assert "상세 내용이 필요한 항목은" not in reply

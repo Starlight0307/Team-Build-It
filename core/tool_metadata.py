@@ -171,6 +171,18 @@ TOOL_METADATA: dict = {
         name="remove_lumi_firewall_rule", module="network_security", category="network_security",
         risk_level="dangerous", read_only=False, llm_exposed=True,
     ),
+    "check_web_redirection": ToolMetadata(
+        name="check_web_redirection", module="network_security", category="network_security",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "check_wifi_security": ToolMetadata(
+        name="check_wifi_security", module="network_security", category="network_security",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "check_security_settings": ToolMetadata(
+        name="check_security_settings", module="system_security", category="system_security",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
     "discover_iot_devices": ToolMetadata(
         name="discover_iot_devices", module="iot_control", category="iot",
         risk_level="safe", read_only=True, llm_exposed=True,

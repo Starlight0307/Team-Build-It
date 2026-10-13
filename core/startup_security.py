@@ -89,15 +89,8 @@ def build_startup_notice(func_map) -> str:
             continue
         mark = _mark(_counts(result))
         summary = _summary(result) or "확인했어요"
-        if (func_name == "get_listening_ports" and mark == "🚨" and marks.get("check_firewall_status") == "✅"
-                and not mac_security.is_mac()):
-            # 포트는 '열려서 기다리는 중'이지만 방화벽이 모든 네트워크에서 켜져 있고 들어오는 연결을 기본으로
-            # 막는다 — 허용 규칙이 없으면 밖에서 닿지 않으므로 '바로 위험'이 아니라 '확인 필요'로 보여준다.
-            # (허용 규칙까지 따지는 정밀 판정은 보류한 4단계 몫)
-            # Mac 방화벽은 '허용한 앱'과 서명된 앱의 연결을 기본으로 받아서 이 판단을 하지 않는다
-            mark = "⚠️"
-            summary += (" — 방화벽은 켜져 있고 들어오는 연결을 기본으로 막지만, 이 포트들을 허용하는 규칙이 있는지는 "
-                        "아직 확인하지 않았어요")
+        # (4단계) 예전엔 방화벽이 ✅이면 포트 🚨를 ⚠️로 낮췄다 — 이제 get_listening_ports가 Windows 방화벽의
+        # 켜짐·기본 차단·허용 규칙까지 보고 '방화벽이 막는 포트'는 위험으로 세지 않으므로 그대로 보여준다
         marks[func_name] = mark
         worst = max(worst, mark, key=order.get)
         rows.append(f"{mark} {label}: {summary}")

@@ -79,9 +79,9 @@ def test_trust_is_per_user(exe_file):
 def test_remove_trusted(exe_file):
     sr.add_trusted(exe_file)
 
-    assert sr.remove_trusted(exe_file.upper() if os.name == "nt" else exe_file)   # 경로 대소문자 무시(Windows)
+    assert sr.remove_trusted(exe_file.upper() if os.name == "nt" else exe_file) == (True, "")   # 대소문자 무시
     assert sr.is_trusted(exe_file) is False
-    assert sr.remove_trusted(exe_file) is False
+    assert sr.remove_trusted(exe_file) == (False, "")              # 목록에 없음(실패와 구분)
 
 
 def test_re_adding_replaces_entry_and_updates_hash(exe_file):
@@ -150,7 +150,8 @@ def test_history_is_per_kind_and_capped(monkeypatch):
 def test_history_write_failure_does_not_break_report(monkeypatch):
     monkeypatch.setattr(sr, "_write_json", MagicMock(side_effect=OSError("disk full")))
 
-    assert sr.record_report("malware", 90, {"A": "✅"}) == ""
+    # 리포트는 그대로 나가되, 기록하지 못했다는 사실은 숨기지 않는다(2026-10-13)
+    assert "기록하지 못했어요" in sr.record_report("malware", 90, {"A": "✅"})
 
 
 def test_report_gets_comparison_line_on_second_run():
@@ -465,7 +466,8 @@ def test_write_failure_returns_message_not_exception(exe_file, monkeypatch):
     ok, msg = sr.add_trusted(exe_file)
 
     assert not ok and "저장하지 못했어요" in msg
-    assert sr.remove_trusted(exe_file) is False
+    removed, why = sr.remove_trusted(exe_file)
+    assert removed is False and why == ""                  # 애초에 저장되지 않아 목록에 없음
 
 
 @pytest.mark.parametrize("content", [
@@ -483,6 +485,194 @@ def test_malformed_trust_file_entries_are_ignored(content):
         f.write(content)
 
     assert sr.load_trusted() == []
+
+
+def _write_raw(path, content):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+# ── 2026-10-13: 기록 파일 손상·읽기 실패를 '비어 있음'으로 바꾸지 않기 + 여러 루미 프로세스 잠금 ─────────
+
+def test_trusted_state_reports_corruption_instead_of_empty():
+    _write_raw(sr._trust_path(), "{not json")
+    entries, notice = sr.trusted_state()
+    assert entries == [] and "손상" in notice
+    _write_raw(sr._trust_path(), '[{"path": "C:/a.exe", "sha256": "' + "a" * 64 + '"}, 5]')
+    entries, notice = sr.trusted_state()
+    assert len(entries) == 1 and "1개 항목이 손상" in notice
+
+
+def test_corrupt_trust_file_is_backed_up_before_overwrite(exe_file):
+    path = sr._trust_path()
+    _write_raw(path, "{broken")
+    ok, msg = sr.add_trusted(exe_file)
+    assert ok and "손상돼 새로 시작했어요" in msg
+    backups = [f for f in os.listdir(os.path.dirname(path)) if ".corrupt-" in f]
+    assert len(backups) == 1
+    with open(os.path.join(os.path.dirname(path), backups[0]), encoding="utf-8") as f:
+        assert f.read() == "{broken"                       # 원본 그대로 보관
+    assert len(sr.load_trusted()) == 1
+
+
+def test_unreadable_trust_file_is_not_overwritten(exe_file, monkeypatch):
+    monkeypatch.setattr(sr, "_read_state", lambda p: (None, sr.UNREADABLE))
+    written = MagicMock()
+    monkeypatch.setattr(sr, "_write_json", written)
+    ok, msg = sr.add_trusted(exe_file)
+    assert not ok and "읽지 못해" in msg
+    removed, why = sr.remove_trusted(exe_file)
+    assert removed is None and "읽지 못해" in why
+    written.assert_not_called()
+
+
+def test_firewall_ledger_states():
+    path = sr._fw_ledger_path()
+    assert sr.read_firewall_ledger() == ([], sr.MISSING, "")
+    _write_raw(path, "nope")
+    rules, state, notice = sr.read_firewall_ledger()
+    assert rules is None and state == sr.CORRUPT and "손상" in notice
+    assert sr.load_firewall_rules() == []                  # 호환용 — 그래도 '믿을 수 있는 빈 목록'은 아님
+    good = "LUMI-" + "a" * 32
+    _write_raw(path, f'[{{"name": "{good}", "display": "A"}}, {{"name": "bad"}}]')
+    rules, state, notice = sr.read_firewall_ledger()
+    assert [r["name"] for r in rules] == [good] and state == sr.CORRUPT and "1개 항목" in notice
+
+
+def test_firewall_ledger_write_after_corruption_backs_up_and_reports():
+    path = sr._fw_ledger_path()
+    _write_raw(path, "nope")
+    ok, notice = sr.add_firewall_rules([{"name": "LUMI-" + "b" * 32, "display": "B"}])
+    assert ok and "손상돼 새로 시작했어요" in notice
+    assert any(".corrupt-" in f for f in os.listdir(os.path.dirname(path)))
+    assert sr.read_firewall_ledger()[1] == sr.OK
+
+
+def test_history_corruption_is_reported_and_restarted():
+    path = sr._history_path("malware")
+    _write_raw(path, "[[[")
+    line = sr.record_report("malware", 90, {"A": "✅"})
+    assert "지난 점검 기록 파일이 손상돼 새로 시작했어요" in line and "다시 비교해요" in line
+    assert "지난 점검(" in sr.record_report("malware", 90, {"A": "✅"})
+
+
+def test_lock_timeout_is_reported_not_silent(exe_file, monkeypatch):
+    def busy(*a, **k):
+        raise sr.RecordLockTimeout("x")
+    monkeypatch.setattr(sr, "_file_lock", busy)
+    ok, msg = sr.add_trusted(exe_file)
+    assert not ok and "다른 루미 창" in msg
+    assert "다른 루미 창" in sr.record_report("malware", 90, {})
+    assert sr.add_firewall_rules([])[0] is False
+
+
+def test_file_lock_blocks_second_holder(tmp_path):
+    """같은 파일 잠금을 다른 프로세스가 쥐고 있으면 기다리다가 시간이 지나면 실패한다."""
+    import subprocess
+    import sys
+    target = str(tmp_path / "rec.json")
+    holder = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys, time; sys.path.insert(0, sys.argv[1]); from core import security_records as s\n"
+         "with s._file_lock(sys.argv[2]):\n    print('locked', flush=True); time.sleep(3)",
+         os.getcwd(), target],
+        stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "locked"
+        with pytest.raises(sr.RecordLockTimeout):
+            with sr._file_lock(target, timeout=0.5):
+                pass
+    finally:
+        holder.wait(timeout=10)
+    with sr._file_lock(target, timeout=1):          # 놓은 뒤에는 바로 얻는다
+        pass
+
+
+def test_backup_failure_never_overwrites_corrupt_original(exe_file, monkeypatch):
+    """손상된 파일을 백업하지 못하면 그 원본이 유일한 사본이다 — 덮어쓰지 않고 실패로 알린다(검수 정직성 1차)."""
+    path = sr._trust_path()
+    _write_raw(path, "{broken")
+    monkeypatch.setattr(sr, "_backup_corrupt", lambda p: "")
+    ok, msg = sr.add_trusted(exe_file)
+    assert not ok and "백업하지 못해서" in msg
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == "{broken"
+    # 일부 항목만 손상된 경우도 같다
+    _write_raw(path, '[{"path": "C:/a.exe", "sha256": "' + "a" * 64 + '"}, 7]')
+    ok, msg = sr.add_trusted(exe_file)
+    assert not ok and "백업하지 못해서" in msg
+    fw = sr._fw_ledger_path()
+    _write_raw(fw, "nope")
+    ok, msg = sr.add_firewall_rules([{"name": "LUMI-" + "c" * 32, "display": "C"}])
+    assert not ok and "백업하지 못해서" in msg
+    with open(fw, encoding="utf-8") as f:
+        assert f.read() == "nope"
+
+
+def test_backup_is_written_atomically(monkeypatch, tmp_path):
+    src = tmp_path / "rec.json"
+    src.write_text("{bad", encoding="utf-8")
+    real_replace = os.replace
+    monkeypatch.setattr(sr.os, "replace", lambda a, b: (_ for _ in ()).throw(OSError("disk")))
+    assert sr._backup_corrupt(str(src)) == ""
+    assert not [p for p in os.listdir(tmp_path) if ".corrupt-" in p]      # 반쯤 쓴 백업이 남지 않음
+    monkeypatch.setattr(sr.os, "replace", real_replace)
+    backup = sr._backup_corrupt(str(src))
+    assert backup and open(backup, encoding="utf-8").read() == "{bad"
+
+
+def test_existing_backup_with_different_content_is_not_trusted(tmp_path):
+    """같은 이름의 백업이 이미 있어도 내용이 원본과 다르면 '백업됨'으로 치지 않고 새로 백업한다(검수 정직성 2차)."""
+    import hashlib
+    src = tmp_path / "rec.json"
+    src.write_text("{bad", encoding="utf-8")
+    stale = f"{src}.corrupt-{hashlib.sha256(b'{bad').hexdigest()[:8]}"
+    with open(stale, "w", encoding="utf-8") as f:
+        f.write("half-writ")                                   # 예전에 반쯤 쓰다 만 백업
+    backup = sr._backup_corrupt(str(src))
+    assert backup and backup != stale
+    assert open(backup, encoding="utf-8").read() == "{bad"
+    # 내용이 같은 백업이 있으면 그대로 쓴다(중복 백업 없음)
+    good = tmp_path / "good.json"
+    good.write_text("{x", encoding="utf-8")
+    first = sr._backup_corrupt(str(good))
+    assert sr._backup_corrupt(str(good)) == first
+
+
+def test_trust_notice_reaches_user_through_real_scan_path(monkeypatch):
+    """실제 호출 경로: 신뢰 목록 파일 손상 → 예약 작업 점검(플러그인) → 결정론적 답변까지 안내가 남는다."""
+    from core.ai_worker import _build_deterministic_reply
+    _write_raw(sr._trust_path(), "{broken")
+    monkeypatch.setattr(md.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(md, "_list_scheduled_task_actions",
+                        lambda: [("\\Vendor\\", "Updater", r"C:\Program Files\Vendor\update.exe", "", "Ready")])
+    monkeypatch.setattr(md, "_signature_info", lambda paths: {})
+    result = md.scan_scheduled_tasks()
+    assert "※ 신뢰 목록 파일이 손상돼" in result
+    reply = _build_deterministic_reply(result)
+    assert reply is not None and "신뢰 목록 파일이 손상돼" in reply
+
+
+def test_trust_status_error_does_not_claim_how_scan_ran(monkeypatch):
+    monkeypatch.setattr(sr, "trusted_state", lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    text = md._with_trust_notice("결과")
+    assert "신뢰 예외가 적용됐는지는 알 수 없어요" in text and "신뢰 예외 없이 점검했어요" not in text
+
+
+def test_history_state_separates_missing_from_unreadable():
+    assert sr.history_state("network") == ([], sr.MISSING)
+    _write_raw(sr._history_path("network"), "[[[")
+    assert sr.history_state("network") == (None, sr.CORRUPT)
+    assert sr.load_history("network") == []
+
+
+def test_trust_notice_survives_deterministic_reply():
+    from core.ai_worker import _build_deterministic_reply
+    raw = ("[🗓️ 예약 작업 점검 결과]\n등록된 예약 작업이 없습니다.\n"
+           "※ 신뢰 목록 파일이 손상돼 읽지 못했어요 — 지금은 신뢰 예외 없이 모두 점검해요.")
+    reply = _build_deterministic_reply(raw)
+    assert reply is not None and "신뢰 목록 파일이 손상돼" in reply
 
 
 def test_odd_marks_are_stored_as_text():

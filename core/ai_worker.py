@@ -610,7 +610,9 @@ _TOOL_CATEGORIES = {
     "network_security": (
         ("포트", "방화벽", "네트워크", "dns", "보안", "스캔", "연결", "트래픽", "종합", "점수", "리포트",
          # 2026-10-08: 프로그램 인터넷 차단, 루미 방화벽 규칙
-         "인터넷 막", "인터넷 차단", "차단 풀"),
+         "인터넷 막", "인터넷 차단", "차단 풀",
+         # 2026-10-13 4단계: hosts·프록시, Wi-Fi
+         "hosts", "호스트 파일", "프록시", "proxy", "가짜 사이트", "피싱", "와이파이", "wi-fi", "wifi"),
         # disable_firewall_rule/disable_risky_firewall_rules 둘 다 위 _DANGEROUS_FUNCS +
         # _DETECTION_BEFORE_ACTION에 이미 등록되어 있어(확인창 없이는 절대 실행되지
         # 않음), 여기 노출 목록에 추가하는 것 자체는 "AI가 이 함수를 볼 수 있다"는
@@ -621,7 +623,8 @@ _TOOL_CATEGORIES = {
          "block_suspicious_process", "disable_firewall_rule", "disable_risky_firewall_rules",
          # 2026-10-08: 바꾸는 함수(enable/block/remove)는 _DANGEROUS_FUNCS에 있어 확인창 + UAC를 거친다
          "get_listening_ports", "check_firewall_status", "enable_windows_firewall", "block_risky_open_ports",
-         "block_program_internet", "list_lumi_firewall_rules", "remove_lumi_firewall_rule"),
+         "block_program_internet", "list_lumi_firewall_rules", "remove_lumi_firewall_rule",
+         "check_web_redirection", "check_wifi_security"),
     ),
     "malware_detection": (
         ("의심", "악성", "시작프로그램", "자동실행", "자동 실행", "서비스", "해킹",
@@ -638,11 +641,14 @@ _TOOL_CATEGORIES = {
     ),
     "system_security": (
         ("업데이트", "패치", "공유폴더", "공유 폴더", "로그인실패", "로그인 실패",
-         "보안", "종합", "점수", "리포트"),
+         "보안", "종합", "점수", "리포트",
+         # 2026-10-13 4단계: 보안 설정
+         "uac", "사용자 계정 컨트롤", "원격 데스크톱", "원격데스크톱", "rdp", "smb", "비트로커", "bitlocker",
+         "드라이브 암호화", "장치 암호화"),
         # restrict_shared_folder_permission도 _DANGEROUS_FUNCS + _DETECTION_BEFORE_ACTION에
         # 등록되어 있어 확인창 없이는 실행되지 않는다 — 위 network_security와 동일한 원칙.
         ("check_update_status", "scan_shared_folders", "get_login_failures",
-         "get_system_security_report", "restrict_shared_folder_permission"),
+         "get_system_security_report", "restrict_shared_folder_permission", "check_security_settings"),
     ),
     "realtime_monitor": (
         ("실시간", "감시", "모니터링", "백그라운드"),
@@ -1381,11 +1387,17 @@ def _build_score_report_reply(raw_results: str):
         parts.append(f"{', '.join(safe)}는 정상이에요." if unknown
                      else f"{', '.join(safe)} 모두 정상이라 지금은 특별히 걱정할 부분이 없어요.")
     if unknown:
-        parts.append(f"{', '.join(unknown)}는 권한 부족 등으로 확인하지 못해서 점수에 넣지 않았어요.")
+        # 이유를 추측해 말하지 않는다 — 권한 문제일 수도, Windows Home처럼 기능이 없어서일 수도 있다(2026-10-13)
+        parts.append(f"{', '.join(unknown)}는 확인하지 못해서 점수에 넣지 않았어요(왜 못 했는지는 그 항목을 따로 "
+                     "물어보시면 알려드려요).")
     # 3단계: 점검 이력 — "※ 지난 점검(시각) 대비: 점수 84→97, 시작프로그램 🚨→⚠️" / "※ 지난 점검(시각)과 같아요."
     history = _SCORE_REPORT_HISTORY_LINE.search(raw_results)
     if history:
         parts.append(f"지난 점검({history.group('time')}){history.group('rest')}")
+    # 그 밖의 '※' 안내(기록 파일 손상·기록 실패·신뢰 목록을 못 읽음 등)는 요약하며 빠뜨리지 않고 그대로 전한다
+    for note in _SCORE_REPORT_EXTRA_NOTE.findall(raw_results):
+        if not _SCORE_REPORT_HISTORY_LINE.match(note) and not note.startswith(_SCORE_REPORT_STANDARD_NOTES):
+            parts.append(note[2:].strip())
     if risky:
         parts.append(f"{risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?")
     return " ".join(parts)
@@ -1393,6 +1405,9 @@ def _build_score_report_reply(raw_results: str):
 
 _SCORE_REPORT_HISTORY_LINE = re.compile(
     r'^※ 지난 점검\((?P<time>[^)]+)\)(?P<rest>(?: 대비: .+|과 같아요\.))$', re.MULTILINE)
+_SCORE_REPORT_EXTRA_NOTE = re.compile(r'^※ .+$', re.MULTILINE)
+# 리포트마다 붙는 고정 안내 — 위 문장들이 이미 같은 뜻을 전하므로 따로 옮기지 않는다
+_SCORE_REPORT_STANDARD_NOTES = ("※ 상세 내용이 필요한 항목은", "※ ❔ 표시")
 
 
 _SINGLE_VERDICT_LINE = re.compile(r'^(?:(✅|⚠️|🚨|❔)\s*)?(.+)$')
@@ -1435,6 +1450,8 @@ _REALTIME_RUNNING_PATTERN = re.compile(
     r'✅ 실행 중 \(시작 후 (\d+)분 경과\)\n'
     r'- 시작프로그램 점검: (\d+)초 간격\n'
     r'- 의심 프로세스 점검: (\d+)초 간격\n'
+    # 4단계(2026-10-13): 자동 시작 서비스·예약 작업 줄 — 간격 또는 '아직 못 읽음' 안내
+    r'(?:- (?P<persist>[^\n]+)\n)?'
     r'누적 알림: (\d+)건'
 )
 
@@ -1458,12 +1475,16 @@ def _build_realtime_status_reply(raw_results: str):
     match = _REALTIME_RUNNING_PATTERN.search(raw_results)
     if not match:
         return None
-    minutes, startup_sec, process_sec, alert_count = match.groups()
+    minutes, startup_sec, process_sec, persist, alert_count = match.groups()
     alert_count = int(alert_count)
     parts = [
         f"실시간 감시가 켜진 지 {minutes}분 됐어요. "
         f"시작프로그램은 {startup_sec}초마다, 의심 프로세스는 {process_sec}초마다 확인하고 있고요."
     ]
+    if persist:
+        m = re.match(r'자동 시작 서비스·예약 작업 점검: (\d+)초 간격$', persist)
+        parts.append(f"새 자동 시작 서비스·예약 작업은 {m.group(1)}초마다 확인해요." if m
+                     else persist.lstrip("❔ ").strip())
     if alert_count > 0:
         parts.append(f"지금까지 누적된 알림이 {alert_count}건 있어요. 확인해드릴까요?")
     else:
@@ -2169,8 +2190,11 @@ def _build_dns_check_reply(raw_results: str):
         parts = [f"DNS 서버를 살펴보니 {detail}로 총 {len(items)}개가 설정되어 있어요."]
 
     tail = tail.strip()
-    if tail == _DNS_CHECK_OK_SUFFIX:
+    if tail.startswith(_DNS_CHECK_OK_SUFFIX):
         parts.append("알려진 정상 DNS 서버만 사용 중이라 문제없어 보여요.")
+        # 뒤에 붙은 범위 안내(공유기 DNS 설정은 확인하지 않음 등)는 그대로 전한다(2026-10-13)
+        parts += [ln.strip().removeprefix("ℹ️").strip() for ln in tail[len(_DNS_CHECK_OK_SUFFIX):].split("\n")
+                  if ln.strip()]
         return " ".join(parts)
     wm = _DNS_CHECK_WARN_PREFIX.match(tail)
     if wm:
@@ -2278,7 +2302,7 @@ def _build_network_connections_reply(raw_results: str):
 _FW_RULES_HEADER = re.compile(r'^\[🛡️ 방화벽 규칙 — 인바운드 허용 (?P<total>\d+)개\]\n※ [^\n]+\n\n(?P<body>.+)$', re.DOTALL)
 _FW_RULES_NONE_TEXT = "[🛡️ 방화벽 규칙]\n활성화된 인바운드 허용 규칙이 없습니다."
 _FW_RULES_ITEM = re.compile(
-    r'^ {2}(?P<mark>🚨|✅) (?P<name>.+?) \| 포트: (?P<port>.+?) \| 대상: (?P<prog>.+?)(?: — (?P<warn>.+))?$',
+    r'^ {2}(?P<mark>🚨|⚠️|❔|✅) (?P<name>.+?) \| 포트: (?P<port>.+?) \| 대상: (?P<prog>.+?)(?: — (?P<warn>.+))?$',
     re.MULTILINE
 )
 _FW_RULES_TRUNCATED_MARK = "...(내용이 길어"
@@ -2335,6 +2359,8 @@ def _build_firewall_rules_reply(raw_results: str):
     if not items or len(items) != len(non_empty_lines):
         return None
     risky = [(name, prog) for mark, name, port, prog, _warn in items if mark == '🚨']
+    # 4단계: ⚠️ = 모든 포트지만 접속 범위가 제한됐거나, 위험 포트를 누구에게나 여는 규칙
+    caution = [(name, warn) for mark, name, port, prog, warn in items if mark == '⚠️']
 
     lines = [f"방화벽 인바운드 허용 규칙을 살펴보니 총 {total}개가 있어요."]
 
@@ -2348,7 +2374,7 @@ def _build_firewall_rules_reply(raw_results: str):
                 order.append(key)
             grouped[key] += 1
 
-        lines.append(f"그중 {len(risky)}개가 모든 포트를 허용하고 있어서 위험할 수 있어요:")
+        lines.append(f"그중 {len(risky)}개가 어떤 프로그램이든 모든 포트로 접속을 받게 열려 있어서 위험할 수 있어요:")
         shown = 0
         for key in order:
             if shown >= 10:
@@ -2364,7 +2390,12 @@ def _build_firewall_rules_reply(raw_results: str):
             lines.append(f"- 그 외에도 {remaining_names}개 이름의 규칙(총 {remaining_rules}개)이 더 있어요")
         lines.append("이 규칙들을 지금 정리해드릴까요?")
     else:
-        lines.append("모든 포트를 허용하는 위험한 규칙은 없었어요.")
+        lines.append("모든 포트를 누구에게나 여는 위험한 규칙은 없었어요. 특정 프로그램·앱 전용 규칙은 그 프로그램만 접속을 받아요.")
+    if caution:
+        lines.append(f"확인해 볼 규칙 {len(caution)}개:")
+        lines += [f"- {name} — {warn}" for name, warn in caution[:10]]
+        if len(caution) > 10:
+            lines.append(f"- 그 외 {len(caution) - 10}개")
 
     if was_truncated:
         # 2026-09-13 ChatGPT 검수 지적: 위험 규칙이 항상 목록 맨 앞에 오도록
@@ -2501,9 +2532,12 @@ def _build_suspicious_process_reply(raw_results: str):
     if (tm := _SUSPICIOUS_PROC_TRUSTED.match(body + "\n")):
         unverified_note += f" 신뢰 목록에 있는 {tm.group('count')}개는 의심 항목에서 뺐어요."
         body = (body + "\n")[tm.end():].strip()
-    if body == _SUSPICIOUS_PROC_NONE:
+    if body.startswith(_SUSPICIOUS_PROC_NONE):
+        # 뒤에 붙은 범위 안내(ℹ️ 루미 기준이라 백신 검사를 대신하지 않음 등)는 빼지 않고 전한다(2026-10-13)
+        rest = [ln.strip().removeprefix("ℹ️").strip() for ln in body[len(_SUSPICIOUS_PROC_NONE):].split("\n")
+                if ln.strip()]
         return (f"지금 실행 중인 프로그램 {scanned}개를 살펴보니 의심스러운 프로그램은 없었어요."
-                + unverified_note)
+                + unverified_note + "".join(f" {r}" for r in rest))
 
     lines = body.split('\n')
     if not lines or not (cm := _SUSPICIOUS_PROC_COUNT.match(lines[0])):
@@ -3844,6 +3878,9 @@ def _build_file_search_reply(raw_results: str):
 _FIREWALL_TOOL_HEADERS = (
     (re.compile(r'^\[🔌 열린 포트 점검\](?: \(다른 기기의 접속을 기다리는 TCP 포트 (\d+)개\))?$'), "열린 포트(접속 대기)를 확인해봤어요"),
     (re.compile(r'^\[🧱 Windows 방화벽 상태\]$'), "Windows 방화벽 상태를 확인해봤어요"),
+    (re.compile(r'^\[🧭 웹 접속 경로 점검\]$'), "hosts 파일과 프록시 설정을 확인해봤어요"),
+    (re.compile(r'^\[📶 Wi-Fi 보안 점검\]$'), "지금 연결된 Wi-Fi를 확인해봤어요"),
+    (re.compile(r'^\[🔐 Windows 보안 설정\]$'), "Windows 보안 설정을 확인해봤어요"),
     (re.compile(r'^\[🧱 루미가 만든 방화벽 규칙\](?: (\d+)개)?$'), "루미가 만든 방화벽 규칙이에요"),
     (re.compile(r'^\[🧱 포트 차단\]$'), "포트 차단 결과예요"),
     (re.compile(r'^\[✅ (Windows 방화벽 켜기|포트 차단|인터넷 차단|방화벽 규칙 삭제) 완료\]$'), "done"),
@@ -4056,11 +4093,35 @@ _DETERMINISTIC_REPLY_BUILDERS = (
 def _build_deterministic_reply(raw_result: str):
     """단일 도구 결과 하나를 위 결정론적 빌더들에 순서대로 통과시켜 본다 —
     전부 고정 구조를 못 찾으면 None."""
+    # 신뢰 목록을 못 읽었다는 안내는 어느 점검 결과 끝에든 붙을 수 있다 — 빌더가 형식을 못 알아봐 LLM 요약으로 넘어가며
+    # 빠지지 않게, 먼저 떼어 낸 뒤 어떤 답에든 그대로 다시 붙인다(2026-10-13)
+    notices = [ln for ln in raw_result.split("\n") if ln.startswith(_TRUST_NOTICE_PREFIX)]
+    if notices:
+        raw_result = "\n".join(ln for ln in raw_result.split("\n") if not ln.startswith(_TRUST_NOTICE_PREFIX))
     for builder in _DETERMINISTIC_REPLY_BUILDERS:
         reply = builder(raw_result)
         if reply is not None:
-            return reply
+            return reply + "".join(f"\n{n[2:].strip()}" for n in notices)
     return None
+
+
+_TRUST_NOTICE_PREFIX = "※ 신뢰 목록"
+
+# 요약에서 빠지면 안 되는 안내 — 점검이 못 한 것·기록 실패·점검 범위. '※'/'ℹ️'로 시작하고 이런 말이 들어간 줄만 고른다
+_MUST_KEEP_NOTICE = re.compile(
+    r'^(?:※|ℹ️) ?(?P<text>.*(?:손상|기록하지 못했|저장하지 못했|다른 루미 창|신뢰 목록|확인하지 못했|알 수 없어요|'
+    r'점검하지 않았어요|확인하지 않았어요|확인할 수 없어요|대신하지는 않아요|읽지 못했).*)$', re.MULTILINE)
+
+
+def _must_keep_notices(raw: str, summary: str) -> str:
+    """LLM 요약 뒤에 다시 붙일 안내(요약에 이미 그대로 들어 있으면 빼고, 같은 문장은 한 번만)."""
+    seen, out = set(), []
+    for m in _MUST_KEEP_NOTICE.finditer(raw or ""):
+        text = m.group("text").strip()
+        if text and text not in seen and text not in (summary or ""):
+            seen.add(text)
+            out.append(f"※ {text}")
+    return ("\n" + "\n".join(out)) if out else ""
 
 
 _DAILY_SUMMARY_KEYWORDS = (
@@ -4908,7 +4969,10 @@ def _summarize_tool_results(chat_history: list, tool_results) -> str:
                 batch_raw = "\n\n".join(
                     f"[도구 결과 {i+1}]\n{raw}" for i, raw in enumerate(pending_leftover)
                 )
-            output_parts.append(_summarize_tool_results_llm(chat_history, batch_raw))
+            summary = _summarize_tool_results_llm(chat_history, batch_raw)
+            # 로컬 LLM이 자유롭게 요약하면 '무엇을 확인하지 못했는지·기록에 실패했는지' 같은 안내를 빼먹을 수 있다 —
+            # 그런 안내 줄은 요약 뒤에 원문 그대로 다시 붙인다(2026-10-13, 사용자 지적: 모르는 걸 두루뭉술하게 넘기지 말 것)
+            output_parts.append(summary + _must_keep_notices(batch_raw, summary))
             pending_leftover.clear()
 
     for raw in tool_results:
@@ -5015,6 +5079,9 @@ TOOL_STATUS_NAMES = {
     "disable_firewall_rule":     "🛡️  방화벽 규칙 비활성화 중",
     "disable_risky_firewall_rules": "🛡️  위험한 방화벽 규칙 정리 중",
     "get_listening_ports":       "🔌  열린 포트 확인 중",
+    "check_web_redirection":     "🧭  웹 접속 경로 확인 중",
+    "check_wifi_security":       "📶  Wi-Fi 보안 확인 중",
+    "check_security_settings":   "🔐  Windows 보안 설정 확인 중",
     "check_firewall_status":     "🧱  방화벽 상태 확인 중",
     "enable_windows_firewall":   "🧱  Windows 방화벽 켜는 중",
     "block_risky_open_ports":    "🧱  위험한 포트 차단 규칙 만드는 중",

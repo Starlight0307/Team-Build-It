@@ -36,9 +36,11 @@ def test_check_result_is_a_plain_string_with_counts(module):
 @pytest.mark.parametrize("module, report, names", [
     (md, "get_malware_report", ["check_defender_status", "detect_suspicious_processes", "scan_startup_items",
                                 "scan_scheduled_tasks", "scan_suspicious_services"]),
-    (ss, "get_system_security_report", ["check_update_status", "scan_shared_folders", "get_login_failures"]),
-    (ns, "get_network_security_report", ["scan_open_ports", "get_firewall_rules", "check_dns_settings",
-                                          "get_network_connections"]),
+    (ss, "get_system_security_report", ["check_update_status", "scan_shared_folders", "get_login_failures",
+                                         "check_security_settings"]),
+    (ns, "get_network_security_report", ["get_listening_ports", "check_firewall_status", "get_firewall_rules",
+                                          "check_dns_settings", "get_network_connections",
+                                          "check_web_redirection", "check_wifi_security"]),
 ])
 def test_every_report_scores_only_from_counts(module, report, names):
     """글에는 🚨/⚠️가 잔뜩 있어도 판정 개수가 주의 1개뿐이면 97점·⚠️ 하나."""
@@ -316,6 +318,8 @@ def test_check_result_accepts_large_counts_and_keeps_text(module):
 
 
 def _run_report(module, report, names, values):
+    # 값보다 점검이 많으면(4단계에 추가된 점검 등) 나머지는 '문제 없음' 결과로 채운다 — 실제 PC 상태가 섞이지 않게
+    values = list(values) + [module.CheckResult("ok")] * (len(names) - len(values))
     patches = [patch.object(module, n, **({"side_effect": v} if isinstance(v, Exception) or callable(v)
                                           and not isinstance(v, str) else {"return_value": v}))
                for n, v in zip(names, values)]
@@ -328,7 +332,7 @@ def _run_report(module, report, names, values):
             p.stop()
 
 
-SS_NAMES = ["check_update_status", "scan_shared_folders", "get_login_failures"]
+SS_NAMES = ["check_update_status", "scan_shared_folders", "get_login_failures", "check_security_settings"]
 
 
 def test_score_never_goes_below_zero():

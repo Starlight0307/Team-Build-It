@@ -11,8 +11,10 @@
   → stop_realtime_monitor()로 중지.
 """
 
+import json
 import os
 import ntpath
+import subprocess
 import platform
 import threading
 import psutil
@@ -126,6 +128,7 @@ _alerts_lock        = threading.Lock()
 _alerts             = []
 _monitor_started_at = None
 _known_pids         = set()      # 이미 확인한 PID — 새로 나타난 프로세스만 검사
+_persistence_baseline = None     # 자동 시작 서비스·예약 작업 기준선(4단계) — 감시 스레드가 시작할 때 잡는다
 
 # 의심 프로세스 판별 기준 — malware_detection.py와 동일한 기준 재사용
 # (실시간 감시는 신규 프로세스에 대해서만 검사하므로 CPU 누적치 기반 기준은
@@ -444,6 +447,190 @@ def _snapshot():
     return snap
 
 
+# ─────────────────────────────────────────────
+# 🧷 자동 시작 서비스·예약 작업 감시 (4단계, 2026-10-13)
+# ─────────────────────────────────────────────
+# 악성코드는 시작프로그램(Run 키·시작 폴더)말고도 '자동 시작 서비스'나 '예약 작업'으로 PC가 켜질 때마다 다시
+# 실행되게 한다. 감시를 시작할 때 목록을 기준선으로 잡고, 몇 분마다 새로 생긴 것과 실행 파일이 바뀐 서비스를 알린다.
+# 둘 다 관리자 권한 없이 읽는다(서비스: 레지스트리 15ms 안팎, 예약 작업: PowerShell 약 2초).
+
+_SERVICES_KEY = r"SYSTEM\CurrentControlSet\Services"
+_AUTO_START_VALUES = {0: "부팅 드라이버", 1: "시스템 드라이버", 2: "자동 시작"}
+_PERSISTENCE_EVERY_PROCESS_TICKS = 3      # 의심 프로세스 점검 3번마다(기본 약 3분) — 예약 작업 조회가 무거워서
+
+# _format_info 형식: (제목, 설명, 조치)
+_SERVICE_INFO = (
+    "⚙️ 컴퓨터 켤 때 Windows가 자동으로 실행하는 새 서비스",
+    "프로그램을 새로 설치했다면 정상일 수 있어요. 설치한 기억이 없거나 실행 파일이 사용자 폴더(다운로드·임시 폴더 "
+    "등)에 있으면 악성 프로그램이 컴퓨터를 껐다 켜도 살아남으려는 시도일 수 있어요.",
+    "'자동 시작 서비스 점검해줘'라고 하면 서명·위치를 자세히 확인해 드려요. 확실하지 않으면 함부로 지우지 마시고 "
+    "백신 프로그램으로 검사하세요.",
+)
+_SERVICE_CHANGED_INFO = (
+    "⚙️ 이름은 그대로인데 실행 파일이 바뀐 자동 시작 서비스",
+    "악성 프로그램이 정상 서비스를 가로챌 때 쓰는 수법이에요. 다만 프로그램을 방금 업데이트했다면(버전 번호가 든 "
+    "폴더로 옮겨 가는 프로그램이 있어요) 정상일 수 있어요.",
+    "'자동 시작 서비스 점검해줘'라고 하면 서명·위치를 자세히 확인해 드려요.",
+)
+_TASK_CHANGED_INFO = (
+    "🗓️ 이름은 그대로인데 실행 명령이 바뀐 예약 작업",
+    "악성 프로그램이 이미 있던 정상 예약 작업을 가로챌 때 쓰는 수법이에요. 다만 프로그램을 업데이트하면 명령이 바뀌는 "
+    "경우도 있어요.",
+    "'예약 작업 점검해줘'라고 하면 서명·명령을 자세히 확인해 드려요. 확실하지 않으면 함부로 지우지 마세요.",
+)
+_TASK_INFO = (
+    "🗓️ 정해진 때(로그인할 때, 매일 등) 프로그램을 자동으로 실행하는 새 예약 작업",
+    "프로그램을 새로 설치했다면 정상일 수 있어요. 설치한 기억이 없거나 PowerShell·cmd 같은 실행 도구로 숨긴 명령을 "
+    "돌리면 악성 프로그램일 수 있어요.",
+    "'예약 작업 점검해줘'라고 하면 자세히 확인해 드려요. 확실하지 않으면 함부로 지우지 마세요.",
+)
+
+
+def _service_dll(key) -> str:
+    """서비스 키의 ServiceDll(Parameters 아래 → 서비스 키 바로 아래 순서). 없으면 ''."""
+    for sub in ("Parameters", None):
+        try:
+            if sub:
+                with winreg.OpenKey(key, sub) as params:
+                    value = winreg.QueryValueEx(params, "ServiceDll")[0]
+            else:
+                value = winreg.QueryValueEx(key, "ServiceDll")[0]
+        except OSError:
+            continue
+        if value:
+            return str(value)
+    return ""
+
+
+def _auto_start_services():
+    """{서비스 이름: (시작 방식, 실행 파일 경로)} — 부팅/시스템/자동 시작 서비스·드라이버. 읽기 실패면 None."""
+    if not winreg:
+        return None
+    out = {}
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _SERVICES_KEY) as root:
+            i = 0
+            while True:
+                try:
+                    name = winreg.EnumKey(root, i)
+                except OSError as e:
+                    # 259(ERROR_NO_MORE_ITEMS)만 '목록 끝'이다. 그 밖의 오류로 중간에 멈추면 목록이 불완전하니 이번
+                    # 회차는 '못 읽음'(None)으로 — 빠진 서비스를 기준선에서 놓치지 않게(ChatGPT 검수 4-3 2차)
+                    if getattr(e, "winerror", None) == 259:
+                        break
+                    return None
+                i += 1
+                try:
+                    with winreg.OpenKey(root, name) as key:
+                        start = winreg.QueryValueEx(key, "Start")[0]
+                        if start not in _AUTO_START_VALUES:
+                            continue
+                        try:
+                            image = str(winreg.QueryValueEx(key, "ImagePath")[0] or "")
+                        except OSError:
+                            image = ""
+                        # svchost 같은 공용 실행 파일로 도는 서비스는 실제 코드가 ServiceDll(보통 Parameters 아래, 일부는
+                        # 서비스 키 바로 아래)에 있다 — 그 DLL만 바꿔치기하는 수법도 있어서, 값이 있는 서비스는 모두 함께
+                        # 기록한다(실행 파일 경로가 그대로여도 잡히게). 값이 없는 건 정상이다(ChatGPT 검수 4-3 1차)
+                        dll = _service_dll(key)
+                        if dll:
+                            image = f"{image} (DLL: {dll})"
+                        out[name] = (_AUTO_START_VALUES[start], image)
+                except OSError:
+                    continue
+    except OSError:
+        return None
+    return out
+
+
+def _scheduled_tasks():
+    """{작업 경로: 실행 명령} — Microsoft 폴더 밖 예약 작업. 읽기 실패면 None.
+    Windows 업데이트가 \\Microsoft\\ 아래 작업을 수시로 만들어서 그 폴더는 알림에서 뺀다(그 폴더에 숨는 악성코드는
+    '예약 작업 점검'의 서명·명령 판정이 맡는다)."""
+    root = _system_root()
+    ps = os.path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe") if root else ""
+    if not ps or not os.path.isfile(ps):
+        return None
+    script = (
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+        "$r = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskPath -notlike '\\Microsoft\\*' } | "
+        "ForEach-Object { [ordered]@{ path = [string]($_.TaskPath + $_.TaskName); "
+        "cmd = [string](($_.Actions | ForEach-Object { ($_.Execute + ' ' + $_.Arguments).Trim() }) -join ' ; ') } }); "
+        "ConvertTo-Json -InputObject $r -Compress")
+    try:
+        proc = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                              encoding="utf-8", errors="replace", timeout=60,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        data = json.loads(proc.stdout.strip() or "null")
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return None
+    if proc.returncode != 0 or data is None:
+        return None
+    rows = data if isinstance(data, list) else [data]
+    return {str(r.get("path")): str(r.get("cmd") or "") for r in rows if isinstance(r, dict) and r.get("path")}
+
+
+def _persistence_snapshot():
+    """{"services": … 또는 None, "tasks": … 또는 None}."""
+    return {"services": _auto_start_services(), "tasks": _scheduled_tasks()}
+
+
+def _persistence_alerts(before, after, ts):
+    """기준선과 지금을 비교한 알림 글 목록. 한쪽이라도 못 읽었으면 그 종류는 비교하지 않는다(오탐 방지)."""
+    alerts = []
+    old_s, new_s = (before or {}).get("services"), (after or {}).get("services")
+    if old_s is not None and new_s is not None:
+        for name in sorted(set(new_s) - set(old_s)):
+            kind, image = new_s[name]
+            alerts.append(f"[{ts}] 🚨 새 자동 시작 서비스 발견: {name} ({kind}) → {image or '실행 파일 경로 없음'}"
+                          "\n   " + _format_info(_SERVICE_INFO))
+        for name in sorted(set(new_s) & set(old_s)):
+            if new_s[name][1] != old_s[name][1]:
+                # 원래 있던 서비스의 실행 파일(또는 ServiceDll)만 바꿔치기하는 수법 — 이름이 그대로라 눈에 안 띈다
+                alerts.append(f"[{ts}] 🚨 자동 시작 서비스의 실행 파일이 바뀌었어요: {name} → {new_s[name][1] or '없음'} "
+                              f"(이전: {old_s[name][1] or '없음'})\n   " + _format_info(_SERVICE_CHANGED_INFO))
+            if new_s[name][0] != old_s[name][0]:          # 실행 파일과 함께 바뀌어도 따로 알린다
+                # 자동 시작 → 부팅/시스템 드라이버처럼 더 일찍 실행되게 바꾸는 경우(ChatGPT 검수 4-3 1차).
+                # 꺼져 있던(수동·사용 안 함) 서비스를 자동 시작으로 바꾸면 기준선에 없던 항목이라 '새 서비스'로 잡힌다
+                alerts.append(f"[{ts}] 🚨 자동 시작 서비스의 시작 방식이 바뀌었어요: {name} → {new_s[name][0]} "
+                              f"(이전: {old_s[name][0]})\n   " + _format_info(_SERVICE_CHANGED_INFO))
+    old_t, new_t = (before or {}).get("tasks"), (after or {}).get("tasks")
+    if old_t is not None and new_t is not None:
+        for path in sorted(set(new_t) - set(old_t)):
+            alerts.append(f"[{ts}] 🚨 새 예약 작업 발견: {path} → {new_t[path] or '실행 명령 없음'}"
+                          "\n   " + _format_info(_TASK_INFO))
+        for path in sorted(set(new_t) & set(old_t)):
+            if new_t[path] != old_t[path]:
+                # 이미 있던 예약 작업의 실행 명령만 바꿔치기하는 경우(ChatGPT 검수 4-3 1차)
+                alerts.append(f"[{ts}] 🚨 예약 작업의 실행 명령이 바뀌었어요: {path} → {new_t[path] or '없음'} "
+                              f"(이전: {old_t[path] or '없음'})\n   " + _format_info(_TASK_CHANGED_INFO))
+    return alerts
+
+
+def _persistence_status() -> str:
+    """감시 상태 글에 붙일 한 줄 — 서비스·예약 작업 기준선을 아직 못 읽었으면 그 기간엔 새 항목을 못 잡는다고 알린다."""
+    base = _persistence_baseline
+    if base is None:
+        return "- 자동 시작 서비스·예약 작업: 기준선 준비 중"
+    missing = [label for kind, label in (("services", "자동 시작 서비스"), ("tasks", "예약 작업"))
+               if base.get(kind) is None]
+    if missing:
+        return (f"- ❔ {'·'.join(missing)} 목록을 아직 읽지 못했어요 — 읽힐 때까지 다시 시도하고, 그 전에 생긴 항목은 "
+                "알리지 못해요('자동 시작 서비스 점검해줘'·'예약 작업 점검해줘'로 직접 확인할 수 있어요)")
+    return (f"- 자동 시작 서비스·예약 작업 점검: "
+            f"{_startup_interval_seconds * _process_check_every_ticks * _PERSISTENCE_EVERY_PROCESS_TICKS}초 간격")
+
+
+def _merge_snapshot(before, after):
+    """다음 비교의 기준선 — 이번에 못 읽은 종류는 이전 기준선을 그대로 둔다(한 번 실패로 기준선이 사라져 다음에
+    전부 '새로 생김'으로 알리는 일을 막는다)."""
+    merged = dict(before or {})
+    for kind in ("services", "tasks"):
+        if (after or {}).get(kind) is not None:
+            merged[kind] = after[kind]
+    return merged
+
+
 def _run_one_tick(last_snapshot: dict, tick: int) -> dict:
     """감시 주기 한 틱에 해당하는 실제 점검+알림 기록 로직. ChatGPT 검수 지적으로
     _monitor_loop()의 while문 안에 있던 걸 분리했다 — 원래는 실제 스레드가
@@ -468,6 +655,19 @@ def _run_one_tick(last_snapshot: dict, tick: int) -> dict:
     except Exception:
         pass
 
+    # 3) 자동 시작 서비스·예약 작업(4단계) — 의심 프로세스 점검 3번마다, 예약 작업 조회가 무거워서 가장 느슨하게
+    global _persistence_baseline
+    if _persistence_baseline is not None and tick % (_process_check_every_ticks * _PERSISTENCE_EVERY_PROCESS_TICKS) == 0:
+        try:
+            after = _persistence_snapshot()
+            found = _persistence_alerts(_persistence_baseline, after, ts)
+            if found:
+                with _alerts_lock:
+                    _alerts.extend(found)
+            _persistence_baseline = _merge_snapshot(_persistence_baseline, after)
+        except Exception as e:
+            print(f"[실시간 감시] 서비스·예약 작업 점검 오류: {e}")
+
     # 2) 의심 프로세스 — N틱마다, 전체 프로세스 순회 비용이 있어서 느슨하게
     if tick % _process_check_every_ticks == 0:
         try:
@@ -483,7 +683,14 @@ def _run_one_tick(last_snapshot: dict, tick: int) -> dict:
 
 
 def _monitor_loop():
+    global _persistence_baseline
     last_snapshot = _snapshot()
+    # 서비스·예약 작업 기준선 — 감시 시작 시점에 있던 것은 '이미 있던 것'(예약 작업 조회가 약 2초라 스레드 안에서)
+    try:
+        _persistence_baseline = _persistence_snapshot()
+    except Exception as e:
+        print(f"[실시간 감시] 서비스·예약 작업 기준선 오류: {e}")
+        _persistence_baseline = {"services": None, "tasks": None}
     tick = 0
     while not _monitor_stop_flag.is_set():
         _monitor_stop_flag.wait(_startup_interval_seconds)
@@ -528,6 +735,8 @@ def start_realtime_monitor(startup_interval_seconds: int = None,
     except Exception:
         _known_pids = set()
 
+    global _persistence_baseline
+    _persistence_baseline = None     # 재시작 때 이전 감시의 기준선이 남지 않게 — 새 스레드가 다시 잡는다
     _monitor_started_at = datetime.now()
     _monitor_thread = threading.Thread(target=_monitor_loop, daemon=True)
     _monitor_thread.start()
@@ -537,6 +746,7 @@ def start_realtime_monitor(startup_interval_seconds: int = None,
     return (f"[🛰️ 실시간 감시 시작]\n"
             f"- 컴퓨터 켤 때 자동 실행되는 프로그램: {_startup_interval_seconds}초마다\n"
             f"- 새로 실행되는 의심스러운 프로그램: {actual_process_interval}초마다\n"
+            f"- 새 자동 시작 서비스·예약 작업: {actual_process_interval * _PERSISTENCE_EVERY_PROCESS_TICKS}초마다\n"
             f"새 항목이 감지되면 자동으로 기록해두고, "
             f"'실시간 감시 결과 알려줘'라고 물어보면 확인할 수 있습니다.")
 
@@ -567,6 +777,7 @@ def get_realtime_monitor_status() -> str:
             f"✅ 실행 중 (시작 후 {minutes}분 경과)\n"
             f"- 시작프로그램 점검: {_startup_interval_seconds}초 간격\n"
             f"- 의심 프로세스 점검: {_startup_interval_seconds * _process_check_every_ticks}초 간격\n"
+            f"{_persistence_status()}\n"
             f"누적 알림: {alert_count}건")
 
 
