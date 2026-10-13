@@ -250,6 +250,9 @@ DASHBOARD_WIDGETS = {
 }
 DEFAULT_WIDGET_ORDER = list(DASHBOARD_WIDGETS)
 
+# 창 닫기(X) 동작 — 환경설정 > 실행 (app_settings "close_action")
+CLOSE_ACTIONS = [(None, "매번 묻기"), ("tray", "백그라운드"), ("quit", "종료")]
+
 
 class AssistantApp(QWidget):
     def __init__(self):
@@ -431,12 +434,39 @@ class AssistantApp(QWidget):
             self._voice_listener.stop()
             self._voice_listener.wait(2000)
 
+    def _confirm_quit(self):
+        """상단 바 종료 버튼 — 실수로 누르는 일이 없게 한 번 묻고 완전히 끈다."""
+        if lumi_dialog.choice(self, "루미 종료",
+                              "루미를 완전히 종료할까요?\n종료하면 알림·자동 실행·호출어 대기도 멈춰요.",
+                              [("cancel", "취소", "ghost"), ("quit", "종료", "danger")]) == "quit":
+            self._quit_app()
+
+    def _ask_close_action(self):
+        """X 버튼을 처음 눌렀을 때 — 백그라운드에 남길지 종료할지 묻는다. (동작, 기억 여부), 취소면 동작은 None."""
+        return lumi_dialog.choice(
+            self, "창을 닫을까요?",
+            "백그라운드에 남겨두면 창만 닫히고 알림·자동 실행·호출어 대기는 계속 동작해요.\n"
+            "다시 열려면 작업 표시줄 오른쪽 트레이의 루미 아이콘을 누르세요.",
+            [(None, "취소", "ghost"), ("tray", "백그라운드에 남기기", "primary"), ("quit", "종료", "danger")],
+            remember="이 선택 기억하기 (환경설정 > 실행에서 바꿀 수 있어요)")
+
     def closeEvent(self, event):
         if self._force_quit or not self.tray_icon:
             event.accept()
             return
-        # X 버튼 — 종료하지 않고 트레이로 숨긴다.
         event.ignore()
+        action = app_settings.get("close_action")
+        if action not in ("tray", "quit"):
+            action, remember = self._ask_close_action()
+            if action is None:
+                return
+            if remember:
+                app_settings.set("close_action", action)
+                self._sync_close_action_buttons()
+        if action == "quit":
+            self._quit_app()
+            return
+        # 백그라운드 — 종료하지 않고 트레이로 숨긴다.
         self.hide()
         if not self._tray_close_notice_shown:
             self._tray_close_notice_shown = True
@@ -1025,6 +1055,7 @@ class AssistantApp(QWidget):
         )
         for btn in self.nav_info:
             btn.setStyleSheet(nav_style)
+        self.btn_quit.setStyleSheet(nav_style + f"QPushButton:hover {{ border-color: #E5484D; }}")
 
         for panel in self.info_panels:
             panel.apply_theme(p)
@@ -1234,6 +1265,15 @@ class AssistantApp(QWidget):
         self.btn_profile.setIconSize(QSize(17, 17))
         self.btn_profile.clicked.connect(self.go_to_profile_page)
         tb.addWidget(self.btn_profile)
+
+        # 종료 — 메뉴가 아니라 바로 실행하는 버튼이라 nav_info에 넣지 않는다
+        self.btn_quit = QPushButton()
+        self.btn_quit.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_quit.setToolTip("루미 종료")
+        self.btn_quit.setIcon(icons.icon("power"))
+        self.btn_quit.setIconSize(QSize(18, 18))
+        self.btn_quit.clicked.connect(self._confirm_quit)
+        tb.addWidget(self.btn_quit)
         root.addWidget(self.top_bar)
 
         # 메인 영역
@@ -1659,6 +1699,29 @@ class AssistantApp(QWidget):
 
         outer.addWidget(self._make_settings_card("화면", icon="palette", rows=[
             ("다크 모드", "어두운 배경으로 눈의 피로를 줄여요.", self.switch_dark),
+        ]))
+        outer.addSpacing(18)
+        # 창 닫기(X) 동작 — 매번 묻기 / 백그라운드 / 종료 (세그먼트 버튼)
+        self.close_action_selector = QWidget()
+        cal = QHBoxLayout(self.close_action_selector)
+        cal.setContentsMargins(0, 0, 0, 0)
+        cal.setSpacing(0)
+        self._close_action_buttons = {}
+        for i, (value, label) in enumerate(CLOSE_ACTIONS):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(30)
+            btn.setMinimumWidth(64)
+            btn.setProperty("segment", "left" if i == 0 else "right" if i == len(CLOSE_ACTIONS) - 1 else "mid")
+            btn.clicked.connect(lambda _c, v=value: self._on_close_action_chosen(v))
+            cal.addWidget(btn)
+            self._close_action_buttons[value] = btn
+        self._sync_close_action_buttons()
+        outer.addWidget(self._make_settings_card("실행", icon="power", rows=[
+            ("창 닫기 버튼(X)",
+             "'백그라운드'는 창만 닫고 알림·자동 실행을 계속해요. 완전히 끄려면 위쪽 종료 버튼이나 트레이 메뉴를 쓰세요.",
+             self.close_action_selector),
         ]))
         outer.addSpacing(18)
         # 음성 인식 정확도 — 빠름/정확 둘 중 하나 (세그먼트 버튼)
@@ -2186,10 +2249,10 @@ class AssistantApp(QWidget):
             f"QPushButton {{ background-color: {p['grad']}; color: #2E2A4F; border: none; border-radius: 12px; "
             f"padding: 6px 16px; font-size: 13px; font-weight: bold; }}"
             f"QPushButton:hover {{ background-color: {p['grad_hover']}; }}")
-        for btn in self._voice_model_buttons.values():
-            left = btn.property("segment") == "left"
-            radius = ("border-top-left-radius: 15px; border-bottom-left-radius: 15px;" if left
-                      else "border-top-right-radius: 15px; border-bottom-right-radius: 15px;")
+        for btn in (*self._voice_model_buttons.values(), *self._close_action_buttons.values()):
+            radius = {"left": "border-top-left-radius: 15px; border-bottom-left-radius: 15px;",
+                      "right": "border-top-right-radius: 15px; border-bottom-right-radius: 15px;"
+                      }.get(btn.property("segment"), "border-radius: 0px;")
             btn.setStyleSheet(
                 f"QPushButton {{ background-color: {p['pb']}; color: {p['tc2']}; border: 1px solid {p['card_brd']}; "
                 f"{radius} font-size: 13px; font-weight: bold; padding: 0 14px; }}"
@@ -2218,6 +2281,20 @@ class AssistantApp(QWidget):
         n = len(user_words())
         self._show_toast(f"🎙️ 자주 쓰는 단어 {n}개를 저장했어요. 다음 받아쓰기부터 적용돼요." if n
                          else "🎙️ 자주 쓰는 단어를 비웠어요.")
+
+    def _sync_close_action_buttons(self):
+        current = app_settings.get("close_action")
+        for value, btn in self._close_action_buttons.items():
+            btn.setChecked(value == current)
+
+    def _on_close_action_chosen(self, value):
+        app_settings.set("close_action", value)
+        self._sync_close_action_buttons()
+        self._show_toast({
+            None: "창을 닫을 때마다 백그라운드에 남길지 물어볼게요.",
+            "tray": "창을 닫으면 백그라운드에서 계속 실행할게요.",
+            "quit": "창을 닫으면 루미를 완전히 종료할게요.",
+        }[value])
 
     def _sync_voice_model_buttons(self):
         current = current_voice_model()
@@ -2375,6 +2452,7 @@ class AssistantApp(QWidget):
         self._apply_widget_layout()
         self._rebuild_widget_editor()   # 환경설정의 위젯 목록도 이 계정의 순서·보이기로(안 하면 예전 목록이 남아 저장 안 된 것처럼 보였다)
         self._sync_voice_model_buttons()
+        self._sync_close_action_buttons()
         self.weather_panel.reload()   # 지역이 없으면 refresh가 알아서 현재 위치를 찾는다
         if hasattr(self, "skills_page"):
             self.skills_page.refresh()
@@ -3865,6 +3943,8 @@ if __name__ == "__main__":
     ex  = AssistantApp()
     ex.show()
     app.aboutToQuit.connect(ex.shutdown_background_work)   # Cmd+Q 등 모든 종료 경로
+    # PC 종료·로그아웃 때는 "창을 닫을까요?"를 묻지 않고 바로 끈다(물으면 PC 종료가 그 창에서 멈춘다)
+    app.commitDataRequest.connect(lambda _m: setattr(ex, "_force_quit", True))
 
     # 터미널에서 Ctrl+C / 종료 신호 → 곧바로 죽지 않고 정상 종료 절차를 밟는다.
     # Qt 이벤트 루프가 도는 동안엔 파이썬이 신호를 처리할 틈이 없어서, 짧은

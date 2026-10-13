@@ -37,6 +37,8 @@ ICONS = [
     "shield-check", "bell", "alarm-clock", "check-check",
     # 마이페이지
     "brain", "log-out",
+    # 종료 버튼 · 환경설정 > 실행
+    "power",
     # 알림(토스트)
     "triangle-alert", "volume-2", "volume-x", "save", "circle-check",
 ]

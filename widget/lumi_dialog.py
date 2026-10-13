@@ -12,7 +12,7 @@ QMessageBox / QInputDialog 대신 같은 이름의 함수를 쓰면 된다(반�
 """
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor, QPixmap
-from PyQt6.QtWidgets import (QDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit,
+from PyQt6.QtWidgets import (QCheckBox, QDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit,
                              QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 _state = {"dark": False}
@@ -66,6 +66,10 @@ def qss(p: dict) -> str:
         QCalendarWidget QToolButton {{ color: {p['text']}; background: transparent; font-weight: 700; }}
         QCalendarWidget QAbstractItemView {{ selection-background-color: {p['accent']}; selection-color: #FFFFFF; }}
         QLineEdit:disabled {{ color: {p['sub']}; }}
+        QCheckBox {{ background: transparent; color: {p['sub']}; font-size: 13px; spacing: 8px; }}
+        QCheckBox::indicator {{ width: 16px; height: 16px; border: 1.5px solid {p['border']}; border-radius: 5px;
+                                background-color: {p['input']}; }}
+        QCheckBox::indicator:checked {{ background-color: {p['accent']}; border-color: {p['accent']}; }}
         QPushButton#LinkPrimary {{ background-color: {p['accent']}; color: {p['accent_text']}; border: none;
                                    border-radius: 12px; padding: 0 18px; font-size: 14px; font-weight: 800; }}
         QPushButton#LinkPrimary:hover {{ background-color: {p['accent_hover']}; }}
@@ -250,13 +254,18 @@ def question(parent, title, text, buttons=None, default=None):
     return _message(parent, title, text, "question", buttons, default)
 
 
-def choice(parent, title, text, options, kind: str = "question", on_top: bool = False):
+def choice(parent, title, text, options, kind: str = "question", on_top: bool = False, remember: str = None):
     """버튼이 여러 개인 확인 창. options = [(값, 글자, 모양)] — 모양: "primary"/"danger"/"ghost".
-    고른 값을 돌려준다(Esc·닫기는 마지막 ghost 버튼의 값, 없으면 None)."""
+    고른 값을 돌려준다(Esc·닫기는 마지막 ghost 버튼의 값, 없으면 None).
+    remember에 글자를 주면 그 글자의 체크박스를 달고 (값, 체크 여부)를 돌려준다."""
     dlg = LumiDialog(parent, title or "", icon=_icon(kind))
     if on_top:
         dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
     _body_text(dlg, text)
+    check = None
+    if remember:
+        check = QCheckBox(remember); check.setCursor(Qt.CursorShape.PointingHandCursor)
+        dlg.body.addWidget(check)
     dlg.btn_primary.hide(); dlg.btn_secondary.hide()
     chosen = {"value": next((v for v, _l, st in reversed(options) if st == "ghost"), None)}
     names = {"primary": "LinkPrimary", "danger": "LumiDanger", "ghost": "LinkGhost"}
@@ -267,6 +276,8 @@ def choice(parent, title, text, options, kind: str = "question", on_top: bool = 
         dlg.buttons_row.addWidget(b)
     dlg.setStyleSheet(qss(dlg.p))
     dlg.exec()
+    if check is not None:
+        return chosen["value"], check.isChecked()
     return chosen["value"]
 
 

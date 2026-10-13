@@ -22,6 +22,16 @@ from unittest.mock import MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _close_to_tray(monkeypatch, tmp_path):
+    """X 버튼은 처음에 "백그라운드/종료"를 묻는다(tests/unit/test_close_action.py) — 이 파일은
+    "백그라운드에 남기기"를 기억해 둔 상태의 동작을 검증한다. 설정은 임시 파일에 쓴다."""
+    from settings import app_settings
+    monkeypatch.setattr(app_settings, "_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setattr(app_settings, "_cache", None)
+    app_settings.set("close_action", "tray")
+
+
 def _make_app():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from app_main import AssistantApp

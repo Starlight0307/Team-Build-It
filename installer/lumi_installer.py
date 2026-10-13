@@ -48,6 +48,16 @@ CODE_ZIP_AT = "https://codeload.github.com/Starlight0307/Team-Build-It/zip/{sha}
 # 마이페이지에 보여줄 버전 번호 — 코드를 받을 때의 최신 GitHub Release(v1.1.0 → "1.1.0")
 LATEST_RELEASE_API = "https://api.github.com/repos/Starlight0307/Team-Build-It/releases/latest"
 OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
+# Microsoft Visual C++ 2015-2022 재배포 패키지(x64) — 항상 최신 버전으로 연결되는 공식 주소
+VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+VC_RUNTIME_KEY = r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+VC_MIN_VERSION = (14, 40)
+# 설치 전 여유 공간 확인 — 실제 설치 크기(루미 약 0.8GB·Ollama 약 2.8GB·llama3.1 약 4.6GB)에 받는 중
+# 임시 파일과 캐시를 더한 값
+SPACE_APP = 2_500_000_000
+SPACE_OLLAMA = 4_500_000_000
+SPACE_MODEL = 5_500_000_000
+DISK_MARGIN = 1_000_000_000
 OLLAMA_API = "http://127.0.0.1:11434"
 PYTHON_VERSION = "3.11"
 DEFAULT_MODEL = "llama3.1"
@@ -59,6 +69,7 @@ NO_WINDOW = subprocess.CREATE_NO_WINDOW if IS_WIN else 0
 
 # (단계 키, 이름, 설명, 전체 진행률에서 차지하는 비중)
 STEPS = [
+    ("runtime", "Windows 구성요소", "AI·음성 기능에 필요한 Microsoft Visual C++ 런타임을 확인해요", 4),
     ("python", "실행 환경 준비", "Python 3.11과 루미 전용 환경을 만들어요", 10),
     ("code", "루미 내려받기", "GitHub에서 최신 루미를 받아요", 8),
     ("packages", "구성요소 설치", "화면·음성·날씨 등에 필요한 구성요소를 설치해요", 22),
@@ -255,6 +266,60 @@ def bundled_file(name: str) -> str:
     return p if os.path.isfile(p) else ""
 
 
+def vc_runtime_ok(version: str) -> bool:
+    """설치된 VC++ 런타임("v14.51.36247.00")이 충분히 새것인지. onnxruntime·ctranslate2(음성 인식)는
+    14.40보다 오래된 msvcp140.dll로는 시작하다 죽는다 — 빈 PC에는 아예 없어서 PyQt6 안의 사본에 기대게 된다."""
+    m = re.match(r"v?(\d+)\.(\d+)", (version or "").strip())
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= VC_MIN_VERSION
+
+
+def installed_vc_runtime() -> str:
+    """레지스트리에 기록된 VC++ 2015-2022 x64 런타임 버전("v14.51.36247.00"). 없으면 빈 문자열."""
+    if not IS_WIN:
+        return ""
+    import winreg
+    for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, VC_RUNTIME_KEY, 0, winreg.KEY_READ | view) as k:
+                if winreg.QueryValueEx(k, "Installed")[0] == 1:
+                    return str(winreg.QueryValueEx(k, "Version")[0])
+        except OSError:
+            continue
+    return ""
+
+
+def ollama_models_dir() -> str:
+    return os.environ.get("OLLAMA_MODELS") or os.path.join(os.path.expanduser("~"), ".ollama", "models")
+
+
+def space_problem(needs: list, free_bytes=None) -> str:
+    """needs = [(경로, 필요한 바이트)] — 같은 드라이브끼리 더해서 모자라는 곳이 있으면 안내 문장, 없으면 ''.
+    모델(약 5GB)을 받다가 디스크가 차서 실패하면 한참 기다린 뒤에야 알게 되므로 시작 전에 확인한다."""
+    free_bytes = free_bytes or (lambda p: shutil.disk_usage(p).free)
+    by_drive = {}
+    for path, size in needs:
+        probe = path
+        while probe and not os.path.exists(probe):   # 아직 없는 폴더는 있는 위쪽 폴더로 잰다
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+        drive = os.path.splitdrive(os.path.abspath(probe))[0].upper() or os.path.abspath(probe)
+        need, _ = by_drive.get(drive, (0, probe))
+        by_drive[drive] = (need + size, probe)
+    lines = []
+    for drive, (need, probe) in by_drive.items():
+        try:
+            free = free_bytes(probe)
+        except OSError:
+            continue
+        if free < need + DISK_MARGIN:
+            lines.append(f"{drive or probe} 여유 공간 {free / 1e9:.1f}GB · 필요 {(need + DISK_MARGIN) / 1e9:.1f}GB")
+    if not lines:
+        return ""
+    return "저장 공간이 부족해요. 파일을 정리한 뒤 다시 설치해 주세요.\n" + "\n".join(lines)
+
+
 # ─────────────────────────────────────────────
 # 설치 작업 (UI와 분리 — 콜백으로 진행 상황을 알린다)
 # ─────────────────────────────────────────────
@@ -307,7 +372,7 @@ class Installer:
         if code != 0:
             raise InstallError(f"{what} 중 문제가 생겼어요 (코드 {code}).\n" + "\n".join(tail[-4:]))
 
-    def _run_installer(self, args, what: str, timeout: int = 900):
+    def _run_installer(self, args, what: str, timeout: int = 900, ok_codes=(0,)) -> int:
         """다른 설치 프로그램 실행 — 출력은 읽지 않고 끝나기만 기다린다.
         Ollama 설치 프로그램은 끝나면서 Ollama 앱을 띄우는데, 그 앱이 출력 연결을 물려받아 계속 열어 두면
         출력을 끝까지 읽는 _run은 영원히 기다린다(GitHub Actions에서 실제로 20분 넘게 멈췄다)."""
@@ -330,8 +395,9 @@ class Installer:
             time.sleep(0.5)
         code, self._proc = self._proc.returncode, None
         self.on_log(f"{what} 종료 코드 {code}")
-        if code != 0:
+        if code not in ok_codes:
             raise InstallError(f"{what} 중 문제가 생겼어요 (코드 {code}).")
+        return code
 
     def _download(self, url: str, dest: str, what: str):
         self._check()
@@ -525,8 +591,8 @@ class Installer:
             cands.append(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe"))
         return next((c for c in cands if c and os.path.isfile(c)), "")
 
-    def _verify_signature(self, exe: str):
-        """받은 Ollama 설치 파일이 Ollama가 서명한 파일인지 확인한다 (Windows 서명 검사)."""
+    def _verify_signature(self, exe: str, signer: str = "ollama", what: str = "AI 엔진"):
+        """받은 설치 파일이 signer(Ollama/Microsoft)가 서명한 파일인지 확인한다 (Windows 서명 검사)."""
         if not IS_WIN:
             return
         ps = ("Import-Module Microsoft.PowerShell.Security; "
@@ -540,8 +606,46 @@ class Installer:
         if r.stderr and r.stderr.strip():
             self.on_log("서명 확인 오류: " + r.stderr.strip()[-500:])
         status, _, subject = out.partition("|")
-        if status != "Valid" or "ollama" not in subject.lower():
-            raise InstallError("받은 AI 엔진 설치 파일의 서명을 확인하지 못해 설치를 멈췄어요.")
+        if status != "Valid" or signer not in subject.lower():
+            raise InstallError(f"받은 {what} 설치 파일의 서명을 확인하지 못해 설치를 멈췄어요.")
+
+    def step_runtime(self):
+        """빈 PC에는 Microsoft Visual C++ 런타임이 없다 — 없거나 오래됐으면 공식 재배포 패키지를 설치한다.
+        관리자 승인 창(UAC)이 한 번 뜬다. 거절하거나 실패해도 대화 기능은 쓸 수 있어서 설치는 이어간다."""
+        if not IS_WIN:
+            return
+        current = installed_vc_runtime()
+        if vc_runtime_ok(current):
+            self.on_detail(f"이미 설치돼 있어요 ({current})")
+            return
+        self.on_log(f"VC++ 런타임: {current or '없음'} → 설치")
+        tmp = tempfile.mkdtemp(prefix="lumi-vcredist-")
+        try:
+            exe = os.path.join(tmp, "vc_redist.x64.exe")
+            self._download(VC_REDIST_URL, exe, "Visual C++ 런타임")
+            self.on_detail("서명 확인 중")
+            self._verify_signature(exe, "microsoft corporation", "Visual C++ 런타임")
+            self.on_progress(None)
+            self.on_detail("설치 중 — 관리자 승인 창이 뜨면 '예'를 눌러 주세요")
+            # 3010 = 설치됐고 다시 시작하면 마무리됨, 1638 = 더 새 버전이 이미 있음
+            self._run_installer([exe, "/install", "/quiet", "/norestart"], "Visual C++ 런타임 설치",
+                                timeout=600, ok_codes=(0, 1638, 3010))
+        except InstallError as e:
+            self.on_log(f"VC++ 런타임 설치 건너뜀: {e}")
+            self.on_detail("설치하지 못했어요 — 음성 기능이 안 될 수 있어요 (나중에 다시 설치하면 돼요)")
+            return
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.on_detail("설치했어요")
+
+    def space_needs(self) -> list:
+        """[(경로, 필요한 바이트)] — 이미 있는 구성요소는 빼고 센다."""
+        needs = [(self.p["root"], SPACE_APP)]
+        if not self._ollama_exe():
+            needs.append((os.path.join(os.environ.get("LOCALAPPDATA", self.p["root"]), "Programs"), SPACE_OLLAMA))
+        if not self.skip_model:
+            needs.append((ollama_models_dir(), SPACE_MODEL))
+        return needs
 
     def step_ollama(self):
         if self._ollama_exe():
@@ -666,6 +770,10 @@ class Installer:
                 winreg.SetValueEx(k, name, 0, winreg.REG_DWORD, 1)
 
     def run(self):
+        problem = space_problem(self.space_needs())
+        if problem:
+            self.on_log(problem)
+            raise InstallError(problem)
         for key, *_ in STEPS:
             self._check()
             self.on_step(key, "active")

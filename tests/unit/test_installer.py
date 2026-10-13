@@ -92,7 +92,7 @@ def test_paths_layout(tmp_path):
 
 def test_step_weights_cover_all_steps():
     keys = [k for k, *_ in li.STEPS]
-    assert keys == ["python", "code", "packages", "ollama", "model", "shortcut"]
+    assert keys == ["runtime", "python", "code", "packages", "ollama", "model", "shortcut"]
     assert all(hasattr(li.Installer, "step_" + k) for k in keys)
 
 
@@ -290,3 +290,63 @@ def test_run_launch_skips_update_when_running_or_disabled(tmp_path, monkeypatch)
     calls.clear()
     li.run_launch(["x", "--launch", "--dir", str(root), "--no-ui"])
     assert calls == ["launch"]
+
+
+# ── 빈 PC 준비: VC++ 런타임 · 저장 공간 ──
+
+@pytest.mark.parametrize("version, ok", [
+    ("v14.51.36247.00", True), ("v14.40.33810.00", True), ("14.44", True),
+    ("v14.38.33135.00", False), ("v14.29.30133.00", False), ("", False), ("이상한 값", False),
+])
+def test_vc_runtime_ok(version, ok):
+    assert li.vc_runtime_ok(version) is ok
+
+
+def test_space_problem_sums_needs_on_same_drive(tmp_path):
+    a, b = str(tmp_path / "app"), str(tmp_path / "models" / "not-yet")   # 아직 없는 폴더도 잴 수 있다
+    gb = 1_000_000_000
+    assert li.space_problem([(a, 2 * gb), (b, 5 * gb)], free_bytes=lambda p: 20 * gb) == ""
+    msg = li.space_problem([(a, 2 * gb), (b, 5 * gb)], free_bytes=lambda p: 7 * gb)   # 각각은 되지만 합치면 모자람
+    assert "저장 공간이 부족" in msg and "필요 8.0GB" in msg
+
+
+def test_space_needs_skips_what_is_already_there(tmp_path, monkeypatch):
+    inst = li.Installer(str(tmp_path / "Lumi"))
+    monkeypatch.setattr(li.Installer, "_ollama_exe", lambda self: "")
+    assert [n for _, n in inst.space_needs()] == [li.SPACE_APP, li.SPACE_OLLAMA, li.SPACE_MODEL]
+    monkeypatch.setattr(li.Installer, "_ollama_exe", lambda self: "ollama.exe")
+    inst.skip_model = True
+    assert [n for _, n in inst.space_needs()] == [li.SPACE_APP]
+
+
+def test_run_stops_before_any_step_when_disk_is_full(tmp_path, monkeypatch):
+    monkeypatch.setattr(li, "space_problem", lambda needs: "저장 공간이 부족해요.")
+    steps = []
+    inst = li.Installer(str(tmp_path / "Lumi"), on_step=lambda k, s: steps.append(k))
+    with pytest.raises(li.InstallError, match="저장 공간"):
+        inst.run()
+    assert steps == []
+
+
+@pytest.mark.skipif(not li.IS_WIN, reason="Windows 전용 단계")
+def test_step_runtime_skips_when_recent_runtime_installed(tmp_path, monkeypatch):
+    monkeypatch.setattr(li, "installed_vc_runtime", lambda: "v14.51.36247.00")
+    monkeypatch.setattr(li.Installer, "_download", lambda *a: pytest.fail("받으면 안 됨"))
+    li.Installer(str(tmp_path / "Lumi")).step_runtime()
+
+
+@pytest.mark.skipif(not li.IS_WIN, reason="Windows 전용 단계")
+def test_step_runtime_installs_and_failure_does_not_stop_setup(tmp_path, monkeypatch):
+    monkeypatch.setattr(li, "installed_vc_runtime", lambda: "")
+    monkeypatch.setattr(li.Installer, "_download", lambda self, url, dest, what: open(dest, "wb").close())
+    monkeypatch.setattr(li.Installer, "_verify_signature", lambda self, exe, signer, what: None)
+    calls = []
+
+    def run_installer(self, args, what, timeout=900, ok_codes=(0,)):
+        calls.append((os.path.basename(args[0]), args[1:], ok_codes))
+        raise li.InstallError("관리자 승인 거절")
+    monkeypatch.setattr(li.Installer, "_run_installer", run_installer)
+    details = []
+    li.Installer(str(tmp_path / "Lumi"), on_detail=details.append).step_runtime()   # 예외 없이 끝난다
+    assert calls == [("vc_redist.x64.exe", ["/install", "/quiet", "/norestart"], (0, 1638, 3010))]
+    assert "음성 기능" in details[-1]

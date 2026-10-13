@@ -29,6 +29,7 @@ DEFAULTS = {
     "quiet_hours_enabled": False,  # 알림 토스트 묵음 시간대 사용 여부 (plugins/reminder.py)
     "quiet_hours_start": None,     # 묵음 시작 시각(0~23) — enabled=True일 때만 유효
     "quiet_hours_end": None,       # 묵음 종료 시각(0~23) — start보다 작으면 자정을 넘는 범위
+    "close_action": None,  # 창 닫기(X) — None이면 매번 묻기, "tray"면 백그라운드에 남기기, "quit"면 종료
 }
 
 _cache = None
