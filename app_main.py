@@ -12,6 +12,13 @@ from datetime import datetime
 # 실행되는 함수 안에서 발생하면, 실제 동작은 시도조차 못 했는데 사용자에게는
 # "요청하신 작업을 처리하지 못했습니다"라는 오탐 오류만 보임. 프로그램 시작
 # 시점에 표준출력/에러 인코딩을 UTF-8로 고정해서 원천 차단. 1
+# pythonw.exe(설치본·콘솔 없는 실행)에서는 sys.stdout/stderr가 None이라
+# 곳곳의 sys.stderr.write(...)가 AttributeError로 터져 채팅이 오류로 끝났다.
+# 빈 출력으로 바꿔서 로그 출력이 조용히 버려지게 한다.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
