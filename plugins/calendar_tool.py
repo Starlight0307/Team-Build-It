@@ -109,6 +109,7 @@ def set_current_user(user_id: str):
 # ─────────────────────────────────────────────
 _google_token = {"owner": None, "token": None, "expires_at": 0.0}
 _TOKEN_EXPIRY_MARGIN = 60  # 초 — 만료 직전 토큰으로 호출하다 실패하지 않게 조금 일찍 만료로 본다
+_LEGACY_LOGIN_TIMEOUT = 120  # 초 — 예전 방식(credentials.json) 브라우저 인증 대기. 없으면 끝없이 기다린다
 
 LOGIN_NEEDED_MESSAGE = (
     "[🔐 구글 캘린더 연결 필요]\n"
@@ -438,13 +439,18 @@ def _get_service(user_id: str = None):
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            # 로그인한 사용자는 '구글 캘린더 연결'(connect_google_calendar)로만 새로 연결한다 —
+            # 2026-10-19 실제 앱 점검: 아이디/비밀번호로 로그인한 채 "일정 잡아줘"라고 하자 여기서
+            # 브라우저 인증을 띄우고 끝날 때까지 시간 제한 없이 기다려 채팅이 "일정 등록 중"에 멈췄다.
+            if _current_user_id != "guest":
+                raise CalendarLoginRequired(LOGIN_NEEDED_MESSAGE)
             if not os.path.exists(CREDENTIALS_FILE):
                 raise FileNotFoundError(
                     "credentials.json 파일이 없습니다.\n"
                     f"'{CREDENTIALS_FILE}' 경로에 저장해주세요."
                 )
             flow  = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
+            creds = flow.run_local_server(port=0, timeout_seconds=_LEGACY_LOGIN_TIMEOUT)
 
         with secure_open(token_file, "w") as f:   # 구글 로그인 토큰은 암호화해서 저장한다
             f.write(creds.to_json())
@@ -568,7 +574,7 @@ def setup_calendar_auth() -> str:
         _import_google()
         token_file = _get_token_file()
         flow  = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-        creds = flow.run_local_server(port=0)
+        creds = flow.run_local_server(port=0, timeout_seconds=_LEGACY_LOGIN_TIMEOUT)
 
         with secure_open(token_file, "w") as f:   # 구글 로그인 토큰은 암호화해서 저장한다
             f.write(creds.to_json())

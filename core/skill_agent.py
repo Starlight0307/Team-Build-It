@@ -24,7 +24,7 @@ import threading
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from settings.config import OLLAMA_MODEL, OLLAMA_THINK
+from settings.config import OLLAMA_MODEL, OLLAMA_THINK, OLLAMA_NUM_CTX
 
 MAX_STEPS = 8
 COMMAND_TIMEOUT = 60
@@ -144,7 +144,7 @@ class SkillAgentWorker(QThread):
         resp = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=[{"role": "user", "content": prompt}],
                            format={"type": "object", "properties": {"skill": {"type": "string"}},
                                    "required": ["skill"]},
-                           options={"temperature": 0, "num_predict": 40})
+                           options={"temperature": 0, "num_predict": 40, "num_ctx": OLLAMA_NUM_CTX})
         try:
             chosen = str(json.loads(resp["message"]["content"]).get("skill", "")).strip().lower()
         except (ValueError, TypeError):
@@ -172,7 +172,7 @@ class SkillAgentWorker(QThread):
             if self._stop.is_set():
                 return self.finished_skill.emit(False, skill.name, "스킬 실행을 멈췄어요.", log)
             resp = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=messages, tools=TOOLS,
-                               options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 1024})
+                               options={"temperature": 0.2, "num_ctx": OLLAMA_NUM_CTX, "num_predict": 1024})
             msg = resp["message"]
             calls = list(msg.get("tool_calls") or []) or _faked_tool_calls(msg.get("content") or "")
             if not calls:

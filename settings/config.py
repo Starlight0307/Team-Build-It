@@ -20,6 +20,11 @@ OLLAMA_MODEL = os.environ.get("LUMI_OLLAMA_MODEL") or "llama3.1"
 # 긴 생각을 먼저 해 3~5배 느려지고, 생각한 토큰도 답변 길이 상한(num_predict)을 깎아먹는다
 # (2026-10-06 평가셋 실측). 생각하기가 없는 모델(llama3.1)에 넘겨도 무시된다.
 OLLAMA_THINK = False
+# 대화 모델의 문맥 길이(토큰) — Ollama 기본값 4096으로는 부족하다. 2026-10-19 실측(실제 AIWorker 요청을
+# 큰 문맥으로 보내 prompt_eval_count 확인): 시스템 프롬프트만 약 2,300토큰, 알림 요청(도구 21개)은 기록 없이도
+# 5,760토큰이라 매번 앞부분이 잘린 채 전달됐고, 기록이 쌓이자 Ollama 실행기(llama-server)가 죽었다.
+# OLLAMA_MODEL을 부르는 모든 호출에 같은 값을 준다 — 호출마다 값이 다르면 Ollama가 모델을 다시 올려 느려진다.
+OLLAMA_NUM_CTX = 8192
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_DIR = os.path.join(os.getcwd(), "plugins")

@@ -73,7 +73,7 @@ import time
 
 import ollama
 
-from settings.config import OLLAMA_MODEL, OLLAMA_THINK
+from settings.config import OLLAMA_MODEL, OLLAMA_THINK, OLLAMA_NUM_CTX
 
 _MAX_TEXT_LENGTH = 4000
 _MAX_LANGUAGE_LENGTH = 20  # "브라질 포르투갈어" 정도까지 허용, 그 이상은 언어 이름이 아닐 가능성이 높음
@@ -141,7 +141,7 @@ def _chat_once(system_prompt: str, user_prompt: str) -> str:
         ],
         # num_predict: 길이 상한 — 모델이 반복에 빠지면 끝없이 생성해서 루미 전체가 멈춘다
         # (2026-10-02 core/ai_worker.py _MAX_REPLY_TOKENS 참고). 번역은 원문이 길 수 있어 넉넉히.
-        options={"temperature": 0.3, "num_predict": 2048},
+        options={"temperature": 0.3, "num_predict": 2048, "num_ctx": OLLAMA_NUM_CTX},
     )
     return (response.get("message", {}).get("content") or "").strip()
 

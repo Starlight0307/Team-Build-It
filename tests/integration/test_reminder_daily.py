@@ -102,7 +102,38 @@ def test_cancel_removes_routine(isolated_routines):
 
 def test_cancel_unknown_id_fails_gracefully(isolated_routines):
     result = rm.cancel_daily_reminder("doesnotexist")
-    assert "찾을 수 없습니다" in result
+    assert "정기 알림이 없어요" in result
+
+
+def test_cancel_with_made_up_id_cancels_the_only_routine(isolated_routines):
+    """2026-10-19 실제 앱: "매일 알림 취소해줘"에 모델이 id를 지어냈다 — 하나뿐이면 그것을 취소한다."""
+    rm.set_daily_reminder(9, 0, "물 마시기")
+    assert "물 마시기" in rm.cancel_daily_reminder("list_daily_reminders")
+    assert rm._routines == {}
+
+
+def test_cancel_with_made_up_id_and_several_routines_asks_which(isolated_routines):
+    rm.set_daily_reminder(9, 0, "물 마시기")
+    rm.set_daily_reminder(21, 0, "스트레칭")
+    result = rm.cancel_daily_reminder("list_daily_reminders")
+    assert "어떤 정기 알림" in result and "물 마시기" in result and "스트레칭" in result
+    assert "list_daily_reminders" not in result          # 내부 함수 이름을 사용자에게 보이지 않는다
+    assert len(rm._routines) == 2
+
+
+def test_cancel_by_label(isolated_routines):
+    rm.set_daily_reminder(9, 0, "물 마시기")
+    rm.set_daily_reminder(21, 0, "스트레칭")
+    assert "스트레칭" in rm.cancel_daily_reminder("스트레칭")
+    assert [r["label"] for r in rm._routines.values()] == ["물 마시기"]
+
+
+def test_duplicate_routines_are_cancelled_together(isolated_routines):
+    """2026-10-19 실제 앱: 같은 '매일 9시 물 마시기'가 두 번 등록돼 있어 "매일 알림 취소해줘"가 실패했다."""
+    rm.set_daily_reminder(9, 0, "물 마시기")
+    rm.set_daily_reminder(9, 0, "물 마시기")
+    assert "취소 완료" in rm.cancel_daily_reminder("list_daily_reminders")
+    assert rm._routines == {}
 
 
 def test_list_sorted_by_time(isolated_routines):

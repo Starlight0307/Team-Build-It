@@ -1370,13 +1370,30 @@ def list_timers() -> str:
     return "\n".join(lines)
 
 
-def cancel_timer(timer_id: str) -> str:
+def cancel_timer(timer_id: str = "") -> str:
     print(f"\n⏱️ [타이머] 취소 중: {timer_id}")
     timer_id = (timer_id or "").strip()
     with _lock:
+        now = datetime.now()
+        active = [tid for tid, t in _active_timers.items() if not t["notified"] and t["expires_at"] > now]
+        if timer_id not in _active_timers:
+            # "타이머 취소해줘"에 모델이 id를 모르고 지어낸다(2026-10-19 실제 앱: timer_id="list_timers").
+            # 하나뿐이거나, 이름이 맞는 게 하나뿐이면 그것을 취소한다.
+            by_label = [tid for tid in active if timer_id and _active_timers[tid]["label"]
+                        and (timer_id in _active_timers[tid]["label"] or _active_timers[tid]["label"] in timer_id)]
+            if len(active) == 1:
+                timer_id = active[0]
+            elif len(by_label) == 1:
+                timer_id = by_label[0]
         t = _active_timers.get(timer_id)
         if not t or t["notified"]:
-            return "❌ 취소할 타이머를 찾을 수 없습니다. list_timers로 먼저 확인해주세요."
+            if not active:
+                return "❌ 지금 설정된 타이머가 없어요."
+            choices = "\n".join(
+                f"  - {_format_remaining(_active_timers[tid]['expires_at'] - now)} 후"
+                + (f" ('{_active_timers[tid]['label']}')" if _active_timers[tid]["label"] else "")
+                for tid in sorted(active, key=lambda x: _active_timers[x]["expires_at"]))
+            return ("❔ 어떤 타이머를 취소할지 알려주세요. 지금 설정된 타이머예요:\n" + choices)
         label = t["label"]
         del _active_timers[timer_id]
     label_str = f" ('{label}')" if label else ""
@@ -1492,17 +1509,39 @@ def list_daily_reminders() -> str:
     return "\n".join(lines)
 
 
-def cancel_daily_reminder(routine_id: str) -> str:
+def cancel_daily_reminder(routine_id: str = "") -> str:
     print(f"\n🔁 [정기 알림] 취소 중: {routine_id}")
     _ensure_routines_loaded()
     routine_id = (routine_id or "").strip()
     with _routines_lock:
+        if routine_id not in _routines:
+            # cancel_timer와 같은 이유(2026-10-19 실제 앱 "매일 알림 취소해줘": routine_id="list_daily_reminders")
+            # — 이 사용자에게 보이는 정기 알림(list_daily_reminders와 같은 owner 기준) 중 후보가 하나로
+            # 좁혀지면 그것을 취소한다. 같은 시각·이름으로 두 번 등록된 중복은 한 알림으로 보고 함께 지운다.
+            visible = [rid for rid, r in _routines.items() if not r.get("action") or r.get("owner") == _current_user_id]
+            by_label = [rid for rid in visible if routine_id and _routines[rid]["label"]
+                        and (routine_id in _routines[rid]["label"] or _routines[rid]["label"] in routine_id)]
+            for candidates in (by_label, visible):
+                kinds = {(_routines[rid]["hour"], _routines[rid]["minute"], _routines[rid]["label"]) for rid in candidates}
+                if len(kinds) == 1:
+                    label = _routines[candidates[0]]["label"]
+                    for rid in candidates:
+                        del _routines[rid]
+                    _save_routines()
+                    label_str = f" ('{label}')" if label else ""
+                    return f"[✅ 정기 알림 취소 완료]\n정기 알림{label_str}을 취소했습니다."
         r = _routines.get(routine_id)
         # action이 있는 항목은 owner만 취소할 수 있다(list에서도 안 보이므로
         # 정상 대화 흐름으로는 다른 사용자의 id를 알 수도 없지만, 방어적으로
         # 한 번 더 막는다) — 존재를 알려주지 않도록 not-found와 같은 메시지.
         if not r or (r.get("action") and r.get("owner") != _current_user_id):
-            return "❌ 취소할 정기 알림을 찾을 수 없습니다. list_daily_reminders로 먼저 확인해주세요."
+            visible = sorted((r for r in _routines.values() if not r.get("action") or r.get("owner") == _current_user_id),
+                             key=lambda r: (r["hour"], r["minute"]))
+            if not visible:
+                return "❌ 등록된 정기 알림이 없어요."
+            choices = "\n".join(f"  - 매일 {r['hour']:02d}:{r['minute']:02d}" + (f" ('{r['label']}')" if r["label"] else "")
+                                for r in visible)
+            return "❔ 어떤 정기 알림을 취소할지 알려주세요. 지금 등록된 정기 알림이에요:\n" + choices
         label = r["label"]
         del _routines[routine_id]
         _save_routines()

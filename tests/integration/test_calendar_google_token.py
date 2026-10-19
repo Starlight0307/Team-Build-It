@@ -158,3 +158,23 @@ def test_guest_cannot_connect(isolated_calendar_tool_tokens):
     _reset()
     ok, msg = calendar_tool.connect_google_calendar()
     assert not ok and "로그인" in msg
+
+
+def test_logged_in_user_with_credentials_file_does_not_open_browser_login(isolated_calendar_tool_tokens,
+                                                                          monkeypatch, tmp_path):
+    """2026-10-19 실제 앱 점검: credentials.json이 있는 PC에서 로그인한 채 "일정 잡아줘"라고 하자 예전 방식
+    브라우저 인증(run_local_server)이 시간 제한 없이 기다려 채팅이 멈췄다 — 연결 안내만 해야 한다."""
+    _reset()
+    monkeypatch.setattr(calendar_tool, "_import_google", lambda: None)
+    creds_file = tmp_path / "credentials.json"
+    creds_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(calendar_tool, "CREDENTIALS_FILE", str(creds_file))
+
+    class NoBrowserFlow:
+        @staticmethod
+        def from_client_secrets_file(*a, **k):
+            raise AssertionError("로그인한 사용자에게 예전 방식 브라우저 인증을 띄웠다")
+    monkeypatch.setattr(calendar_tool, "InstalledAppFlow", NoBrowserFlow, raising=False)
+    set_current_user("alice")
+
+    assert calendar_tool.get_upcoming_events(7) == LOGIN_NEEDED_MESSAGE

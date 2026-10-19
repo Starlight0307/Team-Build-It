@@ -269,6 +269,8 @@ class AssistantApp(QWidget):
         self.installed_tools        = []
         self.installed_module_names = []
         self.worker                 = None  # 현재 실행 중인 AIWorker — 중복 요청 방지에 사용
+        self._responding            = False  # 답변 처리 중 — 전송 버튼이 ■(대답 멈추기)로 바뀐다
+        self._abandoned_workers     = []    # '대답 멈추기'로 손 뗀 워커 — 스레드가 끝날 때까지 참조를 쥔다
         self.current_session_id     = None
         self.current_session_title  = None
         self.pending_event_args     = None  # 소요 시간 대기 중인 create_event 인자
@@ -428,6 +430,8 @@ class AssistantApp(QWidget):
             self._skill_worker.wait(2000)
         if self._route_worker is not None and self._route_worker.isRunning():
             self._route_worker.wait(3000)
+        for worker in list(self._abandoned_workers):   # '대답 멈추기'로 손 뗀 워커
+            worker.wait(2000)
         if self._speaker is not None:
             self._speaker.stop()
         if self._voice_listener is not None:
@@ -1506,7 +1510,10 @@ class AssistantApp(QWidget):
         self.send_button = QPushButton()
         self.send_button.setIcon(icons.icon("send-horizontal", white=True))
         self.send_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.send_button.clicked.connect(self._send_typed)
+        # 포커스를 받지 않게 — 처리 중 입력창이 잠기면 포커스가 이 버튼(■ 대답 멈추기)으로 넘어와,
+        # 이어서 친 글자 사이의 스페이스가 버튼을 눌러 대답이 멈췄다(2026-10-19 실제 앱).
+        self.send_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.send_button.clicked.connect(self._on_send_button)
         ir.addWidget(self.send_button)
         bwl.addWidget(self.input_container)
         body.addWidget(self.bottom_input_wrapper)
@@ -2750,7 +2757,14 @@ class AssistantApp(QWidget):
         self._start_ai_worker(txt)
 
     def _start_ai_worker(self, txt: str):
-        self.worker = AIWorker(txt, self.chat_history, self.installed_tools, self.current_session_id)
+        # 워커에는 대화 기록 사본을 준다 — '대답 멈추기'로 손 뗀 워커가 늦게 기록을 덧붙여
+        # 다음 질문의 기록에 끼어들지 않게, 멈추지 않은 워커의 기록만 받아 온다(_adopt_history).
+        history = self.chat_history
+        self.worker = AIWorker(txt, list(history), self.installed_tools, self.current_session_id)
+        self.worker._app_extras, self.worker._app_synced = [], len(history)
+        adopt = lambda *_, w=self.worker, h=history: self._adopt_history(w, h)
+        self.worker.response_ready.connect(adopt)   # display_ai_response보다 먼저 연결 — 먼저 불린다
+        self.worker.finished.connect(adopt)         # 답을 보낸 뒤에 기록을 덧붙이는 경로도 있다
         self.worker.response_ready.connect(self.display_ai_response)
         self.worker.status_update.connect(self._on_status_update)
         self.worker.pending_event.connect(self._on_pending_event)
@@ -2758,6 +2772,16 @@ class AssistantApp(QWidget):
         self.worker.cpu_result.connect(self._on_cpu_result)  # CPU 프로세스 결과 연결
         self.worker.confirm_required.connect(self._on_confirm_required)  # 위험한 동작 확인 연결
         self.worker.start()
+
+    def _adopt_history(self, worker, history):
+        """워커가 쌓은 대화 기록을 앱 기록에 반영한다. 멈춘 워커이거나 그사이 새 채팅을 시작했으면 버린다.
+        워커는 기록이 길면 최근 20개로 새 목록을 만들어 바꿔 끼우므로(core/ai_worker.py) 덧붙이기가 아니라
+        통째로 옮기고, 처리 중에 앱이 따로 덧붙인 기록(실시간 감시 알림 등)은 뒤에 그대로 둔다."""
+        if worker is not self.worker or self.chat_history is not history:
+            return
+        worker._app_extras += history[worker._app_synced:]
+        history[:] = worker.chat_history + worker._app_extras
+        worker._app_synced = len(history)
 
     # ─────────────────────────────────────────────
     # 🪄 OpenClaw 스킬 (core/skills.py, core/skill_agent.py)
@@ -2898,7 +2922,11 @@ class AssistantApp(QWidget):
         has_unambiguous_all = any(q in t for q in _UNAMBIGUOUS_ALL_WORDS)
         has_specific_category = any(w in t for w in _SPECIFIC_CATEGORY_WORDS)
         has_all_word = has_unambiguous_all or ("종합" in t and not has_specific_category)
-        if not (has_security and has_all_word):
+        # "내 PC 안전해?" — README와 보고서가 보안 점검 예시로 드는 말인데, 2026-10-19 실제 앱에서
+        # "보안"이 없어 PC 상태(CPU·메모리) 답이 나왔다. "안전하게 정리해줘" 같은 부사는 뺀다.
+        asks_pc_safe = (any(w in t.lower() for w in ("pc", "컴퓨터", "노트북"))
+                        and "안전" in t and "안전하게" not in t)
+        if not ((has_security and has_all_word) or asks_pc_safe):
             return False
 
         func_map = {f.__name__: f for f in self.installed_tools}
@@ -3579,15 +3607,58 @@ class AssistantApp(QWidget):
         처리 중엔 아예 눌러도 반응이 없어 보이는 게 아니라 "지금은 안 됨"이
         시각적으로도 드러나야 헷갈리지 않는다."""
         self.input_field.setEnabled(enabled)
-        self.send_button.setEnabled(enabled)
+        # 처리 중에도 전송 버튼은 눌린다 — ■로 바뀌어 '대답 멈추기'가 된다
+        self._responding = not enabled
+        self.send_button.setIcon(icons.icon("send-horizontal" if enabled else "square", white=True))
+        self.send_button.setToolTip("" if enabled else "대답 멈추기")
         for pill in self.pills:
             pill.setEnabled(enabled)
-        opacity = 1.0 if enabled else 0.4
         s = ui_scale.get_scale()
         self.send_button.setStyleSheet(
             f"background-color: #8B78EE; color: #FFFFFF; border-radius: {round(18*s)}px; "
-            f"border: none; font-size: {round(18*s)}px; opacity: {opacity};"
+            f"border: none; font-size: {round(18*s)}px;"
         )
+
+    def _on_send_button(self, *_):
+        if self._responding:
+            self.stop_response()
+        else:
+            self._send_typed()
+
+    # 손 뗀 워커가 늦게 보내는 신호를 받지 않도록 끊을 신호 이름(워커 종류마다 다르다)
+    _WORKER_SIGNALS = ("response_ready", "status_update", "pending_event", "price_result", "cpu_result",
+                       "confirm_required", "status", "no_skill", "finished_skill", "decided", "finished_open",
+                       "result_ready")
+
+    def _abandon_worker(self, worker):
+        """워커의 결과를 더는 받지 않는다. 파이썬 스레드는 밖에서 강제로 끝낼 수 없어서,
+        이미 시작한 도구 실행(예: 할 일 추가)은 마저 끝날 수 있다 — 그 결과만 버린다."""
+        if worker is None or not worker.isRunning():
+            return
+        for name in self._WORKER_SIGNALS:
+            sig = getattr(worker, name, None)
+            if sig is not None:
+                try:
+                    sig.disconnect()
+                except TypeError:   # 연결된 슬롯이 없음
+                    pass
+        if hasattr(worker, "stop"):
+            worker.stop()
+        self._abandoned_workers.append(worker)
+        worker.finished.connect(lambda w=worker: w in self._abandoned_workers and self._abandoned_workers.remove(w))
+
+    def stop_response(self):
+        """■ 버튼 — 지금 만들고 있는 대답을 멈추고 바로 다음 질문을 받을 수 있게 한다."""
+        if not self._responding:
+            return
+        if self._screen_task_running():   # 화면 조작은 자체 중지가 있고, 멈춘 뒤 결과를 알려준다
+            self._stop_screen_task()
+            return
+        self._pending_steps.clear()
+        for attr in ("worker", "_skill_worker", "_route_worker", "_web_worker", "_overall_worker"):
+            self._abandon_worker(getattr(self, attr, None))
+            setattr(self, attr, None)
+        self.display_ai_response("🤖 로컬 비서: 대답을 멈췄어요. 이미 실행을 시작한 작업은 마저 끝날 수 있어요.")
 
     def _show_typing_indicator(self):
         """'생각 중...' 버블을 채팅창에 삽입."""

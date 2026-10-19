@@ -15,6 +15,9 @@ from core.screen_agent import (_changed, classify_screen_request, describe_actio
     ("오늘 일정 알려줘", None),
     ("CPU 사용량 확인해줘", None),
     ("", None),
+    # 붙여넣은 글 속 "화면"은 화면 요청이 아니다 (2026-10-19 실제 앱)
+    ("이 글 요약해줘: 루미는 한 화면에서 처리하고 결과를 쉬운 말로 설명합니다.", None),
+    ("지금 화면 설명해줘", "describe"),
 ])
 def test_classify_screen_request(text, expected):
     assert classify_screen_request(text) == expected
@@ -29,6 +32,10 @@ def test_classify_screen_request(text, expected):
     ("안녕?", False),
     ("거실 전등 켜줘", False),           # IoT 기능 — 화면 조작 아님 (AI가 틀린 사례)
     ("직접 씬 실행해줘 취침모드", False),
+    ("메모에 발표 대본 확인하기 저장해줘", False),   # 루미 메모 기능 (2026-10-19 실제 앱에서 화면 조작으로 감)
+    ("메모장에 장보기 목록 적어줘", True),            # Windows 메모장일 수도 있어 AI가 판단
+    ("팀장님께 내일 회의 3시로 변경됐다고 메일 초안 써줘", False),   # 루미 메일 초안 (2026-10-19 실제 앱)
+    ("아웃룩 열고 메일 보내줘", True),
 ])
 def test_may_need_screen_prefilter(text, expected):
     from core.screen_agent import may_need_screen
@@ -121,7 +128,7 @@ def test_enter_needs_confirmation_when_task_sends_something():
 @pytest.mark.parametrize("text, ask_ai", [
     ("직접 메모장 열어서 안녕이라고 써줘", True),            # 진짜 화면 조작 → AI 판단으로
     ("알아서 메모 써줘 회의 내용", False),                   # "회의"가 루미 기능 말(2026-10-11) → 바로 루미 기능(AI도 루미 메모로 골랐음)
-    ("알아서 메모 써줘 오늘 배운 것", True),                 # 애매 → AI가 문맥으로 판단
+    ("알아서 메모 써줘 오늘 배운 것", False),                # 프로그램 이름 없는 "메모"는 루미 메모(2026-10-19 — AI가 화면 조작으로 고른 사례)
     ("대신 지출 기록 입력해줘 커피 4500원", False),          # 루미 가계부 — 규칙으로 바로 루미 기능
     ("직접 할 일 열어서 우유 사기 추가해줘", False),          # 루미 할 일 — 마찬가지
     ("카톡 열어서 오늘 일정 보내줘", True),                  # 다른 프로그램 이름이 있으면 AI가 판단

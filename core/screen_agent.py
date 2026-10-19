@@ -299,6 +299,17 @@ def exclude_from_capture(widget):
         print(f"[화면 작업] 안내 창 캡처 제외 실패(무시): {e}")
 
 
+def _instruction_part(text: str) -> str:
+    """"이 글 요약해줘: <붙여넣은 글>"이면 앞의 지시만 본다 — 2026-10-19 실제 앱: 붙여넣은 글 속
+    "한 화면에서 … 설명합니다"를 "화면 설명해줘"로 읽어 화면 인식(6GB 모델 설치 창)으로 갔다."""
+    t = (text or "").strip()
+    return INSTRUCTION_SPLIT.split(t, maxsplit=1)[0].strip()
+
+
+# "요약해줘: 글…"의 콜론·줄바꿈에서만 나눈다 — "10:30에 회의"처럼 숫자 사이 콜론(시각)은 나누지 않는다
+INSTRUCTION_SPLIT = re.compile(r"(?<=[^\d\s])\s*[:：](?=\s)|\n")
+
+
 def classify_screen_request(text: str):
     """이 메시지가 화면 작업인지 판단: "act"(직접 조작) / "describe"(화면 보고 답만) / None.
 
@@ -312,7 +323,7 @@ def classify_screen_request(text: str):
     케이스("크롬 열고 날씨 검색 대신 해줘", "직접 메모장 열어서
     안녕이라고 써줘")는 각각 "열고"/"열어서+써줘"라는 실제 동사를 이미
     포함하고 있어서 그대로 통과한다."""
-    t = (text or "").strip()
+    t = _instruction_part(text)
     if not t:
         return None
     if t.startswith(_ACT_PREFIXES) or any(p in t for p in _ACT_PHRASES):
@@ -352,8 +363,13 @@ _IOT_HINTS = re.compile(r"씬|전등|조명|스마트\s*(기기|플러그)|플�
 # 2026-10-11 실제 앱: "루미테스트 회의를 모레 오후 5시부터 6시까지로 바꿔줘"가 "바꿔줘" 때문에 화면 조작으로 가서
 # 없는 '캘린더' 앱을 열려고 했다 — 회의/약속/미팅/스케줄도 일정 얘기로 본다.
 # 2026-10-13 실제 앱: "실시간 감시 꺼줘"가 "꺼줘" 때문에 화면 조작으로 가서 "화면 인식 모델이 없어요"만 나왔다.
+# 2026-10-19 실제 앱: "메모에 발표 대본 확인하기 저장해줘"도 "저장해" 때문에 같은 일이 났다 — "메모"는 루미
+# 메모 기능이다. "메모장"은 Windows 프로그램일 수 있어 빼고(_EXTERNAL_APPS), AI가 판단하게 둔다.
 _LUMI_FEATURE_HINTS = re.compile(r"할\s*일|일정|캘린더|회의|약속|미팅|스케줄|지출|가계부|타이머|알림|리마인더|백업|활동\s*기록|"
-                                 r"감시|보안\s*점검")
+                                 r"감시|보안\s*점검|메모(?!장)")
+# 글만 만들어 주는 루미 기능 — 프로그램 이름이 같이 있어도 화면 조작이 아니다. 2026-10-19 실제 앱: "팀장님께 …
+# 메일 초안 써줘"가 "메일"+"써줘" 때문에 화면 조작으로 가서 6GB 모델 설치 창이 떴다(루미는 초안만 쓰고 보내지 않는다).
+_LUMI_TEXT_TASKS = re.compile(r"초안|요약해|번역해")
 _EXTERNAL_APPS = re.compile(
     r"카카오톡|카톡|디스코드|슬랙|텔레그램|라인|워드|엑셀|파워\s*포인트|피피티|한글|크롬|엣지|사파리|웨일|"
     # "설정" — "타이머 설정해줘"의 동사까지 설정 앱으로 보고 화면 조작으로 보냈다(2026-10-13), 동사는 뺀다
@@ -363,8 +379,8 @@ _EXTERNAL_APPS = re.compile(
 
 def may_need_screen(text: str) -> bool:
     """규칙으로는 애매하지만 화면 조작일 수도 있는 요청인가 (→ route_request로 확인)."""
-    t = text or ""
-    if not _UI_ACTION_VERBS.search(t) or _IOT_HINTS.search(t):
+    t = _instruction_part(text)
+    if not _UI_ACTION_VERBS.search(t) or _IOT_HINTS.search(t) or _LUMI_TEXT_TASKS.search(t):
         return False
     if _LUMI_FEATURE_HINTS.search(t) and not _EXTERNAL_APPS.search(t):
         return False
@@ -394,7 +410,7 @@ def route_request(text: str) -> str:
     사용자는 모드를 신경 쓰지 않고 말만 하면 되고, 확인은 되돌리기 어려운 동작에서만 받는다."""
     import ollama
     from core.skill_agent import _BUILTIN_FEATURES
-    from settings.config import OLLAMA_MODEL, OLLAMA_THINK
+    from settings.config import OLLAMA_MODEL, OLLAMA_THINK, OLLAMA_NUM_CTX
     prompt = (
         f"사용자 요청: {text}\n\n"
         f"루미(AI 비서)가 자체 기능으로 할 수 있는 일: {_BUILTIN_FEATURES}\n\n"
@@ -407,7 +423,7 @@ def route_request(text: str) -> str:
         resp = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=[{"role": "user", "content": prompt}],
                            format={"type": "object", "properties": {"route": {"type": "string",
                                    "enum": ["screen", "lumi"]}}, "required": ["route"]},
-                           options={"temperature": 0, "num_predict": 20})
+                           options={"temperature": 0, "num_predict": 20, "num_ctx": OLLAMA_NUM_CTX})
         route = json.loads(resp["message"]["content"]).get("route")
     except Exception as e:
         print(f"[화면 작업] 요청 판단 실패 → 루미 기능으로 처리: {e}")

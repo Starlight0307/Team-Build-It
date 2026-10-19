@@ -95,3 +95,10 @@ def test_numeric_args_are_coerced_by_schema(monkeypatch):
     assert fixed == {"target": "게임", "threshold_minutes": 240, "ratio": 0.5}
     # 숫자가 아닌 글자는 건드리지 않는다
     assert ai_worker._coerce_arg_types("set_usage_condition", {"threshold_minutes": "많이"}) == {"threshold_minutes": "많이"}
+
+
+def test_args_wrapped_in_call_shape_are_unwrapped():
+    """2026-10-19 실제 앱: "타이머 취소해줘"에 {"function": ..., "parameters": {...}}를 인자로 넘겼다."""
+    wrapped = {"function": "cancel_timer", "parameters": {"timer_id": "abc"}}
+    assert ai_worker._coerce_arg_types("cancel_timer", wrapped) == {"timer_id": "abc"}
+    assert ai_worker._coerce_arg_types("cancel_timer", {"timer_id": "abc"}) == {"timer_id": "abc"}

@@ -2,6 +2,7 @@ import os
 import re
 import time
 import inspect
+import threading
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -9,13 +10,67 @@ import ollama
 import httpx  # ollama 패키지가 이미 의존하는 라이브러리 — 오류 종류 구분에만 사용
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from settings.config import TOOL_SCHEMAS, MOCK_USER, OLLAMA_MODEL, OLLAMA_THINK
+from settings.config import TOOL_SCHEMAS, MOCK_USER, OLLAMA_MODEL, OLLAMA_THINK, OLLAMA_NUM_CTX
 
 # 응답 길이 상한 — 2026-10-02 전체 기능 점검 중, 길이 제한이 없던 요청 하나에서 llama3.1이
 # 같은 말을 반복하는 상태에 빠져 24,000토큰 넘게(19분) 끝없이 생성한 것을 확인했다. Ollama는
 # 한 번에 요청 하나만 처리해서 그동안 루미 전체가 "생각 중..."에서 멈춘다. 채팅 답변은 이
 # 길이(약 50초 분량)면 충분하다. 요약은 위 _SUMMARY_OPTIONS(700)를 그대로 쓴다.
 _MAX_REPLY_TOKENS = 1024
+
+# '대답 멈추기'(app_main.py stop_response) — AIWorker마다 전용 Ollama 연결을 두고, 멈추면 그 연결을
+# 끊는다. 연결이 끊기면 Ollama도 생성을 그만둬서 다음 질문이 멈춘 답변 뒤에 줄 서지 않는다(2026-10-19
+# 실측: 생성 중 연결을 끊자 다음 요청이 1.5초 만에 답함). 이 파일의 Ollama 호출은 _ollama_chat으로 한다.
+_ollama_local = threading.local()
+_ORIGINAL_OLLAMA_CHAT = ollama.chat
+
+
+def _ollama_chat(**kwargs):
+    kwargs["options"] = {"num_ctx": OLLAMA_NUM_CTX} | (kwargs.get("options") or {})
+    client = getattr(_ollama_local, "client", None)
+    use_client = client is not None and ollama.chat is _ORIGINAL_OLLAMA_CHAT   # 테스트가 ollama.chat을 바꿨으면 그쪽
+    call = client.chat if use_client else ollama.chat
+    try:
+        return call(**kwargs)
+    except ollama.ResponseError as e:
+        # Ollama 실행기(llama-server)가 처리 중 죽은 경우 — 2026-10-19 이 PC(Intel Arc 내장 그래픽)에서 같은 요청도
+        # 됐다 안 됐다 했다(약 3,000토큰 9/9 성공, 4,000토큰 3/4, 6,000토큰 0/3). Ollama가 실행기를 새로 띄우므로
+        # 한 번만 다시 묻는다. '대답 멈추기'로 연결을 끊은 경우는 다시 묻지 않는다.
+        crashed = e.status_code == 500 and any(
+            s in str(e) for s in ("forcibly closed", "llama-server", "terminated", "wsarecv"))
+        if not crashed or (use_client and client._client.is_closed):
+            raise
+        print(f"[AI 워커] AI 엔진이 처리 중 멈춰서 한 번 더 요청합니다: {str(e)[:80]}")
+        return call(**kwargs)
+
+
+# 한 요청의 토큰 상한(추정) — 2026-10-19 이 PC(Intel Arc 내장 그래픽, Vulkan)에서 순수 글로 잰 결과: 약 4,000토큰은
+# 6번 다 성공, 약 6,000토큰은 3번 다 Ollama 실행기(llama-server)가 죽었다(KERNELBASE 0xe06d7363). 문맥 길이(OLLAMA_NUM_CTX)
+# 한도와는 별개라 여유를 두고 3,500으로 잡는다. 실측 환산: 시스템 프롬프트·도구 JSON은 글자당 약 0.36토큰, 한국어
+# 대화문은 약 0.58토큰(llama3.1, prompt_eval_count 기준).
+_PROMPT_TOKEN_BUDGET = 3500
+
+
+def _estimate_prompt_tokens(messages: list, tools) -> int:
+    import json as _json
+    system = sum(len(str(m.get("content") or "")) for m in messages if m.get("role") == "system")
+    other = sum(len(str(m.get("content") or "")) for m in messages if m.get("role") != "system")
+    tools_chars = len(_json.dumps(tools, ensure_ascii=False)) if tools else 0
+    return int((system + tools_chars) * 0.37 + other * 0.6) + 8 * len(messages)
+
+
+def _fit_history_to_budget(messages: list, tools) -> list:
+    """예상 토큰이 상한을 넘으면 시스템 메시지와 마지막 사용자 메시지는 두고 오래된 기록부터 뺀다."""
+    msgs = list(messages)
+    head = msgs[:1] if msgs and msgs[0].get("role") == "system" else []
+    body = msgs[len(head):]
+    while len(body) > 1 and _estimate_prompt_tokens(head + body, tools) > _PROMPT_TOKEN_BUDGET:
+        body.pop(0)
+        while len(body) > 1 and body[0].get("role") == "tool":   # 짝 잃은 도구 결과는 같이 뺀다
+            body.pop(0)
+    return head + body
+
+
 from calendar_feature import calendar_preference
 from core.preference_memory import get_pref, save_pref
 
@@ -884,6 +939,9 @@ _CALENDAR_WEAK_KEYWORDS = frozenset((
     "오늘", "내일", "모레", "글피", "어제", "이번주", "다음주", "이번달", "다음달", "언제",
 ))
 _CALENDAR_EXPLICIT_WORDS = ("일정", "약속", "회의", "캘린더", "미팅", "예약", "schedule", "calendar")
+# 어떤 기능에나 붙는 동사 — "타이머 취소해줘", "할 일 추가해줘"가 이 말 하나로 일정 도구 25개를 함께 끌고 와
+# 요청이 약 6,000토큰이 됐고, 이 PC(Intel Arc 내장 그래픽)의 Ollama가 처리하다 죽었다(2026-10-19 실측).
+_CALENDAR_VERB_KEYWORDS = frozenset(("추가", "등록", "삭제", "수정", "취소", "미뤄", "연기", "잡아"))
 
 
 # ── 도구 인자 정리 (2026-10-02 인자 정확도 평가에서 발견) ──
@@ -892,6 +950,12 @@ def _coerce_arg_types(func_name: str, args):
     llama3.1이 "게임 하루 4시간 넘으면"에 threshold_minutes="240"(글자)을 넘긴 사례."""
     if not isinstance(args, dict):
         return args
+    # 인자를 호출 형식째 한 겹 더 감싼 경우 — "타이머 취소해줘"에 {"function": "cancel_timer",
+    # "parameters": {"timer_id": ...}}을 넘겨 "missing 1 required positional argument"로 실패했다(2026-10-19)
+    if (isinstance(args.get("parameters"), dict) and set(args) <= {"function", "name", "parameters"}
+            and "parameters" not in (TOOL_SCHEMAS.get(func_name) or {}).get("function", {})
+                                    .get("parameters", {}).get("properties", {})):
+        args = args["parameters"]
     schema = (TOOL_SCHEMAS.get(func_name) or {}).get("function", {}).get("parameters", {}).get("properties", {})
     fixed = dict(args)
     for key, value in args.items():
@@ -975,8 +1039,10 @@ _DAILY_FUNCS = frozenset(("set_daily_reminder", "list_daily_reminders", "cancel_
 _CONDITION_COMMON_FUNCS = frozenset(("list_conditions", "cancel_condition", "list_action_log"))
 _CONDITION_SETTERS = frozenset(("set_usage_condition", "set_spending_condition", "set_cpu_condition",
                                 "set_disk_condition", "set_trend_condition", "set_price_condition",
-                                "set_app_usage_trend_condition"))
-_REMINDER_FUNCS = _TIMER_FUNCS | _DAILY_FUNCS | _CONDITION_COMMON_FUNCS | _CONDITION_SETTERS
+                                "set_app_usage_trend_condition", "set_weather_condition"))
+# 묵음 시간대 — 나중에 추가되면서 아래 묶음 어디에도 안 들어가 타이머·매일 알림 요청에도 늘 섞여 나갔다(2026-10-19)
+_QUIET_FUNCS = frozenset(("set_quiet_hours", "cancel_quiet_hours", "get_quiet_hours_status"))
+_REMINDER_FUNCS = _TIMER_FUNCS | _DAILY_FUNCS | _CONDITION_COMMON_FUNCS | _CONDITION_SETTERS | _QUIET_FUNCS
 
 # 하루가 아니라 기간을 묻는 표현 — "오늘부터 3일", "금요일까지", "일주일 동안" (날짜 하나로 바꾸면 안 됨)
 _DATE_RANGE_WORDS = re.compile(r"부터|까지|동안|앞으로|일간|며칠|\d+\s*일\s*치|이번\s*주|다음\s*주\s*(일정|약속|스케줄)|주간")
@@ -984,6 +1050,8 @@ _TIMER_PATTERN = re.compile(r"\d+\s*(초|분|시간)\s*(뒤|후|있다가)|타�
 _DAILY_PATTERN = re.compile(r"매일|평일|주말마다|아침마다|저녁마다|밤마다|날마다|정기\s*알림")
 _CONDITION_PATTERN = re.compile(r"넘으면|넘게|넘을\s*때|초과하면|이상이면|떨어지면|아래로|밑으로|부족해지면|이하되면|이하로")
 _TREND_CONDITION_PATTERN = re.compile(r"연속|며칠째|계속\s*(늘|줄)|추세\s*알림")
+_QUIET_PATTERN = re.compile(r"묵음|방해\s*금지|무음\s*모드|조용히\s*해")
+_WEATHER_CONDITION_PATTERN = re.compile(r"비\s*(오면|올\s*(것\s*같으면|때))|강수\s*확률")
 _CONDITION_TARGETS = (
     (re.compile(r"cpu|씨피유|시피유", re.IGNORECASE), "set_cpu_condition"),
     (re.compile(r"디스크|저장\s*공간|여유\s*공간|용량"), "set_disk_condition"),
@@ -998,7 +1066,11 @@ def _narrow_reminder_funcs(allowed: set, text: str) -> set:
         return allowed
     t = (text or "").lower()
     subset = None
-    if _TIMER_PATTERN.search(t) and not _CONDITION_PATTERN.search(t):
+    if _QUIET_PATTERN.search(t):
+        subset = _QUIET_FUNCS
+    elif _WEATHER_CONDITION_PATTERN.search(t):
+        subset = frozenset(("set_weather_condition",)) | _CONDITION_COMMON_FUNCS
+    elif _TIMER_PATTERN.search(t) and not _CONDITION_PATTERN.search(t):
         subset = _TIMER_FUNCS
     elif _TREND_CONDITION_PATTERN.search(t):
         subset = frozenset(("set_trend_condition", "set_app_usage_trend_condition")) | _CONDITION_COMMON_FUNCS
@@ -1026,11 +1098,45 @@ _SYSTEM_TREND_WORDS = re.compile(
     r"어제|지난|예전|최근|며칠|이번\s*주|추세|추이|변화|늘었|줄었|졌어|졌나|느려|빨라|평소|비교|이력|기록")
 
 
+# 일정·가계부 도구 중 "그 동작을 뜻하는 말"이 문장에 없으면 빼는 것들 — 2026-10-19 실측: 일정 등록 요청 하나가
+# 기록 없이도 약 4,000토큰(도구 14개)이라 이 PC의 Ollama가 버티는 경계(약 4,000~6,000토큰)에 걸렸다.
+# 말이 있으면 그대로 노출하고, 없을 때만 뺀다(빼는 쪽이 틀려도 모델이 다른 도구로 대신하지 못할 뿐 오작동은 없다).
+_ACTION_WORD_GATES = (
+    (re.compile(r"바꿔|변경|수정|미뤄|미루|연기|옮겨|당겨|늦춰|고쳐"),
+     ("update_event", "local_update_event", "edit_purchase", "edit_income")),
+    (re.compile(r"삭제|취소|지워|없애|빼줘|빼 줘"),
+     ("delete_event", "local_delete_event", "delete_recurring_series", "local_delete_recurring_series",
+      "delete_purchase", "delete_income")),
+    (re.compile(r"매주|매일|매월|매달|매년|반복|격주|평일마다|주말마다"),
+     ("create_recurring_event", "local_create_recurring_event",
+      "delete_recurring_series", "local_delete_recurring_series")),
+    (re.compile(r"로그인|연동|연결|인증|계정|구글|google", re.IGNORECASE),
+     ("setup_calendar_auth", "get_login_status")),
+    (re.compile(r"웹사이트|웹페이지|브라우저|사이트|열어"), ("open_calendar_website",)),
+    (re.compile(r"수입|들어왔|입금|월급|용돈|알바비|벌었|잔액|모았"),
+     ("add_income", "list_income", "delete_income", "edit_income", "get_balance")),
+    (re.compile(r"예산|까지만"), ("set_monthly_budget",)),
+)
+
+
+def _narrow_by_action_words(allowed: set, text: str) -> set:
+    t = text or ""
+    for pattern, funcs in _ACTION_WORD_GATES:
+        if not pattern.search(t):
+            allowed = allowed - set(funcs)
+    return allowed
+
+
 _APP_USAGE_WORDS = re.compile(r"앱|게임|프로그램|유튜브|사용\s*시간|몇\s*시간|얼마나\s*(했|봤|썼)")
 
 
 def _narrow_system_trend(allowed: set, text: str) -> set:
     t = text or ""
+    # "어제보다 컴퓨터 느려졌어?" — 비교 질문에는 이력 비교와 지금 상태만 보여준다(정리·삭제·종료 도구가 함께
+    # 노출돼 작은 모델이 엉뚱한 걸 고를 수 있었다, 2026-10-19 실제 앱)
+    if ("get_system_trend" in allowed and re.search(r"어제|그제|지난|평소|보다|비교|요즘|며칠", t)
+            and re.search(r"느려|느린|빨라|무거|상태|버벅", t)):
+        return {"get_system_trend", "get_system_info"}
     if not (_SYSTEM_RESOURCE_WORDS.search(t) and "get_system_info" in allowed):
         return allowed
     if "get_system_trend" in allowed and not _SYSTEM_TREND_WORDS.search(t):
@@ -4895,7 +5001,7 @@ def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
     # 억제하고 num_predict로 최악의 경우에도 응답 길이에 상한을 둔다.
     _SUMMARY_OPTIONS = {'repeat_penalty': 1.3, 'num_predict': 700}
 
-    final_response = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=summary_messages, options=_SUMMARY_OPTIONS)
+    final_response = _ollama_chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=summary_messages, options=_SUMMARY_OPTIONS)
     result = final_response['message']['content'].strip()
 
     if _looks_like_repetition_loop(result):
@@ -4921,7 +5027,7 @@ def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
                 "결과에 없는 내용은 무엇이든 절대 추가하지 마."
             )
         }]
-        retry_response = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=retry_messages, options=_SUMMARY_OPTIONS)
+        retry_response = _ollama_chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=retry_messages, options=_SUMMARY_OPTIONS)
         result = retry_response['message']['content'].strip()
 
     if (_looks_like_json_leak(result) or _looks_like_unrelated_topic_leak(result, raw_results)
@@ -5183,6 +5289,7 @@ class AIWorker(QThread):
         self.installed_tools    = installed_tools
         self.current_session_id = current_session_id
         self._recent_context    = None
+        self._ollama_client     = ollama.Client()   # 이 워커 전용 연결 — stop()이 끊는다
         # 직전 세션 맥락 로딩(파일 I/O)은 여기서 하지 않는다 — AIWorker는
         # QThread를 상속하는 방식이라 __init__은 이 객체를 생성한 스레드
         # (app_main.py가 self.worker = AIWorker(...)를 직접 호출하는 메인/GUI
@@ -5744,7 +5851,10 @@ class AIWorker(QThread):
         AI 답변까지 같이 훑어서, 방금 무슨 얘기를 하던 중이었는지 반영한다.
         단, 거절하는 대답(_is_decline_reply)이면 직전 AI 답변을 덧붙이지 않는다 —
         거절 의사를 도구 재실행 트리거로 오인하지 않도록 하기 위함."""
-        text = self.user_text.lower()
+        # "이 글 요약해줘: <붙여넣은 글>"은 앞의 지시만 본다 — 2026-10-19 실제 앱: 붙여넣은 글 속 "일정/할 일/
+        # 가계부/보안 점검"에 걸려 도구 75개가 한 요청에 실렸고(약 2만 토큰) Ollama 실행기가 죽었다.
+        from core.screen_agent import INSTRUCTION_SPLIT
+        text = INSTRUCTION_SPLIT.split(self.user_text, maxsplit=1)[0].lower()
         if len(self.user_text.strip()) <= 20 and not self._is_decline_reply():
             for msg in reversed(self.chat_history):
                 if msg.get('role') == 'assistant':
@@ -6071,6 +6181,12 @@ class AIWorker(QThread):
             if (cat_name == "calendar" and len(matched_categories) > 1
                     and all(kw in _CALENDAR_WEAK_KEYWORDS for kw in keywords if kw in text)):
                 continue
+            # 동사("취소/추가/삭제…")만으로 걸린 캘린더도 다른 기능이 같이 걸렸으면 넣지 않는다
+            if (cat_name == "calendar" and len(matched_categories) > 1
+                    and not any(w in text for w in _CALENDAR_EXPLICIT_WORDS)
+                    and all(kw in _CALENDAR_VERB_KEYWORDS | _CALENDAR_WEAK_KEYWORDS
+                            for kw in keywords if kw in text)):
+                continue
             # "이번달 예산 50만원으로 잡아줘" — "잡아"가 캘린더 키워드라 예산 요청에 일정
             # 도구가 섞였다. 일정/약속 같은 명시적 신호가 없으면 예산 쪽으로 본다.
             if (cat_name == "calendar" and "예산" in text
@@ -6103,6 +6219,7 @@ class AIWorker(QThread):
         if allowed:
             allowed = _narrow_reminder_funcs(allowed, text)
             allowed = _narrow_system_trend(allowed, text)
+            allowed = _narrow_by_action_words(allowed, text)
         return allowed if allowed else None
 
     # 계정/로그인 상태 확인 의도 — LLM 판단에 맡기지 않고 직접 함수 호출로 처리
@@ -6131,7 +6248,12 @@ class AIWorker(QThread):
             return False
         return True
 
+    def stop(self):
+        """'대답 멈추기' — 진행 중인 Ollama 요청의 연결을 끊는다(스레드 밖에서 불러도 된다)."""
+        self._ollama_client._client.close()
+
     def run(self):
+        _ollama_local.client = self._ollama_client
         try:
             import sys
             from datetime import datetime
@@ -6264,7 +6386,7 @@ class AIWorker(QThread):
                             )
                         }]
 
-                        final_response = ollama.chat(
+                        final_response = _ollama_chat(
                             model=OLLAMA_MODEL, think=OLLAMA_THINK,
                             messages=summary_messages,
                             options={'temperature': 0.3, 'num_predict': _MAX_REPLY_TOKENS}
@@ -6334,6 +6456,27 @@ class AIWorker(QThread):
                         self.response_ready.emit(f"🤖 로컬 비서: {result}")
                     except Exception as e:
                         print(f"[AI 워커] 타이머 설정 오류: {e}")
+                        self.response_ready.emit(_diagnose_error(e))
+                    return
+
+            # ── 빠른 감지 1.72: "타이머 취소해줘" / "매일 알림 취소해줘" → 취소 함수 바로 실행 ──
+            # 2026-10-19 실제 앱: 같은 문장에 모델이 취소 대신 목록 조회를 고르거나 id를 지어냈다. 어느 것을
+            # 취소할지는 플러그인이 정한다(하나뿐이면 취소, 여러 개면 목록을 보여주며 되묻는다).
+            cancel_match = re.fullmatch(
+                r'\s*(?:(?P<label>\S.*?)\s+)?(?P<kind>타이머|매일\s*알림|정기\s*알림|매일\s*알람)\s*(?:을|를|좀)?\s*'
+                r'(?:취소|꺼|끄|삭제|지워|없애)\S*[.!?\s]*', self.user_text)
+            if cancel_match:
+                func_map = {f.__name__: f for f in self.installed_tools}
+                fname = 'cancel_timer' if cancel_match['kind'] == '타이머' else 'cancel_daily_reminder'
+                if fname in func_map:
+                    arg = 'timer_id' if fname == 'cancel_timer' else 'routine_id'
+                    try:
+                        self.status_update.emit("⏱️  알림 취소 중")
+                        result = str(func_map[fname](**{arg: (cancel_match['label'] or '').strip()}))
+                        result = re.sub(r'^\[[^\]]*취소 완료\]\n', '', result)
+                        self.response_ready.emit(f"🤖 로컬 비서: {result}")
+                    except Exception as e:
+                        print(f"[AI 워커] 알림 취소 오류: {e}")
                         self.response_ready.emit(_diagnose_error(e))
                     return
 
@@ -6420,6 +6563,10 @@ class AIWorker(QThread):
 
             has_system_status = any(kw in text_lower for kw in system_keywords)
             has_slow = any(kw in text_lower for kw in slow_keywords) and '컴' in text_lower
+            # "어제보다 컴퓨터 느려졌어?"는 지난 기록과 비교하는 질문(get_system_trend) — 2026-10-19 실제 앱에서
+            # 이 규칙이 가로채 지금 CPU 상위 프로그램만 보여줬다. 비교 표현이 있으면 LLM에 맡긴다.
+            if has_slow and re.search(r"어제|그제|지난|예전|평소|보다|비교|요즘|며칠", text_lower):
+                has_slow = False
             # "CPU 많이 쓰는 프로그램 알려줘" — 실제 앱 테스트(2026-10-13)에서 LLM이 조건부 알림 목록
             # (list_conditions)을 불렀다. CPU + '많이/높은/먹는' 류 조회는 바로 상위 프로세스를 보여준다.
             # "CPU 80% 넘으면 알려줘" 같은 조건 설정(넘으면/이상/되면)은 제외해 LLM에 맡긴다.
@@ -6523,7 +6670,7 @@ class AIWorker(QThread):
                             )
                         }]
 
-                        final_response = ollama.chat(
+                        final_response = _ollama_chat(
                             model=OLLAMA_MODEL, think=OLLAMA_THINK,
                             messages=summary_messages,
                             options={'temperature': 0.3, 'num_predict': _MAX_REPLY_TOKENS}
@@ -6877,6 +7024,7 @@ class AIWorker(QThread):
                 system = self.chat_history[0]
                 recent = self.chat_history[-(MAX_HISTORY):]
                 self.chat_history = [system] + recent
+            self.chat_history = _fit_history_to_budget(self.chat_history, ollama_tools if use_tools else None)
 
             # ── 1단계: AI 모델 요청 ──
             # 도구 호출 여부/인자를 정확히 골라야 하는 단계라 temperature를 낮춰
@@ -6889,7 +7037,7 @@ class AIWorker(QThread):
             sys.stderr.write(f"   - tools 개수: {len(ollama_tools) if use_tools else 0}\n")
             sys.stderr.flush()
 
-            response = ollama.chat(
+            response = _ollama_chat(
                 model=OLLAMA_MODEL, think=OLLAMA_THINK,
                 messages=self.chat_history,
                 tools=ollama_tools if use_tools else None,
@@ -7483,7 +7631,7 @@ class AIWorker(QThread):
                     # 도구 없이 평소 대화처럼 다시 묻는다(위 _user_text_needs_tools 설명 참고).
                     sys.stderr.write("   - 사용자 문장에 도구 단서 없음 → 도구 없이 다시 질문\n")
                     try:
-                        plain = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=self.chat_history,
+                        plain = _ollama_chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=self.chat_history,
                                             options={'temperature': 0.7, 'num_predict': _MAX_REPLY_TOKENS})
                         plain_reply = _strip_wrapping_quotes((plain["message"]["content"] or "").strip())
                         if plain_reply and not _looks_like_json_leak(plain_reply):
@@ -7511,7 +7659,7 @@ class AIWorker(QThread):
                             'role': 'user',
                             'content': "JSON이나 코드 형식 말고, 한국어 문장으로만 답변해줘. 함수를 실행한 결과를 자연스럽게 설명해줘."
                         }]
-                        retry_response = ollama.chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=retry_messages,
+                        retry_response = _ollama_chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=retry_messages,
                                                      options={'num_predict': _MAX_REPLY_TOKENS})
                         clean_reply = retry_response['message']['content'].strip()
 
@@ -7521,5 +7669,7 @@ class AIWorker(QThread):
             self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
 
         except Exception as e:
+            if self._ollama_client._client.is_closed:   # '대답 멈추기'로 연결을 끊은 것 — 오류가 아니다
+                return
             print(f"[AI 워커] 처리 중 오류: {e}")
             self.response_ready.emit(_diagnose_error(e))

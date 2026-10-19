@@ -459,7 +459,7 @@ def test_cancel_daily_reminder_rejects_other_users_automation(isolated_reminder,
     monkeypatch.setattr(rm, "_current_user_id", "test_user_b")
     result = rm.cancel_daily_reminder(routine_id)
 
-    assert "찾을 수 없습니다" in result
+    assert "정기 알림이 없어요" in result and "내 자동화" not in result   # 존재도 알리지 않는다
     assert routine_id in rm._routines  # 실제로 취소되지 않았어야 함
 
 
