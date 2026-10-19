@@ -691,6 +691,96 @@ def register_user(username, password, email, name, phone, birthday):
         print(f"[회원가입 오류] {e}")
 
 
+def request_signup_otp(email: str) -> bool:
+    """회원가입 전 이메일 인증코드 발송 (Supabase 'Confirm signup' 템플릿의
+    {{ .Token }}으로 인증코드가 이메일에 보인다 — 대시보드에서 템플릿에
+    {{ .Token }}을 넣어둬야 한다). 성공하면 Supabase에 이 이메일로 아직
+    확인되지 않은(unconfirmed) 사용자가 먼저 만들어진다.
+    signup_widget에서 '인증코드 발송' 버튼에 연결."""
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/otp",
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"email": email, "create_user": True},
+            timeout=10,
+        )
+        return resp.status_code < 400
+    except Exception as e:
+        print(f"[회원가입 인증코드 발송 오류] {e}")
+        return False
+
+
+def verify_signup_otp(email: str, code: str):
+    """회원가입 인증코드를 검증한다. 성공하면 그 신규 계정의 본인 세션
+    access_token을 반환 (finalize_signup()으로 비밀번호·이름 등을 채울 때 씀).
+    실패하면 None."""
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/verify",
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"type": "signup", "email": email, "token": code},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            print(f"[회원가입 인증코드 검증 오류] {resp.text[:200]}")
+            return None
+        return resp.json().get("access_token")
+    except Exception as e:
+        print(f"[회원가입 인증코드 검증 오류] {e}")
+        return None
+
+
+def finalize_signup(access_token: str, password: str, username: str, name: str, phone: str, birthday) -> bool:
+    """verify_signup_otp()로 인증된 본인 세션에, 가입 폼에서 받은 비밀번호·
+    아이디·이름·전화번호·생년월일을 채워 회원가입을 마친다
+    (register_user()와 달리 새 계정을 만들지 않고, 이미 인증된 계정을 채운다).
+
+    [주의] handle_new_user() 트리거는 auth.users에 레코드가 생기는 시점
+    (= request_signup_otp 호출 시점)에 이미 실행돼, username 메타데이터가
+    없으면 "구글 가입"과 같은 분기를 타 이메일 기반 임시 아이디로 profiles를
+    만들어 둔다. /auth/v1/user는 auth.users의 메타데이터만 바꿀 뿐 이미
+    만들어진 profiles 행은 건드리지 않으므로, rpc_finalize_signup_profile로
+    따로 그 값을 실제 입력값으로 덮어써야 한다
+    (data/migrations/006_finalize_signup_profile.sql 참고)."""
+    try:
+        resp = requests.put(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json={"password": password},
+            timeout=10,
+        )
+        if resp.status_code >= 400:
+            print(f"[회원가입 완료 오류] {resp.status_code} {resp.text[:300]}")
+            return False
+
+        resp2 = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/rpc_finalize_signup_profile",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "p_username": username,
+                "p_name": name,
+                "p_phone": phone,
+                "p_birthday": str(birthday) if birthday else None,
+            },
+            timeout=10,
+        )
+        if resp2.status_code >= 400 or resp2.json() is not True:
+            print(f"[회원가입 완료 오류] 프로필 반영 실패: {resp2.status_code} {resp2.text[:300]}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[회원가입 완료 오류] {e}")
+        return False
+
+
 def get_username_by_email(email: str):
     """이메일로 아이디 찾기"""
     try:

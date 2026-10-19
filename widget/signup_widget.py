@@ -5,14 +5,11 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
 from PyQt6.QtGui import QColor
 
-from data.db import user_exists_by_username, user_exists_by_email, register_user
+from data.db import (user_exists_by_username, get_username_by_email,
+                      request_signup_otp, verify_signup_otp, finalize_signup)
 from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
 
-try:
-    from auth.email_auth import request_code, confirm_code
-    EMAIL_AUTH_AVAILABLE = True
-except ImportError:
-    EMAIL_AUTH_AVAILABLE = False
+EMAIL_AUTH_AVAILABLE = True  # Supabase가 직접 코드 발송을 처리 (항상 사용 가능)
 
 
 def get_stylesheet(is_dark: bool) -> str:
@@ -107,15 +104,15 @@ def get_stylesheet(is_dark: bool) -> str:
 class EmailSendThread(QThread):
     done = pyqtSignal(bool, str)
 
-    def __init__(self, email, purpose="signup"):
+    def __init__(self, email):
         super().__init__()
         self.email = email
-        self.purpose = purpose
 
     def run(self):
         # 스레드 안에서 예외가 새어 나가면 PyQt가 앱 전체를 강제 종료하므로 여기서 잡는다
         try:
-            ok, msg = request_code(self.email, self.purpose)
+            ok = request_signup_otp(self.email)
+            msg = "" if ok else "인증코드 발송에 실패했습니다."
         except Exception as e:
             ok, msg = False, str(e)
         self.done.emit(ok, msg)
@@ -128,6 +125,7 @@ class SignupWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._email_verified = False
+        self._signup_token = None
         self._send_thread = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
@@ -353,14 +351,19 @@ class SignupWidget(QWidget):
         email = self._get_email()
         if not email or "." not in email.split("@")[-1]:
             self._set_msg(self.msg_email, "올바른 이메일 주소를 입력하세요."); return
+        # profiles 기준(실제 가입 완료자)으로 중복 확인 — 인증코드만 받고 가입을
+        # 완료하지 않은 이메일(auth.users엔 있지만 profiles엔 없음)은 다시 쓸 수 있어야 한다
+        if get_username_by_email(email):
+            self._set_msg(self.msg_email, "이미 사용 중인 이메일입니다."); return
 
         self._email_verified = False
+        self._signup_token = None
         self.msg_code.setText("")
         self.btn_send_code.setEnabled(False)
         self.btn_send_code.setText("발송 중...")
         self._set_msg(self.msg_email, "인증코드를 발송하고 있습니다...", ok=True)
 
-        self._send_thread = EmailSendThread(email, purpose="signup")
+        self._send_thread = EmailSendThread(email)
         self._send_thread.done.connect(self._on_send_done)
         self._send_thread.start()
 
@@ -379,19 +382,18 @@ class SignupWidget(QWidget):
         if not code:
             self._set_msg(self.msg_code, "인증코드를 입력하세요."); return
 
-        if not EMAIL_AUTH_AVAILABLE:
-            self._set_msg(self.msg_code, "이메일 인증을 사용할 수 없습니다. (auth/email_config.py 없음)"); return
-
-        ok, msg = confirm_code(email, code)
-        if ok:
+        token = verify_signup_otp(email, code)
+        if token:
             self._email_verified = True
+            self._signup_token = token
             self._set_msg(self.msg_code, "✓ 이메일 인증이 완료되었습니다.", ok=True)
             self.btn_send_code.setEnabled(False)
             self.btn_verify_code.setEnabled(False)
             self.input_code.setEnabled(False)
         else:
             self._email_verified = False
-            self._set_msg(self.msg_code, msg)
+            self._signup_token = None
+            self._set_msg(self.msg_code, "인증코드가 올바르지 않거나 만료되었습니다.")
 
     def _handle_signup(self):
         uid   = self.input_id.text().strip()
@@ -427,7 +429,7 @@ class SignupWidget(QWidget):
             lumi_dialog.warning(self, "오류", "생년월일을 선택하세요."); return
 
         # 이메일 인증 필수 확인
-        if EMAIL_AUTH_AVAILABLE and not self._email_verified:
+        if not self._email_verified or not self._signup_token:
             lumi_dialog.warning(self, "이메일 인증 필요",
                                 "이메일 인증을 완료한 후 가입하세요.\n"
                                 "'인증코드 발송' 버튼을 눌러 인증을 진행하세요.")
@@ -435,11 +437,11 @@ class SignupWidget(QWidget):
 
         if user_exists_by_username(uid):
             self._set_msg(self.msg_id, "이미 사용 중인 아이디입니다."); return
-        if user_exists_by_email(email):
-            lumi_dialog.warning(self, "오류", "이미 사용 중인 이메일입니다."); return
 
         birthday = f"{yr}-{int(mo):02d}-{int(dy):02d}"
-        register_user(uid, pw, email, name, phone, birthday)
+        if not finalize_signup(self._signup_token, pw, uid, name, phone, birthday):
+            lumi_dialog.warning(self, "오류", "회원가입을 완료하지 못했습니다. 다시 시도해주세요.")
+            return
 
         lumi_dialog.information(self, "가입 완료", "회원가입이 완료되었습니다!")
         self.clear_fields()
@@ -454,6 +456,7 @@ class SignupWidget(QWidget):
 
     def clear_fields(self):
         self._email_verified = False
+        self._signup_token = None
         for w in [self.input_id, self.input_pw, self.input_pw2,
                   self.input_name, self.input_phone, self.input_email,
                   self.input_domain_custom, self.input_code]:

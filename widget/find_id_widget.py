@@ -4,13 +4,9 @@ from PyQt6.QtWidgets import (QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, QFr
 from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot
 from PyQt6.QtGui import QColor
 
-from data.db import get_username_by_email
+from data.db import get_username_by_email, request_password_reset, verify_reset_code
 
-try:
-    from auth.email_auth import request_code, confirm_code
-    EMAIL_AUTH_AVAILABLE = True
-except ImportError:
-    EMAIL_AUTH_AVAILABLE = False
+EMAIL_AUTH_AVAILABLE = True  # Supabase가 직접 코드 발송을 처리 (항상 사용 가능)
 
 
 def get_stylesheet(is_dark: bool) -> str:
@@ -77,15 +73,15 @@ def get_stylesheet(is_dark: bool) -> str:
 class EmailSendThread(QThread):
     done = pyqtSignal(bool, str)
 
-    def __init__(self, email, purpose="find_id"):
+    def __init__(self, email):
         super().__init__()
         self.email = email
-        self.purpose = purpose
 
     def run(self):
         # 스레드 안에서 예외가 새어 나가면 PyQt가 앱 전체를 강제 종료하므로 여기서 잡는다
         try:
-            ok, msg = request_code(self.email, self.purpose)
+            ok = request_password_reset(self.email)
+            msg = "" if ok else "인증코드 발송에 실패했습니다."
         except Exception as e:
             ok, msg = False, str(e)
         self.done.emit(ok, msg)
@@ -234,7 +230,7 @@ class FindIdWidget(QWidget):
         self.btn_send_code.setText("발송 중...")
         self._set_msg(self.msg_email, "인증코드를 발송하고 있습니다...", ok=True)
 
-        self._send_thread = EmailSendThread(email, purpose="find_id")
+        self._send_thread = EmailSendThread(email)
         self._send_thread.done.connect(self._on_send_done)
         self._send_thread.start()
 
@@ -253,11 +249,8 @@ class FindIdWidget(QWidget):
         if not code:
             self._set_msg(self.msg_code, "인증코드를 입력하세요."); return
 
-        if not EMAIL_AUTH_AVAILABLE:
-            self._set_msg(self.msg_code, "이메일 인증을 사용할 수 없습니다. (auth/email_config.py 없음)"); return
-
-        ok, msg = confirm_code(email, code)
-        if ok:
+        token = verify_reset_code(email, code)
+        if token:
             self._email_verified = True
             self._set_msg(self.msg_code, "✓ 인증 완료. 아이디 찾기 버튼을 눌러주세요.", ok=True)
             self.btn_send_code.setEnabled(False)
@@ -265,7 +258,7 @@ class FindIdWidget(QWidget):
             self.input_code.setEnabled(False)
         else:
             self._email_verified = False
-            self._set_msg(self.msg_code, msg)
+            self._set_msg(self.msg_code, "인증코드가 올바르지 않거나 만료되었습니다.")
 
     def _handle_find(self):
         email = self.input_email.text().strip()
