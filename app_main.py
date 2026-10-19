@@ -176,6 +176,16 @@ def _sync_calendar_user(user_id: str):
         pass
 
 
+def _purge_expired_temp_trash():
+    """루미 휴지통에서 보관 기간(7일)이 지난 임시 파일을 지운다 — 앱을 켤 때 백그라운드에서 한 번(정리 기능을 다시
+    쓰지 않아도 7일 뒤엔 비워지도록, 2026-10-19). 플러그인이 없거나 실패해도 시작을 막지 않는다."""
+    try:
+        from plugins.pc_optimizer import purge_expired_temp_trash
+        purge_expired_temp_trash()
+    except Exception as e:
+        print(f"[루미 휴지통] 보관 기간 지난 파일 정리 오류: {e}")
+
+
 # ==========================================
 # 🔄 앱 실행 시 1회 자동 업데이트 상태 체크 (백그라운드)
 # ==========================================
@@ -498,7 +508,7 @@ class AssistantApp(QWidget):
         func_map = {f.__name__: f for f in self.installed_tools}
         # 업데이트 확인(_update_worker)과 따로 둔다 — 2026-10-19 실제 앱: 같은 변수를 쓰고 비우지 않아서, 앱을 켤 때마다
         # 환경설정 [업데이트 확인]이 '이미 확인 중'으로 여겨 눌러도 아무 일도 일어나지 않았다
-        self._startup_security_worker = UpdateCheckWorker(lambda: build_startup_notice(func_map))
+        self._startup_security_worker = UpdateCheckWorker(lambda: (_purge_expired_temp_trash(), build_startup_notice(func_map))[1])
         self._startup_security_worker.result_ready.connect(self._on_update_check_result)
         self._startup_security_worker.start()
 

@@ -103,6 +103,19 @@ TOOL_METADATA: dict = {
         name="clean_temp_files", module="pc_optimizer", category="pc_optimizer",
         risk_level="dangerous", read_only=False, llm_exposed=True,
     ),
+    # 2026-10-19 루미 휴지통 — 정리한 임시 파일 7일 보관·되돌리기·비우기
+    "restore_temp_files": ToolMetadata(
+        name="restore_temp_files", module="pc_optimizer", category="pc_optimizer",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "get_temp_trash_status": ToolMetadata(
+        name="get_temp_trash_status", module="pc_optimizer", category="pc_optimizer",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "empty_temp_trash": ToolMetadata(
+        name="empty_temp_trash", module="pc_optimizer", category="pc_optimizer",
+        risk_level="dangerous", read_only=False, llm_exposed=True,
+    ),
     "control_iot_device": ToolMetadata(
         name="control_iot_device", module="iot_control", category="iot",
         risk_level="safe", read_only=False, llm_exposed=True,

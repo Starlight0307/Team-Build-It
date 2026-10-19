@@ -318,22 +318,36 @@ def _describe_clean_temp_files(a: dict, func_map: dict) -> str:
     """clean_temp_files()도 인자가 없어 확인창 문구만으론 "얼마나 지워질지"가
     안 보인다 — _describe_disable_risky_firewall_rules와 같은 이유로, 실행 전에
     scan_temp_files()를 호출해서 실제 파일 개수/용량을 확인창에 보여준다."""
-    desc = "Windows 임시 폴더의 파일을 정리(삭제)"
+    desc = "Windows 임시 폴더의 파일을 루미 휴지통으로 옮기기"
     scanner = func_map.get('scan_temp_files')
-    if scanner is None:
-        return desc
-    try:
-        preview = scanner()
-    except Exception:
-        preview = None
-    if preview is not None:
-        m = re.search(r'임시 파일 (\d+)개, 총 ([\d.]+[A-Za-z]+)를 확인했습니다', preview)
-        if m:
-            desc += f"\n\n실제로 삭제될 대상: 약 {m.group(1)}개 파일, {m.group(2)}"
-        elif '정리할 임시 파일이 없습니다' in preview:
-            desc += "\n\n(현재 삭제할 임시 파일이 없습니다)"
-    desc += "\n\n※ 삭제된 파일은 복구할 수 없습니다. 사용 중인 파일은 건너뜁니다."
+    if scanner is not None:
+        try:
+            preview = scanner()
+        except Exception:
+            preview = None
+        if preview is not None:
+            m = re.search(r'임시 파일 (\d+)개, 총 ([\d.]+[A-Za-z]+)를 확인했습니다', preview)
+            if m:
+                desc += f"\n\n대상: 약 {m.group(1)}개 파일, {m.group(2)}"
+            elif '정리할 임시 파일이 없습니다' in preview:
+                desc += "\n\n(현재 정리할 임시 파일이 없습니다)"
+    # 2026-10-19 루미 휴지통 — 바로 지우지 않고 7일 동안 보관(plugins/pc_optimizer.py TRASH_KEEP_DAYS)
+    desc += ("\n\n※ 7일 동안 루미 휴지통에 보관돼서 '임시 파일 되돌려줘'로 되돌릴 수 있어요. 7일이 지나면 자동으로 "
+             "완전히 지워지고, 그때 저장 공간이 확보돼요. 최근에 쓰였거나 사용 중인 파일은 건너뜁니다.")
     return desc
+
+
+def _describe_empty_temp_trash(func_map: dict) -> str:
+    desc = "루미 휴지통을 지금 완전히 비우기 (되돌릴 수 없음)"
+    status = func_map.get('get_temp_trash_status')
+    if status is not None:
+        try:
+            m = re.search(r'임시 파일 (\d+)개\(([\d.]+[A-Za-z]+)\)', status())
+        except Exception:
+            m = None
+        if m:
+            desc += f"\n\n지워질 대상: 임시 파일 {m.group(1)}개, {m.group(2)}"
+    return desc + "\n\n※ 비우면 '임시 파일 되돌려줘'로 되돌릴 수 없어요."
 
 
 def _describe_delete_duplicate_files(a: dict, func_map: dict) -> str:
@@ -469,6 +483,7 @@ _DANGEROUS_FUNCS = {
     "delete_recurring_series":       lambda a, fm: f"{_active_calendar_label()} 반복 일정 시리즈 전체 삭제 (모든 회차, 되돌릴 수 없음)",
     "local_delete_recurring_series": lambda a, fm: "내부 캘린더 반복 일정 시리즈 전체 삭제 (모든 회차, 되돌릴 수 없음)",
     "clean_temp_files": _describe_clean_temp_files,
+    "empty_temp_trash": lambda a, fm: _describe_empty_temp_trash(fm),
     "delete_duplicate_files": _describe_delete_duplicate_files,
     "restrict_shared_folder_permission": lambda a, fm: f"공유 폴더 '{a.get('share_name', '')}'의 Everyone(누구나) 공유 권한 제거 (NTFS 파일 권한은 변경되지 않음)",
     "disable_firewall_rule":    lambda a, fm: f"방화벽 규칙 '{a.get('rule_name', '')}' 비활성화 (삭제가 아니라 꺼두는 것이라 나중에 다시 켤 수 있음)",
@@ -740,14 +755,16 @@ _TOOL_CATEGORIES = {
         # 고르는 걸 확인했다. "설치된 프로그램"/"설치 프로그램"이 이미 자연스러운
         # 표현을 충분히 커버하므로 "프로그램 목록"은 제거한다.
         ("최적화", "정리", "중복", "용량", "대용량", "저장공간", "저장 공간", "느려",
-         "느린", "임시파일", "임시 파일", "부팅", "느려졌", "청소",
+         "느린", "임시파일", "임시 파일", "부팅", "느려졌", "청소", "휴지통",
          "설치된 프로그램", "설치 프로그램", "뭐 설치", "인스톨"),
         # clean_temp_files/delete_duplicate_files는 _DANGEROUS_FUNCS에 등록되어
         # 있어 확인창 없이는 실행되지 않는다 — network_security/system_security와
         # 동일한 원칙으로 노출 목록에 포함.
         ("find_duplicate_files", "delete_duplicate_files", "find_large_files",
          "scan_temp_files", "clean_temp_files", "analyze_startup_impact",
-         "list_installed_programs"),
+         "list_installed_programs",
+         # 2026-10-19 루미 휴지통(임시 파일 7일 보관) — 비우기는 _DANGEROUS_FUNCS로 확인창을 거친다
+         "restore_temp_files", "get_temp_trash_status", "empty_temp_trash"),
     ),
     "reminder": (
         ("타이머", "알람", "리마인더", "알려줘", "분뒤", "분 뒤", "시간뒤", "시간 뒤", "초뒤", "초 뒤",
@@ -3799,6 +3816,85 @@ _SUMMARY_RESULT_HEADER = "[📄 요약 결과]\n"
 _TRANSLATE_RESULT_HEADER = re.compile(r"^\[📄 번역 결과 \((?P<lang>.+?)\)\]\n(?P<body>.+)$", re.DOTALL)
 
 
+# "루미 기능 설명해줘" — 전체 소개(예시 문장은 2026-10-19 실제 앱·점검 스크립트에서 동작을 확인한 것)
+_FEATURE_OVERVIEW = (
+    "루미가 할 수 있는 일을 소개할게요. 따옴표 안처럼 말하면 돼요.\n"
+    "- 일정·캘린더: \"내일 오후 3시 회의 잡아줘\", \"오늘 일정 알려줘\"\n"
+    "- 할 일: \"할 일에 우유 사기 추가해줘\"\n"
+    "- 메모: \"메모에 발표 준비 저장해줘\"\n"
+    "- 타이머·알림: \"10분 뒤에 알려줘\", \"매일 아침 9시에 물 마시라고 알려줘\"\n"
+    "- PC 상태: \"내 컴퓨터 상태 어때?\", \"이번주 컴퓨터 상태 추이 보여줘\"\n"
+    "- PC 정리: \"임시 파일 얼마나 있어?\", \"대용량 파일 찾아줘\"\n"
+    "- 보안 점검: \"내 PC 안전해?\", \"악성코드 검사해줘\", \"네트워크 보안 점검해줘\"\n"
+    "- 파일 찾기: \"지난주에 받은 PDF 찾아줘\", \"다운로드 폴더 열어줘\"\n"
+    "- 최저가 검색: \"아이폰 16 최저가 알려줘\"\n"
+    "- 가계부: \"커피 4500원에 샀어\", \"이번달 지출 보여줘\"\n"
+    "- 앱 사용 시간: \"앱 사용 기록 시작해줘\", \"오늘 앱 사용 시간 알려줘\"\n"
+    "- 실시간 감시: \"실시간 감시 시작해줘\"\n"
+    "- 스마트 기기: \"연결된 기기 뭐 있어?\", \"거실 전등 켜줘\"\n"
+    "- 요약·번역·메일 초안: \"이 글 요약해줘: (글)\", \"팀장님께 회의 늦는다는 메일 초안 써줘\"\n"
+    "- 데이터 백업·활동 기록: \"데이터 백업해줘\", \"최근 활동 이력 보여줘\"\n"
+    "특정 기능의 자세한 사용법은 \"타이머 사용법 알려줘\"처럼 기능 이름을 넣어 물어보세요."
+)
+
+
+_ACTIVITY_HEADER = re.compile(r"^\[🧾 활동 이력\] \(최근 (?P<n>\d+)건\)$")
+_ACTIVITY_ITEM = re.compile(r"^\s*\[(?P<ts>[^\]]+)\] (?P<func>\w+)$")
+
+
+def _friendly_action_name(func_name: str) -> str:
+    """내부 함수 이름 → 사용자가 알아볼 말. 진행 상태 문구("🔎  파일 검색 중")에서 기호와 '중'을 뗀다."""
+    label = TOOL_STATUS_NAMES.get(func_name, "")
+    label = re.sub(r"^[^\w가-힣]+", "", label).strip()
+    label = re.sub(r"\s*중$", "", label)
+    return label or "기타 작업"
+
+
+def _build_activity_log_reply(raw_results: str):
+    """활동 이력을 쉬운 말로 — 2026-10-19 기능 점검(1차 발견): 결과가 "[시각] search_files"처럼 내부 이름이라
+    AI 요약 답변에 `search_files` 같은 이름이 그대로 보였다. 이름표(TOOL_STATUS_NAMES)로 바꿔 AI 요약 없이 보여준다."""
+    lines = raw_results.strip().split("\n")
+    head = _ACTIVITY_HEADER.match(lines[0]) if lines else None
+    if not head:
+        return None
+    out = [f"최근에 루미가 한 일 {head.group('n')}건이에요."]
+    for ln in lines[1:]:
+        m = _ACTIVITY_ITEM.match(ln)
+        if not m:
+            return None   # 예상 밖 줄 — 안전하게 LLM 경로로
+        ts = m.group("ts")
+        try:
+            from datetime import datetime as _dt
+            t = _dt.fromisoformat(ts)
+            ts = f"{t.month}월 {t.day}일 {t.strftime('%H:%M')}"
+        except ValueError:
+            pass
+        out.append(f"- {ts}  {_friendly_action_name(m.group('func'))}")
+    return "\n".join(out)
+
+
+# 이미 사용자용 문장인 결과 — AI 요약을 거치지 않고 그대로(2026-10-19 읽기 전용 도구 전체 점검에서 남은 둘)
+_UPDATE_STATUS_HEADER = "[🔄 Windows 업데이트 상태]\n"
+_TOP_CPU_HEADER = "다음은 CPU를 가장 많이 사용하는 상위"
+
+
+def _build_plain_result_reply(raw_results: str):
+    stripped = raw_results.strip()
+    if stripped.startswith(_UPDATE_STATUS_HEADER):
+        return stripped[len(_UPDATE_STATUS_HEADER):]
+    if stripped.startswith(_TOP_CPU_HEADER):
+        return stripped
+    # 루미 휴지통(임시 파일 정리·되돌리기·비우기) 결과 — 7일 보관·공간 확보 시점 안내가 요약에서 빠지면 안 된다
+    for header in _TRASH_RESULT_HEADERS:
+        if stripped.startswith(header):
+            return stripped[len(header):].strip()
+    return None
+
+
+_TRASH_RESULT_HEADERS = ("[🗑️ 임시 파일을 루미 휴지통으로 옮겼어요]", "[✅ 임시 파일 되돌리기 완료]", "[🗑️ 루미 휴지통]",
+                         "[✅ 루미 휴지통 비움]", "[✅ 임시 파일 정리 완료]")
+
+
 _BACKUP_DONE_HEADER = "[✅ 데이터 백업 완료]\n"
 
 
@@ -4378,6 +4474,8 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_text_tool_reply,
     _build_backup_reply,
     _build_calendar_connect_reply,
+    _build_activity_log_reply,
+    _build_plain_result_reply,
     _build_iot_no_devices_reply,
     _build_iot_control_reply,
     _build_run_scene_reply,
@@ -5422,6 +5520,9 @@ TOOL_STATUS_NAMES = {
     "get_system_info":           "🖥️  시스템 정보 수집 중",
     # 2026-10-19 기능 점검: 아래 기능들은 문구가 없어 "⚙️  export_my_data 실행 중"처럼 내부 이름이 그대로 보였다
     "export_my_data":            "💾  데이터 백업 중",
+    "restore_temp_files":        "🗑️  임시 파일 되돌리는 중",
+    "get_temp_trash_status":     "🗑️  루미 휴지통 확인 중",
+    "empty_temp_trash":          "🗑️  루미 휴지통 비우는 중",
     "list_recent_activity":      "🧾  최근 활동 이력 확인 중",
     "get_current_weather":       "🌤️  현재 날씨 확인 중",
     "get_weather_forecast":      "🌦️  날씨 예보 확인 중",
@@ -7189,6 +7290,14 @@ class AIWorker(QThread):
             # 자체를 막는다 — 프롬프트로 "이럴 땐 호출하지 마"라고 아무리 지시해도
             # 실제로 llama3.1이 계속 무시하고 상태확인/실행 함수를 부르는 걸 확인했음.
             is_explanation = self._is_explanation_request()
+
+            # "루미 기능 설명해줘"처럼 특정 기능을 가리키지 않는 전체 소개는 정해진 안내로 — 2026-10-19: AI가 소개하면
+            # "악성코드를 제거할 수 있습니다"처럼 없는 기능을 덧붙였다. 예시 문장은 실제 앱에서 동작을 확인한 것들이다.
+            if is_explanation and allowed_category_funcs is None:
+                self.chat_history.append({'role': 'user', 'content': self.user_text})
+                self.chat_history.append({'role': 'assistant', 'content': _FEATURE_OVERVIEW})
+                self.response_ready.emit(f"🤖 로컬 비서: {_FEATURE_OVERVIEW}")
+                return
 
             # ── 단순 대화는 tool 없이 전송 (속도 대폭 향상) ──
             use_tools = bool(ollama_tools) and self._needs_tools() and not is_explanation

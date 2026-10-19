@@ -183,9 +183,42 @@ TOOL_SCHEMAS = {
         "function": {
             "name": "clean_temp_files",
             "description": (
-                "Windows 임시 폴더의 파일을 실제로 삭제해서 공간을 확보합니다(되돌릴 수 "
-                "없음). 사용 중인 파일은 건너뜁니다. 사용자가 '임시 파일 정리해줘', '임시 "
-                "파일 지워줘' 등을 말할 때 호출하세요."
+                "Windows 임시 폴더의 파일을 루미 휴지통으로 옮깁니다(7일 동안 되돌릴 수 있고 7일 뒤 자동으로 "
+                "완전히 지워짐). 최근에 쓰였거나 사용 중인 파일은 건너뜁니다. 사용자가 '임시 파일 정리해줘', "
+                "'임시 파일 지워줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "restore_temp_files": {
+        "type": "function",
+        "function": {
+            "name": "restore_temp_files",
+            "description": (
+                "루미 휴지통에 옮겨 둔 임시 파일을 원래 자리로 돌려놓습니다. 사용자가 '임시 파일 되돌려줘', "
+                "'정리한 임시 파일 복원해줘' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "get_temp_trash_status": {
+        "type": "function",
+        "function": {
+            "name": "get_temp_trash_status",
+            "description": (
+                "루미 휴지통에 임시 파일이 얼마나 있고 언제 완전히 지워지는지 알려줍니다. 사용자가 '루미 휴지통 "
+                "확인해줘', '휴지통에 뭐 있어' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    "empty_temp_trash": {
+        "type": "function",
+        "function": {
+            "name": "empty_temp_trash",
+            "description": (
+                "루미 휴지통을 지금 완전히 비워 저장 공간을 확보합니다(되돌릴 수 없음). 사용자가 '루미 휴지통 "
+                "비워줘', '휴지통 비워줘' 등을 말할 때 호출하세요."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
@@ -524,41 +557,175 @@ def scan_temp_files() -> str:
         return "❌ 임시 파일을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
 
 
+# ─────────────────────────────────────────────
+# 🗑️ 루미 휴지통 — 임시 파일을 바로 지우지 않고 7일 동안 보관한다(2026-10-19 팀 요청)
+# ─────────────────────────────────────────────
+# 정리한 임시 파일은 루미 휴지통으로 옮기고, 7일 안에는 "임시 파일 되돌려줘"로 원래 자리에 돌려놓는다. 7일이 지나면
+# 다음 정리·조회 때 완전히 지운다. 휴지통은 %LOCALAPPDATA% 아래(임시 폴더와 같은 드라이브)라 파일을 복사하지 않고
+# 이름만 옮겨 빠르다. 대신 공간은 휴지통이 비워질 때 확보된다 — 안내 문구에 꼭 적는다.
+TRASH_KEEP_DAYS = 7
+# 최근에 바뀐 임시 파일은 실행 중인 프로그램이 쓰고 있을 수 있어 옮기지 않는다(정리 프로그램들의 일반적인 방식)
+_RECENT_SKIP_HOURS = 24
+
+
+def _trash_root() -> str:
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    path = os.path.join(base, "Lumi", "temp_trash")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _trash_batches() -> list:
+    """[(폴더 경로, manifest)] — 오래된 것부터. manifest를 못 읽는 폴더는 건너뛴다."""
+    import json
+    out = []
+    root = _trash_root()
+    for name in sorted(os.listdir(root)):
+        folder = os.path.join(root, name)
+        try:
+            with open(os.path.join(folder, "manifest.json"), encoding="utf-8") as f:
+                out.append((folder, json.load(f)))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def purge_expired_temp_trash() -> int:
+    """보관 기간(7일)이 지난 휴지통 묶음을 완전히 지운다. 지운 묶음 수."""
+    import shutil
+    now = datetime.now()
+    purged = 0
+    for folder, manifest in _trash_batches():
+        try:
+            moved_at = datetime.fromisoformat(manifest.get("moved_at", ""))
+        except ValueError:
+            continue
+        if (now - moved_at).days >= TRASH_KEEP_DAYS:
+            shutil.rmtree(folder, ignore_errors=True)
+            purged += 1
+    return purged
+
+
 def clean_temp_files() -> str:
-    print("\n[PC 최적화] 임시 파일 정리 중...")
+    print("\n[PC 최적화] 임시 파일 정리 중(루미 휴지통으로 옮기기)...")
     if platform.system() != "Windows":
         return "⚠️ 이 기능은 Windows 전용입니다."
     dirs = _temp_dirs()
     if not dirs:
         return "임시 폴더를 찾지 못했습니다."
 
+    import json
     try:
-        deleted_count = 0
-        deleted_bytes = 0
-        skipped_count = 0
+        purge_expired_temp_trash()
+        root = _trash_root()
+        trash_norm = os.path.normcase(os.path.normpath(root))
+        batch = os.path.join(root, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+        os.makedirs(batch, exist_ok=True)
+        cutoff = datetime.now().timestamp() - _RECENT_SKIP_HOURS * 3600
+        items, moved_bytes, skipped_busy, skipped_recent = [], 0, 0, 0
         for d in dirs:
-            for root, _subdirs, files in os.walk(d):
+            for cur, _subdirs, files in os.walk(d):
+                if os.path.normcase(os.path.normpath(cur)).startswith(trash_norm):
+                    continue   # 휴지통이 임시 폴더 안에 있는 경우(LOCALAPPDATA가 없을 때) 다시 옮기지 않게
                 for fname in files:
-                    path = os.path.join(root, fname)
+                    path = os.path.join(cur, fname)
                     try:
-                        size = os.path.getsize(path)
-                        os.remove(path)
-                        deleted_count += 1
-                        deleted_bytes += size
+                        st = os.stat(path)
+                        if st.st_mtime > cutoff:
+                            skipped_recent += 1
+                            continue
+                        stored = f"{len(items):06d}_{fname}"
+                        os.replace(path, os.path.join(batch, stored))
+                        items.append({"orig": path, "stored": stored, "size": st.st_size})
+                        moved_bytes += st.st_size
                     except OSError:
                         # 사용 중이거나 권한 문제 — 전체 정리를 멈추지 않고 건너뛴다.
-                        skipped_count += 1
+                        skipped_busy += 1
+        if not items:
+            os.rmdir(batch)
+            return (f"[✅ 임시 파일 정리 완료]\n옮길 임시 파일이 없었습니다. "
+                    f"(최근 {_RECENT_SKIP_HOURS}시간 안에 쓰인 파일 {skipped_recent}개, 사용 중인 파일 {skipped_busy}개는 건너뜀)")
+        with open(os.path.join(batch, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"moved_at": datetime.now().isoformat(timespec="seconds"), "items": items}, f, ensure_ascii=False)
 
-        if deleted_count == 0:
-            return f"[✅ 임시 파일 정리 완료]\n삭제할 임시 파일이 없었습니다. (건너뜀 {skipped_count}개)"
-
-        result = f"[✅ 임시 파일 정리 완료]\n{deleted_count}개 파일을 삭제해 {_format_size(deleted_bytes)}를 확보했습니다."
-        if skipped_count:
-            result += f" (사용 중이거나 권한 문제로 {skipped_count}개는 건너뛰었습니다)"
+        result = (f"[🗑️ 임시 파일을 루미 휴지통으로 옮겼어요]\n"
+                  f"{len(items)}개 파일({_format_size(moved_bytes)})을 루미 휴지통으로 옮겼어요.\n"
+                  f"{TRASH_KEEP_DAYS}일 안에는 '임시 파일 되돌려줘'라고 하면 원래 자리로 돌려놓아요. "
+                  f"{TRASH_KEEP_DAYS}일이 지나면 자동으로 완전히 지워지고, 그때 저장 공간이 확보돼요.\n"
+                  f"지금 바로 공간을 비우려면 '루미 휴지통 비워줘'라고 말해 주세요.")
+        if skipped_recent or skipped_busy:
+            result += (f"\n※ 최근 {_RECENT_SKIP_HOURS}시간 안에 쓰인 파일 {skipped_recent}개와 사용 중인 파일 "
+                       f"{skipped_busy}개는 프로그램이 쓰고 있을 수 있어 건너뛰었어요.")
         return result
     except Exception as e:
         print(f"[PC 최적화] 임시 파일 정리 오류: {e}")
         return "❌ 임시 파일을 정리하지 못했습니다. 잠시 후 다시 시도해주세요."
+
+
+def restore_temp_files() -> str:
+    """루미 휴지통의 임시 파일을 모두 원래 자리로 돌려놓는다(같은 이름 파일이 이미 있으면 그대로 둠)."""
+    print("\n[PC 최적화] 루미 휴지통 → 임시 파일 되돌리기...")
+    import shutil
+    try:
+        purge_expired_temp_trash()
+        batches = _trash_batches()
+        if not batches:
+            return "[🗑️ 루미 휴지통]\n되돌릴 임시 파일이 없어요. (보관 기간 7일이 지난 파일은 이미 완전히 지워졌어요)"
+        restored, kept = 0, 0
+        for folder, manifest in batches:
+            for item in manifest.get("items", []):
+                src = os.path.join(folder, os.path.basename(item.get("stored", "")))   # 경로 조작 방지
+                dst = item.get("orig", "")
+                if not dst or not os.path.exists(src):
+                    continue
+                if os.path.exists(dst):
+                    kept += 1
+                    continue
+                try:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    os.replace(src, dst)
+                    restored += 1
+                except OSError:
+                    kept += 1
+            if not any(os.path.exists(os.path.join(folder, os.path.basename(i.get("stored", ""))))
+                       for i in manifest.get("items", [])):
+                shutil.rmtree(folder, ignore_errors=True)
+        result = f"[✅ 임시 파일 되돌리기 완료]\n임시 파일 {restored}개를 원래 자리로 돌려놓았어요."
+        if kept:
+            result += f"\n※ {kept}개는 같은 이름의 파일이 이미 있거나 옮기지 못해 휴지통에 그대로 뒀어요."
+        return result
+    except Exception as e:
+        print(f"[PC 최적화] 임시 파일 되돌리기 오류: {e}")
+        return "❌ 임시 파일을 되돌리지 못했습니다. 잠시 후 다시 시도해주세요."
+
+
+def get_temp_trash_status() -> str:
+    """루미 휴지통에 무엇이 얼마나 있고 언제 완전히 지워지는지."""
+    purge_expired_temp_trash()
+    batches = _trash_batches()
+    if not batches:
+        return "[🗑️ 루미 휴지통]\n루미 휴지통이 비어 있어요."
+    count = sum(len(m.get("items", [])) for _f, m in batches)
+    size = sum(i.get("size", 0) for _f, m in batches for i in m.get("items", []))
+    oldest = min(datetime.fromisoformat(m["moved_at"]) for _f, m in batches if m.get("moved_at"))
+    from datetime import timedelta
+    expire = oldest + timedelta(days=TRASH_KEEP_DAYS)
+    return (f"[🗑️ 루미 휴지통]\n임시 파일 {count}개({_format_size(size)})가 있어요. "
+            f"가장 먼저 옮긴 것은 {expire.month}월 {expire.day}일에 완전히 지워져요.\n"
+            "'임시 파일 되돌려줘'로 되돌리거나, '루미 휴지통 비워줘'로 지금 바로 비울 수 있어요.")
+
+
+def empty_temp_trash() -> str:
+    """루미 휴지통을 지금 완전히 비운다(되돌릴 수 없음 — 확인창을 거친다)."""
+    print("\n[PC 최적화] 루미 휴지통 비우는 중...")
+    import shutil
+    batches = _trash_batches()
+    if not batches:
+        return "[🗑️ 루미 휴지통]\n루미 휴지통이 이미 비어 있어요."
+    size = sum(i.get("size", 0) for _f, m in batches for i in m.get("items", []))
+    for folder, _m in batches:
+        shutil.rmtree(folder, ignore_errors=True)
+    return f"[✅ 루미 휴지통 비움]\n루미 휴지통을 비워 {_format_size(size)}를 확보했어요."
 
 
 # ─────────────────────────────────────────────

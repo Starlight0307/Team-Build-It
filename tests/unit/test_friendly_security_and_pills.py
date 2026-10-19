@@ -121,3 +121,29 @@ def test_login_history_lines_use_separators_not_padding(qapp, monkeypatch):
     monkeypatch.setattr(lumi_dialog, "information", lambda parent, title, text: shown.update(text=text))
     MyPageWidget._show_login_history(type("W", (), {"_username": "me"})())
     assert "2026-10-19 15:44:02 · 비밀번호 · Windows 11" in shown["text"]
+
+
+def test_activity_log_shows_friendly_names_not_function_names():
+    """1차 점검: 활동 이력 답변에 `search_files` 같은 내부 이름이 그대로 보였다."""
+    raw = "[🧾 활동 이력] (최근 2건)\n  [2026-10-19T17:23:20] export_my_data\n  [2026-10-19T17:20:01] search_files"
+    reply = ai_worker._build_deterministic_reply(raw)
+    assert reply == "최근에 루미가 한 일 2건이에요.\n- 10월 19일 17:23  데이터 백업\n- 10월 19일 17:20  파일 검색"
+    assert "search_files" not in reply
+
+
+def test_feature_overview_is_fixed_text_without_ai(monkeypatch):
+    """AI가 소개하면 "악성코드를 제거할 수 있습니다"처럼 없는 기능을 덧붙였다."""
+    calls = []
+    monkeypatch.setattr(ai_worker, "_ollama_chat", lambda **kw: calls.append(kw))
+    out = []
+    w = ai_worker.AIWorker("루미 기능 설명해줘", [], [lambda: None], None)
+    w.response_ready.connect(out.append)
+    w.run()
+    assert calls == [] and out and "\"10분 뒤에 알려줘\"" in out[0]
+
+
+def test_update_status_and_top_cpu_results_pass_through():
+    upd = "[🔄 Windows 업데이트 상태]\n마지막 업데이트 설치일: 2026-02-23 (238일 전)\n🚨 238일 동안 업데이트가 없었습니다."
+    assert ai_worker._build_deterministic_reply(upd).startswith("마지막 업데이트 설치일")
+    cpu = "다음은 CPU를 가장 많이 사용하는 상위 5개 프로그램입니다:\n1. a.exe (점유율: 3.5%)"
+    assert ai_worker._build_deterministic_reply(cpu) == cpu
