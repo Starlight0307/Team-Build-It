@@ -129,3 +129,37 @@ def test_system_prompt_lists_only_sent_functions_and_their_rules():
     assert "절차/방법을 물어보면" in text              # 공통 규칙은 늘 붙는다
     iot = ai_worker._function_rules_text({"control_iot_device"})
     assert "반드시 control_iot_device를 호출하세요" in iot
+
+
+def test_short_but_self_contained_request_ignores_previous_report():
+    """2026-10-19 녹화 중: 보안 리포트 뒤 "대용량 파일 찾아줘"에 리포트 단어가 섞여 도구 59개가 실리고 PC 상태가 답으로 나왔다."""
+    history = [{"role": "user", "content": "시스템 보안 점검해줘"},
+               {"role": "assistant", "content": "🤖 로컬 비서: PC 보안 상태를 4가지 확인했어요. Windows 업데이트를 자세히 봐드릴까요?"}]
+    w = ai_worker.AIWorker("대용량 파일 찾아줘", history, [], None)
+    assert "보안" not in w._keyword_search_text()
+    allowed = w._allowed_category_funcs()
+    assert "find_large_files" in allowed and "get_network_security_report" not in allowed
+    # 문장만으로 뜻이 없는 짧은 대답은 지금처럼 직전 답을 이어서 본다
+    assert "보안" in ai_worker.AIWorker("응 자세히", history, [], None)._keyword_search_text()
+
+
+@pytest.mark.parametrize("cpu, ram, expect", [
+    (85, 50, "CPU 사용량이 85%로 높아요"),
+    (20, 92, "메모리가 92% 차 있어서"),
+    (9, 40, "CPU나 메모리 때문은 아닐 수 있어요"),
+])
+def test_slow_pc_reply_explains_why_cpu_list_is_shown(cpu, ram, expect):
+    """2026-10-19 팀 피드백: "내 PC가 왜 이렇게 느려?"에 CPU 목록만 나와 의아했다 — 이유와 지금 상태를 같이 말한다."""
+    raw = "다음은 CPU를 가장 많이 사용하는 상위 5개 프로그램입니다:\n1. chrome.exe (점유율: 35.0%)\n"
+    reply = ai_worker._slow_pc_reply(raw, asked_slow=True, cpu=cpu, ram=ram)
+    assert expect in reply and "'종료하기'" in reply
+    assert ai_worker._slow_pc_reply(raw, asked_slow=False).startswith("CPU를 많이 쓰는 프로그램 목록이에요.")
+
+
+@pytest.mark.parametrize("text, item, price", [
+    ("커피 4500원에 샀어", "커피", 4500), ("편의점에서 라면 3,000원 주고 샀어", "라면", 3000),
+    ("치킨을 2만원에 시켰어", "치킨", 20000), ("오늘 뭐 샀지", None, None),
+])
+def test_purchase_item_and_price_are_read_from_the_sentence(text, item, price):
+    """2026-10-19 녹화 중: 모델이 물건 이름을 비워 보내 "무엇을 얼마에 구매하셨는지" 되물었다."""
+    assert ai_worker._extract_purchase(text) == (item, price)

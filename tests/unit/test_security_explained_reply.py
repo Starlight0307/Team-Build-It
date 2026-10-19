@@ -23,7 +23,8 @@ def test_reply_explains_each_check_and_result():
 
 def test_risky_item_comes_before_the_score():
     reply = _build_score_report_reply(RAW)
-    assert "점수는 92/100점이지만, Windows 업데이트는 먼저 챙겨 주세요." in reply
+    assert "점수는 92/100점이에요. 루미가 확인한 항목만으로 계산했고" in reply
+    assert reply.count("점수에") == 0 and reply.count("먼저 Windows 업데이트를 자세히") == 1
     assert reply.rstrip().endswith("Windows 업데이트를 자세히 봐드릴까요?")   # "응 자세히" 후속 질문이 이 줄을 본다
 
 

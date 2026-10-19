@@ -1563,15 +1563,8 @@ def _build_explained_score_reply(raw_results: str, score: int, categories: list)
     for marker, name, summary in items:
         lines.append(f"{marker} {name}: {summary}" if summary else f"{marker} {name}")
     lines.append("")
-    if risky:
-        lines.append(f"점수는 {score}/100점이지만, {', '.join(risky)}{_eun_neun(risky[-1])} 먼저 챙겨 주세요.")
-    elif unknown:
-        lines.append(f"확인한 항목은 모두 괜찮아요. 점수는 {score}/100점이에요.")
-    else:
-        lines.append(f"모든 항목이 괜찮아요. 점수는 {score}/100점이에요.")
-    if unknown:
-        lines.append("확인하지 못한 항목은 점수에 넣지 않았어요.")
-    lines.append("점수는 루미가 확인한 항목만 반영해요. 백신 검사나 전문 보안 점검을 대신하지는 않아요.")
+    closing = _security_closing("점수", score, risky, bool(unknown))
+    lines.append(closing[0])
     # 지난 점검과 달라졌을 때만 알린다("같아요"는 사용자에게 의미가 적다)
     history = _SCORE_REPORT_HISTORY_LINE.search(raw_results)
     if history and "대비" in history.group("rest"):
@@ -1580,9 +1573,26 @@ def _build_explained_score_reply(raw_results: str, score: int, categories: list)
         if (not _SCORE_REPORT_HISTORY_LINE.match(note) and not note.startswith(_SCORE_REPORT_STANDARD_NOTES)
                 and not note.startswith("※ 점수는")):
             lines.append(note[2:].strip())
-    if risky:
-        lines.append(f"{risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?")
+    lines += closing[1:]
     return "\n".join(lines)
+
+
+def _security_closing(score_label: str, score, risky: list, has_unknown: bool) -> list:
+    """보안 답변 끝맺음 — [점수·범위 한 문장, (위험 항목이 있으면) 마지막 제안 한 문장].
+    2026-10-19 팀 피드백: 위험 항목 이름("먼저 챙겨 주세요" + "자세히 봐드릴까요?")과 점수 범위 안내("확인하지 못한
+    항목은 점수에 넣지 않았어요" + "점수는 루미가 확인한 항목만 반영해요")가 한 답변 안에서 두 번씩 나왔다.
+    마지막 줄 "○○를 자세히 봐드릴까요?"는 '응 자세히 봐줘' 후속 질문(_REPORT_DETAIL_OFFER)이 읽는 형식이라 그대로 둔다."""
+    status = "" if risky else ("확인한 항목은 모두 괜찮아요. " if has_unknown else "모든 항목이 괜찮아요. ")
+    excluded = "(확인하지 못한 항목은 뺐어요)" if has_unknown else ""
+    if score is not None:
+        first = (f"{status}{score_label}는 {score}/100점이에요. 루미가 확인한 항목만으로 계산했고{excluded}, "
+                 "백신 검사나 전문 보안 점검을 대신하지는 않아요.")
+    else:
+        first = f"{status}루미가 확인한 항목만 다루고, 백신 검사나 전문 보안 점검을 대신하지는 않아요."
+    if not risky:
+        return [first]
+    lead = f"확인이 필요한 항목이 {len(risky)}개 있어요. " if len(risky) > 1 else ""
+    return [first.strip(), f"{lead}먼저 {risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?"]
 
 
 def build_overall_security_reply(reports: list, overall_score=None):
@@ -1611,16 +1621,7 @@ def build_overall_security_reply(reports: list, overall_score=None):
 
     out = [f"PC 보안을 {len(areas)}가지 영역에서 모두 {total}가지 확인했어요.", ""]
     out += ["\n\n".join(areas), ""]
-    score = f"종합 점수는 {overall_score}/100점이에요" if overall_score is not None else ""
-    if risky:
-        out.append(f"{score + '. ' if score else ''}먼저 챙길 항목: {', '.join(risky)}")
-    elif score:
-        out.append(f"{score}. 확인한 항목은 모두 괜찮아요." if unknown_count else f"{score}. 모든 항목이 괜찮아요.")
-    if unknown_count:
-        out.append("확인하지 못한 항목은 점수에 넣지 않았어요.")
-    out.append("점수는 루미가 확인한 항목만 반영해요. 백신 검사나 전문 보안 점검을 대신하지는 않아요.")
-    if risky:
-        out.append(f"{risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?")
+    out += _security_closing("종합 점수", overall_score, risky, unknown_count > 0)
     return "\n".join(out)
 
 
@@ -3814,6 +3815,52 @@ _EMAIL_DRAFT_RESULT_HEADER = "[✉️ 메일 초안]\n"
 _EMAIL_OPEN_RESULT_HEADER = "[✉️ 메일 앱 열기]\n"
 _SUMMARY_RESULT_HEADER = "[📄 요약 결과]\n"
 _TRANSLATE_RESULT_HEADER = re.compile(r"^\[📄 번역 결과 \((?P<lang>.+?)\)\]\n(?P<body>.+)$", re.DOTALL)
+
+
+# "커피 4500원에 샀어", "편의점에서 라면 3,000원 주고 샀어", "택시비 12000원 냈어" → (물건, 금액)
+_PURCHASE_PATTERN = re.compile(r"^\s*(?:.*?에서\s+)?(?P<item>.+?)(?:을|를|은|는|이|가)?\s*(?P<num>[\d,]+)\s*(?P<unit>만\s*원|천\s*원|원)")
+
+
+def _extract_purchase(text: str):
+    m = _PURCHASE_PATTERN.search(text or "")
+    if not m:
+        return None, None
+    item = m.group("item").strip()
+    try:
+        num = int(m.group("num").replace(",", ""))
+    except ValueError:
+        return item or None, None
+    unit = m.group("unit").replace(" ", "")
+    price = num * (10000 if unit == "만원" else 1000 if unit == "천원" else 1)
+    return (item or None), price
+
+
+_TOP_CPU_ITEM = re.compile(r"^1\. (?P<name>.+?) \(점유율: (?P<pct>[\d.]+)%\)", re.MULTILINE)
+
+
+def _slow_pc_reply(tool_result: str, asked_slow: bool, cpu: float = None, ram: float = None) -> str:
+    """"내 PC가 왜 이렇게 느려?" — CPU 상위 프로그램 카드와 함께, 왜 이 목록을 보여주는지와 지금 CPU·메모리 상태를 말한다.
+    CPU가 낮으면 CPU 탓이라고 단정하지 않는다(2026-10-19 팀 피드백: 목록만 나와 "엥?" 싶었다)."""
+    card_hint = "종료하려면 각 카드의 '종료하기' 버튼을 누르세요."
+    if not asked_slow:
+        return f"CPU를 많이 쓰는 프로그램 목록이에요. {card_hint}"
+    if cpu is None or ram is None:
+        try:
+            import psutil
+            cpu = psutil.cpu_percent(interval=0.5) if cpu is None else cpu
+            ram = psutil.virtual_memory().percent if ram is None else ram
+        except Exception:
+            return f"컴퓨터가 느려지는 흔한 원인은 CPU를 많이 쓰는 프로그램이라, CPU 사용량이 높은 프로그램을 보여드려요. {card_hint}"
+    top = _TOP_CPU_ITEM.search(tool_result or "")
+    top_text = f" 가장 많이 쓰는 프로그램은 {top.group('name')}({top.group('pct')}%)예요." if top else ""
+    if cpu >= 70:
+        return (f"컴퓨터가 느려지는 흔한 원인은 CPU를 많이 쓰는 프로그램이에요. 지금 CPU 사용량이 {cpu:.0f}%로 높아요.{top_text}\n"
+                f"아래 목록에서 쓰지 않는 프로그램을 종료하면 빨라질 수 있어요. {card_hint}")
+    if ram >= 85:
+        return (f"지금 CPU 사용량은 {cpu:.0f}%로 괜찮지만, 메모리가 {ram:.0f}% 차 있어서 느려졌을 수 있어요. "
+                f"안 쓰는 프로그램이나 브라우저 탭을 닫아 보세요.\n참고로 CPU를 많이 쓰는 프로그램도 보여드려요. {card_hint}")
+    return (f"지금 CPU 사용량은 {cpu:.0f}%, 메모리는 {ram:.0f}%로 둘 다 여유가 있어서, CPU나 메모리 때문은 아닐 수 있어요. "
+            f"특정 프로그램이 느리다면 그 프로그램을 다시 켜 보세요.\n참고로 CPU를 많이 쓰는 프로그램을 보여드려요.{top_text} {card_hint}")
 
 
 # "루미 기능 설명해줘" — 전체 소개(예시 문장은 2026-10-19 실제 앱·점검 스크립트에서 동작을 확인한 것)
@@ -6250,7 +6297,11 @@ class AIWorker(QThread):
         # 가계부/보안 점검"에 걸려 도구 75개가 한 요청에 실렸고(약 2만 토큰) Ollama 실행기가 죽었다.
         from core.screen_agent import INSTRUCTION_SPLIT
         text = INSTRUCTION_SPLIT.split(self.user_text, maxsplit=1)[0].lower()
-        if len(self.user_text.strip()) <= 20 and not self._is_decline_reply():
+        # 문장만으로 이미 어떤 기능인지 분명하면 직전 답을 섞지 않는다 — 2026-10-19 녹화 중 실제 앱: 보안 리포트 바로 뒤
+        # "대용량 파일 찾아줘"(20자 이하)에 리포트 속 '보안·pc·업데이트'가 섞여 도구 59개(약 9,400토큰, 문맥 초과로 잘림)가
+        # 실렸고 PC 상태가 답으로 나왔다. 직전에 실제로 쓴 기능을 잇는 장치(_allowed_category_funcs의 last_categories)는 그대로다.
+        own_match = any(_any_keyword_in(kws, text) for kws, _f in _TOOL_CATEGORIES.values())
+        if len(self.user_text.strip()) <= 20 and not own_match and not self._is_decline_reply():
             for msg in reversed(self.chat_history):
                 if msg.get('role') == 'assistant':
                     prev = str(msg.get('content', ''))
@@ -7023,8 +7074,9 @@ class AIWorker(QThread):
                         # CPU 프로세스 결과 원본 전달
                         self.cpu_result.emit(tool_result)
 
-                        # 간단한 안내 메시지
-                        self.response_ready.emit("🤖 로컬 비서: CPU 사용량이 높은 프로세스 목록입니다. 종료하려면 각 카드의 '종료하기' 버튼을 클릭하세요.")
+                        # 왜 이 목록을 보여주는지 함께 — 2026-10-19 팀 피드백: "내 PC가 왜 이렇게 느려?"에 목록만 나와 의아했다
+                        asked_slow = any(kw in text_lower for kw in slow_keywords)
+                        self.response_ready.emit(f"🤖 로컬 비서: {_slow_pc_reply(tool_result, asked_slow)}")
                         return
                     except Exception as e:
                         print(f"[AI 워커] CPU 프로세스 조회 오류: {e}")
@@ -7639,6 +7691,15 @@ class AIWorker(QThread):
                         extracted_title = self._extract_event_title(self.user_text)
                         if extracted_title:
                             args['title'] = extracted_title
+
+                    # "커피 4500원에 샀어" — 2026-10-19 녹화 중: 모델이 금액만 넣고 물건 이름을 비워 보내 가계부가
+                    # "무엇을 얼마에 구매하셨는지" 되물었다(두 번째엔 됨). 비어 있으면 사용자 문장에서 직접 채운다.
+                    if func_name == 'mark_as_purchased':
+                        item, price = _extract_purchase(self.user_text)
+                        if item and not str(args.get('item_name') or '').strip():
+                            args['item_name'] = item
+                        if price and not args.get('price'):
+                            args['price'] = price
 
                     # ── 일정 등록: 날짜는 LLM 대신 정규식으로 결정론적 계산 ──
                     # (title과 같은 이유 — "내일"이라고 했는데 모델이 스스로 계산해서

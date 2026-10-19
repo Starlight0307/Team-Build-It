@@ -17,8 +17,8 @@ def test_overall_reply_groups_items_by_area():
     assert reply.startswith("PC 보안을 2가지 영역에서 모두 4가지 확인했어요.")
     assert "🌐 네트워크 보안 (2가지)\n✅ 방화벽 상태: 방화벽이 모든 네트워크에서 켜져 있어요." in reply
     assert "🖥️ 시스템 보안 (2가지)\n🚨 Windows 업데이트: 마지막 업데이트가 238일 전이에요." in reply
-    assert "종합 점수는 96/100점이에요. 먼저 챙길 항목: Windows 업데이트" in reply
-    assert "확인하지 못한 항목은 점수에 넣지 않았어요." in reply
+    assert "종합 점수는 96/100점이에요. 루미가 확인한 항목만으로 계산했고(확인하지 못한 항목은 뺐어요)" in reply
+    assert reply.count("루미가 확인한 항목만") == 1 and reply.count("Windows 업데이트를") == 1   # 같은 말 반복 없이
     assert reply.endswith("Windows 업데이트를 자세히 봐드릴까요?")
 
 
