@@ -54,7 +54,8 @@ from settings import app_settings
 from settings.theme import get_palette
 from calendar_feature import calendar_preference
 from settings import ui_scale
-from core.ai_worker import AIWorker, _build_condition_recommendation
+from core.ai_worker import (AIWorker, _build_condition_recommendation, is_large_file_followup,
+                            build_overall_security_reply)
 from core.plugin_manager import load_existing_plugins, download_and_install_plugin
 from core.plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
 from widget.widgets import (CommandCard, MessageBubble, TypingIndicator, FlowLayout,
@@ -223,6 +224,12 @@ class OverallSecurityCheckWorker(QThread):
             if m:
                 scores.append(int(m.group(1)))
             sections.append(result)
+
+        # 영역별로 묶은 사용자용 답변 — 리포트 형식을 못 읽으면 아래 예전 방식(원본 그대로)으로
+        friendly = build_overall_security_reply(sections, round(sum(scores) / len(scores)) if scores else None)
+        if friendly:
+            self.result_ready.emit(friendly)
+            return
 
         header = "[🛡️ 전체 보안 점검]\n"
         if scores:
@@ -489,9 +496,11 @@ class AssistantApp(QWidget):
         # Windows 업데이트 + 방화벽 + 열린 포트를 백그라운드에서 확인해 한 메시지로 보여준다
         from core.startup_security import build_startup_notice
         func_map = {f.__name__: f for f in self.installed_tools}
-        self._update_worker = UpdateCheckWorker(lambda: build_startup_notice(func_map))
-        self._update_worker.result_ready.connect(self._on_update_check_result)
-        self._update_worker.start()
+        # 업데이트 확인(_update_worker)과 따로 둔다 — 2026-10-19 실제 앱: 같은 변수를 쓰고 비우지 않아서, 앱을 켤 때마다
+        # 환경설정 [업데이트 확인]이 '이미 확인 중'으로 여겨 눌러도 아무 일도 일어나지 않았다
+        self._startup_security_worker = UpdateCheckWorker(lambda: build_startup_notice(func_map))
+        self._startup_security_worker.result_ready.connect(self._on_update_check_result)
+        self._startup_security_worker.start()
 
     def _on_update_check_result(self, result: str):
         # 점검할 플러그인이 하나도 없으면 빈 글 — 아무것도 띄우지 않는다
@@ -848,9 +857,13 @@ class AssistantApp(QWidget):
                            any(w in t for w in ("써", "쓰고", "사용", "쓰는", "쓰니", "뭐야", "뭐니"))
 
         if is_status_query:
-            active = calendar_preference.get_active_calendar()
-            label  = {"local": "내부 캘린더", "apple": "애플 캘린더"}.get(active, "구글 캘린더")
-            self.display_ai_response(f"🤖 로컬 비서: 지금은 **{label}**를 쓰고 있어요.")
+            labels = {"local": "내부 캘린더", "apple": "애플 캘린더", "google": "구글 캘린더"}
+            chosen = calendar_preference.get_active_calendar()
+            owner = MOCK_USER.get("name") if MOCK_USER.get("logged_in") else "guest"
+            active = calendar_preference.get_effective_calendar(owner)
+            note = (f" ({labels.get(chosen, '구글 캘린더')}로 골라 두셨지만 아직 연결 전이라 이 PC의 캘린더를 쓰고 있어요. "
+                    f"캘린더 화면의 [구글 연동하기]로 연결할 수 있어요.)" if active != chosen else "")
+            self.display_ai_response(f"🤖 로컬 비서: 지금은 **{labels.get(active, '구글 캘린더')}**를 쓰고 있어요.{note}")
             return True
 
         if has_apple and has_verb and not has_local and not has_google:
@@ -2665,6 +2678,13 @@ class AssistantApp(QWidget):
         # _maybe_handle_web_open이 화면 조작 에이전트에 넘긴다.
         if self._maybe_handle_web_open(txt):
             QTimer.singleShot(50, self.auto_scroll_to_bottom)
+            return
+
+        # ── 대용량 파일 목록 뒤의 "1번 폴더 열어줘"/"어디 있어?" → 화면 조작 판단 없이 루미가 바로 답한다 ──
+        # (2026-10-19: "열어" 때문에 화면 조작으로 가서 이미 열린 탐색기 창을 클릭했다 — 루미는 탐색기 명령으로 연다)
+        if is_large_file_followup(txt, self.chat_history):
+            QTimer.singleShot(50, self.auto_scroll_to_bottom)
+            self._start_ai_worker(txt)
             return
 
         # ── "직접 ~해줘" / "지금 화면에 뭐 있어?" → 화면을 보고 작업/답변 ──

@@ -77,6 +77,7 @@ def qss(p: dict) -> str:
         QPushButton#LumiDanger {{ background-color: {p['danger']}; color: #FFFFFF; border: none;
                                   border-radius: 12px; padding: 0 18px; font-size: 14px; font-weight: 800; }}
         QPushButton#LumiDanger:hover {{ background-color: {p['danger_hover']}; }}
+        QPushButton#LumiDanger:disabled {{ background-color: {p['border']}; color: {p['sub']}; }}
         QPushButton#LinkGhost {{ background: transparent; color: {p['text']}; border: 1.5px solid {p['border']};
                                  border-radius: 12px; padding: 0 18px; font-size: 14px; font-weight: 700; }}
         QPushButton#LinkGhost:hover {{ background-color: {p['ghost_hover']}; }}

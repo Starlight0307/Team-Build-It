@@ -53,6 +53,24 @@ def get_active_calendar() -> str:
     return value if value in _VALID_VALUES else _DEFAULT_ACTIVE
 
 
+def get_effective_calendar(owner) -> str:
+    """대화 기능이 실제로 쓸 캘린더 — 캘린더 화면(calendar_sources.connected_sources)과 같은 기준이다.
+    2026-10-19 실제 앱: 구글을 연결하지 않은 채로 캘린더 화면은 '이 PC의 내 캘린더'를 보여주는데, 대화로 일정을
+    잡으면 기본값(google)만 보고 "구글 계정 연결이 필요해요"라고 했다. 고른 캘린더가 연결돼 있지 않으면 연결된
+    다른 쪽, 둘 다 없으면 내부 캘린더를 쓴다. 로그인하지 않았으면(내부 캘린더도 못 씀) 고른 값 그대로."""
+    active = get_active_calendar()
+    if active == "local" or not owner or owner == "guest":
+        return active
+    try:
+        from calendar_feature.calendar_sources import SOURCES
+        for key in (active, "apple" if active == "google" else "google"):
+            if SOURCES[key].connected(owner):
+                return key
+    except Exception:
+        return active
+    return "local"
+
+
 def set_active_calendar(value: str):
     """사용할 캘린더 백엔드를 저장. 'google' / 'local' / 'apple'만 허용(다른 항목은 그대로 둔다)."""
     if value not in _VALID_VALUES:

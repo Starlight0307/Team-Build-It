@@ -445,11 +445,17 @@ def _describe_remove_lumi_firewall_rule(a: dict, func_map: dict) -> str:
     return desc + "\n\n※ Windows 관리자 승인 창이 뜹니다."
 
 
+def _effective_calendar() -> str:
+    """대화가 실제로 쓸 캘린더 — 캘린더 화면과 같은 기준(연결 안 된 구글·애플 대신 내부 캘린더).
+    calendar_feature.calendar_preference.get_effective_calendar 참고."""
+    owner = MOCK_USER.get("name") if MOCK_USER.get("logged_in") else "guest"
+    return calendar_preference.get_effective_calendar(owner)
+
+
 def _active_calendar_label() -> str:
     """삭제 확인창에 쓸 캘린더 이름 — 구글 이름의 도구(delete_event)가 애플 캘린더 일정도 지운다."""
     try:
-        from calendar_feature import calendar_preference
-        return "애플 캘린더" if calendar_preference.get_active_calendar() == "apple" else "구글 캘린더"
+        return {"apple": "애플 캘린더", "local": "내 캘린더"}.get(_effective_calendar(), "구글 캘린더")
     except Exception:
         return "캘린더"
 
@@ -1116,6 +1122,8 @@ _ACTION_WORD_GATES = (
     (re.compile(r"수입|들어왔|입금|월급|용돈|알바비|벌었|잔액|모았"),
      ("add_income", "list_income", "delete_income", "edit_income", "get_balance")),
     (re.compile(r"예산|까지만"), ("set_monthly_budget",)),
+    # 2026-10-19 기능 점검: "오늘 앱 사용 시간 알려줘"가 3번 다 사용 시간 조회 대신 기록 켜짐/꺼짐 확인을 골랐다
+    (re.compile(r"켜져|꺼져|켜졌|꺼졌|켜있|꺼있|켜 있|꺼 있|측정\s*중|기록\s*중|기록하고|상태"), ("get_usage_status",)),
 )
 
 
@@ -1130,11 +1138,15 @@ def _narrow_by_action_words(allowed: set, text: str) -> set:
 _APP_USAGE_WORDS = re.compile(r"앱|게임|프로그램|유튜브|사용\s*시간|몇\s*시간|얼마나\s*(했|봤|썼)")
 
 
+# 지난 기록과 비교·변화를 묻는 표현 — PC 상태 질문을 추이(get_system_trend)로 보낼 때 쓴다
+_SYSTEM_TREND_REQUEST = r"어제|그제|지난|평소|보다|비교|요즘|며칠|이번\s*주|일주일|추이|변화|변했"
+
+
 def _narrow_system_trend(allowed: set, text: str) -> set:
     t = text or ""
     # "어제보다 컴퓨터 느려졌어?" — 비교 질문에는 이력 비교와 지금 상태만 보여준다(정리·삭제·종료 도구가 함께
     # 노출돼 작은 모델이 엉뚱한 걸 고를 수 있었다, 2026-10-19 실제 앱)
-    if ("get_system_trend" in allowed and re.search(r"어제|그제|지난|평소|보다|비교|요즘|며칠", t)
+    if ("get_system_trend" in allowed and re.search(_SYSTEM_TREND_REQUEST, t)
             and re.search(r"느려|느린|빨라|무거|상태|버벅", t)):
         return {"get_system_trend", "get_system_info"}
     if not (_SYSTEM_RESOURCE_WORDS.search(t) and "get_system_info" in allowed):
@@ -1197,6 +1209,11 @@ def _eul_reul(word: str) -> str:
         has_batchim = (ord(last) - 0xAC00) % 28 != 0
         return "을" if has_batchim else "를"
     return "를"
+
+
+def _eun_neun(word: str) -> str:
+    """보조사 "은/는" — _eul_reul과 같은 받침 계산."""
+    return "은" if _eul_reul(word) == "을" else "는"
 
 
 _REPORT_DETAIL_OFFER = re.compile(
@@ -1483,6 +1500,9 @@ def _build_score_report_reply(raw_results: str):
     title_match = _SCORE_REPORT_TITLE_LINE.search(raw_results)
     title = re.sub(r'^[^\w가-힣]+', '', title_match.group(1)).strip() if title_match else "점검 리포트"
 
+    if any(_SCORE_ITEM_SUMMARY_SEP in name for _marker, name in categories):
+        return _build_explained_score_reply(raw_results, score, categories)
+
     parts = [f"{title}를 살펴보니 점수는 {score}/100점이에요."]
     if risky:
         parts.append(f"{', '.join(risky)} 쪽에 위험 표시가 있어서 확인이 필요해 보여요.")
@@ -1507,6 +1527,84 @@ def _build_score_report_reply(raw_results: str):
     if risky:
         parts.append(f"{risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?")
     return " ".join(parts)
+
+
+_SCORE_ITEM_SUMMARY_SEP = " — "   # "  🚨 Windows 업데이트 — 마지막 업데이트가 238일 전이에요…" (plugins/system_security.py)
+
+
+def _build_explained_score_reply(raw_results: str, score: int, categories: list) -> str:
+    """항목마다 사용자용 한 줄이 붙은 리포트 — 무엇을 확인했고 각각 어땠는지, 뭘 하면 되는지 순서로 쓴다.
+    2026-10-19 사용자 피드백: 예전 답변("공유 폴더는 정상이고요. 보안 설정는 확인하지 못해서…")은 개발자용 같았다."""
+    items = []
+    for marker, line in categories:
+        name, _, summary = line.partition(_SCORE_ITEM_SUMMARY_SEP)
+        items.append((marker, name.strip(), summary.strip()))
+    risky = [name for marker, name, _s in items if marker in ('🚨', '⚠️')]
+    unknown = [name for marker, name, _s in items if marker == '❔']
+
+    lines = [f"PC 보안 상태를 {len(items)}가지 확인했어요.", ""]
+    for marker, name, summary in items:
+        lines.append(f"{marker} {name}: {summary}" if summary else f"{marker} {name}")
+    lines.append("")
+    if risky:
+        lines.append(f"점수는 {score}/100점이지만, {', '.join(risky)}{_eun_neun(risky[-1])} 먼저 챙겨 주세요.")
+    elif unknown:
+        lines.append(f"확인한 항목은 모두 괜찮아요. 점수는 {score}/100점이에요.")
+    else:
+        lines.append(f"모든 항목이 괜찮아요. 점수는 {score}/100점이에요.")
+    if unknown:
+        lines.append("확인하지 못한 항목은 점수에 넣지 않았어요.")
+    lines.append("점수는 루미가 확인한 항목만 반영해요. 백신 검사나 전문 보안 점검을 대신하지는 않아요.")
+    # 지난 점검과 달라졌을 때만 알린다("같아요"는 사용자에게 의미가 적다)
+    history = _SCORE_REPORT_HISTORY_LINE.search(raw_results)
+    if history and "대비" in history.group("rest"):
+        lines.append(f"지난 점검({history.group('time')}){history.group('rest')}")
+    for note in _SCORE_REPORT_EXTRA_NOTE.findall(raw_results):
+        if (not _SCORE_REPORT_HISTORY_LINE.match(note) and not note.startswith(_SCORE_REPORT_STANDARD_NOTES)
+                and not note.startswith("※ 점수는")):
+            lines.append(note[2:].strip())
+    if risky:
+        lines.append(f"{risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?")
+    return "\n".join(lines)
+
+
+def build_overall_security_reply(reports: list, overall_score=None):
+    """"내 PC 안전해?"(전체 보안 점검) — 네트워크·악성코드·시스템 리포트를 영역별로 묶어 한 답변으로 쓴다.
+    2026-10-19 사용자 피드백: 세 리포트 원본("항목별 상태:", "※ 상세 내용이 필요한 항목은…")을 그대로 이어 붙여 보여줘
+    개발자용 같았다. 형식을 못 읽는 리포트가 하나라도 있으면 None(호출부가 예전 방식으로 보여준다)."""
+    areas, risky, unknown_count, total = [], [], 0, 0
+    for raw in reports:
+        if _SCORE_REPORT_MARKER not in raw:
+            return None
+        title_match = _SCORE_REPORT_TITLE_LINE.search(raw)
+        title = title_match.group(1).replace("종합 리포트", "").strip() if title_match else "보안 점검"
+        lines = []
+        for marker, line in _SCORE_REPORT_CATEGORY_LINE.findall(raw):
+            name, _, summary = line.partition(_SCORE_ITEM_SUMMARY_SEP)
+            name = name.strip()
+            lines.append(f"{marker} {name}: {summary.strip()}" if summary.strip() else f"{marker} {name}")
+            if marker in ('🚨', '⚠️'):
+                risky.append(name)
+            elif marker == '❔':
+                unknown_count += 1
+        if not lines:
+            return None
+        total += len(lines)
+        areas.append(f"{title} ({len(lines)}가지)\n" + "\n".join(lines))
+
+    out = [f"PC 보안을 {len(areas)}가지 영역에서 모두 {total}가지 확인했어요.", ""]
+    out += ["\n\n".join(areas), ""]
+    score = f"종합 점수는 {overall_score}/100점이에요" if overall_score is not None else ""
+    if risky:
+        out.append(f"{score + '. ' if score else ''}먼저 챙길 항목: {', '.join(risky)}")
+    elif score:
+        out.append(f"{score}. 확인한 항목은 모두 괜찮아요." if unknown_count else f"{score}. 모든 항목이 괜찮아요.")
+    if unknown_count:
+        out.append("확인하지 못한 항목은 점수에 넣지 않았어요.")
+    out.append("점수는 루미가 확인한 항목만 반영해요. 백신 검사나 전문 보안 점검을 대신하지는 않아요.")
+    if risky:
+        out.append(f"{risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?")
+    return "\n".join(out)
 
 
 _SCORE_REPORT_HISTORY_LINE = re.compile(
@@ -3210,6 +3308,7 @@ def _build_large_files_reply(raw_results: str):
     stripped = raw_results.strip()
     m_none = _LARGE_FILES_NONE.match(stripped)
     if m_none:
+        _LAST_LARGE_FILES.clear()   # 예전 목록으로 "1번 어디 있어?"에 답하지 않게
         return (f"{m_none.group('min_mb')}MB 이상인 파일을 찾지 못했어요. "
                 f"(파일 {m_none.group('scanned')}개 확인)")
 
@@ -3233,11 +3332,92 @@ def _build_large_files_reply(raw_results: str):
     if len(items) != declared_count:
         return None
 
+    # 화면에는 이름·용량만 — 2026-10-19 기능 점검: 전체 경로까지 나오니 길고 보기 불편했다. 경로는 기억해 뒀다가
+    # "1번 어디 있어?"처럼 물으면 _large_file_location_reply가 알려준다.
+    _LAST_LARGE_FILES[:] = items
     lines = [f"{m.group('min_mb')}MB 이상인 파일을 {declared_count}개 찾았어요 (총 {m.group('scanned')}개 파일 확인)."]
-    for size, path in items:
-        lines.append(f"- {size}  {path}")
+    for i, (size, path) in enumerate(items, 1):
+        lines.append(f"{i}. {_path_basename(path)}  ({size})")
     for note in notes:
         lines.append(f"※ {note}")
+    lines.append("'1번 열어줘'로 파일을 열거나, '1번 어디 있어?'로 위치를 물어보세요.")
+    return "\n".join(lines)
+
+
+_LAST_LARGE_FILES: list = []   # 마지막 대용량 파일 목록 [(크기, 전체 경로)] — 화면 번호 순서 그대로
+_LARGE_FILES_LIST_MARK = "MB 이상인 파일을"
+_LOCATION_REPLY_MARK = "📁 위치:"   # 📍는 일정 장소 표시라 쓰지 않는다(일정 목록 뒤 "어디서 해?"에 끼어들지 않게)
+_LOCATION_WORDS = re.compile(r"어디|위치|경로|폴더|열어|틀어|재생")
+_FOLDER_WORDS = re.compile(r"어디|위치|경로|폴더")
+_ORDINAL_WORDS = {"첫": 1, "두": 2, "세": 3, "네": 4, "다섯": 5, "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9, "열": 10}
+_ORDINAL_PATTERN = re.compile(r"(" + "|".join(sorted(_ORDINAL_WORDS, key=len, reverse=True)) + r")\s*번\s*째")
+_LOCATION_STOPWORDS = {"어디", "어디에", "어디야", "어디있어", "있어", "있어?", "있는지", "위치", "위치는", "경로", "경로는",
+                       "폴더", "폴더를", "열어줘", "열어", "알려줘", "알려", "파일", "파일은", "파일이", "그거", "그", "거",
+                       "다", "전부", "모두", "줘", "좀"}
+
+
+def _path_basename(path: str) -> str:
+    # 이 PC가 아닌 경로 형식(테스트 등)도 이름만 뽑을 수 있게 두 구분자를 다 본다
+    return re.split(r"[\\/]", path.rstrip("\\/"))[-1]
+
+
+def _path_folder(path: str) -> str:
+    name = _path_basename(path)
+    return path.rstrip("\\/")[: -len(name)].rstrip("\\/") or path
+
+
+def _pick_large_files(text: str) -> list:
+    """질문이 가리키는 파일의 화면 번호(1부터) — 번호("1번", "두 번째", "마지막")나 이름 일부("Rocky")로 고른다.
+    아무것도 가리키지 않으면 빈 목록(= 전부)."""
+    n = len(_LAST_LARGE_FILES)
+    picked = [int(d) for d in re.findall(r"(\d+)\s*번", text)]
+    picked += [_ORDINAL_WORDS[w] for w in _ORDINAL_PATTERN.findall(text)]
+    if "마지막" in text:
+        picked.append(n)
+    picked = [i for i in picked if 1 <= i <= n]
+    if picked:
+        return sorted(set(picked))
+    words = [w.lower() for w in re.findall(r"[0-9A-Za-z가-힣._\-]{2,}", text) if w not in _LOCATION_STOPWORDS]
+    return [i for i, (_size, path) in enumerate(_LAST_LARGE_FILES, 1)
+            if any(w in _path_basename(path).lower() for w in words)]
+
+
+def is_large_file_followup(text: str, chat_history: list) -> bool:
+    """대용량 파일 목록(또는 위치 답변) 바로 뒤에 위치·폴더를 묻는 말인가 — app_main은 이걸 보고 화면 조작 판단을
+    건너뛴다(2026-10-19 실제 앱: "1번 폴더 열어줘"가 "열어" 때문에 화면 조작으로 가서 열린 탐색기 창을 클릭했다)."""
+    if not _LAST_LARGE_FILES or not _LOCATION_WORDS.search(text or ""):
+        return False
+    last = next((str(m.get("content") or "") for m in reversed(chat_history or []) if m.get("role") == "assistant"), "")
+    return _LARGE_FILES_LIST_MARK in last or _LOCATION_REPLY_MARK in last
+
+
+def _large_file_location_reply(text: str, chat_history: list, func_map: dict):
+    """대용량 파일 목록 바로 뒤의 "어디 있어?"/"폴더 열어줘" — 경로는 화면에 없으니 모델에 맡기지 않고 기억해 둔
+    목록으로 답한다. 직전 루미 답변이 그 목록(또는 위치 답변)일 때만 끼어든다."""
+    if not is_large_file_followup(text, chat_history):
+        return None
+    picked = _pick_large_files(text) or list(range(1, len(_LAST_LARGE_FILES) + 1))
+    wants_folder = bool(_FOLDER_WORDS.search(text))
+    if re.search(r"열어|틀어|재생", text):
+        if len(picked) > 1:
+            what = "폴더를" if wants_folder else "파일을"
+            return f"어느 {what} 열까요? '1번 {'폴더 ' if wants_folder else ''}열어줘'처럼 번호로 말씀해주세요."
+        path = _LAST_LARGE_FILES[picked[0] - 1][1]
+        if wants_folder:
+            if "open_file_location" in func_map:
+                return func_map["open_file_location"](path=path)
+        else:
+            # "1번 열어줘" — 파일 자체를 기본 프로그램으로(실행 파일은 위치만). 2026-10-19 사용자 요청
+            from plugins.file_explorer import open_file
+            return open_file(path)
+    lines = []
+    for i in picked:
+        size, path = _LAST_LARGE_FILES[i - 1]
+        lines.append(f"{i}. {_path_basename(path)}  ({size})\n{_LOCATION_REPLY_MARK} {_path_folder(path)}")
+    hint = f"'{picked[0]}번 열어줘'라고 하면 파일을 바로 열어드려요"
+    if "open_file_location" in func_map:
+        hint += f", '{picked[0]}번 폴더 열어줘'는 탐색기로 폴더를 열어요"
+    lines.append(hint + ".")
     return "\n".join(lines)
 
 
@@ -3617,6 +3797,35 @@ _EMAIL_DRAFT_RESULT_HEADER = "[✉️ 메일 초안]\n"
 _EMAIL_OPEN_RESULT_HEADER = "[✉️ 메일 앱 열기]\n"
 _SUMMARY_RESULT_HEADER = "[📄 요약 결과]\n"
 _TRANSLATE_RESULT_HEADER = re.compile(r"^\[📄 번역 결과 \((?P<lang>.+?)\)\]\n(?P<body>.+)$", re.DOTALL)
+
+
+_BACKUP_DONE_HEADER = "[✅ 데이터 백업 완료]\n"
+
+
+def _build_backup_reply(raw_results: str):
+    """데이터 백업 결과는 그대로 보여준다 — 2026-10-19 실제 앱: AI 요약이 "지출 기록도 없다니요!"처럼 감탄하고
+    저장 위치를 "있는 것 같아요"라고 추측처럼 말했으며, 클라우드 동기화·다시 불러오기 불가 안내를 빼먹었다."""
+    stripped = raw_results.strip()
+    if stripped.startswith(_BACKUP_DONE_HEADER):
+        body = stripped[len(_BACKUP_DONE_HEADER):]
+        return "데이터를 백업했어요.\n" + body.replace("\n※ ", "\n\n※ ", 1)
+    return None
+
+
+# 캘린더 연결(setup_calendar_auth/connect_google_calendar) 결과 — plugins/calendar_tool.py의 문장 그대로
+_CALENDAR_CONNECT_RESULTS = ("✅ 구글 캘린더 연결 완료!", "✅ 구글 계정을 연동했어요!", "✅ 연결됐어요! (사용자:",
+                             "구글 연결을 취소했어요.", "❌ 구글 캘린더는 Lumi에 로그인한 뒤", "❌ 지금 Lumi 계정에 연결된 구글 계정과",
+                             "❌ 구글 로그인 대기 시간", "❌ 구글 계정 연결에 실패했어요", "❌ 구글 캘린더 권한을 받지 못했어요",
+                             "애플 캘린더는 마이페이지의")
+
+
+def _build_calendar_connect_reply(raw_results: str):
+    """캘린더 연결 결과는 그대로 보여준다 — 2026-10-19 실제 앱: "구글 캘린더 연동해줘" 뒤 AI 요약이 일정 조회도 안 했는데
+    "2026-10-20 09:00 - 팀 회의, 2026-11-05 14:30 - 식사 약속"을 지어냈다(시스템 안내문의 일정 제목 예시를 베낌)."""
+    stripped = raw_results.strip()
+    if stripped.startswith(_CALENDAR_CONNECT_RESULTS):
+        return stripped
+    return None
 
 
 def _build_text_tool_reply(raw_results: str):
@@ -4167,6 +4376,8 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_todo_list_reply,
     _build_note_list_reply,
     _build_text_tool_reply,
+    _build_backup_reply,
+    _build_calendar_connect_reply,
     _build_iot_no_devices_reply,
     _build_iot_control_reply,
     _build_run_scene_reply,
@@ -4914,6 +5125,70 @@ _SOFT_TONE_RULE = (
 )
 
 
+# 함수 선택 규칙 — (이 규칙이 다루는 함수들, 규칙 문장). 이번 요청에 그 함수가 하나라도 실려 갈 때만 붙인다.
+# 함수가 None이면 도구를 보내는 요청에는 늘 붙인다. 문장은 2026-10-19 이전 시스템 프롬프트 그대로다.
+_FUNCTION_RULES = (
+    ({"search_product_price"},
+     "제품명(아이폰, 맥북, 갤럭시 등) + 가격/얼마/최저가 키워드 → search_product_price 호출"),
+    ({"search_events"},
+     "캘린더 일정(회의, 약속 등) 검색 → search_events 호출. search_events는 오직 캘린더에 등록된 일정을 찾을 때만 "
+     "사용하고, 제품명이 들어간 질문은 절대 search_events를 사용하지 마세요"),
+    (None,
+     "사용자가 '방법 알려줘', '어떻게 해', '어떻게 하는지' 등 절차/방법을 물어보면 "
+     "이건 지금 실행하거나 상태를 확인해달라는 게 아니라 설명해달라는 것입니다. "
+     "이럴 땐 관련 함수를 호출하지 말고 말로 자연스럽게 설명하세요. "
+     "예: '계정 연동 방법 알려줘' → get_login_status를 호출하지 말고, "
+     "어떻게 하면 되는지 설명하세요."),
+    ({"control_iot_device", "discover_iot_devices"},
+     "전등/조명/TV/보일러/에어컨 등 스마트 기기를 켜거나 끄라는 요청은 "
+     "반드시 control_iot_device를 호출하세요 (절대 답변만으로 '켰습니다'라고 "
+     "말하지 마세요 — 함수를 호출하지 않으면 실제로는 아무 일도 일어나지 않습니다). "
+     "기기 이름이 정확한지 모르겠으면 먼저 discover_iot_devices를 호출해서 "
+     "실제 등록된 기기 목록을 확인한 뒤 control_iot_device를 호출하세요. "
+     "'스마트 기기 찾아줘', '연결된 기기 뭐 있어' 같은 요청은 discover_iot_devices를 호출하세요."),
+    ({"block_suspicious_process"},
+     "사용자가 '위험한/의심스러운 프로세스가 있으면 종료해줘', '있으면 막아줘'처럼 "
+     "탐지 결과에 따라 대응까지 요청하면, detect_suspicious_processes 같은 탐지 함수만 "
+     "다시 부르지 말고 block_suspicious_process를 호출하세요. 종료할 프로세스 이름을 "
+     "아직 모르면 먼저 detect_suspicious_processes나 get_malware_report로 탐지부터 "
+     "하고, 그 결과에 실제로 있던 이름으로 block_suspicious_process를 호출하세요. "
+     "**절대로 detect_suspicious_processes/get_malware_report와 block_suspicious_process를 "
+     "같은 턴에 동시에 호출하지 마세요** — 탐지 함수의 실제 결과를 아직 못 본 상태에서는 "
+     "종료할 진짜 프로세스 이름을 알 수 없으니, 이번 턴엔 탐지 함수만 호출하고 그 결과가 "
+     "돌아온 다음 턴에서 결과에 적힌 이름을 보고 나서만 block_suspicious_process를 "
+     "호출하세요. process_name에는 결과 텍스트에 문자 그대로 적힌 이름만 넣어야지, "
+     "'탐지된 프로세스 이름'처럼 무엇을 넣어야 하는지 설명하는 말 자체를 값으로 넣으면 "
+     "안 됩니다."),
+    (None,
+     "사용자가 한 문장에서 '~랑 ~', '~하고 ~', '~와 ~'처럼 두 가지 이상을 "
+     "동시에 확인해달라고 하면(예: '포트랑 방화벽 상태 확인해줘' → 포트 확인 + "
+     "방화벽 확인 두 가지), 그중 하나만 호출하고 끝내지 말고 언급된 항목에 "
+     "해당하는 함수를 전부 호출하세요 — 한 번에 하나씩 나눠서 물어본 게 아니라 "
+     "이미 한 문장에서 다 물어봤으니, 이번 턴에 관련 함수를 모두 호출해야 합니다."),
+    ({"get_malware_report"},
+     "'악성코드 검사해줘'/'악성코드 점검해줘'처럼 종합적으로 봐달라는 요청은 "
+     "get_malware_report(점수 + 항목별 상태를 한번에 보여주는 종합 리포트)를 "
+     "호출하세요. 반대로 방금 나온 결과에서 '의심 프로세스'처럼 특정 항목 하나를 "
+     "콕 집어 '그게 정확히 뭔지', '자세히' 다시 물어보면, get_malware_report를 "
+     "또 부르지 말고 그 항목에 해당하는 개별 함수(의심 프로세스→"
+     "detect_suspicious_processes, 시작프로그램→scan_startup_items, 자동 시작 "
+     "서비스→scan_suspicious_services)를 호출하세요 — 이미 종합 리포트는 본 "
+     "상태이므로 다시 종합 리포트를 보여주면 사용자가 원하는 상세 정보가 아닙니다."),
+)
+
+
+def _function_rules_text(sent_funcs: set) -> str:
+    """이번 요청에 보내는 함수 목록과, 그 함수에 해당하는 선택 규칙만. 도구를 안 보내면 빈 문자열."""
+    if not sent_funcs:
+        return ""
+    rules = [text for funcs, text in _FUNCTION_RULES if funcs is None or funcs & sent_funcs]
+    return (f"사용 가능한 함수 목록: [{', '.join(sorted(sent_funcs))}]\n"
+            "위 목록에 있는 함수만 호출하세요. 목록에 없는 함수는 절대 만들거나 호출하지 마세요.\n"
+            "\n"
+            "*** 함수 선택 규칙 (반드시 따르세요) ***\n"
+            + "".join(f"{i}. {text}\n" for i, text in enumerate(rules, 1)))
+
+
 def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
     """자유형 LLM 요약 — _summarize_tool_results가 결정론적 처리로 못 거른
     나머지 결과에 대해서만 이 함수를 호출한다. 원래 이 로직 전체가
@@ -5145,6 +5420,25 @@ def _truncate_tool_result(text: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str
 # 도구 이름 → 사람이 읽기 좋은 한국어 상태 메시지
 TOOL_STATUS_NAMES = {
     "get_system_info":           "🖥️  시스템 정보 수집 중",
+    # 2026-10-19 기능 점검: 아래 기능들은 문구가 없어 "⚙️  export_my_data 실행 중"처럼 내부 이름이 그대로 보였다
+    "export_my_data":            "💾  데이터 백업 중",
+    "list_recent_activity":      "🧾  최근 활동 이력 확인 중",
+    "get_current_weather":       "🌤️  현재 날씨 확인 중",
+    "get_weather_forecast":      "🌦️  날씨 예보 확인 중",
+    "get_usage_trend":           "⏳  앱 사용 시간 변화 확인 중",
+    "discover_iot_devices":      "🏠  스마트 기기 찾는 중",
+    "control_iot_device":        "🏠  스마트 기기 조작 중",
+    "list_scenes":               "🏠  저장된 씬 확인 중",
+    "run_scene":                 "🏠  씬 실행 중",
+    "create_scene":              "🏠  씬 저장 중",
+    "delete_scene":              "🏠  씬 삭제 중",
+    "list_action_log":           "🧾  자동 실행 기록 확인 중",
+    "block_suspicious_process":  "🛑  의심 프로세스 종료 중",
+    "set_cpu_condition":         "🎯  CPU 조건 알림 등록 중",
+    "set_disk_condition":        "🎯  디스크 조건 알림 등록 중",
+    "set_quiet_hours":           "🔕  묵음 시간대 설정 중",
+    "cancel_quiet_hours":        "🔔  묵음 시간대 해제 중",
+    "get_quiet_hours_status":    "🔕  묵음 시간대 확인 중",
     "get_system_trend":          "📊  PC 상태 추이 조회 중",
     "add_todo":                  "✅  할 일 추가 중",
     "list_todos":                "✅  할 일 목록 조회 중",
@@ -6211,6 +6505,27 @@ class AIWorker(QThread):
                     and not (_TIMER_PATTERN.search(text) or _CONDITION_PATTERN.search(text)
                              or _DAILY_PATTERN.search(text) or _TREND_CONDITION_PATTERN.search(text))):
                 continue
+            # 2026-10-19 기능 점검(AMD PC): 위 규칙이 일정에만 있어서 "오늘 앱 사용 시간 알려줘"·"실시간 감시 상태
+            # 알려줘"에 알림 도구 20여 개가 섞였다(도구 25~27개, 약 9,000토큰 — 문맥 8,192를 넘어 잘렸고, Intel Arc
+            # 노트북에서는 엔진이 죽던 크기). 감시 질문은 조건부 알림 목록(list_conditions)을 골라 엉뚱하게 답했다.
+            # "연결된 기기 뭐 있어?" — "연결" 하나로 네트워크 보안 도구 19개가 IoT 도구와 함께 실렸다(2026-10-19,
+            # 약 4,900토큰). 기기(IoT)가 같이 걸렸고 네트워크 쪽은 "연결"로만 걸렸으면 네트워크 도구를 넣지 않는다.
+            if (cat_name == "network_security" and "iot" in matched_categories
+                    and all(kw == "연결" for kw in keywords if kw in text)):
+                continue
+            # "대용량 파일 찾아줘"의 "대용량" 속 "용량"으로만 걸린 PC 상태 도구 — 2026-10-19 기능 점검: 이것까지 더해
+            # 약 4,400토큰(예산 3,500 초과)이었다. "디스크 용량"처럼 다른 단어가 있거나 "용량"만 쓴 경우는 그대로.
+            if (cat_name == "system" and "대용량" in text
+                    and all(kw == "용량" for kw in keywords if kw in text)):
+                continue
+            # 일정 말고 다른 기능이 같이 걸렸고 알림 쪽은 "알려줘"로만 걸렸으며 알림 표현이 없으면 알림 도구를 넣지
+            # 않는다. 일정만 같이 걸린 경우("내일 아침 9시에 알려줘"는 알림 요청)는 위 일정 규칙에 맡긴다.
+            if (cat_name == "reminder" and any(c not in ("reminder", "calendar") for c in matched_categories)
+                    and all(kw == "알려줘" for kw in keywords if kw in text)
+                    and not (_TIMER_PATTERN.search(text) or _CONDITION_PATTERN.search(text)
+                             or _DAILY_PATTERN.search(text) or _TREND_CONDITION_PATTERN.search(text)
+                             or _QUIET_PATTERN.search(text) or _WEATHER_CONDITION_PATTERN.search(text))):
+                continue
             allowed.update(funcs)
 
         for cat_name in last_categories:
@@ -6266,6 +6581,13 @@ class AIWorker(QThread):
                 self._recent_context = _load_recent_context(
                     MOCK_USER.get("name"), exclude_session_id=self.current_session_id
                 )
+
+            # ── 빠른 감지 0: 대용량 파일 목록 뒤의 "1번 어디 있어?" — 목록에 경로를 안 보여주므로 기억해 둔 목록으로 답한다 ──
+            location_reply = _large_file_location_reply(
+                self.user_text, self.chat_history, {f.__name__: f for f in self.installed_tools})
+            if location_reply is not None:
+                self.response_ready.emit(f"🤖 로컬 비서: {location_reply}")
+                return
 
             # ── 빠른 감지 1: 제품 가격 검색 요청을 정규식으로 직접 감지 ──
             import re
@@ -6567,6 +6889,10 @@ class AIWorker(QThread):
             # 이 규칙이 가로채 지금 CPU 상위 프로그램만 보여줬다. 비교 표현이 있으면 LLM에 맡긴다.
             if has_slow and re.search(r"어제|그제|지난|예전|평소|보다|비교|요즘|며칠", text_lower):
                 has_slow = False
+            # "이번주 컴퓨터 상태 추이 보여줘"도 같다 — 2026-10-19: 홈 화면 'PC 상태 추이' 버튼의 질문이 이 규칙에 걸려
+            # 지금 상태만 나왔다. 기간·변화 표현이 있으면 LLM이 추이(get_system_trend)를 고르게 둔다.
+            if has_system_status and re.search(_SYSTEM_TREND_REQUEST, text_lower):
+                has_system_status = False
             # "CPU 많이 쓰는 프로그램 알려줘" — 실제 앱 테스트(2026-10-13)에서 LLM이 조건부 알림 목록
             # (list_conditions)을 불렀다. CPU + '많이/높은/먹는' 류 조회는 바로 상위 프로세스를 보여준다.
             # "CPU 80% 넘으면 알려줘" 같은 조건 설정(넘으면/이상/되면)은 제외해 LLM에 맡긴다.
@@ -6703,7 +7029,7 @@ class AIWorker(QThread):
                 func_map = {f.__name__: f for f in self.installed_tools}
                 self.status_update.emit("📋  하루 브리핑 준비 중")
 
-                summary = _build_daily_summary(func_map, calendar_preference.get_active_calendar)
+                summary = _build_daily_summary(func_map, _effective_calendar)
                 if not summary:
                     self.response_ready.emit(
                         "🤖 로컬 비서: 지금은 브리핑에 담을 내용이 없어요. "
@@ -6773,7 +7099,7 @@ class AIWorker(QThread):
                 func_map = {f.__name__: f for f in self.installed_tools}
                 self.status_update.emit("🔗  관련 일정·파일 찾는 중")
 
-                combined = _build_calendar_file_search(func_map, calendar_preference.get_active_calendar)
+                combined = _build_calendar_file_search(func_map, _effective_calendar)
                 if not combined:
                     self.response_ready.emit(
                         "🤖 로컬 비서: 지금은 관련 일정·파일을 찾지 못했어요. "
@@ -6836,7 +7162,7 @@ class AIWorker(QThread):
 
             # 설정에서 고른 캘린더 백엔드가 아닌 쪽의 CRUD 함수는 애초에
             # 노출하지 않는다 (구조적 필터 — 위 상수 설명 참고)
-            active_calendar = calendar_preference.get_active_calendar()
+            active_calendar = _effective_calendar()   # 연결 안 된 구글 대신 내부 캘린더(캘린더 화면과 같은 기준)
             hidden_calendar_funcs = (
                 _LOCAL_CALENDAR_CRUD_FUNCS if active_calendar in ("google", "apple") else _GOOGLE_CALENDAR_CRUD_FUNCS
             )
@@ -6882,22 +7208,36 @@ class AIWorker(QThread):
             elif is_explanation:
                 # 실행하지 말고, 설치된 기능 설명(TOOL_SCHEMAS의 description)에 근거해서만
                 # 자연어로 설명하게 한다 — 설명에 없는 내용을 지어내는 걸 막기 위함.
-                feature_docs = "\n".join(
-                    f"- {name}: {TOOL_SCHEMAS[name]['function']['description']}"
-                    for name in func_map
-                    if name in TOOL_SCHEMAS
-                    and name not in hidden_calendar_funcs
-                    and name not in hidden_realtime_funcs
-                    and (allowed_category_funcs is None or name in allowed_category_funcs)
-                )
+                if allowed_category_funcs is None:
+                    # "루미 기능 설명해줘"처럼 특정 기능을 가리키지 않으면 기능 요약만 — 2026-10-19: 설치된 기능 169개
+                    # 설명을 다 넣어 약 8,400토큰(문맥 8,192 초과로 앞부분이 잘림)이었다.
+                    from core.skill_agent import _BUILTIN_FEATURES
+                    feature_list = "\n".join(f"- {item.strip()}" for item in _BUILTIN_FEATURES.split(","))
+                    explain_intro = ("사용자가 이 앱(루미)이 전체적으로 어떤 기능을 하는지 물었습니다. 기능 하나만 고르지 말고, "
+                                     "아래 목록의 기능을 하나도 빠뜨리지 말고 각각 한 줄씩 짧게 소개하세요. "
+                                     "지금 기능을 실행하거나 상태를 확인하지 마세요 — 오직 소개만 하세요.\n"
+                                     "아래 목록에 없는 기능은 지어내지 마세요.\n\n")
+                    feature_docs = (f"{feature_list}\n\n"
+                                    "마지막에, 특정 기능의 자세한 사용법은 '타이머 사용법 알려줘'처럼 기능 이름을 넣어 "
+                                    "물어보면 된다고 안내하세요.")
+                else:
+                    explain_intro = ("사용자가 지금 어떤 기능의 '사용 방법'을 설명해달라고 했습니다. "
+                                     "지금 그 기능을 실행하거나 상태를 확인하지 마세요 — 오직 설명만 하세요.\n"
+                                     "아래는 이 앱에 설치된 기능들에 대한 정확한 설명입니다. 이 내용에 근거해서 "
+                                     "사용자가 이해하기 쉬운 자연스러운 한국어로 어떻게 하면 되는지 설명하세요.\n"
+                                     "아래 설명에 없는 내용은 절대 지어내지 마세요.\n\n")
+                    feature_docs = "\n".join(
+                        f"- {name}: {TOOL_SCHEMAS[name]['function']['description']}"
+                        for name in func_map
+                        if name in TOOL_SCHEMAS
+                        and name not in hidden_calendar_funcs
+                        and name not in hidden_realtime_funcs
+                        and name in allowed_category_funcs
+                    )
                 system_content = (
                     "당신은 사용자의 PC를 돕는 유능한 AI 비서입니다.\n"
                     f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}. 모레: {_day_after_tomorrow}\n"
-                    "사용자가 지금 어떤 기능의 '사용 방법'을 설명해달라고 했습니다. "
-                    "지금 그 기능을 실행하거나 상태를 확인하지 마세요 — 오직 설명만 하세요.\n"
-                    "아래는 이 앱에 설치된 기능들에 대한 정확한 설명입니다. 이 내용에 근거해서 "
-                    "사용자가 이해하기 쉬운 자연스러운 한국어로 어떻게 하면 되는지 설명하세요.\n"
-                    "아래 설명에 없는 내용은 절대 지어내지 마세요.\n\n"
+                    + explain_intro +
                     f"{feature_docs}\n\n"
                     "*** 답변 규칙 ***\n"
                     + _SOFT_TONE_RULE +
@@ -6905,59 +7245,20 @@ class AIWorker(QThread):
                     "- 답변 시작/끝에 따옴표(\") 절대 금지."
                 )
             else:
-                available_funcs = ", ".join(func_map.keys())
+                # 함수 목록과 선택 규칙은 이번 요청에 실제로 보내는 도구에 맞춰 넣는다 — 2026-10-19: 설치된 함수
+                # 169개 이름을 매번 다 적어(약 1,300토큰) "안녕"도 2,381토큰이었고, 가격·IoT·악성코드 규칙도 그 도구가
+                # 없는 요청에까지 붙었다. 보내지 않은 함수는 모델이 어차피 호출할 수 없다.
+                sent_funcs = {t["function"]["name"] for t in ollama_tools} if use_tools else set()
                 system_content = (
                     "당신은 사용자의 PC를 돕는 유능한 AI 비서입니다.\n"
                     f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}. 모레: {_day_after_tomorrow}\n"
-                    f"사용 가능한 함수 목록: [{available_funcs}]\n"
-                    "위 목록에 있는 함수만 호출하세요. 목록에 없는 함수는 절대 만들거나 호출하지 마세요.\n"
-                    "\n"
-                    "*** 함수 선택 규칙 (반드시 따르세요) ***\n"
-                    "1. 제품명(아이폰, 맥북, 갤럭시 등) + 가격/얼마/최저가 키워드 → search_product_price 호출\n"
-                    "2. 캘린더 일정(회의, 약속 등) 검색 → search_events 호출\n"
-                    "3. search_events는 오직 캘린더에 등록된 일정을 찾을 때만 사용\n"
-                    "4. 제품명이 들어간 질문은 절대 search_events를 사용하지 마세요\n"
-                    "5. 사용자가 '방법 알려줘', '어떻게 해', '어떻게 하는지' 등 절차/방법을 물어보면 "
-                    "이건 지금 실행하거나 상태를 확인해달라는 게 아니라 설명해달라는 것입니다. "
-                    "이럴 땐 관련 함수를 호출하지 말고 말로 자연스럽게 설명하세요. "
-                    "예: '계정 연동 방법 알려줘' → get_login_status를 호출하지 말고, "
-                    "어떻게 하면 되는지 설명하세요.\n"
-                    "6. 전등/조명/TV/보일러/에어컨 등 스마트 기기를 켜거나 끄라는 요청은 "
-                    "반드시 control_iot_device를 호출하세요 (절대 답변만으로 '켰습니다'라고 "
-                    "말하지 마세요 — 함수를 호출하지 않으면 실제로는 아무 일도 일어나지 않습니다). "
-                    "기기 이름이 정확한지 모르겠으면 먼저 discover_iot_devices를 호출해서 "
-                    "실제 등록된 기기 목록을 확인한 뒤 control_iot_device를 호출하세요. "
-                    "'스마트 기기 찾아줘', '연결된 기기 뭐 있어' 같은 요청은 discover_iot_devices를 호출하세요.\n"
-                    "7. 사용자가 '위험한/의심스러운 프로세스가 있으면 종료해줘', '있으면 막아줘'처럼 "
-                    "탐지 결과에 따라 대응까지 요청하면, detect_suspicious_processes 같은 탐지 함수만 "
-                    "다시 부르지 말고 block_suspicious_process를 호출하세요. 종료할 프로세스 이름을 "
-                    "아직 모르면 먼저 detect_suspicious_processes나 get_malware_report로 탐지부터 "
-                    "하고, 그 결과에 실제로 있던 이름으로 block_suspicious_process를 호출하세요. "
-                    "**절대로 detect_suspicious_processes/get_malware_report와 block_suspicious_process를 "
-                    "같은 턴에 동시에 호출하지 마세요** — 탐지 함수의 실제 결과를 아직 못 본 상태에서는 "
-                    "종료할 진짜 프로세스 이름을 알 수 없으니, 이번 턴엔 탐지 함수만 호출하고 그 결과가 "
-                    "돌아온 다음 턴에서 결과에 적힌 이름을 보고 나서만 block_suspicious_process를 "
-                    "호출하세요. process_name에는 결과 텍스트에 문자 그대로 적힌 이름만 넣어야지, "
-                    "'탐지된 프로세스 이름'처럼 무엇을 넣어야 하는지 설명하는 말 자체를 값으로 넣으면 "
-                    "안 됩니다.\n"
-                    "8. 사용자가 한 문장에서 '~랑 ~', '~하고 ~', '~와 ~'처럼 두 가지 이상을 "
-                    "동시에 확인해달라고 하면(예: '포트랑 방화벽 상태 확인해줘' → 포트 확인 + "
-                    "방화벽 확인 두 가지), 그중 하나만 호출하고 끝내지 말고 언급된 항목에 "
-                    "해당하는 함수를 전부 호출하세요 — 한 번에 하나씩 나눠서 물어본 게 아니라 "
-                    "이미 한 문장에서 다 물어봤으니, 이번 턴에 관련 함수를 모두 호출해야 합니다.\n"
-                    "9. '악성코드 검사해줘'/'악성코드 점검해줘'처럼 종합적으로 봐달라는 요청은 "
-                    "get_malware_report(점수 + 항목별 상태를 한번에 보여주는 종합 리포트)를 "
-                    "호출하세요. 반대로 방금 나온 결과에서 '의심 프로세스'처럼 특정 항목 하나를 "
-                    "콕 집어 '그게 정확히 뭔지', '자세히' 다시 물어보면, get_malware_report를 "
-                    "또 부르지 말고 그 항목에 해당하는 개별 함수(의심 프로세스→"
-                    "detect_suspicious_processes, 시작프로그램→scan_startup_items, 자동 시작 "
-                    "서비스→scan_suspicious_services)를 호출하세요 — 이미 종합 리포트는 본 "
-                    "상태이므로 다시 종합 리포트를 보여주면 사용자가 원하는 상세 정보가 아닙니다.\n"
+                    + _function_rules_text(sent_funcs) +
                     "\n"
                     f"날짜 계산 규칙: 오늘={_today}, 내일={_tomorrow}, 모레={_day_after_tomorrow}. "
                     f"사용자가 '내일'이라고 하면 반드시 {_tomorrow}를, '모레'라고 하면 반드시 {_day_after_tomorrow}를 사용하세요. "
                     "직접 날짜를 계산하지 말고 이 값을 그대로 쓰세요.\n"
-                    "create_event의 title 파라미터는 일정의 핵심 이름만 넣으세요 (예: '식사 약속', '팀 회의', '운동'). 사용자의 전체 문장을 넣지 마세요.\n"
+                    + ("create_event의 title 파라미터는 일정의 핵심 이름만 넣으세요 (예: '식사 약속', '팀 회의', '운동'). "
+                       "사용자의 전체 문장을 넣지 마세요.\n" if sent_funcs & {"create_event", "local_create_event"} else "") +
                     "\n"
                     "*** 답변 규칙 ***\n"
                     + _SOFT_TONE_RULE +

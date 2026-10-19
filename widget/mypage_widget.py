@@ -78,6 +78,7 @@ class MemoryDialog(QDialog):
         from core.preference_memory import list_all
         data = list_all()
         self.empty_lbl.setVisible(not data)
+        self.btn_clear_all.setEnabled(bool(data))   # 지울 기억이 없으면 누를 수 없게(2026-10-19 기능 점검)
 
         for namespace, entries in data.items():
             header = QLabel(icons.label_html(*_NAMESPACE_LABELS[namespace], 16)
@@ -461,7 +462,8 @@ class MyPageWidget(QWidget):
         if rows is None:   # 서버에 닿지 못하면 이 PC에 남은 기록으로
             rows = get_login_history((self._username or ""), limit=15)
             source = "이 PC에 저장된 기록 (서버에 연결하지 못했어요)"
-        lines = [f"{r.get('time', '')}   {r.get('method', '')}" + (f"   ({r['device']})" if r.get("device") else "")
+        # 칸을 공백으로 맞추면 글자 폭이 다른 글꼴에서 '비밀번호' 줄만 어긋났다(2026-10-19) — 가운뎃점으로 구분
+        lines = [" · ".join(x for x in (r.get("time", ""), r.get("method", ""), r.get("device", "")) if x)
                  for r in rows]
         text = f"{source}\n\n" + ("\n".join(lines) or "아직 로그인 기록이 없어요.")
         lumi_dialog.information(self, "최근 로그인 기록", text)
@@ -489,7 +491,8 @@ class MyPageWidget(QWidget):
             path += BACKUP_EXT
         try:
             info = create_backup(user, path)
-            lumi_dialog.information(self, "백업", f"대화 {info['chats']}개와 설정을 암호화해 저장했어요.\n"
+            lumi_dialog.information(self, "백업", f"대화 {info['chats']}개, 할 일 {info['todos']}개, 메모 {info['notes']}개, "
+                                    f"지출 기록 {info['expenses']}건과 설정을 암호화해 저장했어요.\n"
                                     "파일을 열어도 내용이 보이지 않아요. 같은 계정으로 로그인한 루미라면 다른 PC에서도 복원할 수 있어요.")
         except Exception as e:
             lumi_dialog.warning(self, "백업", f"백업하지 못했어요.\n{e}")
@@ -505,12 +508,13 @@ class MyPageWidget(QWidget):
             password, ok = lumi_dialog.getText(self, "백업 비밀번호", "백업할 때 정한 비밀번호를 입력하세요.",
                                                 QLineEdit.EchoMode.Password)
             if not ok: return
-        r = lumi_dialog.question(self, "복원", "같은 이름의 대화와 설정은 백업 내용으로 덮어써져요. 계속할까요?")
+        r = lumi_dialog.question(self, "복원", "같은 이름의 대화와 설정은 백업 내용으로 덮어써져요.\n"
+                                 "할 일·메모·가계부는 백업했을 때 상태로 바뀌어요(그 뒤에 추가한 것은 사라져요). 계속할까요?")
         if r != QMessageBox.StandardButton.Yes: return
         try:
             info = restore_backup((self._username or ""), path, password)
-            lumi_dialog.information(self, "복원", f"대화 {info['chats']}개를 복원했어요.\n"
-                                    "설정은 다음 로그인부터 적용돼요.")
+            lumi_dialog.information(self, "복원", f"대화 {info['chats']}개, 할 일 {info['todos']}개, 메모 {info['notes']}개, "
+                                    f"지출 기록 {info['expenses']}건을 복원했어요.\n설정은 다음 로그인부터 적용돼요.")
         except Exception as e:
             lumi_dialog.warning(self, "복원", f"복원하지 못했어요.\n{e}")
 

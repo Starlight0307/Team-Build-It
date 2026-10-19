@@ -1790,13 +1790,19 @@ def get_listening_ports() -> str:
     elif critical or warning:
         lines.append("💡 '열려 있다'는 건 프로그램이 접속을 기다린다는 뜻이에요. 실제로 밖에서 닿는지는 Windows 방화벽 "
                      "규칙에 달려 있어요. '위험한 포트 막아줘'라고 하면 Windows 방화벽 차단 규칙으로 확실히 막을 수 있어요.")
-    unclassified = f", 목록에 없는 포트 {len(other_lines)}개" if other_lines else ""
-    unclassified += f", 방화벽 설정상 막힌 위험 포트 {len(blocked_lines)}개" if blocked_lines else ""
+    # 사용자용 한 줄(시작 보안 점검 말풍선·종합 리포트에 그대로 나간다) — 2026-10-19 사용자 피드백: "열린 TCP 포트 11개 —
+    # 목록에 없는 포트 2개, 방화벽 설정상 막힌 위험 포트 3개"는 무슨 뜻인지 알기 어려웠다
     if critical or warning:
-        summary = (f"네트워크에 열린 TCP 포트 {len(exposed)}개 — 위험 {critical}개, 주의 {warning}개{unclassified} "
-                   f"({', '.join(summary_items[:4])}{' …' if len(summary_items) > 4 else ''})")
+        found = [f"위험한 것 {critical}개" if critical else "", f"확인해 볼 것 {warning}개" if warning else ""]
+        summary = (f"바깥에서 접속할 수 있게 열린 통로(TCP 포트) 중 {', '.join(x for x in found if x)}가 있어요"
+                   f"({', '.join(summary_items[:4])}{' …' if len(summary_items) > 4 else ''}). "
+                   "'위험한 포트 막아줘'라고 하면 막아 드려요.")
     else:
-        summary = f"네트워크에 열린 TCP 포트 {len(exposed)}개 — 루미가 아는 위험 포트 없음{unclassified}"
+        summary = f"바깥에서 접속할 수 있게 열린 통로(TCP 포트) {len(exposed)}개를 확인했는데, 위험한 것은 없어요."
+    if blocked_lines:
+        summary += f" 위험할 수 있는 {len(blocked_lines)}개는 방화벽이 이미 막고 있어요."
+    if other_lines:
+        summary += f" 루미가 모르는 프로그램이 연 통로 {len(other_lines)}개는 '열린 포트 보여줘'로 볼 수 있어요."
     return CheckResult("\n".join(lines), critical=critical, warning=warning, summary=summary)
 
 
@@ -1872,14 +1878,14 @@ def check_firewall_status() -> str:
     if critical or warning:
         lines.append("💡 '방화벽 켜줘'라고 하면 Windows 방화벽을 모든 네트워크에서 켜고 들어오는 연결을 기본으로 막아요.")
     if off:
-        summary = f"{', '.join(off)} 네트워크에서 꺼져 있음"
+        summary = f"방화벽이 {', '.join(off)} 네트워크에서 꺼져 있어요. '방화벽 켜줘'라고 하면 켜 드려요."
     elif critical or warning:
-        summary = "켜져 있지만 들어오는 연결을 기본 허용하는 프로필이 있음"
+        summary = "방화벽은 켜져 있지만, 바깥에서 들어오는 접속을 기본으로 허용하는 설정이 있어요."
     elif unknown:
-        summary = "일부 상태를 확인하지 못함"
+        summary = "방화벽 상태 일부를 확인하지 못했어요."
     else:
         cur = ", ".join(_CATEGORY_LABEL.get(c, c) for c in sorted(current)) or "알 수 없음"
-        summary = f"모든 네트워크에서 켜짐 (지금 네트워크: {cur})"
+        summary = f"바깥 접속을 막아 주는 방화벽이 모든 네트워크에서 켜져 있어요(지금 쓰는 네트워크: {cur})."
     return CheckResult(f"{title}\n" + "\n".join(lines), critical=critical, warning=warning, unknown=unknown,
                        summary=summary)
 
@@ -2490,6 +2496,38 @@ def check_wifi_security() -> str:
     return CheckResult(f"{title}\n" + "\n".join(lines), critical=critical, warning=warning, unknown=unknown)
 
 
+# 종합 리포트 항목별 사용자용 한 줄 — 무엇을 봤는지(아래 설명) + 결과. 2026-10-19 사용자 피드백: 리포트 답변이
+# "열린 포트는 정상"처럼 이름만 말해 무엇을 점검했는지 알 수 없었다(plugins/system_security.py와 같은 형식).
+_ITEM_PURPOSE = {
+    "열린 포트": "바깥에서 이 PC로 들어올 수 있는 통로(포트)가 위험하게 열려 있는지",
+    "포트 스캔": "이 PC에 열려 있는 통로(포트)가 있는지",
+    "방화벽 상태": "외부 접속을 막아 주는 방화벽이 켜져 있는지",
+    "방화벽 규칙": "방화벽에 위험한 예외 규칙이 들어가 있는지",
+    "DNS 설정": "인터넷 주소를 찾는 설정(DNS)이 바뀌어 가짜 사이트로 연결될 위험이 있는지",
+    "네트워크 연결": "지금 이 PC가 수상한 곳과 통신하고 있는지",
+    "웹 접속 경로": "웹사이트 접속이 엉뚱한 곳으로 돌아가도록 바뀌었는지(hosts 파일·프록시)",
+    "Wi-Fi 보안": "연결된 Wi-Fi가 암호로 안전하게 보호되는지",
+}
+_VERDICT = {"✅": "이상 없어요.", "⚠️": "확인해 볼 부분이 있어요.", "🚨": "위험 신호가 있어요.", UNKNOWN_MARK: "확인하지 못했어요."}
+
+
+def _item_summary(name: str, mark: str, result) -> str:
+    purpose = _ITEM_PURPOSE.get(name)
+    if not purpose:
+        return ""
+    summary = f"{purpose} 봤는데, {_VERDICT.get(mark, '')}"
+    if mark != "✅" and isinstance(result, str):
+        # 문제·미확인일 때는 점검 결과에 적힌 이유 한 줄을 덧붙인다(같은 기호로 시작하는 첫 줄)
+        for line in result.splitlines():
+            line = line.strip()
+            if line.startswith(mark):
+                reason = line[len(mark):].strip(" :—-")
+                if reason:
+                    summary += " " + reason
+                break
+    return summary
+
+
 def _score_report(title: str, checks, kind: str = None) -> str:
     """checks: [(항목명, 실행함수), ...] — 각 점검이 돌려준 CheckResult의 판정 개수로 점수화한다.
     결과 글 속 기호는 읽지 않는다(3단계, malware_detection._score_report와 같은 규칙). CheckResult가
@@ -2521,7 +2559,8 @@ def _score_report(title: str, checks, kind: str = None) -> str:
             unknown += 1
         else:
             mark = "✅"
-        sections.append(f"{mark} {name}")
+        summary = getattr(result, "summary", "") or _item_summary(name, mark, result)
+        sections.append(f"{mark} {name} — {summary}" if summary else f"{mark} {name}")
         marks[name] = mark
 
     score = max(0, min(100, score))

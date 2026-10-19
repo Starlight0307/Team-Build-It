@@ -173,7 +173,8 @@ def test_export_write_failure_leaves_no_partial_or_tmp_file(isolated_data_backup
 def test_export_response_warns_about_cloud_sync_and_no_restore(isolated_data_backup):
     result = data_backup.export_my_data()
     assert "클라우드" in result or "OneDrive" in result
-    assert "불러오는 기능은 아직 없" in result
+    assert "다시 불러올 수는 없어요" in result
+    assert "[백업에서 복원]" in result   # 복원되는 백업은 마이페이지 쪽이라고 안내(2026-10-19)
 
 
 def test_export_file_is_valid_json_readable_by_a_fresh_process(isolated_data_backup):

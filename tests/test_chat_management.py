@@ -12,6 +12,8 @@ def chat_env(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "LOGIN_HISTORY_DIR", str(tmp_path / "hist"))
     monkeypatch.setattr(chat_crypto, "KEY_FILE", str(tmp_path / "key"))
     monkeypatch.setattr(chat_crypto, "_fernet", None)
+    from data import backup as _backup
+    monkeypatch.setattr(_backup, "_personal_records", lambda: ())   # 할 일·메모·가계부 실제 폴더를 건드리지 않게
     return tmp_path
 
 
@@ -51,7 +53,7 @@ def test_backup_restore_roundtrip(chat_env, monkeypatch):
     (chat_env / "s.json").write_text('{"dark_mode": true}', encoding="utf-8")
     db.save_chat_to_file("alice", "user", "백업할 내용", session_id="s1", session_title="t")
     zp = str(chat_env / "b.lumibak")
-    assert backup.create_backup("alice", zp, "pw1234") == {"chats": 1}
+    assert backup.create_backup("alice", zp, "pw1234") == {"chats": 1, "todos": 0, "notes": 0, "expenses": 0}
     raw = open(zp, encoding="utf-8").read()
     assert raw.startswith("LUMIX1:") and "백업" not in raw      # 파일을 열어도 내용이 안 보인다
     assert backup.is_encrypted_backup(zp)
@@ -61,7 +63,7 @@ def test_backup_restore_roundtrip(chat_env, monkeypatch):
         backup.restore_backup("alice", zp)                      # 비밀번호 없이는 복원 불가
     with pytest.raises(ValueError):
         backup.restore_backup("alice", zp, "wrong")
-    assert backup.restore_backup("alice", zp, "pw1234") == {"chats": 1}
+    assert backup.restore_backup("alice", zp, "pw1234") == {"chats": 1, "todos": 0, "notes": 0, "expenses": 0}
     assert db.load_messages("alice", "s1")[0][1] == "백업할 내용"
     assert "dark_mode" in (chat_env / "s.json").read_text(encoding="utf-8")
 
@@ -92,12 +94,12 @@ def test_backup_needs_no_password_but_is_encrypted(chat_env, monkeypatch):
     monkeypatch.setattr(backup, "_memory_path", lambda u: str(chat_env / "m.json"))
     db.save_chat_to_file("alice", "user", "비밀 백업 내용", session_id="s1", session_title="t")
     bk = str(chat_env / "b.lumibak")
-    assert backup.create_backup("alice", bk) == {"chats": 1}            # 비밀번호 없이 만든다
+    assert backup.create_backup("alice", bk) == {"chats": 1, "todos": 0, "notes": 0, "expenses": 0}            # 비밀번호 없이 만든다
     raw = open(bk, encoding="utf-8").read()
     assert raw.startswith("LUMIK1:") and "비밀" not in raw               # 그래도 파일을 열면 안 보인다
     assert not backup.is_encrypted_backup(bk)                           # 복원할 때 비밀번호를 묻지 않는다
     db.delete_session("alice", "s1")
-    assert backup.restore_backup("alice", bk) == {"chats": 1}
+    assert backup.restore_backup("alice", bk) == {"chats": 1, "todos": 0, "notes": 0, "expenses": 0}
     assert db.load_messages("alice", "s1")[0][1] == "비밀 백업 내용"
 
 
@@ -111,7 +113,7 @@ def test_legacy_plain_zip_backup_still_restorable(chat_env, monkeypatch):
         z.writestr("chats/s9.json", json.dumps({"session_id": "s9", "session_title": "옛날", "messages": [
             {"role": "user", "content": "예전 백업", "timestamp": "2026-01-01 00:00:00"}]}))
     assert not backup.is_encrypted_backup(zp)
-    assert backup.restore_backup("alice", zp) == {"chats": 1}
+    assert backup.restore_backup("alice", zp) == {"chats": 1, "todos": 0, "notes": 0, "expenses": 0}
     assert db.load_messages("alice", "s9")[0][1] == "예전 백업"
 
 

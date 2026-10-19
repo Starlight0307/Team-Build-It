@@ -159,7 +159,8 @@ def check_update_status() -> str:
         )
         raw = proc.stdout.strip()
         if not raw:
-            return CheckResult("[🔄 Windows 업데이트 상태]\n설치된 업데이트 정보를 찾을 수 없습니다.", unknown=1)
+            return CheckResult("[🔄 Windows 업데이트 상태]\n설치된 업데이트 정보를 찾을 수 없습니다.", unknown=1,
+                               summary="설치된 업데이트 기록을 찾지 못해 확인하지 못했어요.")
 
         last_date  = datetime.strptime(raw, "%Y-%m-%d")
         days_since = (datetime.now() - last_date).days
@@ -169,18 +170,24 @@ def check_update_status() -> str:
         if days_since > 30:
             return CheckResult(header + (f"🚨 {days_since}일 동안 업데이트가 없었습니다. "
                               "최신 보안 패치가 누락됐을 가능성이 높습니다. "
-                              "설정 > Windows Update에서 즉시 확인하세요."), critical=1)
+                              "설정 > Windows Update에서 즉시 확인하세요."), critical=1,
+                              summary=(f"마지막 업데이트가 {days_since}일 전({raw})이에요. 그사이 나온 보안 패치가 "
+                                       "빠져 있을 가능성이 높아요. 설정 > Windows 업데이트에서 '업데이트 확인'을 눌러 주세요."))
         elif days_since > 14:
-            return CheckResult(header + "⚠️ 2주 이상 업데이트가 없었습니다. 업데이트 확인을 권장합니다.", warning=1)
+            return CheckResult(header + "⚠️ 2주 이상 업데이트가 없었습니다. 업데이트 확인을 권장합니다.", warning=1,
+                               summary=(f"마지막 업데이트가 {days_since}일 전이에요. 2주가 넘었으니 설정 > Windows "
+                                        "업데이트에서 한 번 확인해 주세요."))
         else:
             return CheckResult(header + "✅ 최근에 업데이트가 적용되었습니다.\n"
                                "ℹ️ 마지막 설치일 기준이에요 — 지금 받을 업데이트가 남아 있는지는 확인하지 않았어요"
-                               "(설정 > Windows Update에서 확인할 수 있어요).")
+                               "(설정 > Windows Update에서 확인할 수 있어요).",
+                               summary=f"최근({days_since}일 전)에 업데이트가 설치됐어요.")
 
     except subprocess.TimeoutExpired:
         return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
     except ValueError:
-        return CheckResult("[🔄 Windows 업데이트 상태]\n업데이트 날짜 정보를 확인하지 못했습니다.", unknown=1)
+        return CheckResult("[🔄 Windows 업데이트 상태]\n업데이트 날짜 정보를 확인하지 못했습니다.", unknown=1,
+                           summary="업데이트 날짜를 읽지 못해 확인하지 못했어요.")
     except Exception as e:
         print(f"[시스템 보안] 업데이트 확인 오류: {e}")
         return CheckResult("⚠️ 업데이트 상태를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
@@ -189,6 +196,9 @@ def check_update_status() -> str:
 # ─────────────────────────────────────────────
 # 📁 공유 폴더 점검
 # ─────────────────────────────────────────────
+
+_NO_SHARE_SUMMARY = "다른 사람이 네트워크로 들어와 볼 수 있게 열어 둔 폴더가 없어요."
+
 
 def scan_shared_folders() -> str:
     print("\n[시스템 보안] 공유 폴더 점검 중...")
@@ -204,7 +214,7 @@ def scan_shared_folders() -> str:
         )
         raw = proc.stdout.strip()
         if not raw:
-            return CheckResult("[📁 공유 폴더 점검]\n공유 폴더가 없습니다.")
+            return CheckResult("[📁 공유 폴더 점검]\n공유 폴더가 없습니다.", summary=_NO_SHARE_SUMMARY)
 
         reader = csv.DictReader(io.StringIO(raw))
         shares = [(row.get("Name", ""), row.get("Path", "")) for row in reader]
@@ -212,7 +222,8 @@ def scan_shared_folders() -> str:
         user_shares = [(n, p) for n, p in shares if not n.endswith("$")]
 
         if not user_shares:
-            return CheckResult("[📁 공유 폴더 점검]\n사용자가 만든 공유 폴더가 없습니다. (시스템 기본 공유만 존재)")
+            return CheckResult("[📁 공유 폴더 점검]\n사용자가 만든 공유 폴더가 없습니다. (시스템 기본 공유만 존재)",
+                               summary=_NO_SHARE_SUMMARY)
 
         lines  = []
         risky  = []
@@ -235,7 +246,10 @@ def scan_shared_folders() -> str:
             result += (f"\n\n🚨 경고: {', '.join(risky)} 폴더는 비밀번호 없이 누구나 접근할 수 있습니다. "
                         "공용 와이파이나 회사 네트워크에서 파일이 노출될 수 있으니 공유 권한을 제한하세요.")
         # 누구나 접근 가능한 공유 폴더 하나당 위험 1개(마지막 경고 문단은 같은 내용의 요약이라 세지 않음)
-        return CheckResult(result, critical=len(risky))
+        summary = (f"비밀번호 없이 누구나 열 수 있는 공유 폴더가 있어요({', '.join(risky)}). 공용 와이파이 등에서 파일이 "
+                   "보일 수 있으니 공유 권한을 줄이는 게 좋아요." if risky
+                   else f"공유 폴더 {len(user_shares)}개가 있지만, 아무나 열 수 있게 열려 있지는 않아요.")
+        return CheckResult(result, critical=len(risky), summary=summary)
 
     except subprocess.TimeoutExpired:
         return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
@@ -315,8 +329,11 @@ class CheckResult(str):
     (플러그인끼리 import하지 않는 관례라 각자 둔다). 종합 점수는 이 개수만 쓰고 결과 글은 읽지 않는다.
     critical=위험(🚨), warning=주의(⚠️), unknown=확인하지 못한 부분(❔ — 점수에 넣지 않음)."""
 
-    def __new__(cls, text: str, critical: int = 0, warning: int = 0, unknown: int = 0):
+    def __new__(cls, text: str, critical: int = 0, warning: int = 0, unknown: int = 0, summary: str = ""):
         obj = super().__new__(cls, text)
+        # summary — 종합 리포트에 항목 옆에 붙는 사용자용 한 줄(무엇을 봤고 어땠는지). 2026-10-19 기능 점검:
+        # 종합 리포트가 이름과 기호만 남겨 "공유 폴더는 정상", "보안 설정은 확인 못 함"처럼 뜻을 알기 어려웠다.
+        obj.summary = summary
         # 개수는 0 이상의 정수만 받는다 — 음수가 들어가면 점수가 오히려 올라가고, bool/실수/문자열은 코드
         # 실수다. 잘못된 값은 조용히 고치지 않고 바로 오류를 내서(점검 함수 단위로 ❔ 처리됨) 드러낸다
         # (ChatGPT 검수 3단계 1차). unknown은 '확인하지 못한 항목 수'다.
@@ -385,16 +402,21 @@ def get_login_failures(hours: int = 24) -> str:
         if _NO_ACCESS in raw:
             return CheckResult(f"[🔑 로그인 실패 이력] (최근 {hours}시간)\n"
                     f"{UNKNOWN_MARK} 관리자 권한이 없어 Windows 보안 기록을 읽지 못했어요 — 확인하지 못한 상태예요. "
-                    "확인하려면 루미를 관리자 권한으로 실행해주세요.", unknown=1)
+                    "확인하려면 루미를 관리자 권한으로 실행해주세요.", unknown=1,
+                    summary=("누가 비밀번호를 틀리며 로그인을 시도했는지 보려면 관리자 권한이 필요해서 확인하지 "
+                             "못했어요. 루미를 관리자 권한으로 실행하면 볼 수 있어요."))
         if _QUERY_FAILED in raw:
             return CheckResult(f"[🔑 로그인 실패 이력] (최근 {hours}시간)\n"
-                    f"{UNKNOWN_MARK} Windows 보안 기록을 읽는 중 문제가 생겨 확인하지 못했어요. 잠시 후 다시 시도해주세요.", unknown=1)
+                    f"{UNKNOWN_MARK} Windows 보안 기록을 읽는 중 문제가 생겨 확인하지 못했어요. 잠시 후 다시 시도해주세요.", unknown=1,
+                    summary="Windows 보안 기록을 읽는 중 문제가 생겨 확인하지 못했어요.")
         if not raw or raw.count('\n') == 0:
-            return CheckResult(f"[🔑 로그인 실패 이력] (최근 {hours}시간)\n✅ 로그인 실패 기록이 없습니다.")
+            return CheckResult(f"[🔑 로그인 실패 이력] (최근 {hours}시간)\n✅ 로그인 실패 기록이 없습니다.",
+                               summary=f"최근 {hours}시간 동안 이 PC에 로그인하다 실패한 기록이 없어요.")
 
         reader = list(csv.DictReader(io.StringIO(raw)))
         if not reader:
-            return CheckResult(f"[🔑 로그인 실패 이력] (최근 {hours}시간)\n✅ 로그인 실패 기록이 없습니다.")
+            return CheckResult(f"[🔑 로그인 실패 이력] (최근 {hours}시간)\n✅ 로그인 실패 기록이 없습니다.",
+                               summary=f"최근 {hours}시간 동안 이 PC에 로그인하다 실패한 기록이 없어요.")
 
         ip_counter = Counter(row.get("SourceIP", "알 수 없음") for row in reader)
         lines = [f"  - {ip}: {cnt}회" for ip, cnt in ip_counter.most_common(10)]
@@ -406,7 +428,10 @@ def get_login_failures(hours: int = 24) -> str:
         if max_cnt >= 5:
             result += (f"\n\n🚨 경고: {max_ip}에서 {max_cnt}회나 로그인에 실패했습니다 — "
                         "누군가 비밀번호를 계속 시도하며 침입을 시도했을 가능성이 있습니다.")
-        return CheckResult(result, critical=1 if max_cnt >= 5 else 0)
+        summary = f"최근 {hours}시간 동안 로그인 실패가 {len(reader)}번 있었어요."
+        if max_cnt >= 5:
+            summary += f" 한 곳에서 {max_cnt}번이나 실패해서, 누군가 비밀번호를 맞혀 보려 했을 수 있어요."
+        return CheckResult(result, critical=1 if max_cnt >= 5 else 0, summary=summary)
 
     except subprocess.TimeoutExpired:
         return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
@@ -450,7 +475,9 @@ def _score_report(title: str, checks, kind: str = None) -> str:
             unknown += 1
         else:
             mark = "✅"
-        sections.append(f"{mark} {name}")
+        # 사용자용 한 줄(무엇을 봤고 어땠는지) — 답변이 "공유 폴더는 정상"처럼 이름만 말하지 않게(2026-10-19)
+        summary = getattr(result, "summary", "") if counts is not None else ""
+        sections.append(f"{mark} {name} — {summary}" if summary else f"{mark} {name}")
         marks[name] = mark
 
     score = max(0, min(100, score))
@@ -661,11 +688,14 @@ def check_security_settings() -> str:
         return CheckResult(f"{title}\n{UNKNOWN_MARK} 이 점검은 Windows 전용이에요.", unknown=1)
     counts = {"critical": 0, "warning": 0, "unknown": 0}
     lines = []
+    not_ok = []   # 사용자용 요약에 그대로 옮길 문장(안전하지 않거나 확인 못 한 설정)
     marks = {"critical": "🚨", "warning": "⚠️", "unknown": UNKNOWN_MARK, "ok": "✅"}
 
     def add(severity, text):
         if severity in counts:
             counts[severity] += 1
+        if severity != "ok":
+            not_ok.append(text.rstrip("."))
         lines.append(f"{marks[severity]} {text}")
 
     for check in (_check_uac, _check_remote_desktop, _check_smb1, _check_bitlocker):
@@ -674,7 +704,12 @@ def check_security_settings() -> str:
         except Exception as e:                      # 한 항목 오류가 나머지를 막지 않게
             print(f"[시스템 보안] {getattr(check, '__name__', '점검')} 오류: {e}")
             add("unknown", "일부 설정을 확인하지 못했어요")
-    return CheckResult(f"{title}\n" + "\n".join(lines), **counts)
+    total, safe = len(lines), len(lines) - len(not_ok)
+    summary = (f"관리자 승인(UAC)·원격 접속·오래된 파일 공유 방식·드라이브 암호화, 이 {total}가지 보호 설정 중 "
+               f"{safe}가지는 안전하게 되어 있어요.")
+    if not_ok:
+        summary += " " + ". ".join(not_ok) + "."
+    return CheckResult(f"{title}\n" + "\n".join(lines), summary=summary, **counts)
 
 
 def get_system_security_report() -> str:

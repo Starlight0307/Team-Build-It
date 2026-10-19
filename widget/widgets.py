@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QDialog, QScrollArea, QStackedWidget, QAbstractButton)
 from PyQt6.QtCore import (pyqtSignal, pyqtProperty, Qt, QPropertyAnimation, QEasingCurve,
                           QTimer, QRect, QRectF, QPoint, QSize)
-from PyQt6.QtGui import QFontMetrics, QFont, QPainter, QColor, QLinearGradient
+from PyQt6.QtGui import QFontMetrics, QFont, QPainter, QColor, QLinearGradient, QKeySequence
 
 from settings.theme import get_palette
 from widget import icons
@@ -509,10 +509,42 @@ def bubble_plain_text(text: str, is_user: bool) -> str:
     return (_USER_PREFIX if is_user else _AI_PREFIX).sub("", text or "", count=1)
 
 
+# 줄을 바꿀 수 있는 자리 표시(보이지 않는 글자) — 2026-10-19 기능 점검: 대용량 파일 답변의 띄어쓰기 없는 긴 경로가
+# 말풍선 폭보다 넓으면 QLabel이 높이를 잘못 계산해(필요 840px로 잡고 실제 520px만 받음) 말풍선 위쪽은 비고
+# 아래쪽 줄은 잘렸다. 경로·주소 구분자 뒤에 넣어 거기서 줄이 바뀌게 한다. 복사할 땐 _BubbleLabel이 지운다.
+_BREAK_MARK = "​"
+
+
 def bubble_html(plain: str) -> str:
     """LLM 답변의 **굵게**만 실제 굵은 글씨로 — 나머지는 글자 그대로 보여준다."""
-    escaped = html.escape(plain)
+    breakable = plain.replace("\\", "\\" + _BREAK_MARK).replace("/", "/" + _BREAK_MARK)
+    escaped = html.escape(breakable)
     return _BOLD.sub(r"<b>\1</b>", escaped).replace("\n", "<br>")
+
+
+class _BubbleLabel(QLabel):
+    """말풍선 글자 — 복사(Ctrl+C·오른쪽 클릭)할 때 줄바꿈 자리 표시를 빼고 복사해 붙여넣은 경로가 깨지지 않게 한다.
+    클립보드 변경 신호(dataChanged)에서 고치는 방식은 Windows에서 앱이 강제 종료됐다(2026-10-19, access violation)."""
+
+    def _copy_selection(self):
+        from PyQt6.QtWidgets import QApplication
+        text = self.selectedText().replace(_BREAK_MARK, "")
+        if text:
+            QApplication.clipboard().setText(text)
+
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self._copy_selection()
+            return
+        super().keyPressEvent(event)
+
+    def contextMenuEvent(self, event):
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu(self)
+        copy = menu.addAction("복사")
+        copy.setEnabled(self.hasSelectedText())
+        copy.triggered.connect(self._copy_selection)
+        menu.exec(event.globalPos())
 
 
 class MessageBubble(QFrame):
@@ -537,7 +569,7 @@ class MessageBubble(QFrame):
             # 루미 답변 위에 작은 발신자 표시
             self.sender_label = QLabel(icons.label_html("sparkles", "LUMI", 13))
             bl.addWidget(self.sender_label)
-        self.message_label = QLabel(bubble_html(plain))
+        self.message_label = _BubbleLabel(bubble_html(plain))
         self.message_label.setTextFormat(Qt.TextFormat.RichText)
         self.message_label.setWordWrap(True)
         # Preferred+MinimumExpanding 대신 Preferred+Preferred 사용 —

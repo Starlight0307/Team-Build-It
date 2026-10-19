@@ -59,7 +59,7 @@ def test_exposed_risky_ports_are_counted_with_owner():
     assert "🚨 445" in r and "System" in r
     assert "⚠️ 3306" in r
     assert "  - 8000 — mysqld.exe (알려진 포트 목록에 없음)" in r
-    assert "위험 1개, 주의 1개" in r.summary
+    assert "위험한 것 1개, 확인해 볼 것 1개" in r.summary
 
 
 def test_windows_dynamic_rpc_ports_are_not_risky():
@@ -72,7 +72,7 @@ def test_unknown_program_on_high_port_is_listed_but_not_rpc():
     r = _ports([_conn("0.0.0.0", 49999, 7)], {7: "evil.exe"})
     assert "동적 RPC" not in r
     assert "49999 — evil.exe (알려진 포트 목록에 없음)" in r
-    assert "목록에 없는 포트 1개" in r.summary and "루미가 아는 위험 포트 없음" in r.summary
+    assert "루미가 모르는 프로그램이 연 통로 1개" in r.summary and "위험한 것은 없어요" in r.summary
 
 
 def test_non_listen_and_unreadable_connections():
@@ -99,13 +99,13 @@ def test_firewall_all_on():
     r = _fw([_prof("Domain"), _prof("Private"), _prof("Public")], [{"name": "Wi-Fi", "category": "Public"}])
     assert (r.critical, r.warning, r.unknown) == (0, 0, 0)
     assert "← 지금 연결된 네트워크" in r
-    assert r.summary.startswith("모든 네트워크에서 켜짐")
+    assert "방화벽이 모든 네트워크에서 켜져 있어요" in r.summary
 
 
 def test_firewall_off_on_current_network_is_critical_other_is_warning():
     r = _fw([_prof("Private", "False"), _prof("Public", "False")], [{"name": "Home", "category": "Private"}])
     assert (r.critical, r.warning) == (1, 1)
-    assert "꺼져 있음" in r.summary
+    assert "꺼져 있어요" in r.summary
 
 
 def test_firewall_default_allow_inbound_and_notconfigured():
@@ -481,7 +481,7 @@ def _ctx(blocking=True, rules=(), current=4, wfd=False):
 def test_port_blocked_by_firewall_is_not_counted():
     r = _ports([_conn("0.0.0.0", 445, 4)], {4: "System"}, ctx=_ctx())
     assert (r.critical, r.warning) == (0, 0)
-    assert "🛡️ 445" in r and "방화벽 설정상 막힌 위험 포트 1개" in r.summary
+    assert "🛡️ 445" in r and "위험할 수 있는 1개는 방화벽이 이미 막고 있어요" in r.summary
 
 
 def test_port_allowed_by_matching_rule_keeps_severity_with_rule_name():
