@@ -12,7 +12,7 @@ import zipfile
 from datetime import datetime
 
 from data import db
-from data.chat_crypto import (ACCOUNT_EXPORT_PREFIX, APP_EXPORT_PREFIX, EXPORT_PREFIX, decrypt_export, encrypt_export,
+from data.chat_crypto import (ACCOUNT_EXPORT_PREFIX, APP_EXPORT_PREFIX, EXPORT_PREFIX, LEGACY_ACCOUNT_EXPORT_PREFIX, decrypt_export, encrypt_export,
                               encrypt_with_password)
 from core.user_context import safe_uid
 
@@ -100,8 +100,8 @@ def create_backup(user_id: str, path: str, password: str = None) -> dict:
 def _open_zip(path: str, password):
     with open(path, "rb") as f:
         raw = f.read()
-    if raw.startswith((ACCOUNT_EXPORT_PREFIX.encode("ascii"), APP_EXPORT_PREFIX.encode("ascii"),
-                       EXPORT_PREFIX.encode("ascii"))):
+    if raw.startswith((ACCOUNT_EXPORT_PREFIX.encode("ascii"), LEGACY_ACCOUNT_EXPORT_PREFIX.encode("ascii"),
+                       APP_EXPORT_PREFIX.encode("ascii"), EXPORT_PREFIX.encode("ascii"))):
         zip_bytes = base64.b64decode(decrypt_export(raw.decode("ascii"), password))
     else:
         zip_bytes = raw   # 예전 암호 없는 zip 백업

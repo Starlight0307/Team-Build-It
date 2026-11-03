@@ -106,12 +106,14 @@ def encrypt_with_password(text: str, password: str) -> str:
 
 
 APP_EXPORT_PREFIX = "LUMIK1:"        # 이 컴퓨터의 앱 키 (로그인 안 한 상태에서 내보낸 파일)
-ACCOUNT_EXPORT_PREFIX = "LUMIA1:"    # 계정 키 (로그인한 계정으로 내보낸 파일 — 다른 PC에서도 같은 계정이면 열림)
+ACCOUNT_EXPORT_PREFIX = "LUMIA2:"    # 계정 키 (로그인한 계정으로 내보낸 파일 — 다른 PC에서도 같은 계정이면 열림)
+# 예전 계정 키 — 계정 uid 하나로만 키를 만들어서 uid를 아는 사람은 열 수 있었다(보안 점검 2026-11-03).
+# 이미 만들어진 파일이 열리도록 읽기만 계속 지원하고, 서버에 007 마이그레이션이 적용되기 전에만 새로 만든다.
+LEGACY_ACCOUNT_EXPORT_PREFIX = "LUMIA1:"
 
 
-def _account_fernet():
-    """로그인한 계정(Supabase 계정 고유번호)에서 만든 암호 키. 같은 계정이면 어느 PC에서든 같은 키가 나오고,
-    다른 계정은 다른 키라서 열 수 없다. 로그인하지 않았으면 None."""
+def _legacy_account_fernet():
+    """[예전 LUMIA1] 계정 uid만으로 만든 키 — 읽기 호환용. 로그인하지 않았으면 None."""
     from data import db   # 지연 import — db가 이 모듈을 먼저 불러서 순환을 피한다
     uid = db._current_uid()
     if not uid or Fernet is None:
@@ -123,12 +125,34 @@ def _account_fernet():
     return Fernet(base64.urlsafe_b64encode(key))
 
 
+def _account_fernet():
+    """로그인한 계정의 암호 키 — 서버에 본인만 읽을 수 있게 저장된 무작위 비밀값(profiles.export_secret)과
+    계정 uid를 섞어 만든다. 같은 계정이면 어느 PC에서든 같은 키가 나오고, 다른 계정이나 비밀값을 모르는
+    사람은 열 수 없다.
+    반환: Fernet / None(로그인 안 함·서버에 닿지 못함) / db.EXPORT_SECRET_NOT_DEPLOYED(서버에 아직 컬럼 없음)."""
+    from data import db   # 지연 import — db가 이 모듈을 먼저 불러서 순환을 피한다
+    uid = db._current_uid()
+    if not uid or Fernet is None:
+        return None
+    secret = db.get_export_secret()
+    if secret is None or secret is db.EXPORT_SECRET_NOT_DEPLOYED:
+        return secret
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=b"lumi-export-v2",
+               info=b"account-export:" + str(uid).encode("utf-8")).derive(secret.encode("utf-8"))
+    return Fernet(base64.urlsafe_b64encode(key))
+
+
 def encrypt_export(text: str) -> str:
     """내보내는 파일용 암호화 — 비밀번호를 묻지 않는다.
     로그인한 상태면 계정 키로 암호화한다: 파일을 열어도 내용이 안 보이고, 같은 계정으로 로그인한 루미라면
-    다른 PC에서도 열린다(다른 계정은 못 연다). 로그인하지 않았으면 이 컴퓨터의 앱 키를 쓴다."""
+    다른 PC에서도 열린다(다른 계정은 못 연다). 로그인하지 않았거나 서버에 닿지 못하면 이 컴퓨터의 앱 키를 쓴다."""
+    from data import db
     f = _account_fernet()
     prefix = ACCOUNT_EXPORT_PREFIX
+    if f is db.EXPORT_SECRET_NOT_DEPLOYED:   # 서버에 007 마이그레이션 적용 전 — 예전 방식 유지
+        f, prefix = _legacy_account_fernet(), LEGACY_ACCOUNT_EXPORT_PREFIX
     if f is None:
         f, prefix = _get_fernet(), APP_EXPORT_PREFIX
     if f is None:
@@ -142,15 +166,26 @@ def export_needs_password(raw: str) -> bool:
 
 
 def decrypt_export(raw: str, password: str = None) -> str:
-    """내보낸 파일 내용을 푼다. 계정 키(LUMIA1)/앱 키(LUMIK1)는 비밀번호 없이, 예전 비밀번호 방식(LUMIX1)은 password로.
-    형식이 다르거나 키/비밀번호가 맞지 않으면 ValueError."""
+    """내보낸 파일 내용을 푼다. 계정 키(LUMIA2, 예전 LUMIA1)/앱 키(LUMIK1)는 비밀번호 없이,
+    예전 비밀번호 방식(LUMIX1)은 password로. 형식이 다르거나 키/비밀번호가 맞지 않으면 ValueError."""
     raw = raw.strip()
     if raw.startswith(ACCOUNT_EXPORT_PREFIX):
+        from data import db
+        if not db._current_uid():
+            raise ValueError("이 파일은 계정으로 암호화돼 있어요. 만든 계정으로 로그인한 뒤 열어주세요.")
         f = _account_fernet()
+        if f is None or f is db.EXPORT_SECRET_NOT_DEPLOYED:
+            raise ValueError("계정 암호 키를 서버에서 받지 못했어요. 인터넷 연결을 확인한 뒤 다시 열어주세요.")
+        try:
+            return f.decrypt(raw[len(ACCOUNT_EXPORT_PREFIX):].encode("ascii")).decode("utf-8")
+        except InvalidToken:
+            raise ValueError("다른 계정으로 만든 파일이라 열 수 없어요. 만든 계정으로 로그인해주세요.")
+    if raw.startswith(LEGACY_ACCOUNT_EXPORT_PREFIX):
+        f = _legacy_account_fernet()
         if f is None:
             raise ValueError("이 파일은 계정으로 암호화돼 있어요. 만든 계정으로 로그인한 뒤 열어주세요.")
         try:
-            return f.decrypt(raw[len(ACCOUNT_EXPORT_PREFIX):].encode("ascii")).decode("utf-8")
+            return f.decrypt(raw[len(LEGACY_ACCOUNT_EXPORT_PREFIX):].encode("ascii")).decode("utf-8")
         except InvalidToken:
             raise ValueError("다른 계정으로 만든 파일이라 열 수 없어요. 만든 계정으로 로그인해주세요.")
     if raw.startswith(APP_EXPORT_PREFIX):

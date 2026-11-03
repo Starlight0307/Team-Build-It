@@ -93,6 +93,7 @@ class FindIdWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._email_verified = False
+        self._verify_token = None   # 이메일 인증으로 받은 본인 세션 — 이걸로만 내 아이디를 조회할 수 있다
         self._send_thread = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._build_ui()
@@ -223,6 +224,7 @@ class FindIdWidget(QWidget):
             self._set_msg(self.msg_email, "이메일을 입력하세요."); return
 
         self._email_verified = False
+        self._verify_token = None
         self.result_box.hide()
         self.lbl_err.setText("")
         self.msg_code.setText("")
@@ -250,6 +252,7 @@ class FindIdWidget(QWidget):
             self._set_msg(self.msg_code, "인증코드를 입력하세요."); return
 
         token = verify_reset_code(email, code)
+        self._verify_token = token
         if token:
             self._email_verified = True
             self._set_msg(self.msg_code, "✓ 인증 완료. 아이디 찾기 버튼을 눌러주세요.", ok=True)
@@ -271,7 +274,7 @@ class FindIdWidget(QWidget):
             self.lbl_err.setText("이메일 인증을 먼저 완료하세요.")
             return
 
-        username = get_username_by_email(email)
+        username = get_username_by_email(email, self._verify_token)
         if username:
             self.lbl_result.setText(username)
             self.result_box.show()
@@ -287,6 +290,7 @@ class FindIdWidget(QWidget):
         self.input_email.clear()
         self.input_code.clear()
         self._email_verified = False
+        self._verify_token = None
         self.lbl_result.setText(""); self.lbl_err.setText("")
         self.msg_email.setText(""); self.msg_code.setText("")
         self.result_box.hide()
