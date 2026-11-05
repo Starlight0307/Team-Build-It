@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -102,7 +103,11 @@ def _load(user_id: str = None) -> dict:
             saved = json.load(f)
         if isinstance(saved, dict):
             data.update(saved)
-    except (OSError, ValueError):
+    except ValueError:   # 못 읽는 파일 — 다음 저장이 덮어쓰기 전에 원본을 남긴다(키가 잠시 안 읽힌 경우 되살릴 수 있게)
+        backup = _path(user_id) + ".unreadable"
+        if not os.path.exists(backup):
+            shutil.copyfile(_path(user_id), backup)
+    except OSError:
         pass
     return data
 

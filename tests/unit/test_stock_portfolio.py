@@ -1443,3 +1443,27 @@ def test_overview_shows_favorites_up_to_limit_then_default(tmp_path, monkeypatch
     finally:
         sp.set_current_user("guest")
 
+
+def test_unreadable_file_is_kept_before_it_gets_overwritten(tmp_path, monkeypatch):
+    _favorite_env(tmp_path, monkeypatch)
+    try:
+        sp.toggle_favorite("005930")
+        path = sp._path()
+        original = "ENC1:망가진 내용"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(original)
+        assert sp.favorite_codes() == []
+        sp.toggle_favorite("000660")
+        assert open(path + ".unreadable", encoding="utf-8").read() == original
+        assert sp.favorite_codes() == ["000660"]
+    finally:
+        sp.set_current_user("guest")
+
+
+def test_missing_file_makes_no_backup(tmp_path, monkeypatch):
+    _favorite_env(tmp_path, monkeypatch)
+    try:
+        assert sp.favorite_codes() == [] and not os.path.exists(sp._path() + ".unreadable")
+    finally:
+        sp.set_current_user("guest")
+
