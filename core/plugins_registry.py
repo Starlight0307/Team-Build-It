@@ -296,7 +296,7 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "주식 포트폴리오",
-        "desc": "증권 계좌(한국투자·키움·토스·KB·NH·LS·메리츠·DB)의 손익 브리핑, 직접 확정하는 주문, 직접 정한 규칙의 자동매매(추천은 하지 않아요)",
+        "desc": "한국투자, 키움, 토스, KB, NH, LS, 메리츠, DB 계좌의 손익 브리핑과 주문, 직접 정한 규칙의 자동매매 (추천은 하지 않아요)",
         "func_names": ["get_stock_briefing", "open_stock_order", "stop_stock_auto_trading"],
         "module_name": "stock_portfolio",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/stock_portfolio.py",
