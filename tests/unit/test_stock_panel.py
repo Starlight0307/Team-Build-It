@@ -10,7 +10,7 @@ from plugins import stock_portfolio as sp
 from widget import stock_panel
 
 
-def _wait(qapp, condition, seconds=3):
+def _wait(qapp, condition, seconds=20):   # 느린 CI에서도 넉넉하게 — 조건이 맞으면 바로 끝난다
     end = time.time() + seconds
     while time.time() < end:
         qapp.processEvents()
