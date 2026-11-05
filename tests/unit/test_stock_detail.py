@@ -30,6 +30,11 @@ HOLDINGS = [{"code": "005930", "name": "삼성전자", "qty": 10, "avg_price": 6
 POINTS = [("2026-11-03", 69000), ("2026-11-04", 70000), ("2026-11-05", 71000)]
 
 
+def _bars(points):
+    return [{"date": d, "open": c - 100, "high": c + 200, "low": c - 300, "close": c, "volume": 1000 + i}
+            for i, (d, c) in enumerate(points)]
+
+
 def _portfolio(holdings=HOLDINGS):
     return {"holdings": holdings, "total_pl": sum(h["pl"] for h in holdings), "total_rate": 4.5, "total_value": 1300000.0,
             "fetched_at": "10:00", "account": "모의 계좌 ****4501", "mode": "demo"}
@@ -41,7 +46,7 @@ def stock(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(sp, "load_master", lambda: {"005930": "삼성전자", "000660": "SK하이닉스", "035720": "카카오"})
     monkeypatch.setattr(sp, "fetch_portfolio", _portfolio)
     calls = []
-    monkeypatch.setattr(sp, "get_price_history", lambda code: calls.append(code) or POINTS)
+    monkeypatch.setattr(sp, "get_price_bars", lambda code: calls.append(code) or _bars(POINTS))
     sp.set_current_user("tester")
     with sp._lock:
         data = sp._load()
@@ -59,7 +64,7 @@ def _dialog(qapp, **k):
 
 def test_shows_summary_table_bars_and_first_holding_chart(qapp, stock):
     dlg = _dialog(qapp)
-    assert "+58,000원" in dlg.summary.text() and "모의 계좌 ****4501" in dlg.summary_note.text()
+    assert _wait(qapp, lambda: "+58,000원" in dlg.summary.text()) and "모의 계좌 ****4501" in dlg.summary_note.text()
     assert dlg.table.rowCount() == 2 and dlg.table.item(0, 5).text() == "+100,000원" and dlg.table.item(1, 6).text() == "-6.54%"
     assert [r["code"] for r in dlg.bars.rows] == ["005930", "000660"]
     assert "삼성전자" in dlg.chart.title and dlg.chart.reference == 60000.0 and stock == ["005930"]
@@ -101,8 +106,8 @@ def test_late_response_does_not_replace_newer_chart(qapp, stock, monkeypatch):
     def history(code):
         if code == "000660":
             release.wait(3)
-        return [("2026-11-05", 1 if code == "000660" else 2)]
-    monkeypatch.setattr(sp, "get_price_history", history)
+        return _bars([("2026-11-05", 1 if code == "000660" else 2)])
+    monkeypatch.setattr(sp, "get_price_bars", history)
     dlg = _dialog(qapp)
     dlg.history.clear()
     dlg.show_stock("000660")
@@ -133,7 +138,7 @@ def test_history_failure_shows_message_not_old_chart(qapp, stock, monkeypatch):
 
     def down(code):
         raise sp.StockError("증권사 응답을 받지 못했어요.")
-    monkeypatch.setattr(sp, "get_price_history", down)
+    monkeypatch.setattr(sp, "get_price_bars", down)
     dlg.show_stock("카카오")
     assert _wait(qapp, lambda: "응답을" in dlg.chart.message)
     assert dlg.chart.points == []
@@ -212,7 +217,7 @@ def test_guest_with_market_key_sees_movement_without_login_or_account(qapp, stoc
     sp.set_current_user("guest")
     monkeypatch.setattr(sp, "_market_key", lambda: "KEY")
     monkeypatch.setattr(sp, "market_overview", lambda: QUOTES)
-    monkeypatch.setattr(sp, "market_history", lambda code: POINTS)
+    monkeypatch.setattr(sp, "market_bars", lambda code: _bars(POINTS))
     dlg = _dialog(qapp)
     assert dlg.summary.text() == "주요 종목 시세" and "2026-11-04 종가" in dlg.summary_note.text() and "금융위원회" in dlg.summary_note.text()
     assert dlg.table.rowCount() == 2 and dlg.table.item(1, 3).text() == "-3,000원" and dlg.table.columnCount() == len(sd.MARKET_HEADERS)
@@ -307,4 +312,120 @@ def test_panel_hides_zero_total_and_shows_loading(qapp, stock, monkeypatch):
     assert _wait(qapp, lambda: "모의 계좌" in panel.message.text())
     assert not panel.total.isVisible() and "+0" not in panel.total.text() or not panel.total.isVisible()
     panel.close()
+
+
+def test_selected_stock_shows_detailed_numbers(qapp, stock):
+    dlg = _dialog(qapp)
+    assert _wait(qapp, lambda: dlg.tiles["종가"].value.text() == "71,000원")
+    assert dlg.tiles["기준일"].value.text() == "2026-11-05" and dlg.tiles["시가"].value.text() == "70,900원"
+    assert dlg.tiles["고가"].value.text() == "71,200원" and dlg.tiles["저가"].value.text() == "70,700원"
+    assert dlg.tiles["거래량"].value.text() == "1,002주" and dlg.tiles["전일 대비"].value.text() == "+1,000원 (+1.43%)"
+    assert not dlg.holding_tiles["평가손익"].isHidden()
+    assert _wait(qapp, lambda: dlg.holding_tiles["평가손익"].value.text() == "+100,000원")
+    assert dlg.holding_tiles["내 수량"].value.text() == "10주" and dlg.holding_tiles["수익률"].value.text() == "+16.67%"
+
+
+def test_unheld_stock_hides_my_numbers(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show_stock("카카오")
+    assert _wait(qapp, lambda: "카카오" in dlg.chart.title)
+    assert all(t.isHidden() for t in dlg.holding_tiles.values())
+
+
+def test_chart_hover_updates_numbers_to_that_day(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.chart.hovered.emit(0)
+    assert dlg.tiles["기준일"].value.text() == "2026-11-03" and dlg.tiles["종가"].value.text() == "69,000원"
+    assert dlg.tiles["전일 대비"].value.text() == "-"
+    dlg.chart.hovered.emit(None)
+    assert dlg.tiles["기준일"].value.text() == "2026-11-05"
+
+
+def test_period_buttons_limit_chart(qapp, stock, monkeypatch):
+    long = [(f"2026-{m:02d}-{d:02d}", 1000 + m * 40 + d) for m in range(1, 6) for d in range(1, 21)]
+    monkeypatch.setattr(sp, "get_price_bars", lambda code: _bars(long))
+    dlg = _dialog(qapp)
+    assert len(dlg.chart.points) == 100
+    dlg.period_buttons[22].click()
+    assert len(dlg.chart.points) == 22 and len(dlg.chart.volumes) == 22 and "22거래일" in dlg.chart.title
+    assert dlg.tiles["기준일"].value.text() == long[-1][0]
+    dlg.period_buttons[66].click()
+    assert len(dlg.chart.points) == 66
+    dlg.period_buttons[None].click()
+    assert len(dlg.chart.points) == 100
+
+
+def test_period_keeps_previous_close_from_full_history(qapp, stock, monkeypatch):
+    long = [(f"2026-10-{d:02d}", 1000 + d) for d in range(1, 31)]
+    monkeypatch.setattr(sp, "get_price_bars", lambda code: _bars(long))
+    dlg = _dialog(qapp)
+    dlg.period_buttons[22].click()
+    dlg.chart.hovered.emit(0)   # 1개월 구간의 첫날도 전일 종가는 전체 기록에서 찾는다
+    assert dlg.tiles["전일 대비"].value.text() != "-"
+
+
+def test_chart_and_bars_animate_then_finish(qapp, stock):
+    chart = sd.PriceChart(lumi_dialog.palette(False))
+    chart.resize(400, 280)
+    chart.set_data("x", POINTS, None, [1, 2, 3])
+    assert chart.progress < 1
+    assert not chart.grab().isNull()
+    assert _wait(qapp, lambda: chart.progress == 1.0)
+    assert not chart.grab().isNull()
+    bars = sd.ProfitBars(lumi_dialog.palette(False))
+    bars.resize(300, 100)
+    bars.set_rows(HOLDINGS)
+    assert bars.progress < 1 and not bars.grab().isNull()
+    assert _wait(qapp, lambda: bars.progress == 1.0)
+
+
+def test_numbers_count_up_and_end_exact(qapp):
+    label = sd.QLabel()
+    seen = []
+    label.setText("")
+    stock_panel.animate_values(label, (100000.0, 16.67), lambda pl, rate: f"{pl:+,.0f}원 ({rate:+.2f}%)", 200)
+    assert _wait(qapp, lambda: seen.append(label.text()) or label.text() == "+100,000원 (+16.67%)")
+    assert len(set(seen)) > 2   # 중간값을 거친다
+    stock_panel.animate_values(label, (-5.0, -1.0), lambda pl, rate: f"{pl:+,.0f}원 ({rate:+.2f}%)", 100)
+    assert _wait(qapp, lambda: label.text() == "-5원 (-1.00%)")
+
+
+def test_new_value_during_animation_ends_on_latest(qapp):
+    label = sd.QLabel()
+    stock_panel.animate_values(label, (100.0,), lambda v: f"{v:.0f}", 2000)
+    stock_panel.animate_values(label, (5.0,), lambda v: f"{v:.0f}", 50)
+    assert _wait(qapp, lambda: label.text() == "5")
+
+
+def test_detail_fits_small_screen_and_scrolls(qapp, stock):
+    dlg = sd.StockDetailDialog()
+    dlg.max_height = 720
+    dlg.show()
+    assert _wait(qapp, lambda: dlg.chart.points)
+    dlg.fit_to_content()
+    qapp.processEvents()
+    assert dlg.scroll.minimumHeight() <= 720 - 190
+    assert not dlg.btn_secondary.isHidden()
+    dlg.close()
+
+
+def test_stat_tiles_have_room_for_long_values(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    qapp.processEvents()
+    tile = dlg.tiles["전일 대비"]
+    assert tile.width() >= tile.value.fontMetrics().horizontalAdvance("-1,234,500원 (-12.34%)") - 20
+    dlg.close()
+
+
+def test_uncaught_error_is_logged_and_does_not_kill_app(monkeypatch):
+    import app_main
+    from core import ai_worker
+    logged = []
+    monkeypatch.setattr(ai_worker, "_log_error_trace", logged.append)
+    try:
+        raise TypeError("boom")
+    except TypeError as e:
+        app_main._keep_running_on_uncaught_error(type(e), e, e.__traceback__)
+    assert str(logged[0]) == "boom"
 

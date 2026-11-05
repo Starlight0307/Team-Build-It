@@ -719,9 +719,9 @@ def test_manual_failure_gives_error_not_old_numbers(market):
 def test_connected_account_takes_priority_over_manual_and_public_prices(connected, monkeypatch):
     sp.add_manual_holding("x", "삼성전자", 1, 1)
     assert "모의 계좌" in sp.fetch_portfolio()["account"]
-    monkeypatch.setattr(sp, "get_price_history", lambda code: "broker")
-    monkeypatch.setattr(sp, "market_history", lambda code: "public")
-    assert sp.price_history("005930") == "broker"
+    monkeypatch.setattr(sp, "get_price_bars", lambda code: "broker")
+    monkeypatch.setattr(sp, "market_bars", lambda code: "public")
+    assert sp.price_bars("005930") == "broker"
 
 
 def test_market_key_is_not_an_ai_tool():
@@ -775,4 +775,17 @@ def test_overview_reports_error_when_everything_fails(market):
     market.state["body"] = requests.Timeout()
     with pytest.raises(sp.StockError):
         sp.market_overview()
+
+
+def test_broker_bars_have_open_high_low_volume(connected):
+    connected.history_rows = [{"stck_bsop_date": "20261105", "stck_clpr": "71000", "stck_oprc": "70000",
+                               "stck_hgpr": "72000", "stck_lwpr": "69000", "acml_vol": "1234"}]
+    assert sp.get_price_bars("005930") == [{"date": "2026-11-05", "open": 70000, "high": 72000, "low": 69000, "close": 71000, "volume": 1234}]
+
+
+def test_market_bars_have_open_high_low_volume(market):
+    sp.set_market_key("K")
+    sp._market_cache.clear()
+    market.state["body"] = _market_body([{**ROW_NEW, "mkp": "226500", "hipr": "228000", "lopr": "208000", "trqu": "22248738"}])
+    assert sp.market_bars("005930")[0] == {"date": "2026-11-04", "open": 226500, "high": 228000, "low": 208000, "close": 70000, "volume": 22248738}
 

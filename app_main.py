@@ -4163,7 +4163,15 @@ class AssistantApp(QWidget):
         sb.setValue(sb.maximum())
 
 
+def _keep_running_on_uncaught_error(error_type, error, trace):
+    """PyQt는 슬롯에서 처리 못 한 예외가 나면 앱을 강제 종료한다 — 기록만 남기고 계속 돌게 한다.
+    주문이나 자동매매 도중 작은 화면 오류로 앱이 통째로 꺼지면 안 된다."""
+    from core.ai_worker import _log_error_trace   # 설치본은 콘솔이 없어 파일에 남겨야 원인을 찾을 수 있다
+    _log_error_trace(error.with_traceback(trace))
+
+
 if __name__ == "__main__":
+    sys.excepthook = _keep_running_on_uncaught_error
     lumi_icon.set_windows_app_id()   # QApplication보다 먼저 — 작업 표시줄에 파이썬 대신 루미 아이콘
     app = QApplication(sys.argv)
     app.setApplicationName(lumi_icon.APP_NAME)

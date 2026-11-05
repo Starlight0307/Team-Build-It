@@ -1,8 +1,11 @@
 """홈 화면 주식 위젯과 계좌 설정·주문·자동매매 창 (plugins/stock_portfolio.py의 화면)."""
+import os
+import tempfile
 import threading
 import webbrowser
 
-from PyQt6.QtCore import pyqtSignal, QObject, Qt, QTimer
+from PyQt6.QtCore import pyqtSignal, QEasingCurve, QObject, QPointF, Qt, QTimer, QVariantAnimation
+from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
                              QVBoxLayout, QWidget)
 
@@ -22,6 +25,41 @@ def _stock():
 
 def _in_background(work):
     threading.Thread(target=work, daemon=True).start()
+
+
+def _arrow_path(dark: bool) -> str:
+    """콤보 상자 화살표 그림 — 스타일을 입히면 기본 화살표가 사라지고, 아이콘 파일에 화살표가 없어 직접 그린다."""
+    path = os.path.join(tempfile.gettempdir(), f"lumi-combo-arrow-{'dark' if dark else 'light'}.png")
+    pixmap = QPixmap(32, 32)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(QColor("#EEF0F6" if dark else "#5B6170"), 4, cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
+    painter.drawPolyline([QPointF(8, 12), QPointF(16, 21), QPointF(24, 12)])
+    painter.end()
+    pixmap.save(path)
+    return path.replace("\\", "/")
+
+
+def animate_values(label, values: tuple, fmt, duration: int = 600):
+    """숫자가 이전 값에서 새 값까지 부드럽게 변한다. fmt(*values) → 글자. 끝나면 정확한 값으로 맞춘다."""
+    old = label.property("countValues") or tuple(0.0 for _ in values)
+    previous = getattr(label, "_count_anim", None)
+    if previous is not None:
+        previous.stop()
+    label.setProperty("countValues", tuple(values))
+    if tuple(old) == tuple(values) or len(old) != len(values):
+        label.setText(fmt(*values))
+        return
+    anim = QVariantAnimation(label)
+    anim.setDuration(duration)
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+    anim.valueChanged.connect(lambda t: label.setText(fmt(*(a + (b - a) * t for a, b in zip(old, values)))))
+    anim.finished.connect(lambda: label.setText(fmt(*values)))
+    label._count_anim = anim
+    anim.start()
 
 
 def _pl_color(value: float) -> str:
@@ -58,7 +96,8 @@ class _StockDialog(lumi_dialog.LumiDialog):
         self.setStyleSheet(lumi_dialog.qss(p) + f"""
             QComboBox {{ background-color: {p['input']}; color: {p['text']}; border: 1.5px solid {p['focus']};
                          border-radius: 12px; padding: 8px 12px; font-size: 14px; font-weight: 700; }}
-            QComboBox::drop-down {{ border: none; width: 28px; }}
+            QComboBox::drop-down {{ border: none; width: 32px; }}
+            QComboBox::down-arrow {{ image: url({_arrow_path(self.dark)}); width: 16px; height: 16px; }}
             QComboBox QAbstractItemView {{ background-color: {p['input']}; color: {p['text']}; }}""")
 
     def run_background(self, work, finish):
@@ -634,7 +673,7 @@ class StockPanel(Panel):
             self.message.show()
             self._style_labels()
             return
-        self.total.setText(f"{portfolio['total_pl']:+,.0f}원 ({portfolio['total_rate']:+.2f}%)")
+        animate_values(self.total, (portfolio["total_pl"], portfolio["total_rate"]), lambda pl, rate: f"{pl:+,.0f}원 ({rate:+.2f}%)")
         self.total.setProperty("plColor", _pl_color(portfolio["total_pl"]))
         lines = [f"<span style='color:{_pl_color(h['pl']) or 'inherit'}'>{h['name']} {h['qty']:,}주 "
                  f"{h['pl']:+,.0f}원 ({h['rate']:+.2f}%)</span>" for h in portfolio["holdings"]]

@@ -1,16 +1,37 @@
 """주식 위젯을 누르면 뜨는 상세 창 — 종목별 손익 막대, 가격 그래프, 보유 종목 표."""
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QVariantAnimation, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QToolTip,
+from PyQt6.QtWidgets import (QAbstractItemView, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QScrollArea, QToolTip,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from widget import lumi_dialog
-from widget.stock_panel import LOSS_COLOR, PROFIT_COLOR, _pl_color, _stock, _StockDialog
+from widget.stock_panel import LOSS_COLOR, PROFIT_COLOR, _pl_color, _stock, _StockDialog, animate_values
 
 DEFAULT_STOCK = "삼성전자"   # 보유 종목이 없을 때 먼저 보여 줄 종목
 MAX_BARS = 8
 TABLE_HEADERS = ("종목", "수량", "평균 단가", "현재가", "평가금액", "평가손익", "수익률")
 MARKET_HEADERS = ("종목", "기준일", "종가", "전일 대비", "등락률")
+PERIODS = (("1개월", 22), ("3개월", 66), ("전체", None))   # 거래일 수
+
+
+def _reveal(widget, attr: str, duration: int = 650):
+    """그래프가 그려지는 애니메이션 — widget.<attr>를 0에서 1까지 올리며 다시 그린다."""
+    previous = getattr(widget, "_reveal_anim", None)
+    if previous is not None:
+        previous.stop()
+    setattr(widget, attr, 0.0)
+    anim = QVariantAnimation(widget)
+    anim.setDuration(duration)
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def step(value):
+        setattr(widget, attr, value)
+        widget.update()
+    anim.valueChanged.connect(step)
+    widget._reveal_anim = anim
+    anim.start()
 
 
 def price_ticks(low: float, high: float, count: int = 4) -> list:
@@ -37,39 +58,50 @@ def nearest_index(x: float, left: float, width: float, count: int) -> int:
 class PriceChart(QWidget):
     """일별 종가 선 그래프 하나. 마우스를 올리면 그 날의 날짜와 종가를 보여 준다."""
     LEFT, RIGHT, TOP, BOTTOM = 70, 16, 34, 28
+    VOLUME_H = 44
+    hovered = pyqtSignal(object)   # 마우스가 가리키는 번호, 벗어나면 None
 
     def __init__(self, palette: dict, parent=None):
         super().__init__(parent)
         self.p = palette
         self.title, self.points, self.reference, self.message = "", [], None, ""
+        self.volumes, self.progress = [], 1.0
         self.hover = None
-        self.setMinimumHeight(210)
+        self.setMinimumHeight(240)
         self.setMouseTracking(True)
 
     def set_message(self, text: str):
         """불러오는 중이거나 실패하면 이전 그래프를 지운다 — 다른 종목 값으로 오해하지 않게."""
         self.title, self.points, self.reference, self.hover, self.message = "", [], None, None, text
+        self.volumes = []
         self.setAccessibleDescription(text)
         self.update()
 
-    def set_data(self, title: str, points: list, reference: float = None):
+    def set_data(self, title: str, points: list, reference: float = None, volumes: list = None):
         self.title, self.points, self.reference, self.hover, self.message = title, points, reference, None, ""
+        self.volumes = volumes or []
+        _reveal(self, "progress")
         if points:
             self.setAccessibleDescription(f"{title}: {points[0][0]} {points[0][1]:,}원에서 {points[-1][0]} {points[-1][1]:,}원")
         self.update()
 
     def _plot_rect(self) -> QRectF:
+        volume = self.VOLUME_H + 6 if any(self.volumes) else 0
         return QRectF(self.LEFT, self.TOP, max(1, self.width() - self.LEFT - self.RIGHT),
-                      max(1, self.height() - self.TOP - self.BOTTOM))
+                      max(1, self.height() - self.TOP - self.BOTTOM - volume))
 
     def mouseMoveEvent(self, event):
         if self.points:
             r = self._plot_rect()
-            self.hover = nearest_index(event.position().x(), r.left(), r.width(), len(self.points))
+            index = nearest_index(event.position().x(), r.left(), r.width(), len(self.points))
+            if index != self.hover:
+                self.hover = index
+                self.hovered.emit(index)
             self.update()
 
     def leaveEvent(self, event):
         self.hover = None
+        self.hovered.emit(None)
         self.update()
 
     def paintEvent(self, event):
@@ -109,8 +141,23 @@ class PriceChart(QWidget):
             painter.drawText(QRectF(0, y_of(tick) - 10, self.LEFT - 8, 20),
                              Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{tick:,.0f}")
         painter.setPen(muted)
+        volume_top = r.bottom() + 6
+        date_y = volume_top + (self.VOLUME_H + 6 if any(self.volumes) else 0)
         for i, align in ((0, Qt.AlignmentFlag.AlignLeft), (len(self.points) - 1, Qt.AlignmentFlag.AlignRight)):
-            painter.drawText(QRectF(r.left(), r.bottom() + 6, r.width(), 20), align, self.points[i][0])
+            painter.drawText(QRectF(r.left(), date_y, r.width(), 20), align, self.points[i][0])
+        shown = max(1, int(round(self.progress * len(self.points))))   # 왼쪽부터 차례로 그린다
+        if any(self.volumes):   # 거래량은 축이 다른 값이라 가격 축에 겹치지 않고 아래에 따로 그린다
+            painter.drawText(QRectF(0, volume_top, self.LEFT - 8, self.VOLUME_H),
+                             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, "거래량")
+            peak = max(self.volumes) or 1
+            width = max(1.0, r.width() / max(1, len(self.volumes)) - 1)
+            bar_color = QColor(self.p["sub"])
+            bar_color.setAlpha(120)
+            painter.setPen(Qt.PenStyle.NoPen)
+            for i, volume in enumerate(self.volumes[:shown]):
+                height = volume / peak * self.VOLUME_H
+                painter.setBrush(QColor(self.p["accent"]) if i == self.hover else bar_color)
+                painter.drawRect(QRectF(x_of(i) - width / 2, volume_top + self.VOLUME_H - height, width, height))
 
         if self.reference:
             pen = QPen(muted, 1, Qt.PenStyle.DashLine)
@@ -119,7 +166,7 @@ class PriceChart(QWidget):
 
         line = QColor(self.p["accent"])
         path = QPainterPath(QPointF(x_of(0), y_of(self.points[0][1])))
-        for i, (_, value) in enumerate(self.points[1:], 1):
+        for i, (_, value) in enumerate(self.points[1:shown], 1):
             path.lineTo(QPointF(x_of(i), y_of(value)))
         painter.setPen(QPen(line, 2, cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -135,6 +182,9 @@ class PriceChart(QWidget):
             painter.setPen(muted)
             painter.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
 
+        if self.hover is None:   # 그리는 중에는 점이 선 끝을 따라간다
+            index = shown - 1
+            value = self.points[index][1]
         center = QPointF(x_of(index), y_of(value))
         if self.hover is not None:
             painter.setPen(QPen(muted, 1))
@@ -154,7 +204,7 @@ class ProfitBars(QWidget):
     def __init__(self, palette: dict, parent=None):
         super().__init__(parent)
         self.p = palette
-        self.rows, self.hidden = [], 0
+        self.rows, self.hidden, self.progress = [], 0, 1.0
         self.setMouseTracking(True)
 
     def set_rows(self, holdings: list):
@@ -163,7 +213,7 @@ class ProfitBars(QWidget):
         height = len(self.rows) * (self.ROW + self.GAP) + (24 if self.hidden else 0)
         self.setMinimumHeight(max(height, 40))
         self.updateGeometry()
-        self.update()
+        _reveal(self, "progress")
 
     def _row_at(self, y: float):
         i = int(y // (self.ROW + self.GAP))
@@ -198,12 +248,12 @@ class ProfitBars(QWidget):
             painter.setPen(ink)
             name = painter.fontMetrics().elidedText(row["name"], Qt.TextElideMode.ElideRight, self.NAME_W - 8)
             painter.drawText(QRectF(0, y, self.NAME_W - 8, self.ROW), Qt.AlignmentFlag.AlignVCenter, name)
-            width = abs(row["pl"]) / peak * span
+            width = abs(row["pl"]) / peak * span * self.progress
             if width >= 1:
                 x = zero if row["pl"] > 0 else zero - width
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QColor(PROFIT_COLOR if row["pl"] > 0 else LOSS_COLOR))
-                painter.drawRoundedRect(QRectF(x, y + 7, max(width, 4), self.ROW - 14), 4, 4)
+                painter.drawRoundedRect(QRectF(x, y + 7, width, self.ROW - 14), min(4, width / 2), 4)
             painter.setPen(ink)
             painter.drawText(QRectF(right + 2, y, value_w - 2, self.ROW),
                              Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{row['pl']:+,.0f}원")
@@ -219,23 +269,71 @@ class ProfitBars(QWidget):
                              f"그 외 {self.hidden}개는 아래 표에서 볼 수 있어요")
 
 
+class StatTile(QFrame):
+    """항목 이름과 값 한 칸."""
+
+    def __init__(self, name: str, palette: dict, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"StatTile {{ background: {palette['input']}; border: none; border-radius: 10px; }}"
+                           "QLabel { background: transparent; }")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(1)
+        self.p = palette
+        self.name = QLabel(name)
+        self.name.setStyleSheet(f"color: {palette['sub']}; font-size: 11px;")
+        self.value = QLabel("-")
+        self.value.setStyleSheet(f"color: {palette['text']}; font-size: 13px; font-weight: 700;")
+        layout.addWidget(self.name)
+        layout.addWidget(self.value)
+
+    def set_text(self, text: str, color: str = ""):
+        self.value.setProperty("countValues", None)
+        previous = getattr(self.value, "_count_anim", None)
+        if previous is not None:
+            previous.stop()
+        self.value.setText(text)
+        self._color(color)
+
+    def set_number(self, value: float, fmt, color: str = ""):
+        animate_values(self.value, (float(value),), fmt)
+        self._color(color)
+
+    def _color(self, color: str):
+        self.value.setStyleSheet(f"color: {color or self.p['text']}; font-size: 13px; font-weight: 700;")
+
+
 class StockDetailDialog(_StockDialog):
     """요약 · 손익 막대 · 가격 그래프 · 보유 종목 표. 조회만 하고 주문은 내지 않는다."""
 
     def __init__(self, parent=None, open_settings=None):
         super().__init__(parent, "주식 상세")
-        self.setMinimumWidth(920)
+        self.setMinimumWidth(1040)
+        self.max_height = None   # 시험용 — 없으면 실제 화면 높이를 쓴다
         self.status_info = _stock().account_status()
         self.open_settings = open_settings
-        self.holdings, self.history, self._chart_seq, self.current_code = [], {}, 0, ""
+        self.holdings, self.history, self._chart_seq, self.current_code, self.current_name = [], {}, 0, "", ""
         self.btn_secondary.setText("닫기")
         self.summary = QLabel()
         self.summary.setStyleSheet("font-size: 22px; font-weight: 800;")
         self.summary_note = QLabel()
         self.summary_note.setWordWrap(True)
         self.summary_note.setStyleSheet(f"color: {self.p['sub']}; font-size: 12px;")
-        self.body.addWidget(self.summary)
-        self.body.addWidget(self.summary_note)
+        # 내용이 화면보다 길면 창 안에서 스크롤한다 — 작은 노트북에서 버튼이 화면 밖으로 나가지 않게
+        self.content = QWidget()
+        self.content.setStyleSheet("background: transparent;")
+        content = QVBoxLayout(self.content)
+        content.setContentsMargins(0, 0, 8, 0)
+        content.setSpacing(10)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        self.scroll.setWidget(self.content)
+        self.body.addWidget(self.scroll)
+        content.addWidget(self.summary)
+        content.addWidget(self.summary_note)
 
         charts = QHBoxLayout()
         charts.setSpacing(20)
@@ -259,8 +357,31 @@ class StockDetailDialog(_StockDialog):
         search.addWidget(self.search_input, 1)
         search.addWidget(self.btn_search)
         right.addLayout(search)
+        periods = QHBoxLayout()
+        periods.setSpacing(6)
+        self.period_buttons = {}
+        for name, days in PERIODS:
+            button = QPushButton(name)
+            button.setObjectName("LinkPrimary" if days is None else "LinkGhost")
+            button.setAutoDefault(False)
+            button.clicked.connect(lambda _=False, d=days: self.set_period(d))
+            self.period_buttons[days] = button
+            periods.addWidget(button)
+        periods.addStretch(1)
+        right.addLayout(periods)
+        self.period_days = None
         self.chart = PriceChart(self.p)
+        self.chart.hovered.connect(self._on_chart_hover)
         right.addWidget(self.chart, 1)
+        self.tiles = {name: StatTile(name, self.p) for name in ("기준일", "종가", "전일 대비", "시가", "고가", "저가", "거래량")}
+        self.holding_tiles = {name: StatTile(name, self.p) for name in ("내 수량", "평균 단가", "평가금액", "평가손익", "수익률")}
+        grid = QGridLayout()
+        grid.setSpacing(6)
+        for i, tile in enumerate(self.tiles.values()):
+            grid.addWidget(tile, 0, i)
+        for i, tile in enumerate(self.holding_tiles.values()):
+            grid.addWidget(tile, 1, i)
+            tile.hide()
         left_box, right_box = QWidget(), QWidget()
         left_box.setLayout(left)
         right_box.setLayout(right)
@@ -268,7 +389,8 @@ class StockDetailDialog(_StockDialog):
         self.left_box = left_box
         charts.addWidget(left_box, 4)
         charts.addWidget(right_box, 5)
-        self.body.addLayout(charts)
+        content.addLayout(charts)
+        content.addLayout(grid)   # 수치는 긴 금액도 들어가게 창 전체 폭을 쓴다
 
         self.table = QTableWidget(0, len(TABLE_HEADERS))
         self.table.setHorizontalHeaderLabels(TABLE_HEADERS)
@@ -281,7 +403,7 @@ class StockDetailDialog(_StockDialog):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)   # 남는 폭은 긴 종목명에 준다
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.table.setMinimumHeight(120)
-        self.table.setMaximumHeight(180)   # 작은 화면에서도 창이 넘치지 않게 — 많으면 표 안에서 스크롤한다
+        self.table.setMaximumHeight(150)   # 작은 화면에서도 창이 넘치지 않게 — 많으면 표 안에서 스크롤한다
         self.table.setStyleSheet(f"""
             QTableWidget {{ background: {self.p['input']}; color: {self.p['text']}; border: none; border-radius: 12px;
                             gridline-color: transparent; font-size: 13px; }}
@@ -290,7 +412,7 @@ class StockDetailDialog(_StockDialog):
                                     font-size: 12px; font-weight: 700; }}
             QTableWidget::item:selected {{ background: {self.p['accent']}; color: #FFFFFF; }}""")
         self.table.itemSelectionChanged.connect(self._on_table_selected)
-        self.body.addWidget(self.table)
+        content.addWidget(self.table)
         self._align_first_header()
 
         if self.status_info["connected"] or self.status_info["has_manual"]:
@@ -300,6 +422,14 @@ class StockDetailDialog(_StockDialog):
             self._show_market()
         else:
             self._show_not_connected()
+
+    def fit_to_content(self):
+        """내용 높이에 맞추되 화면을 넘지 않는다."""
+        screen = self.screen().availableGeometry().height() if self.screen() else 900
+        limit = (self.max_height or screen) - 190   # 제목·버튼·그림자 자리
+        self.content.layout().activate()
+        self.scroll.setMinimumHeight(max(240, min(self.content.sizeHint().height(), limit)))
+        super().fit_to_content()
 
     def _align_first_header(self):
         item = self.table.horizontalHeaderItem(0)
@@ -374,7 +504,10 @@ class StockDetailDialog(_StockDialog):
             return
         self.holdings = result["holdings"]
         held = bool(self.holdings)
-        self.summary.setText(f"{result['total_pl']:+,.0f}원 ({result['total_rate']:+.2f}%)" if held else "보유 종목이 없어요")
+        if held:
+            animate_values(self.summary, (result["total_pl"], result["total_rate"]), lambda pl, rate: f"{pl:+,.0f}원 ({rate:+.2f}%)")
+        else:
+            self.summary.setText("보유 종목이 없어요")
         color = _pl_color(result["total_pl"]) or self.p["text"]
         self.summary.setStyleSheet(f"color: {color}; font-size: 22px; font-weight: 800;")
         self.summary_note.setText(f"{result['account']} · 평가금액 {result['total_value']:,.0f}원 · {result['fetched_at']} 기준"
@@ -419,7 +552,7 @@ class StockDetailDialog(_StockDialog):
             code, name = _stock().resolve_stock(query)
             if not code:
                 raise _stock().StockError("종목을 찾지 못했어요. 정확한 종목명이나 6자리 코드를 입력해 주세요.")
-            return code, name, self.history.get(code) or _stock().price_history(code)
+            return code, name, self.history.get(code) or _stock().price_bars(code)
 
         def done(result):
             if seq != self._chart_seq:
@@ -427,12 +560,76 @@ class StockDetailDialog(_StockDialog):
             if isinstance(result, Exception):
                 self.chart.set_message(str(result))
                 return
-            code, name, points = result
-            self.current_code = code
-            self.history[code] = points
-            if not points:
+            code, name, bars = result
+            self.current_code, self.current_name = code, name
+            self.history[code] = bars
+            if not bars:
                 self.chart.set_message(f"{name}의 가격 기록이 없어요.")
+                self._clear_stats()
                 return
-            held = next((h for h in self.holdings if h["code"] == code), None)
-            self.chart.set_data(f"{name} 일별 종가 (최근 {len(points)}거래일)", points, held.get("avg_price") if held else None)
+            self._draw_chart()
         self._spawn(work, done)
+
+    def set_period(self, days):
+        self.period_days = days
+        for key, button in self.period_buttons.items():
+            button.setObjectName("LinkPrimary" if key == days else "LinkGhost")
+            button.style().unpolish(button)
+            button.style().polish(button)
+        if self.history.get(self.current_code):
+            self._draw_chart()
+
+    def _visible_bars(self) -> list:
+        bars = self.history.get(self.current_code) or []
+        return bars[-self.period_days:] if self.period_days else bars
+
+    def _holding(self):
+        return next((h for h in self.holdings if h["code"] == self.current_code and "qty" in h), None)
+
+    def _draw_chart(self):
+        bars, held = self._visible_bars(), self._holding()
+        self.chart.set_data(f"{self.current_name} 일별 종가 (최근 {len(bars)}거래일)", [(b["date"], b["close"]) for b in bars],
+                            held.get("avg_price") if held else None, [b.get("volume", 0) for b in bars])
+        self._show_stats(len(bars) - 1, animate=True)
+        for tile in self.holding_tiles.values():
+            tile.setVisible(bool(held))
+        self.fit_to_content()
+        if held:
+            color = _pl_color(held["pl"])
+            self.holding_tiles["내 수량"].set_number(held["qty"], lambda v: f"{v:,.0f}주")
+            self.holding_tiles["평균 단가"].set_number(held["avg_price"], lambda v: f"{v:,.0f}원")
+            self.holding_tiles["평가금액"].set_number(held["value"], lambda v: f"{v:,.0f}원")
+            self.holding_tiles["평가손익"].set_number(held["pl"], lambda v: f"{v:+,.0f}원", color)
+            self.holding_tiles["수익률"].set_number(held["rate"], lambda v: f"{v:+.2f}%", color)
+
+    def _on_chart_hover(self, index):
+        if self.chart.points:
+            self._show_stats(len(self.chart.points) - 1 if index is None else index, animate=False)
+
+    def _show_stats(self, index: int, animate: bool):
+        bars = self._visible_bars()
+        if not 0 <= index < len(bars):
+            return
+        bar = bars[index]
+        all_bars = self.history.get(self.current_code) or []
+        position = all_bars.index(bar) if bar in all_bars else 0
+        previous = all_bars[position - 1]["close"] if position else None
+        change = bar["close"] - previous if previous else None
+        color = _pl_color(change) if change else ""
+        self.tiles["기준일"].set_text(bar["date"])
+        values = (("종가", bar["close"], "{:,.0f}원"), ("시가", bar.get("open"), "{:,.0f}원"), ("고가", bar.get("high"), "{:,.0f}원"),
+                  ("저가", bar.get("low"), "{:,.0f}원"), ("거래량", bar.get("volume"), "{:,.0f}주"))
+        for name, value, pattern in values:
+            if not value:
+                self.tiles[name].set_text("-")
+            elif animate:
+                self.tiles[name].set_number(value, pattern.format)
+            else:
+                self.tiles[name].set_text(pattern.format(value))
+        self.tiles["전일 대비"].set_text("-" if change is None else f"{change:+,.0f}원 ({change / previous * 100:+.2f}%)", color)
+
+    def _clear_stats(self):
+        for tile in self.tiles.values():
+            tile.set_text("-")
+        for tile in self.holding_tiles.values():
+            tile.hide()

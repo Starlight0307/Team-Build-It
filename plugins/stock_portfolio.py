@@ -329,8 +329,8 @@ def get_price(code: str) -> int:
     return price
 
 
-def get_price_history(code: str, days: int = 150) -> list:
-    """일별 종가 [("2026-11-05", 70000), ...] 오래된 날부터. 증권사가 한 번에 최대 100건까지 준다."""
+def get_price_bars(code: str, days: int = 150) -> list:
+    """일별 시세 [{"date", "open", "high", "low", "close", "volume"}] 오래된 날부터. 증권사가 한 번에 최대 100건까지 준다."""
     if not re.fullmatch(r"[0-9A-Z]{6}", code or ""):
         raise StockError("종목코드가 올바르지 않아요.")
     with _lock:
@@ -340,19 +340,32 @@ def get_price_history(code: str, days: int = 150) -> list:
         "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": (today - timedelta(days=days)).strftime("%Y%m%d"),
         "FID_INPUT_DATE_2": today.strftime("%Y%m%d"), "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"})
     _store_token(data)
-    points = {}
+    bars = {}
     for row in result.get("output2") or []:
         date, close = str(row.get("stck_bsop_date") or ""), int(_num(row.get("stck_clpr")))
         if re.fullmatch(r"\d{8}", date) and close > 0:
-            points[f"{date[:4]}-{date[4:6]}-{date[6:]}"] = close
-    return sorted(points.items())
+            bars[date] = _bar(date, row.get("stck_oprc"), row.get("stck_hgpr"), row.get("stck_lwpr"), close, row.get("acml_vol"))
+    return [bars[d] for d in sorted(bars)]
+
+
+def _bar(date: str, open_price, high, low, close, volume) -> dict:
+    return {"date": f"{date[:4]}-{date[4:6]}-{date[6:]}", "open": int(_num(open_price)), "high": int(_num(high)),
+            "low": int(_num(low)), "close": int(_num(close)), "volume": int(_num(volume))}
+
+
+def get_price_history(code: str, days: int = 150) -> list:
+    return [(b["date"], b["close"]) for b in get_price_bars(code, days)]
+
+
+def price_bars(code: str) -> list:
+    """계좌가 연결돼 있으면 증권사 시세, 아니면 공공데이터 시세."""
+    if logged_in() and _load()["account"]:
+        return get_price_bars(code)
+    return market_bars(code)
 
 
 def price_history(code: str) -> list:
-    """계좌가 연결돼 있으면 증권사 시세, 아니면 공공데이터 시세."""
-    if logged_in() and _load()["account"]:
-        return get_price_history(code)
-    return market_history(code)
+    return [(b["date"], b["close"]) for b in price_bars(code)]
 
 
 # ── 로그인·계좌 없이 보는 시세 (공공데이터, 지난 영업일 기준) ──
@@ -427,9 +440,13 @@ def delete_market_key():
     _market_cache.clear()
 
 
+def market_bars(code: str) -> list:
+    return [_bar(str(r["basDt"]), r.get("mkp"), r.get("hipr"), r.get("lopr"), r["clpr"], r.get("trqu")) for r in _market_rows(code)]
+
+
 def market_history(code: str) -> list:
     """일별 종가 [("2026-11-04", 70000), ...] 오래된 날부터."""
-    return [(f"{r['basDt'][:4]}-{r['basDt'][4:6]}-{r['basDt'][6:]}", int(_num(r["clpr"]))) for r in _market_rows(code)]
+    return [(b["date"], b["close"]) for b in market_bars(code)]
 
 
 def market_quote(code: str) -> dict:

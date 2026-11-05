@@ -197,6 +197,15 @@ def isolated_calendar_tool_tokens(tmp_path, monkeypatch):
     return fake_dir
 
 
+def _report_uncaught_error(error_type, error, trace):
+    """PyQt는 슬롯의 예외로 프로세스를 강제 종료한다 — 원인 없이 테스트 전체가 죽지 않게 문장을 남긴다(앱과 같은 동작)."""
+    import traceback
+    sys.__stderr__.write("\n@@UNCAUGHT " + "".join(traceback.format_exception(error_type, error, trace))[-1500:] + "\n")
+
+
+sys.excepthook = _report_uncaught_error
+
+
 @pytest.fixture(scope="session")
 def qapp():
     """PyQt6 위젯을 다루는 테스트에 필요한 QApplication — 프로세스당 하나만

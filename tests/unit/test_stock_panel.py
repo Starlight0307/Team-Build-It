@@ -324,3 +324,8 @@ def test_current_price_stays_visible_while_typing(qapp, stock):
     dlg.quantity_input.setText("1")
     assert "현재가 70,000원" in dlg.stock_label.text()
 
+
+@pytest.mark.parametrize("dark", [False, True])
+def test_combo_arrow_image_exists(qapp, dark):
+    assert os.path.isfile(stock_panel._arrow_path(dark))
+
