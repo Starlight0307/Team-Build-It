@@ -12,6 +12,10 @@ MAX_BARS = 8
 TABLE_HEADERS = ("종목", "수량", "평균 단가", "현재가", "평가금액", "평가손익", "수익률")
 MARKET_HEADERS = ("종목", "기준일", "종가", "전일 대비", "등락률")
 SEARCH_ROLE = Qt.ItemDataRole.UserRole + 1
+DEFAULT_WIDTH, MIN_WIDTH, MIN_HEIGHT = 1240, 900, 560
+CHROME_HEIGHT = 190     # 제목·버튼·그림자 자리
+TILE_WIDTH = 118        # 이보다 좁으면 수치 칸을 다음 줄로 내린다
+BARS_MIN_WIDTH = 780    # 이보다 좁으면 손익 막대를 접고 그래프에 폭을 준다
 PERIODS = (("1개월", 22), ("3개월", 66), ("전체", None))   # 거래일 수
 
 
@@ -298,7 +302,9 @@ class StockDetailDialog(_StockDialog):
 
     def __init__(self, parent=None, open_settings=None):
         super().__init__(parent, "주식 상세")
-        self.setMinimumWidth(1240)
+        self.setMinimumWidth(MIN_WIDTH)
+        self.resize(DEFAULT_WIDTH, self.height())
+        self.enable_resize()
         self.max_height = None   # 시험용 — 없으면 실제 화면 높이를 쓴다
         self.status_info = _stock().account_status()
         self.open_settings = open_settings
@@ -365,10 +371,8 @@ class StockDetailDialog(_StockDialog):
         self.holding_tiles = {name: StatTile(name, self.p) for name in ("내 수량", "평균 단가", "평가금액", "평가손익", "수익률")}
         grid = QGridLayout()
         grid.setSpacing(6)
-        for i, tile in enumerate(self.tiles.values()):
-            grid.addWidget(tile, 0, i)
-        for i, tile in enumerate(self.holding_tiles.values()):
-            grid.addWidget(tile, 1, i)
+        self.stat_grid, self._stat_columns, self._has_bars = grid, 0, False
+        for tile in self.holding_tiles.values():
             tile.hide()
         left_box, right_box = QWidget(), QWidget()
         left_box.setLayout(left)
@@ -377,7 +381,7 @@ class StockDetailDialog(_StockDialog):
         self.left_box = left_box
         charts.addWidget(left_box, 4)
         charts.addWidget(right_box, 5)
-        content.addLayout(charts)
+        content.addLayout(charts, 3)   # 창을 키우면 그래프가 가장 많이 커진다
         content.addLayout(grid)   # 수치는 긴 금액도 들어가게 창 전체 폭을 쓴다
 
         self.table = QTableWidget(0, len(TABLE_HEADERS))
@@ -400,8 +404,9 @@ class StockDetailDialog(_StockDialog):
                                     font-size: 12px; font-weight: 700; }}
             QTableWidget::item:selected {{ background: {self.p['accent']}; color: #FFFFFF; }}""")
         self.table.itemSelectionChanged.connect(self._on_table_selected)
-        content.addWidget(self.table)
+        content.addWidget(self.table, 1)
         self._align_first_header()
+        self._arrange_stats()
         self._spawn(_stock().stock_list, self._on_stock_list)
 
         if self.status_info["connected"] or self.status_info["has_manual"]:
@@ -501,12 +506,32 @@ class StockDetailDialog(_StockDialog):
             self.show_stock(index.data(Qt.ItemDataRole.UserRole))
 
     def fit_to_content(self):
-        """내용 높이에 맞추되 화면을 넘지 않는다."""
+        """내용 높이에 맞추되 화면을 넘지 않는다. 사용자가 크기를 정했으면 그대로 둔다."""
+        if self.user_sized:
+            return
         screen = self.screen().availableGeometry().height() if self.screen() else 900
-        limit = (self.max_height or screen) - 190   # 제목·버튼·그림자 자리
         self.content.layout().activate()
-        self.scroll.setMinimumHeight(max(240, min(self.content.sizeHint().height(), limit)))
-        super().fit_to_content()
+        wanted = self.content.sizeHint().height() + CHROME_HEIGHT
+        self.setMinimumHeight(MIN_HEIGHT)
+        self.scroll.setMinimumHeight(240)
+        self.resize(self.width(), max(MIN_HEIGHT, min(wanted, self.max_height or screen)))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._arrange_stats()
+        self.table.setMaximumHeight(16777215 if self.user_sized else 150)   # 직접 키우면 표도 함께 커진다
+
+    def _arrange_stats(self):
+        """폭에 맞춰 수치 칸의 줄 수를 정하고, 좁으면 손익 막대를 접는다 — 금액이 잘리지 않게."""
+        available = self.width() - 390   # 그림자·카드 여백·왼쪽 목록·스크롤바
+        self.left_box.setVisible(self._has_bars and available >= BARS_MIN_WIDTH)
+        columns = max(3, min(len(self.tiles), available // TILE_WIDTH))
+        if columns == self._stat_columns:
+            return
+        self._stat_columns = columns
+        for row_start, tiles in ((0, self.tiles.values()), (3, self.holding_tiles.values())):
+            for i, tile in enumerate(tiles):
+                self.stat_grid.addWidget(tile, row_start + i // columns, i % columns)
 
     def _align_first_header(self):
         item = self.table.horizontalHeaderItem(0)
@@ -573,7 +598,8 @@ class StockDetailDialog(_StockDialog):
             self.summary.setStyleSheet("font-size: 22px; font-weight: 800;")
             self.summary_note.setText(str(result))
             self.bars.set_rows([])
-            self.left_box.hide()
+            self._has_bars = False
+            self._arrange_stats()
             self.table.setRowCount(0)
             self.table.hide()
             return
@@ -588,7 +614,8 @@ class StockDetailDialog(_StockDialog):
         self.summary_note.setText(f"{result['account']} · 평가금액 {result['total_value']:,.0f}원 · {result['fetched_at']} 기준"
                                   if held else f"{result['account']} · {result['fetched_at']} 기준")
         self.bars.set_rows(self.holdings)
-        self.left_box.setVisible(held)
+        self._has_bars = held
+        self._arrange_stats()
         self.table.setVisible(held)
         self._fill_table()
         if self.stock_rows:

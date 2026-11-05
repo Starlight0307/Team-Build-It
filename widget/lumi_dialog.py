@@ -10,7 +10,7 @@ QMessageBox / QInputDialog 대신 같은 이름의 함수를 쓰면 된다(반�
 다크·라이트 모드는 앱이 테마를 바꿀 때 set_dark()로 알려준다(app_main.apply_theme).
 되돌릴 수 없는 작업을 묻는 창(삭제·탈퇴·되돌릴 수 없음)은 실행 버튼을 빨간색으로 보여준다.
 """
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QRect, QSize, Qt
 from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit,
                              QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget)
@@ -90,6 +90,54 @@ def qss(p: dict) -> str:
     """
 
 
+class _ResizeEdge(QWidget):
+    """카드 가장자리의 보이지 않는 손잡이. 그림자 자리는 Windows에서 클릭이 뒤로 통과하므로 카드 안쪽에 둔다."""
+    THICKNESS, CORNER = 8, 16
+
+    def __init__(self, dialog, left=False, top=False, right=False, bottom=False):
+        super().__init__(dialog)
+        self.left, self.top, self.right, self.bottom = left, top, right, bottom
+        diagonal = (left and top) or (right and bottom)
+        cursor = (Qt.CursorShape.SizeHorCursor if (left or right) and not (top or bottom) else
+                  Qt.CursorShape.SizeVerCursor if (top or bottom) and not (left or right) else
+                  Qt.CursorShape.SizeFDiagCursor if diagonal else Qt.CursorShape.SizeBDiagCursor)
+        self.setCursor(cursor)
+        self._start = None
+
+    def place(self, card: QRect):
+        t, c = self.THICKNESS, self.CORNER
+        x = card.left() if self.left else card.right() + 1 - (c if self.top or self.bottom else t) if self.right else card.left() + c
+        y = card.top() if self.top else card.bottom() + 1 - (c if self.left or self.right else t) if self.bottom else card.top() + c
+        w = (c if self.top or self.bottom else t) if self.left or self.right else card.width() - 2 * c
+        h = (c if self.left or self.right else t) if self.top or self.bottom else card.height() - 2 * c
+        self.setGeometry(x, y, w, h)
+
+    def mousePressEvent(self, e):
+        self._start = (e.globalPosition().toPoint(), self.window().geometry())
+
+    def mouseMoveEvent(self, e):
+        if self._start is None:
+            return
+        origin, rect = self._start
+        delta = e.globalPosition().toPoint() - origin
+        window = self.window()
+        min_w, min_h = window.minimumWidth(), window.minimumHeight()
+        new = QRect(rect)
+        if self.right:
+            new.setWidth(max(min_w, rect.width() + delta.x()))
+        if self.bottom:
+            new.setHeight(max(min_h, rect.height() + delta.y()))
+        if self.left:   # 줄일 수 있는 만큼만 — 오른쪽 끝은 움직이지 않는다
+            new.setLeft(min(rect.left() + delta.x(), rect.right() + 1 - min_w))
+        if self.top:
+            new.setTop(min(rect.top() + delta.y(), rect.bottom() + 1 - min_h))
+        window.user_sized = True
+        window.setGeometry(new)
+
+    def mouseReleaseEvent(self, e):
+        self._start = None
+
+
 class LumiDialog(QDialog):
     """제목(아이콘) · 설명 · 내용(body) · 상태 줄 · 버튼 두 개로 된 둥근 카드 팝업(테두리 없는 창)."""
 
@@ -147,6 +195,8 @@ class LumiDialog(QDialog):
         self.buttons_row = btns
         L.addLayout(btns)
         self.setStyleSheet(qss(self.p))
+        self.user_sized = False   # 사용자가 끌어서 크기를 정하면 내용에 맞춰 되돌리지 않는다
+        self._resize_edges = []
 
     def field(self, label: str, widget):
         lab = QLabel(label); lab.setObjectName("LinkField")
@@ -161,9 +211,24 @@ class LumiDialog(QDialog):
         if self.isVisible():   # 상태 줄이 생기면 그만큼 창을 늘린다(안 늘리면 위 글의 마지막 줄이 잘렸다)
             self.fit_to_content()
 
+    def enable_resize(self):
+        """가장자리와 모서리를 끌어 창 크기를 바꿀 수 있게 한다."""
+        sides = [dict(left=True), dict(right=True), dict(top=True), dict(bottom=True), dict(left=True, top=True),
+                 dict(right=True, top=True), dict(left=True, bottom=True), dict(right=True, bottom=True)]
+        self._resize_edges = [_ResizeEdge(self, **side) for side in sides]
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        card = self.rect().marginsRemoved(self.layout().contentsMargins())
+        for edge in self._resize_edges:
+            edge.place(card)
+            edge.raise_()
+
     def fit_to_content(self):
         """폭은 그대로 두고, 여러 줄로 접히는 글(도움말 등)까지 다 들어가는 높이로 맞춘다
         (adjustSize만으로는 접힌 글 높이를 덜 잡아 마지막 줄이 잘렸다)."""
+        if self.user_sized:
+            return
         lay = self.layout()
         lay.activate()
         w = max(self.minimumWidth(), self.width(), self.sizeHint().width())

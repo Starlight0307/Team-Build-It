@@ -526,6 +526,179 @@ def clipped_labels(root) -> list:
     return out
 
 
+def _real_screen_app():
+    """offscreen이 아닌 진짜 화면 — 창 투명도와 클릭은 운영체제가 처리하는 부분이라 여기서만 확인된다."""
+    os.environ.pop("QT_QPA_PLATFORM", None)
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication(sys.argv)
+    out_dir = os.path.join(ROOT, "selftest_out"); os.makedirs(out_dir, exist_ok=True)
+    return app, out_dir
+
+
+def _pump(app, seconds):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        app.processEvents(); time.sleep(0.004)
+
+
+def _shot(app, widget, path=None):
+    g = widget.frameGeometry()
+    image = app.primaryScreen().grabWindow(0, g.x(), g.y(), g.width(), g.height()).toImage()
+    if path:
+        image.save(path)
+    return image
+
+
+@check("애니메이션 — 팝업 창 열림 (실제 화면 캡처)")
+def _motion_window():
+    app, out_dir = _real_screen_app()
+    from PyQt6.QtGui import QColor
+    from widget import lumi_dialog, motion
+    motion.set_enabled(True)
+    filt = motion._AppMotion()
+    app.installEventFilter(filt)
+    try:
+        dlg = lumi_dialog.LumiDialog(None, "창 열림 점검", "창이 서서히 나타나며 살짝 올라와요.")
+        dlg.show()
+        levels, ys = [], []
+        end = time.monotonic() + 0.5
+        while time.monotonic() < end:
+            app.processEvents()
+            levels.append(dlg.windowOpacity()); ys.append(dlg.y())
+            if 0.2 < levels[-1] < 0.8 and not os.path.exists(os.path.join(out_dir, "motion_window_mid.png")):
+                _shot(app, dlg, os.path.join(out_dir, "motion_window_mid.png"))
+            time.sleep(0.004)
+        final = _shot(app, dlg, os.path.join(out_dir, "motion_window_end.png"))
+        center = QColor(final.pixel(final.width() - 60, final.height() // 3))
+        pal = lumi_dialog.palette(dlg.dark)
+        bg = QColor(pal["bg"])
+        problems = []
+        if dlg.windowOpacity() != 1.0:
+            problems.append(f"끝 불투명도 {dlg.windowOpacity()}")
+        if not any(0.0 < v < 1.0 for v in levels):
+            problems.append("중간 단계 없음")
+        if len(set(ys)) < 3:
+            problems.append(f"올라오는 움직임 없음 {sorted(set(ys))[:3]}")
+        if abs(center.red() - bg.red()) + abs(center.green() - bg.green()) + abs(center.blue() - bg.blue()) > 40:
+            problems.append(f"카드 색 {center.name()} (기대 {pal['bg']})")
+        dlg.close()
+        info = f"단계 {len(set(round(v, 2) for v in levels))}개 · 이동 {len(set(ys))}칸 · 카드 {center.name()}"
+        return ("FAIL", "; ".join(problems) + " · " + info) if problems else ("PASS", info)
+    finally:
+        app.removeEventFilter(filt)
+
+
+@check("애니메이션 — 화면 전환·말풍선·카드 (실제 화면 캡처)")
+def _motion_page():
+    app, out_dir = _real_screen_app()
+    from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+    from widget import motion
+    from widget.widgets import AutoSizeStackedWidget, MessageBubble
+    motion.set_enabled(True)
+    stack = AutoSizeStackedWidget()
+    stack.setStyleSheet("background-color: #F1EAFF;")
+    first, second = QLabel("첫 화면"), QWidget()
+    lay = QVBoxLayout(second)
+    cards = [QLabel(f"카드 {i}") for i in range(4)]
+    for card in cards:
+        card.setProperty("motionCard", True)
+        card.setStyleSheet("background-color: #FFFFFF; border-radius: 12px; font-size: 22px;")
+        lay.addWidget(card)
+    mine, lumi = MessageBubble("나: 안녕", True, max_width=560), MessageBubble("안녕하세요, 루미예요.", False, max_width=560)
+    lay.addWidget(mine); lay.addWidget(lumi)
+    stack.addWidget(first); stack.addWidget(second)
+    stack.setGeometry(160, 160, 640, 520)
+    stack.show()
+    _pump(app, 0.5)
+    stack.setCurrentIndex(1)
+    covered = any(type(w) is QLabel and w not in (first, *cards) and w.parent() is stack for w in stack.findChildren(QLabel))
+    _pump(app, 0.09)
+    _shot(app, stack, os.path.join(out_dir, "motion_page_mid.png"))
+    mine2 = MessageBubble("나: 두 번째 말", True, max_width=560)
+    lay.addWidget(mine2)
+    _pump(app, 0.1)
+    moving = mine2.graphicsEffect() is not None
+    _pump(app, 1.2)
+    _shot(app, stack, os.path.join(out_dir, "motion_page_end.png"))
+    left_cover = [w for w in stack.findChildren(QLabel) if w.parent() is stack and w is not first]
+    left_effect = [w for w in (*cards, mine, lumi, mine2) if w.graphicsEffect() is not None]
+    problems = []
+    if not covered:
+        problems.append("전환 덮개가 안 생김")
+    if left_cover:
+        problems.append(f"덮개 {len(left_cover)}개 남음")
+    if left_effect:
+        problems.append(f"효과 {len(left_effect)}개 남음")
+    if not moving:
+        problems.append("말풍선 효과 없음")
+    stack.close()
+    return ("FAIL", "; ".join(problems)) if problems else ("PASS", "전환 덮개 사라짐 · 카드·말풍선 효과 정리됨")
+
+
+def _real_drag(app, start, end):
+    """진짜 마우스 입력 — 투명 창에서 클릭이 뒤로 빠지지 않는지는 이렇게만 알 수 있다."""
+    import ctypes
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QCursor
+    down, up = 0x0002, 0x0004
+    QCursor.setPos(start); _pump(app, 0.15)
+    ctypes.windll.user32.mouse_event(down, 0, 0, 0, 0); _pump(app, 0.1)
+    for i in range(1, 9):
+        QCursor.setPos(start + QPoint((end - start).x() * i // 8, (end - start).y() * i // 8)); _pump(app, 0.03)
+    ctypes.windll.user32.mouse_event(up, 0, 0, 0, 0); _pump(app, 0.15)
+
+
+@check("주식 창 — 실제 마우스로 크기 조절과 버튼 물결")
+def _stock_resize():
+    if not IS_WIN:
+        return "SKIP", "진짜 마우스 입력은 Windows에서만"
+    app, out_dir = _real_screen_app()
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QCursor
+    from plugins import stock_portfolio as sp
+    sp.load_master = lambda: {"005930": "삼성전자", "000660": "SK하이닉스"}
+    from widget import motion, stock_detail
+    motion.set_enabled(True)
+    filt = motion._AppMotion()
+    app.installEventFilter(filt)
+    try:
+        dlg = stock_detail.StockDetailDialog()
+        dlg.setGeometry(40, 20, 1000, 640)
+        dlg.show()
+        _KEEP_ALIVE.append(dlg)
+        _pump(app, 0.8)
+        before = dlg.geometry()
+        problems = []
+        edge = next(e for e in dlg._resize_edges if e.right and e.bottom)
+        grip = edge.mapToGlobal(edge.rect().center())
+        _real_drag(app, grip, grip + QPoint(120, 70))
+        _pump(app, 0.2)
+        grown = dlg.geometry()
+        if (grown.width() - before.width(), grown.height() - before.height()) != (120, 70):
+            problems.append(f"모서리 끌기 {before.width()}x{before.height()} → {grown.width()}x{grown.height()} (기대 +120, +70)")
+        edge = next(e for e in dlg._resize_edges if e.left and not (e.top or e.bottom))
+        grip = edge.mapToGlobal(edge.rect().center())
+        _real_drag(app, grip, grip + QPoint(40, 0))
+        _pump(app, 0.2)
+        if dlg.width() != grown.width() - 40 or dlg.geometry().right() != grown.right():
+            problems.append(f"왼쪽 끌기 후 폭 {dlg.width()} (기대 {grown.width() - 40})")
+        _shot(app, dlg, os.path.join(out_dir, "stock_resized.png"))
+        button = dlg.btn_secondary
+        QCursor.setPos(button.mapToGlobal(button.rect().center())); _pump(app, 0.25)
+        glow = button.findChild(motion._Glow) is not None
+        if not glow:
+            problems.append("마우스를 올려도 버튼 반응 없음")
+        dlg.user_sized, width = True, dlg.width()
+        dlg.fit_to_content()
+        if dlg.width() != width:
+            problems.append("내용 맞춤이 크기를 되돌림")
+        dlg.close()
+        info = f"{before.width()}x{before.height()} → {grown.width()}x{grown.height()} → 폭 {width}"
+        return ("FAIL", "; ".join(problems) + " · " + info) if problems else ("PASS", info)
+    finally:
+        app.removeEventFilter(filt)
+
+
 @check("환경설정 글자 잘림 (실제 Windows 글꼴)")
 def _settings_clip():
     os.environ.pop("QT_QPA_PLATFORM", None)

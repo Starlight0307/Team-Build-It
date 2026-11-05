@@ -404,7 +404,7 @@ def test_detail_fits_small_screen_and_scrolls(qapp, stock):
     assert _wait(qapp, lambda: dlg.chart.points)
     dlg.fit_to_content()
     qapp.processEvents()
-    assert dlg.scroll.minimumHeight() <= 720 - 190
+    assert dlg.height() <= 720 and dlg.scroll.minimumHeight() <= 720 - 190
     assert not dlg.btn_secondary.isHidden()
     dlg.close()
 
@@ -543,3 +543,103 @@ def test_master_failure_leaves_message_in_list(qapp, stock, monkeypatch):
     dlg = _dialog(qapp)
     assert _wait(qapp, lambda: "받지 못했어요" in dlg.list_title.text())
     dlg.close()
+
+
+def _drag(qapp, edge, dx, dy):
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QMouseEvent
+    start = QPointF(edge.rect().center())
+    origin = QPointF(edge.mapToGlobal(edge.rect().center()))
+    left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+    mods = Qt.KeyboardModifier.NoModifier
+    qapp.sendEvent(edge, QMouseEvent(QEvent.Type.MouseButtonPress, start, origin, left, left, mods))
+    moved = origin + QPointF(dx, dy)
+    qapp.sendEvent(edge, QMouseEvent(QEvent.Type.MouseMove, start + QPointF(dx, dy), moved, none, left, mods))
+    qapp.sendEvent(edge, QMouseEvent(QEvent.Type.MouseButtonRelease, start + QPointF(dx, dy), moved, left, none, mods))
+
+
+def _edge(dlg, **sides):
+    wanted = {"left": False, "top": False, "right": False, "bottom": False, **sides}
+    return next(e for e in dlg._resize_edges if all(getattr(e, k) == v for k, v in wanted.items()))
+
+
+def test_every_edge_and_corner_resizes_and_opposite_side_stays(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    qapp.processEvents()
+    g = dlg.geometry()
+    _drag(qapp, _edge(dlg, right=True, bottom=True), 120, 90)
+    assert (dlg.width(), dlg.height()) == (g.width() + 120, g.height() + 90) and dlg.pos() == g.topLeft()
+    g = dlg.geometry()
+    _drag(qapp, _edge(dlg, left=True), -50, 0)
+    assert dlg.width() == g.width() + 50 and dlg.geometry().right() == g.right()
+    g = dlg.geometry()
+    _drag(qapp, _edge(dlg, top=True), 0, 40)
+    assert dlg.height() == g.height() - 40 and dlg.geometry().bottom() == g.bottom()
+    assert len(dlg._resize_edges) == 8
+    dlg.close()
+
+
+def test_cannot_shrink_below_minimum_and_left_drag_does_not_push_window(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    qapp.processEvents()
+    _drag(qapp, _edge(dlg, right=True, bottom=True), -5000, -5000)
+    assert dlg.width() == sd.MIN_WIDTH and dlg.height() == sd.MIN_HEIGHT
+    g = dlg.geometry()
+    _drag(qapp, _edge(dlg, left=True, top=True), 3000, 3000)
+    assert dlg.geometry() == g
+    dlg.close()
+
+
+def test_user_size_survives_new_chart_and_period_change(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    assert _wait(qapp, lambda: dlg.current_code)
+    _drag(qapp, _edge(dlg, right=True), 200, 0)
+    width, height = dlg.width(), dlg.height()
+    dlg.set_period(22)
+    dlg.show_stock("035720")
+    assert _wait(qapp, lambda: dlg.current_code == "035720")
+    assert (dlg.width(), dlg.height()) == (width, height)
+    dlg.close()
+
+
+def test_narrow_window_moves_tiles_to_more_rows_and_folds_bars_and_wide_restores(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    assert _wait(qapp, lambda: dlg.holdings)
+    assert not dlg.left_box.isHidden() and dlg._stat_columns == len(dlg.tiles)
+    _drag(qapp, _edge(dlg, right=True), -5000, 0)
+    assert dlg.left_box.isHidden() and dlg._stat_columns < len(dlg.tiles)
+    _drag(qapp, _edge(dlg, right=True), 1000, 0)
+    assert not dlg.left_box.isHidden() and dlg._stat_columns == len(dlg.tiles)
+    dlg.close()
+
+
+def test_enlarging_grows_chart_and_table(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    assert _wait(qapp, lambda: dlg.current_code)
+    qapp.processEvents()
+    chart, table = dlg.chart.height(), dlg.table.height()
+    _drag(qapp, _edge(dlg, bottom=True), 0, 400)
+    qapp.processEvents()
+    assert dlg.chart.height() > chart + 100 and dlg.table.height() > table
+    dlg.close()
+
+
+def test_other_dialogs_stay_fixed_size(qapp, stock):
+    assert stock_panel.StockAccountDialog()._resize_edges == []
+
+
+def test_default_height_shows_whole_content_when_screen_allows(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.max_height = 2000
+    dlg.show()
+    assert _wait(qapp, lambda: dlg.chart.points)
+    dlg.fit_to_content()
+    qapp.processEvents()
+    assert dlg.height() >= dlg.content.sizeHint().height() + sd.CHROME_HEIGHT - 1
+    dlg.close()
+
