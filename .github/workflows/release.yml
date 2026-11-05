@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: python -m pip install --only-binary=:all: -r requirements-dev.txt -r requirements-mac.txt
+      - run: "python -m pip install --only-binary=:all: -r requirements-dev.txt -r requirements-mac.txt"
       - run: python -m pytest tests/unit -q
         env:
           QT_QPA_PLATFORM: offscreen
