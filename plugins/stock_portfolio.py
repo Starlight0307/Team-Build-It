@@ -1,8 +1,8 @@
 """
-주식 플러그인 — 한국투자증권 모의 계좌의 손익 브리핑, 주문, 사용자 규칙 자동매매
+주식 플러그인 — 한국투자증권 계좌(모의·실전)의 손익 브리핑, 주문, 사용자 규칙 자동매매
 ────────────────────────────────────────────────────────
-● 모의 계좌 전용이다. 실계좌 주소와 거래 코드는 약관·법 검토 전이라 일부러 넣지 않았다
-  (docs/superpowers/specs/2026-11-05-stock-plugin-design.md).
+● 사용자가 이미 가진 계좌를 앱 키로 연결한다. 실전은 연결할 때 직접 골라야 하고, 주문마다 금액을 다시
+  입력해야 한다(docs/superpowers/specs/2026-11-05-stock-plugin-design.md).
 ● AI에게 공개하는 도구는 TOOL_SCHEMAS의 3개뿐이다. place_order는 사람이 주문 창에서
   누를 때만 부르고, AI는 주문 창을 채우기만 한다.
 ● 자동매매는 사용자가 직접 정한 규칙만 실행한다. 앱을 다시 켜면 꺼진 상태로 시작한다.
@@ -24,12 +24,16 @@ import requests
 from data import storage_location
 from data.secure_store import secure_open
 
-BASE_URL = "https://openapivts.koreainvestment.com:29443"
+BASE_URLS = {"demo": "https://openapivts.koreainvestment.com:29443",
+             "real": "https://openapi.koreainvestment.com:9443"}
+MODE_NAMES = {"demo": "모의", "real": "실전"}
 KIS_GUIDE_URL = "https://apiportal.koreainvestment.com/"
 MASTER_URL = "https://new.real.download.dws.co.kr/common/master/{}_code.mst.zip"
 MASTER_TAIL = {"kospi": 228, "kosdaq": 222}   # 공식 예제 kis_*_code_mst.py의 뒤쪽 고정 길이 — 그 앞이 코드·이름
-TR_BALANCE, TR_PRICE = "VTTC8434R", "FHKST01010100"
-TR_ORDER = {"sell": "VTTC0011U", "buy": "VTTC0012U"}
+TR_BALANCE = {"demo": "VTTC8434R", "real": "TTTC8434R"}
+TR_PRICE = "FHKST01010100"
+TR_ORDER = {"demo": {"sell": "VTTC0011U", "buy": "VTTC0012U"},
+            "real": {"sell": "TTTC0011U", "buy": "TTTC0012U"}}
 SIDE_NAMES = {"sell": "매도", "buy": "매수"}
 DEFAULT_ORDER_LIMIT = 1_000_000
 REQUEST_GAP = 1.1   # 모의투자 호출 제한(초당 약 1번)
@@ -127,13 +131,21 @@ def _throttle():
         _last_request = time.monotonic()
 
 
+def _mode(account: dict) -> str:
+    return "real" if (account or {}).get("mode") == "real" else "demo"   # 모르면 돈이 안 움직이는 쪽으로
+
+
+def _base_url(account: dict) -> str:
+    return BASE_URLS[_mode(account)]
+
+
 def _token(data: dict, account: dict = None) -> str:
     account = account or data["account"]
     if data.get("token") and data.get("token_expires", "") > datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"):
         return data["token"]
     _throttle()
     try:
-        resp = requests.post(BASE_URL + "/oauth2/tokenP", timeout=15, json={
+        resp = requests.post(_base_url(account) + "/oauth2/tokenP", timeout=15, json={
             "grant_type": "client_credentials", "appkey": account["app_key"], "appsecret": account["app_secret"]})
         body = resp.json()
     except (requests.RequestException, ValueError):
@@ -154,7 +166,7 @@ def _call(data: dict, method: str, path: str, tr_id: str, params: dict = None, b
                "tr_id": tr_id, "custtype": "P", "tr_cont": tr_cont}
     _throttle()
     try:
-        resp = requests.request(method, BASE_URL + path, headers=headers, params=params, json=body, timeout=15)
+        resp = requests.request(method, _base_url(account) + path, headers=headers, params=params, json=body, timeout=15)
         result = resp.json()
     except (requests.RequestException, ValueError):
         if method == "POST":
@@ -192,7 +204,7 @@ def _fetch_portfolio(data: dict, account: dict = None) -> dict:
               "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""}
     holdings, summary, tr_cont = [], {}, ""
     for _ in range(20):   # 잔고가 여러 페이지면 이어서 받는다
-        result, more = _call(data, "GET", "/uapi/domestic-stock/v1/trading/inquire-balance", TR_BALANCE,
+        result, more = _call(data, "GET", "/uapi/domestic-stock/v1/trading/inquire-balance", TR_BALANCE[_mode(account)],
                              params=params, tr_cont=tr_cont, account=account)
         for row in result.get("output1") or []:
             qty = int(_num(row.get("hldg_qty")))
@@ -211,11 +223,11 @@ def _fetch_portfolio(data: dict, account: dict = None) -> dict:
     pl = _num(summary.get("evlu_pfls_smtl_amt"))
     return {"holdings": holdings, "total_pl": pl, "total_buy": buy, "total_value": _num(summary.get("evlu_amt_smtl_amt")),
             "total_rate": pl / buy * 100 if buy else 0.0, "fetched_at": datetime.now(KST).strftime("%H:%M"),
-            "account": mask_account(account["number"])}
+            "account": mask_account(account["number"], _mode(account)), "mode": _mode(account)}
 
 
-def mask_account(number: str) -> str:
-    return "모의 계좌 ****" + re.sub(r"\D", "", number or "")[-4:]
+def mask_account(number: str, mode: str = "demo") -> str:
+    return f"{MODE_NAMES[mode]} 계좌 ****" + re.sub(r"\D", "", number or "")[-4:]
 
 
 def _require_account() -> dict:
@@ -223,27 +235,30 @@ def _require_account() -> dict:
         raise StockError("주식 기능은 로그인한 사용자만 쓸 수 있어요.")
     data = _load()
     if not data["account"]:
-        raise StockError("아직 증권 계좌를 연결하지 않았어요. 홈 화면의 주식 위젯에서 모의 계좌를 연결해 주세요.")
+        raise StockError("아직 증권 계좌를 연결하지 않았어요. 홈 화면의 주식 위젯에서 계좌를 연결해 주세요.")
     return data
 
 
-def connect_account(app_key: str, app_secret: str, account_no: str) -> str:
+def connect_account(app_key: str, app_secret: str, account_no: str, mode: str = "demo") -> str:
     """실제로 잔고를 한 번 읽어 본 뒤에만 저장한다. 안내 문장을 돌려준다."""
+    if mode not in BASE_URLS:
+        raise StockError("모의 또는 실전 계좌를 골라 주세요.")
     if not logged_in():
         raise StockError("주식 기능은 로그인한 사용자만 쓸 수 있어요.")
     app_key, app_secret = (app_key or "").strip(), (app_secret or "").strip()
     if not app_key or not app_secret:
         raise StockError("앱 키와 시크릿을 입력해 주세요.")
     _split_account(account_no)
-    account = {"app_key": app_key, "app_secret": app_secret, "number": account_no.strip(), "mode": "demo"}
+    account = {"app_key": app_key, "app_secret": app_secret, "number": account_no.strip(), "mode": mode}
     with _lock:
         data = _load()
         data.update(account=None, token=None, token_expires="")
     _fetch_portfolio(data, account)
     with _lock:
-        data["account"] = account
+        data.update(account=account, order_enabled=False)   # 계좌가 바뀌면 주문은 다시 켜야 한다
+        data["auto"]["enabled"] = False
         _save(data)
-    return f"{mask_account(account_no)}를 연결했어요."
+    return f"{mask_account(account_no, mode)}를 연결했어요."
 
 
 def disconnect_account():
@@ -257,8 +272,9 @@ def disconnect_account():
 def account_status() -> dict:
     data = _load() if logged_in() else _defaults()
     number = (data["account"] or {}).get("number")
-    return {"logged_in": logged_in(), "connected": bool(number), "account": mask_account(number) if number else "",
-            "order_enabled": data["order_enabled"], "order_limit": data["order_limit"]}
+    mode = _mode(data["account"])
+    return {"logged_in": logged_in(), "connected": bool(number), "account": mask_account(number, mode) if number else "",
+            "mode": mode, "order_enabled": data["order_enabled"], "order_limit": data["order_limit"]}
 
 
 def set_order_settings(enabled: bool, limit: int):
@@ -363,10 +379,10 @@ def validate_order(side: str, stock: str, quantity, price) -> str:
     """문제가 있으면 안내 문장, 없으면 ''."""
     status = account_status()
     if not status["connected"]:
-        return "먼저 모의 계좌를 연결해 주세요."
+        return "먼저 증권 계좌를 연결해 주세요."
     if not status["order_enabled"]:
         return "주문 기능이 꺼져 있어요. 주식 위젯의 계좌 설정에서 켜 주세요."
-    if side not in TR_ORDER:
+    if side not in SIDE_NAMES:
         return "매수인지 매도인지 골라 주세요."
     if not resolve_stock(stock)[0]:
         return "종목을 찾지 못했어요. 정확한 종목명이나 6자리 코드를 입력해 주세요."
@@ -381,7 +397,7 @@ def validate_order(side: str, stock: str, quantity, price) -> str:
 
 def _submit_order(data: dict, side: str, code: str, quantity: int, price: int) -> str:
     cano, product = _split_account(data["account"]["number"])
-    result, _ = _call(data, "POST", "/uapi/domestic-stock/v1/trading/order-cash", TR_ORDER[side], body={
+    result, _ = _call(data, "POST", "/uapi/domestic-stock/v1/trading/order-cash", TR_ORDER[_mode(data["account"])][side], body={
         "CANO": cano, "ACNT_PRDT_CD": product, "PDNO": code, "ORD_DVSN": "00", "ORD_QTY": str(quantity),
         "ORD_UNPR": str(price), "EXCG_ID_DVSN_CD": "KRX", "SLL_TYPE": "", "CNDT_PRIC": ""})
     return str((result.get("output") or {}).get("ODNO", ""))
@@ -390,25 +406,29 @@ def _submit_order(data: dict, side: str, code: str, quantity: int, price: int) -
 def _record_order(side, code, name, quantity, price, source, result):
     with _lock:
         data = _load()
+        mode = _mode(data["account"])
         data["orders"] = (data["orders"] + [{
             "at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"), "side": side, "code": code, "name": name,
-            "qty": quantity, "price": price, "source": source, "mode": "demo", "result": result}])[-300:]
+            "qty": quantity, "price": price, "source": source, "mode": mode, "result": result}])[-300:]
         _save(data)
     try:
         from plugins.activity_log import log_activity
         how = "자동매매" if source == "auto" else "직접 확정"
         # 활동 이력 목록은 시각과 이 이름만 보여 주므로 주문 내용을 이름에 담는다
-        log_activity(f"주식 주문: {name}({code}) {quantity:,}주 {price:,}원 {SIDE_NAMES[side]} · 모의 계좌 {how} · {result}",
+        log_activity(f"주식 주문: {name}({code}) {quantity:,}주 {price:,}원 {SIDE_NAMES[side]} · {MODE_NAMES[mode]} 계좌 {how} · {result}",
                      {}, result)
     except Exception as e:   # 이력 기록이 실패해도 주문 기록과 결과 안내는 그대로 간다
         print(f"[주식] 활동 이력 기록 오류: {type(e).__name__}")
 
 
-def place_order(side: str, stock: str, quantity: int, price: int) -> str:
-    """지정가 주문 한 번. 성공하면 안내 문장, 실패하면 StockError."""
+def place_order(side: str, stock: str, quantity: int, price: int, confirm_amount: int = None) -> str:
+    """지정가 주문 한 번. 성공하면 안내 문장, 실패하면 StockError.
+    실전 계좌는 사용자가 다시 입력한 예상 금액(confirm_amount)이 맞아야 나간다."""
     problem = validate_order(side, stock, quantity, price)
     if problem:
         raise StockError(problem)
+    if account_status()["mode"] == "real" and confirm_amount != quantity * price:
+        raise StockError("실전 주문은 예상 금액을 정확히 다시 입력해야 나가요.")
     if not market_open():
         raise StockError("정규장(평일 09:00~15:30)에만 주문할 수 있어요.")
     code, name = resolve_stock(stock)
@@ -434,7 +454,7 @@ def auto_state() -> dict:
 
 def add_rule(side: str, stock: str, target_price: int, quantity: int) -> dict:
     """예: add_rule("sell", "삼성전자", 70000, 10) — 현재가가 7만 원 이상이 되면 10주 지정가 매도."""
-    if side not in TR_ORDER:
+    if side not in SIDE_NAMES:
         raise StockError("매수인지 매도인지 골라 주세요.")
     code, name = resolve_stock(stock)
     if not code:
@@ -465,11 +485,14 @@ def set_auto_limits(max_order: int, max_daily_amount: int, max_daily_count: int)
         _save(data)
 
 
-def enable_auto():
-    """사용자가 자동매매 창에서 직접 누를 때만 부른다. AI 도구로 공개하지 않는다."""
+def enable_auto(real_money_confirmed: bool = False):
+    """사용자가 자동매매 창에서 직접 누를 때만 부른다. AI 도구로 공개하지 않는다.
+    실전 계좌는 사람의 확정 없이 실제 주문이 나가므로, 켤 때마다 따로 동의를 받는다."""
     with _lock:
         data = _require_account()
         auto = data["auto"]
+        if _mode(data["account"]) == "real" and not real_money_confirmed:
+            raise StockError("실전 자동매매는 실제 돈으로 주문돼요. 위험 안내에 동의해야 켤 수 있어요.")
         if min(auto["max_order"], auto["max_daily_amount"], auto["max_daily_count"]) <= 0:
             raise StockError("1회 금액, 하루 총액, 하루 횟수 한도를 모두 정해야 켤 수 있어요.")
         if not any(r["status"] == "waiting" for r in auto["rules"]):
@@ -506,7 +529,8 @@ def _limit_problem(data: dict, amount: int) -> str:
     if amount > auto["max_order"]:
         return f"1회 금액 한도({auto['max_order']:,}원)를 넘는 규칙이 있어 자동매매를 멈췄어요."
     today = datetime.now(KST).strftime("%Y-%m-%d")
-    done = [o for o in data["orders"] if o["source"] == "auto" and o["at"].startswith(today)]
+    mode = _mode(data["account"])   # 모의 주문이 실전 한도를 깎지 않게 계좌 종류별로 센다
+    done = [o for o in data["orders"] if o["source"] == "auto" and o["at"].startswith(today) and o.get("mode") == mode]
     if len(done) >= auto["max_daily_count"]:
         return f"하루 횟수 한도({auto['max_daily_count']}번)에 닿아 자동매매를 멈췄어요."
     if sum(o["qty"] * o["price"] for o in done) + amount > auto["max_daily_amount"]:
@@ -626,12 +650,12 @@ def open_stock_order(side: str, stock: str, quantity: int, price: int = 0) -> st
     """주문 창을 채워서 연다. 주문을 내지 않는다 — 사람이 창에서 직접 눌러야 나간다."""
     status = account_status()
     if not status["logged_in"] or not status["connected"]:
-        return "⚠️ 먼저 로그인하고 주식 위젯에서 모의 계좌를 연결해 주세요."
+        return "⚠️ 먼저 로그인하고 주식 위젯에서 증권 계좌를 연결해 주세요."
     if not status["order_enabled"]:
         return "⚠️ 주문 기능이 꺼져 있어요. 주식 위젯의 계좌 설정에서 켜 주세요."
     if _order_ui_hook is None:
         return "⚠️ 주문 창을 열 수 없어요. 홈 화면의 주식 위젯을 확인해 주세요."
-    _order_ui_hook({"side": side if side in TR_ORDER else "", "stock": str(stock or ""),
+    _order_ui_hook({"side": side if side in SIDE_NAMES else "", "stock": str(stock or ""),
                     "quantity": quantity, "price": price})
     return "주문 창을 열었어요. 내용을 확인하고 직접 눌러야 주문이 나가요. 아직 주문되지 않았어요."
 
@@ -646,7 +670,7 @@ def stop_stock_auto_trading() -> str:
 TOOL_SCHEMAS = {
     "get_stock_briefing": {"type": "function", "function": {
         "name": "get_stock_briefing",
-        "description": "연결한 모의 증권 계좌의 보유 종목과 평가손익을 알려준다. 결과의 숫자를 그대로 전달하고 "
+        "description": "연결한 증권 계좌의 보유 종목과 평가손익을 알려준다. 결과의 숫자를 그대로 전달하고 "
                        "매수·매도 추천이나 전망은 절대 하지 않는다.",
         "parameters": {"type": "object", "properties": {}}}},
     "open_stock_order": {"type": "function", "function": {

@@ -2,7 +2,7 @@
 import threading
 import webbrowser
 
-from PyQt6.QtCore import pyqtSignal, QTimer
+from PyQt6.QtCore import pyqtSignal, QObject, QTimer
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
                              QVBoxLayout, QWidget)
 
@@ -10,6 +10,8 @@ from widget import lumi_dialog
 from widget.dashboard import Panel
 
 PROFIT_COLOR, LOSS_COLOR = "#E5484D", "#3B82F6"   # 한국 관례: 이익 빨강, 손실 파랑 (기호도 함께 쓴다)
+# 스레드가 위젯의 마지막 참조를 쥐면 위젯이 화면 스레드 밖에서 지워져 앱이 죽는다 — 작업이 끝날 때까지 여기서 붙잡아 둔다
+_ALIVE = set()
 RULE_STATUS = {"waiting": "대기 중", "sending": "주문 중", "sent": "주문 접수됨", "failed": "거절됨", "unknown": "결과 모름"}
 
 
@@ -36,14 +38,15 @@ def _to_int(text: str):
 
 class _StockDialog(lumi_dialog.LumiDialog):
     """배경 작업 결과를 화면 스레드로 넘기는 공통 틀. 작업 중에는 닫히지 않는다."""
-    _done = pyqtSignal(object, object)   # 완료 함수, 결과 또는 오류
+    _done = pyqtSignal(object, object, object)   # 완료 함수, 결과 또는 오류, 끝난 스레드
 
     def __init__(self, parent, title: str, description: str = ""):
         super().__init__(parent, title, description, min_width=500)
         self.btn_primary.hide()
         self.btn_secondary.setText("닫기")
         self._busy = False
-        self._done.connect(lambda finish, result: finish(result))
+        self._jobs = 0
+        self._done.connect(self._on_job_done)
         self._apply_style()
 
     def _apply_style(self):
@@ -56,6 +59,11 @@ class _StockDialog(lumi_dialog.LumiDialog):
 
     def run_background(self, work, finish):
         self._busy = True
+        self._spawn(work, finish, ends_busy=True)
+
+    def _spawn(self, work, finish, ends_busy=False):
+        self._jobs += 1
+        _ALIVE.add(self)
 
         def job():
             try:
@@ -65,9 +73,17 @@ class _StockDialog(lumi_dialog.LumiDialog):
             except Exception as e:
                 print(f"[주식] 처리 오류: {type(e).__name__}")
                 result = _stock().StockError("처리하지 못했어요. 잠시 후 다시 시도해 주세요.")
-            self._busy = False
-            self._done.emit(finish, result)
+            if ends_busy:
+                self._busy = False
+            self._done.emit(finish, result, threading.current_thread())
         _in_background(job)
+
+    def _on_job_done(self, finish, result, thread):
+        thread.join(2)   # 스레드가 이 창을 놓은 뒤에 붙잡기를 푼다
+        self._jobs -= 1
+        if not self._jobs:
+            _ALIVE.discard(self)
+        finish(result)
 
     def reject(self):
         if not self._busy:
@@ -97,16 +113,20 @@ class StockAccountDialog(_StockDialog):
             self._build_connect_form()
 
     def _build_connect_form(self):
-        self.desc.setText("한국투자증권 KIS Developers에서 모의투자용 앱 키를 발급받아 입력해 주세요. 지금은 모의 계좌만 연결할 수 있어요.\n"
+        self.desc.setText("한국투자증권 KIS Developers에서 계좌의 앱 키를 발급받아 입력해 주세요. 이미 가진 계좌를 그대로 연결해요.\n"
                           "키는 이 컴퓨터에 암호화해 저장해요. 보유 종목과 손익은 브리핑할 때 대화 기록에 남을 수 있어요.")
         self.desc.show()
         self.key_input, self.secret_input, self.account_input = QLineEdit(), QLineEdit(), QLineEdit()
         self.key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.secret_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.account_input.setPlaceholderText("50012345-01")
+        self.mode_input = QComboBox()
+        self.mode_input.addItem("모의 계좌 (실제 돈이 움직이지 않아요)", "demo")
+        self.mode_input.addItem("실전 계좌 (실제 돈으로 주문돼요)", "real")
+        self.field("계좌 종류 (키도 같은 종류로 발급받아야 해요)", self.mode_input)
         self.field("앱 키", self.key_input)
         self.field("앱 시크릿", self.secret_input)
-        self.field("모의 계좌번호", self.account_input)
+        self.field("계좌번호", self.account_input)
         self.add_button("발급 방법 보기", "LinkGhost", lambda: webbrowser.open(_stock().KIS_GUIDE_URL))
         self.btn_connect = self.add_button("연결", "LinkPrimary", self._connect)
 
@@ -114,7 +134,8 @@ class StockAccountDialog(_StockDialog):
         self.btn_connect.setEnabled(False)
         self.set_status("연결을 확인하는 중이에요…")
         key, secret, number = self.key_input.text(), self.secret_input.text(), self.account_input.text()
-        self.run_background(lambda: _stock().connect_account(key, secret, number), self._on_connected)
+        mode = self.mode_input.currentData()
+        self.run_background(lambda: _stock().connect_account(key, secret, number, mode), self._on_connected)
 
     def _on_connected(self, result):
         self.btn_connect.setEnabled(True)
@@ -141,7 +162,7 @@ class StockAccountDialog(_StockDialog):
             self.set_status("1회 주문 한도를 숫자로 입력해 주세요.", "err")
             return
         if self.order_check.isChecked() and not self.status_info["order_enabled"] and lumi_dialog.question(
-                self, "주문 기능 켜기", "주문은 되돌릴 수 없고 손실이 생길 수 있어요. 지금은 모의 계좌로만 나가요.\n"
+                self, "주문 기능 켜기", f"주문은 되돌릴 수 없고 손실이 생길 수 있어요. {self.status_info['account']}로 주문이 나가요.\n"
                 "루미는 매수·매도를 추천하지 않으며, 주문은 직접 확인하고 눌러야 나가요. 켤까요?") != QMessageBox.StandardButton.Yes:
             return
         _stock().set_order_settings(self.order_check.isChecked(), limit)
@@ -161,7 +182,9 @@ class StockOrderDialog(_StockDialog):
     def __init__(self, request: dict = None, parent=None):
         request = request or {}
         status = _stock().account_status()
-        super().__init__(parent, "주문 확인", f"{status['account']} · 정규장 지정가 주문 · 직접 눌러야 주문이 나가요")
+        self.real = status["mode"] == "real"
+        warning = "⚠️ 실제 돈으로 주문돼요 · " if self.real else ""
+        super().__init__(parent, "주문 확인", f"{warning}{status['account']} · 정규장 지정가 주문 · 직접 눌러야 주문이 나가요")
         self.btn_secondary.setText("취소")
         self.side_input = QComboBox()
         self.side_input.addItem("매도", "sell")
@@ -177,6 +200,10 @@ class StockOrderDialog(_StockDialog):
         self.field("수량(주)", self.quantity_input)
         self.field("지정가(원)", self.price_input)
         self.body.addWidget(self.amount_label)
+        self.amount_input = QLineEdit()
+        if self.real:
+            self.field("예상 금액을 다시 입력해 주세요(원)", self.amount_input)
+        self.amount_input.setVisible(self.real)
         self.btn_confirm = self.add_button("주문 확정", "LumiDanger", self._confirm)
         self.btn_confirm.setEnabled(False)
         self.btn_secondary.setDefault(True)
@@ -184,7 +211,8 @@ class StockOrderDialog(_StockDialog):
         self._master_ready = False
         self._sent = False
         self._price_for = ""
-        for widget in (self.stock_input, self.quantity_input, self.price_input):
+        self._price_text = ""
+        for widget in (self.stock_input, self.quantity_input, self.price_input, self.amount_input):
             widget.textChanged.connect(self._revalidate)
         self.side_input.currentIndexChanged.connect(self._revalidate)
         self.stock_input.editingFinished.connect(self._show_price)
@@ -205,9 +233,12 @@ class StockOrderDialog(_StockDialog):
             return
         side, stock_text, quantity, price = self._values()
         problem = _stock().validate_order(side, stock_text, quantity, price)
+        if not problem and self.real and _to_int(self.amount_input.text()) != quantity * price:
+            problem = "예상 금액을 정확히 다시 입력하면 확정할 수 있어요."
         code, name = _stock().resolve_stock(stock_text)
         self.btn_confirm.setText(f"{_stock().SIDE_NAMES[side]} 확정")
-        self.stock_label.setText(f"{name} ({code})" if code else "")
+        price_note = f" · {self._price_text}" if code and code == self._price_for and self._price_text else ""
+        self.stock_label.setText(f"{name} ({code}){price_note}" if code else "")
         self.amount_label.setText(f"예상 금액 {quantity * price:,}원" if quantity and price else "")
         self.btn_confirm.setEnabled(not problem and not self._busy)
         self.set_status(problem, "err" if problem else "info")
@@ -216,7 +247,7 @@ class StockOrderDialog(_StockDialog):
         code = _stock().resolve_stock(self.stock_input.text().strip())[0] if self._master_ready else None
         if not code or code == self._price_for:
             return
-        self._price_for = code
+        self._price_for, self._price_text = code, ""
 
         def work():
             try:
@@ -224,10 +255,11 @@ class StockOrderDialog(_StockDialog):
             except _stock().StockError as e:
                 return f"현재가를 확인하지 못했어요 ({e})"
 
-        def show(text, name=self.stock_label.text()):
+        def show(text):
             if self._price_for == code:
-                self.stock_label.setText(f"{name} · {text}")
-        threading.Thread(target=lambda: self._done.emit(show, work()), daemon=True).start()
+                self._price_text = text
+                self._revalidate()
+        self._spawn(work, show)
 
     def _confirm(self):
         if self._sent:   # 한 창에서 주문은 한 번만 나간다
@@ -237,14 +269,15 @@ class StockOrderDialog(_StockDialog):
         self.btn_secondary.setEnabled(False)
         self.set_status("주문을 보내는 중이에요…")
         side, stock_text, quantity, price = self._values()
-        self.run_background(lambda: _stock().place_order(side, stock_text, quantity, price), self._on_ordered)
+        amount = _to_int(self.amount_input.text())
+        self.run_background(lambda: _stock().place_order(side, stock_text, quantity, price, amount), self._on_ordered)
 
     def _on_ordered(self, result):
         failed = isinstance(result, Exception)
         self.set_status(str(result), "err" if failed else "ok")
         self.btn_secondary.setEnabled(True)
         self.btn_secondary.setText("닫기")
-        for widget in (self.side_input, self.stock_input, self.quantity_input, self.price_input):
+        for widget in (self.side_input, self.stock_input, self.quantity_input, self.price_input, self.amount_input):
             widget.setEnabled(False)
 
 
@@ -253,7 +286,7 @@ class StockAutoDialog(_StockDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent, "자동매매",
-                         "'삼성전자가 7만 원이 되면 10주 매도'처럼 직접 정한 규칙을 조건이 되면 지정가로 한 번 주문해요. 지금은 모의 계좌 전용이에요.\n"
+                         f"{_stock().account_status()['account']} · '삼성전자가 7만 원이 되면 10주 매도'처럼 직접 정한 규칙을 조건이 되면 지정가로 한 번 주문해요.\n"
                          "루미가 켜져 있고 PC가 깨어 있을 때 정규장에서만 동작하며, 수익을 보장하지 않아요. 앱을 다시 켜면 꺼진 상태로 시작해요.")
         self.side_input = QComboBox()
         self.side_input.addItem("도달하면 매도 (현재가 ≥ 기준가)", "sell")
@@ -339,8 +372,13 @@ class StockAutoDialog(_StockDialog):
             self.set_status("1회 금액, 하루 총액, 하루 횟수 한도를 모두 숫자로 입력해 주세요.", "err")
             return
         _stock().set_auto_limits(*limits)
+        real = _stock().account_status()["mode"] == "real"
+        if real and lumi_dialog.question(self, "실전 자동매매 켜기",
+                                         "조건이 되면 확인 없이 실제 돈으로 주문이 나가요. 되돌릴 수 없고 손실이 생길 수 있어요.\n"
+                                         "규칙과 한도를 확인하셨나요? 켤까요?") != QMessageBox.StandardButton.Yes:
+            return
         try:
-            _stock().enable_auto()
+            _stock().enable_auto(real_money_confirmed=real)
         except _stock().StockError as e:
             self.set_status(str(e), "err")
             return
@@ -348,16 +386,25 @@ class StockAutoDialog(_StockDialog):
         self._refresh()
 
 
-class StockPanel(Panel):
-    _loaded = pyqtSignal(object, str, int)   # 잔고, 오류 문장, 세대
+class _PanelSignals(QObject):
+    """백그라운드 스레드는 위젯 대신 이 객체만 쓴다 — 지워지는 위젯으로 신호를 보내면 앱이 죽는다."""
+    loaded = pyqtSignal(object, str, int)    # 잔고, 오류 문장, 세대
     notice = pyqtSignal(str)                 # 자동매매 알림 → 앱이 토스트로 보여 준다
     order_requested = pyqtSignal(dict)       # AI 도구(작업 스레드)가 채운 주문 창 요청
     briefing_ready = pyqtSignal(str)         # AI 없이 만든 브리핑 → 앱이 대화창에 보여 준다
+    tick_done = pyqtSignal()
+
+
+class StockPanel(Panel):
 
     REFRESH_MS, AUTO_MS = 5 * 60 * 1000, 30 * 1000
 
     def __init__(self, parent=None):
         super().__init__("chart-line", "주식", parent)
+        self.signals = _PanelSignals()
+        _ALIVE.add(self.signals)
+        self.notice, self.order_requested = self.signals.notice, self.signals.order_requested
+        self.briefing_ready = self.signals.briefing_ready
         self.add_header_button(" 자동", "자동매매 규칙과 켜고 끄기", self.open_auto)
         self.add_header_button("", "계좌 설정", self.open_settings, icon="settings")
         self.add_header_button("", "새로고침", self.refresh, icon="refresh-cw")
@@ -377,7 +424,8 @@ class StockPanel(Panel):
         self.btn_stop.clicked.connect(self.stop_auto)
         for widget in (self.message, self.total, self.rows, self.auto_label, self.btn_stop):
             self.body.addWidget(widget)
-        self._loaded.connect(self._apply)
+        self.signals.loaded.connect(self._apply)
+        self.signals.tick_done.connect(self._on_tick_done)
         self.order_requested.connect(self.open_order)
         _stock().set_order_ui_hook(self.order_requested.emit)
         self._refresh_timer = QTimer(self)
@@ -411,23 +459,23 @@ class StockPanel(Panel):
         if not status["logged_in"] or not status["connected"]:
             self._gen += 1
             self._loading = False
-            self._clear_numbers("로그인한 뒤 톱니바퀴를 눌러 모의 계좌를 연결해 주세요." if not status["logged_in"]
-                                else "톱니바퀴를 눌러 모의 계좌를 연결해 주세요.")
+            self._clear_numbers("로그인한 뒤 톱니바퀴를 눌러 증권 계좌를 연결해 주세요." if not status["logged_in"]
+                                else "톱니바퀴를 눌러 증권 계좌를 연결해 주세요.")
             return
         if self._loading:
             return
         self._loading = True
         self._gen += 1
-        gen = self._gen
+        gen, signals = self._gen, self.signals
 
         def work():
             try:
-                self._loaded.emit(_stock().fetch_portfolio(), "", gen)
+                signals.loaded.emit(_stock().fetch_portfolio(), "", gen)
             except _stock().StockError as e:
-                self._loaded.emit(None, str(e), gen)
+                signals.loaded.emit(None, str(e), gen)
             except Exception as e:
                 print(f"[주식 위젯] 조회 오류: {type(e).__name__}")
-                self._loaded.emit(None, "잔고를 불러오지 못했어요.", gen)
+                signals.loaded.emit(None, "잔고를 불러오지 못했어요.", gen)
         _in_background(work)
 
     def _clear_numbers(self, text: str):
@@ -472,21 +520,27 @@ class StockPanel(Panel):
         if self._ticking or not _stock().auto_state()["enabled"]:
             return
         self._ticking = True
+        signals = self.signals
 
         def work():
             try:
                 for text in _stock().auto_tick():
-                    self.notice.emit(text)
+                    signals.notice.emit(text)
             except Exception as e:
                 print(f"[자동매매] 오류: {type(e).__name__}")
                 _stock().stop_auto("예상하지 못한 오류로 자동매매를 멈췄어요.")
-                self.notice.emit("예상하지 못한 오류로 자동매매를 멈췄어요.")
+                signals.notice.emit("예상하지 못한 오류로 자동매매를 멈췄어요.")
             finally:
-                self._ticking = False
+                signals.tick_done.emit()
         _in_background(work)
 
+    def _on_tick_done(self):
+        self._ticking = False
+        self._sync_auto()
+
     def request_briefing(self):
-        _in_background(lambda: self.briefing_ready.emit(_stock().get_stock_briefing()))
+        signals = self.signals
+        _in_background(lambda: signals.briefing_ready.emit(_stock().get_stock_briefing()))
 
     def _after_dialog(self):
         self.refresh()
