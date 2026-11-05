@@ -1091,7 +1091,7 @@ class AssistantApp(QWidget):
         self.brand_title.setStyleSheet(
             f"color: {p['grad']}; font-size: 24px; font-weight: 900; background: transparent;")
         pill = (f"color: {p['tc']}; background-color: {p['card']}; border: 1px solid {p['card_brd']}; "
-                f"border-radius: 18px; padding: 8px 12px; font-size: 13px; font-weight: bold;")
+                f"border-radius: 18px; padding: 9px 12px 7px 8px; font-size: 13px; font-weight: bold;")   # 보이는 내용 기준 가운데: 줄 상자가 위로 뜨고 아이콘 그림에 투명 여백이 있다
         self.clock_pill.setStyleSheet(pill)
         self.weather_pill.setStyleSheet(pill)
         self._update_status_pill()
@@ -1311,7 +1311,7 @@ class AssistantApp(QWidget):
             tb.addWidget(btn)
         self.btn_chat.setChecked(True)
         # 화면을 바꾸지 않고 따로 창을 띄워서 nav_info에 넣지 않는다. 창이 떠 있는 동안 켜진 모양
-        self.btn_stock = QPushButton(" 주식")
+        self.btn_stock = QPushButton()
         self.btn_stock.setCheckable(True)
         self.btn_stock.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_stock.setToolTip("주식 창 열기 — 띄워 둔 채로 루미를 쓸 수 있어요")
@@ -1644,17 +1644,24 @@ class AssistantApp(QWidget):
             btn.setMaximumWidth(16777215)   # 펼침 애니메이션의 폭 제한이 남아 있으면 필요한 폭을 작게 잰다
             btn.setText(badge if btn is self.btn_chat else "")
             btn.setMinimumWidth(btn.sizeHint().width())
-        selected = next((btn for btn in self.nav_info if btn.isChecked()), None)
-        if selected is None:
-            return
-        selected.setText(f" {self.nav_info[selected][1]}" + (badge if selected is self.btn_chat else ""))
+        self.btn_stock.setMaximumWidth(16777215)
+        self.btn_stock.setText("")
+        self.btn_stock.setMinimumWidth(self.btn_stock.sizeHint().width())
+        for btn in self.nav_info:
+            if btn.isChecked():
+                self._expand_if_room(btn, f" {self.nav_info[btn][1]}" + (badge if btn is self.btn_chat else ""), badge if btn is self.btn_chat else "")
+        if self.btn_stock.isChecked():   # 주식 창이 열려 있으면 선택된 메뉴처럼 이름을 펼친다
+            self._expand_if_room(self.btn_stock, " 주식", "")
+
+    def _expand_if_room(self, btn: QPushButton, name: str, folded: str):
+        btn.setText(name)
         top, left, _, right = self._top_groups
         right.layout().invalidate()   # 버튼은 오른쪽 묶음 안에 있다 — 안 하면 예전 폭으로 잰다
         margins = top.contentsMargins()
         need = (margins.left() + margins.right() + left.sizeHint().width() + self._top_center_gap.sizeHint().width()
                 + right.sizeHint().width() + 2 * top.spacing())   # top.sizeHint()는 묶음 폭을 캐시해 한 박자 늦는다
         if need + 8 > self.width():   # 눌려서 이름이 잘리기 전에 접는다
-            selected.setText(badge if selected is self.btn_chat else "")
+            btn.setText(folded)
 
     def _center_top_bar(self):
         """시계·날씨 칸을 왼쪽 묶음 바로 옆 같은 자리에 둔다. 창 폭이나 고른 메뉴가 달라도 움직이지 않는다."""
@@ -2101,6 +2108,7 @@ class AssistantApp(QWidget):
             return
         hidden = self._hidden_widgets()
         self.btn_stock.setVisible("stock_portfolio" in self.installed_module_names)
+        self._fit_menu_names()
         self.iot_panel.setVisible(False)   # IoT 플러그인이 있으면 아래에서 다시 켠다
         self.stock_panel.setVisible(False)
         for i, wid in enumerate(self._widget_order()):
@@ -2257,7 +2265,11 @@ class AssistantApp(QWidget):
         motion.shine(self.btn_stock)
 
     def _on_stock_window_changed(self, is_open: bool):
+        old_width = self.btn_stock.width()
         self.btn_stock.setChecked(is_open)
+        self.btn_stock.setIcon(icons.tinted("chart-line", "#2E2A4F") if is_open else icons.icon("chart-line"))
+        self._fit_menu_names()
+        motion.slide_width(self.btn_stock, old_width, self.btn_stock.sizeHint().width())
 
     def _sync_surface_buttons(self):
         current = bool(app_settings.get("ui_glass"))

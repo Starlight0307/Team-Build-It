@@ -348,3 +348,21 @@ def test_selected_menu_name_is_never_clipped_at_any_width(qapp, stock_env):
             assert w.width() == smallest + extra
     w.close()
 
+
+def test_stock_button_behaves_like_other_menus(qapp, stock_env):
+    import app_main
+    w = app_main.AssistantApp()
+    if "stock_portfolio" not in w.installed_module_names:
+        (w.installed_module_names.add if hasattr(w.installed_module_names, "add") else w.installed_module_names.append)("stock_portfolio")
+    w._apply_widget_layout()
+    w.resize(1800, 800)
+    w.show()
+    _until(qapp, lambda: False, 0.2)
+    assert w.btn_stock.text() == "" and w.btn_stock.toolTip()
+    w.btn_stock.click()
+    assert _until(qapp, lambda: w.btn_stock.maximumWidth() == 16777215)
+    assert w.btn_stock.isChecked() and w.btn_stock.text().strip() == "주식"
+    w.stock_panel.close_detail()
+    assert _until(qapp, lambda: not w.btn_stock.isChecked() and w.btn_stock.text() == "")
+    w.close()
+
