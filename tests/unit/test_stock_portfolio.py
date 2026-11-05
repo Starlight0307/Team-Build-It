@@ -1467,3 +1467,63 @@ def test_missing_file_makes_no_backup(tmp_path, monkeypatch):
     finally:
         sp.set_current_user("guest")
 
+
+# ── 그래프에 그린 점·선 — 즐겨찾기처럼 계정별, 암호화 ──
+POINT = {"type": "point", "date": "2026-11-05", "price": 70000.5}
+LINE = {"type": "line", "start": {"date": "2026-10-01", "price": 60000}, "end": {"date": "2026-11-05", "price": 70000}}
+
+
+def test_drawings_are_per_stock_per_account_encrypted_and_survive_relogin(tmp_path, monkeypatch):
+    _favorite_env(tmp_path, monkeypatch)
+    try:
+        sp.save_chart_drawings("005930", [POINT, LINE])
+        sp.save_chart_drawings("000660", [LINE])
+        raw = open(sp._path(), encoding="utf-8").read()
+        assert "70000" not in raw and "drawings" not in raw and "2026-11-05" not in raw
+        sp.set_current_user("other")
+        assert sp.chart_drawings("005930") == []
+        sp.set_current_user("tester")
+        assert sp.chart_drawings("005930") == [POINT, LINE] and sp.chart_drawings("000660") == [LINE]
+        sp.toggle_favorite("005930")
+        assert sp.chart_drawings("005930") == [POINT, LINE]   # 다른 저장이 지우지 않는다
+        sp.save_chart_drawings("005930", [])
+        assert sp.chart_drawings("005930") == [] and "005930" not in sp._load()["drawings"]
+    finally:
+        sp.set_current_user("guest")
+
+
+@pytest.mark.parametrize("bad", [[{"type": "point"}], [{"type": "circle", "date": "2026-11-05", "price": 1}], [{"type": "point", "date": "x", "price": 1}],
+                                 [{"type": "point", "date": "2026-11-05", "price": True}], [{"type": "point", "date": "2026-11-05", "price": float("nan")}],
+                                 [{"type": "line", "start": POINT}], ["문자"]])
+def test_bad_drawings_are_refused(tmp_path, monkeypatch, bad):
+    _favorite_env(tmp_path, monkeypatch)
+    try:
+        with pytest.raises(sp.StockError):
+            sp.save_chart_drawings("005930", bad)
+    finally:
+        sp.set_current_user("guest")
+
+
+def test_limits_guest_bad_code_and_broken_saved_data(tmp_path, monkeypatch):
+    from data.secure_store import secure_open
+    _favorite_env(tmp_path, monkeypatch)
+    try:
+        with pytest.raises(sp.StockError, match="까지"):
+            sp.save_chart_drawings("005930", [POINT] * (sp.MAX_DRAWINGS + 1))
+        with pytest.raises(sp.StockError):
+            sp.save_chart_drawings("../x", [POINT])
+        with secure_open(sp._path(), "w") as f:
+            json.dump({"drawings": {"005930": [POINT, {"type": "x"}, 1]}}, f)
+        assert sp.chart_drawings("005930") == [POINT]
+        with secure_open(sp._path(), "w") as f:
+            json.dump({"drawings": "망가짐"}, f)
+        assert sp.chart_drawings("005930") == []
+        sp.save_chart_drawings("005930", [POINT])
+        assert sp.chart_drawings("005930") == [POINT]
+        sp.set_current_user("guest")
+        assert sp.chart_drawings("005930") == []
+        with pytest.raises(sp.StockError, match="로그인"):
+            sp.save_chart_drawings("005930", [POINT])
+    finally:
+        sp.set_current_user("guest")
+

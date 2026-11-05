@@ -171,23 +171,6 @@ def test_panel_click_opens_detail(qapp, stock, monkeypatch):
     assert opened == [1]
 
 
-@pytest.mark.parametrize("low, high", [(69000, 71000), (100, 100), (1, 3), (59990, 1234567), (0, 10)])
-def test_price_ticks_cover_data_with_round_steps(low, high):
-    ticks = sd.price_ticks(low, high)
-    assert ticks[0] <= low and ticks[-1] >= high and len(ticks) >= 2
-    steps = {round(b - a, 6) for a, b in zip(ticks, ticks[1:])}
-    assert len(steps) == 1 and len(ticks) <= 9
-
-
-@pytest.mark.parametrize("x, expected", [(-50, 0), (70, 0), (120, 1), (170, 2), (9999, 2)])
-def test_hover_finds_nearest_point(x, expected):
-    assert sd.nearest_index(x, 70, 100, 3) == expected
-
-
-def test_nearest_point_handles_single_point():
-    assert sd.nearest_index(100, 70, 100, 1) == 0
-
-
 def test_charts_paint_in_every_state(qapp):
     p = lumi_dialog.palette(False)
     chart = sd.PriceChart(p)
@@ -691,6 +674,206 @@ def test_guest_sees_login_message_on_favorite(qapp, stock):
     sp.set_current_user("guest")
     dlg.btn_favorite.click()
     assert "로그인" in dlg.status.text() and not dlg.status.isHidden()
+    dlg.close()
+    sp.set_current_user("tester")
+
+
+@pytest.mark.parametrize("low, high", [(69000, 71000), (100, 100), (1, 3), (59990, 1234567), (0, 10)])
+def test_price_ticks_cover_data_with_round_steps(low, high):
+    ticks = sd.price_ticks(low, high)
+    assert ticks[0] <= low and ticks[-1] >= high and len(ticks) >= 2
+    steps = {round(b - a, 6) for a, b in zip(ticks, ticks[1:])}
+    assert len(steps) == 1 and len(ticks) <= 9
+
+
+# ── 일봉 차트와 점·선 그리기 ──
+def _ohlc(count=30):
+    return [{"date": f"2026-{1 + i // 28:02d}-{i % 28 + 1:02d}", "open": 100 + i, "high": 110 + i, "low": 95 + i,
+             "close": (105 if i % 2 else 98) + i, "volume": 10 + i} for i in range(count)]
+
+
+def _chart(qapp, bars=None, history=None):
+    chart = sd.PriceChart(lumi_dialog.palette(False))
+    chart.resize(800, 420)
+    bars = bars or _ohlc()
+    chart.set_data("x", [(b["date"], b["close"]) for b in bars], None, [b["volume"] for b in bars], bars, history)
+    chart.show()
+    qapp.processEvents()
+    return chart
+
+
+def _mouse(qapp, chart, kind, x, y, button=Qt.MouseButton.LeftButton):
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QMouseEvent
+    p = QPointF(x, y)
+    types = {"press": QEvent.Type.MouseButtonPress, "move": QEvent.Type.MouseMove, "release": QEvent.Type.MouseButtonRelease}
+    held = Qt.MouseButton.NoButton if kind == "release" else button
+    pressed = button if kind != "move" else Qt.MouseButton.NoButton
+    qapp.sendEvent(chart, QMouseEvent(types[kind], p, chart.mapToGlobal(p), pressed, held, Qt.KeyboardModifier.NoModifier))
+
+
+def _wheel(qapp, chart, x, delta):
+    from PyQt6.QtCore import QPoint, QPointF
+    from PyQt6.QtGui import QWheelEvent
+    p = QPointF(x, 200)
+    qapp.sendEvent(chart, QWheelEvent(p, chart.mapToGlobal(p), QPoint(0, 0), QPoint(0, delta), Qt.MouseButton.NoButton,
+                                      Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False))
+
+
+def test_moving_average_waits_for_enough_values():
+    assert sd.moving_average([1, 2, 3, 4], 2) == [None, 1.5, 2.5, 3.5]
+    assert sd.moving_average([1], 5) == [None]
+
+
+def test_candle_color_follows_korean_convention_and_flat_bar_compares_previous(qapp):
+    chart = _chart(qapp, [{"date": "2026-01-01", "open": 100, "high": 110, "low": 90, "close": 105, "volume": 1},
+                          {"date": "2026-01-02", "open": 105, "high": 106, "low": 90, "close": 95, "volume": 1},
+                          {"date": "2026-01-03", "open": 90, "high": 90, "low": 90, "close": 90, "volume": 1}])
+    assert chart._candle_color(0).name().upper() == sd.PROFIT_COLOR
+    assert chart._candle_color(1).name().upper() == sd.LOSS_COLOR
+    assert chart._candle_color(2).name().upper() == sd.LOSS_COLOR
+    chart.close()
+
+
+def test_axis_uses_visible_candles_not_far_average_price(qapp):
+    chart = _chart(qapp)
+    chart.reference = 100000
+    assert chart._price_range()[-1] < 1000
+    assert not chart.grab().isNull()
+    chart.close()
+
+
+def test_wheel_zooms_around_cursor_and_drag_pans_within_limits(qapp):
+    chart = _chart(qapp)
+    _wheel(qapp, chart, 400, 120)
+    assert chart.view_count < 30 and chart.view_start > 0
+    for _ in range(40):
+        _wheel(qapp, chart, 400, 120)
+    assert chart.view_count == chart.MIN_BARS
+    start = chart.view_start
+    _mouse(qapp, chart, "press", 400, 200)
+    _mouse(qapp, chart, "move", 500, 200)
+    _mouse(qapp, chart, "release", 500, 200)
+    assert chart.view_start < start
+    _mouse(qapp, chart, "press", 100, 200)
+    _mouse(qapp, chart, "move", 8000, 200)
+    _mouse(qapp, chart, "release", 8000, 200)
+    assert chart.view_start == 0 and chart.hover is not None
+    for _ in range(40):
+        _wheel(qapp, chart, 400, -120)
+    assert (chart.view_start, chart.view_count) == (0, 30)
+    assert not chart.grab().isNull()
+    chart.close()
+
+
+def test_point_tool_saves_date_and_price_at_click(qapp):
+    chart = _chart(qapp)
+    saved = []
+    chart.drawings_changed.connect(saved.append)
+    chart.set_tool("point")
+    x, y = chart._x_of(10), 200
+    _mouse(qapp, chart, "press", x, y)
+    item = saved[-1][0]
+    assert item["type"] == "point" and item["date"] == chart.bars[10]["date"]
+    assert abs(chart._screen(item, chart._price_range()).y() - y) < 2
+    assert abs(chart._screen(item, chart._price_range()).x() - x) < 1
+    chart.close()
+
+
+def test_line_takes_two_clicks_and_cancels_with_right_click(qapp):
+    chart = _chart(qapp)
+    saved = []
+    chart.drawings_changed.connect(saved.append)
+    chart.set_tool("line")
+    _mouse(qapp, chart, "press", chart._x_of(5), 150)
+    assert chart.pending and not saved
+    _mouse(qapp, chart, "move", chart._x_of(8), 170)
+    assert not chart.grab().isNull()
+    _mouse(qapp, chart, "press", 300, 200, Qt.MouseButton.RightButton)
+    assert chart.pending is None and not saved
+    _mouse(qapp, chart, "press", chart._x_of(5), 150)
+    _mouse(qapp, chart, "press", chart._x_of(20), 220)
+    line = saved[-1][0]
+    assert line["type"] == "line" and line["start"]["date"] == chart.bars[5]["date"] and line["end"]["date"] == chart.bars[20]["date"]
+    chart.close()
+
+
+def test_drawing_stays_on_same_date_price_after_zoom_and_outside_period(qapp):
+    bars = _ohlc(30)
+    chart = _chart(qapp, bars[-10:], bars)
+    chart.set_drawings([{"type": "point", "date": bars[5]["date"], "price": 120}])
+    assert chart._history_index(bars[5]["date"]) == 5 - 20   # 기간 밖은 왼쪽 밖에 놓이고 잘려서 안 보인다
+    assert chart._screen(chart.drawings[0], chart._price_range()).x() < chart._plot_rect().left()
+    assert not chart.grab().isNull()
+    chart.close()
+    chart = _chart(qapp, bars)
+    chart.set_drawings([{"type": "point", "date": bars[20]["date"], "price": 120}])
+    _wheel(qapp, chart, chart._x_of(20), 120)
+    assert abs(chart._x_of(chart._history_index(bars[20]["date"])) - chart._x_of(20)) < 1
+    chart.close()
+
+
+def test_eraser_removes_only_what_was_hit(qapp):
+    chart = _chart(qapp)
+    ticks = chart._price_range()
+    items = [{"type": "point", "date": chart.bars[5]["date"], "price": 110},
+             {"type": "line", "start": {"date": chart.bars[10]["date"], "price": 110}, "end": {"date": chart.bars[25]["date"], "price": 110}}]
+    chart.set_drawings(items)
+    saved = []
+    chart.drawings_changed.connect(saved.append)
+    chart.set_tool("erase")
+    _mouse(qapp, chart, "press", chart._x_of(2), chart._y_of(ticks[-1], ticks) + 5)
+    assert not saved
+    _mouse(qapp, chart, "press", chart._x_of(18), chart._y_of(110, ticks))
+    assert saved[-1] == items[:1]
+    chart.clear_drawings()
+    assert saved[-1] == []
+    chart.close()
+
+
+def test_chart_without_ohlc_or_volume_still_draws(qapp):
+    chart = sd.PriceChart(lumi_dialog.palette(False))
+    chart.resize(500, 280)
+    chart.set_data("x", POINTS)
+    assert not chart.grab().isNull()
+    chart.set_data("하나", POINTS[:1], 60000.0, [0])
+    chart.hover = 0
+    assert not chart.grab().isNull()
+    bars = [dict(b, open=0, high=0, low=0) for b in _ohlc(3)]   # 시고저가 비어 오는 종목
+    chart.set_data("빈값", [(b["date"], b["close"]) for b in bars], None, [b["volume"] for b in bars], bars)
+    assert not chart.grab().isNull()
+    chart.close()
+
+
+def test_dialog_saves_drawing_and_restores_on_reopen_per_stock(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    assert _wait(qapp, lambda: dlg.chart.points)
+    code = dlg.current_code
+    dlg.tool_buttons["point"].click()
+    assert dlg.chart.tool == "point" and dlg.tool_buttons["point"].objectName() == "LinkPrimary"
+    _mouse(qapp, dlg.chart, "press", dlg.chart._x_of(1), 150)
+    assert len(sp.chart_drawings(code)) == 1
+    dlg.tool_buttons[None].click()
+    assert dlg.chart.tool is None
+    dlg.close()
+    again = _dialog(qapp)
+    again.show()
+    assert _wait(qapp, lambda: again.chart.points)
+    assert len(again.chart.drawings) == 1
+    again.show_stock("035720")
+    assert _wait(qapp, lambda: again.current_code == "035720")
+    assert again.chart.drawings == []
+    again.close()
+
+
+def test_guest_cannot_pick_drawing_tool(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    assert _wait(qapp, lambda: dlg.chart.points)
+    sp.set_current_user("guest")
+    dlg.tool_buttons["line"].click()
+    assert dlg.chart.tool is None and "로그인" in dlg.status.text()
     dlg.close()
     sp.set_current_user("tester")
 

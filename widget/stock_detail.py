@@ -1,5 +1,7 @@
 """주식 위젯을 누르면 뜨는 상세 창 — 종목별 손익 막대, 가격 그래프, 보유 종목 표."""
-from PyQt6.QtCore import QModelIndex, QPointF, QRectF, QSortFilterProxyModel, Qt, QTimer, pyqtSignal
+from bisect import bisect_left
+
+from PyQt6.QtCore import QLineF, QModelIndex, QPointF, QRectF, QSortFilterProxyModel, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (QAbstractItemView, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListView, QPushButton, QScrollArea, QToolTip,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -15,6 +17,7 @@ SEARCH_ROLE = Qt.ItemDataRole.UserRole + 1
 DEFAULT_WIDTH, MIN_WIDTH, MIN_HEIGHT = 1240, 900, 560
 CHROME_HEIGHT = 190     # 제목·버튼·그림자 자리
 LIVE_REFRESH_MS = 60_000
+TOOL_STYLE = "margin: 0; padding: 0 10px; min-height: 26px; max-height: 26px; font-size: 12px; border-radius: 9px;"
 TILE_WIDTH = 118        # 이보다 좁으면 수치 칸을 다음 줄로 내린다
 BARS_MIN_WIDTH = 780    # 이보다 좁으면 손익 막대를 접고 그래프에 폭을 준다
 PERIODS = (("1개월", 22), ("3개월", 66), ("전체", None))   # 거래일 수
@@ -47,152 +50,407 @@ def price_ticks(low: float, high: float, count: int = 4) -> list:
     return ticks
 
 
-def nearest_index(x: float, left: float, width: float, count: int) -> int:
-    """마우스 x 위치에 가장 가까운 데이터 번호."""
-    if count <= 1 or width <= 0:
-        return 0
-    return max(0, min(count - 1, round((x - left) / width * (count - 1))))
+def moving_average(closes: list, length: int) -> list:
+    """이동평균 — 앞쪽 length-1개는 값이 모자라 None."""
+    total, out = 0.0, []
+    for i, value in enumerate(closes):
+        total += value
+        if i >= length:
+            total -= closes[i - length]
+        out.append(total / length if i >= length - 1 else None)
+    return out
 
 
 class PriceChart(QWidget):
-    """일별 종가 선 그래프 하나. 마우스를 올리면 그 날의 날짜와 종가를 보여 준다."""
-    LEFT, RIGHT, TOP, BOTTOM = 70, 16, 34, 28
+    """주식 프로그램 같은 일봉 차트: 캔들, 이동평균, 거래량, 십자선, 휠 확대, 끌어서 이동, 점·선 그리기.
+    그린 것은 날짜와 가격에 붙어 있어 확대하거나 기간을 바꿔도 같은 자리에 남는다."""
+    LEFT, RIGHT, TOP, BOTTOM = 8, 74, 50, 24
     VOLUME_H = 44
+    MIN_BARS = 10
+    HIT_PX = 9
+    AVERAGES = ((5, "#D97706"), (20, "#0D9488"), (60, "#7C3AED"))   # 캔들 빨강·파랑과 함께 색약 대비 검사 통과
+    DRAW_COLOR = "#DB2777"
     hovered = pyqtSignal(object)   # 마우스가 가리키는 번호, 벗어나면 None
+    drawings_changed = pyqtSignal(list)
 
     def __init__(self, palette: dict, parent=None):
         super().__init__(parent)
         self.p = palette
         self.title, self.points, self.reference, self.message = "", [], None, ""
         self.volumes, self.progress = [], 1.0
-        self.hover = None
+        self.hover, self.mouse = None, None
+        self.bars, self.history, self.offset = [], [], 0
+        self.view_start, self.view_count = 0, 0
+        self.drawings, self.tool, self.pending, self._drag = [], None, None, None
         self.setMinimumHeight(240)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
 
     def set_message(self, text: str):
         """불러오는 중이거나 실패하면 이전 그래프를 지운다 — 다른 종목 값으로 오해하지 않게."""
         self.title, self.points, self.reference, self.hover, self.message = "", [], None, None, text
-        self.volumes = []
+        self.volumes, self.bars, self.history, self.drawings, self.pending = [], [], [], [], None
         self.setAccessibleDescription(text)
         self.update()
 
-    def set_data(self, title: str, points: list, reference: float = None, volumes: list = None):
+    def set_data(self, title: str, points: list, reference: float = None, volumes: list = None, bars: list = None, history: list = None):
+        """bars가 없으면 종가만으로 납작한 캔들을 그린다. history는 이동평균과 기간 밖 그림 위치 계산용 전체 기록."""
         self.title, self.points, self.reference, self.hover, self.message = title, points, reference, None, ""
         self.volumes = volumes or []
+        self.bars = bars or [{"date": d, "open": v, "high": v, "low": v, "close": v} for d, v in points]
+        self.history = history or self.bars
+        self.offset = len(self.history) - len(self.bars)
+        closes = [b["close"] for b in self.history]
+        self.averages = [(length, color, moving_average(closes, length)[self.offset:]) for length, color in self.AVERAGES]
+        self.view_start, self.view_count, self.pending = 0, len(self.bars), None
         _reveal(self, "progress")
         if points:
             self.setAccessibleDescription(f"{title}: {points[0][0]} {points[0][1]:,}원에서 {points[-1][0]} {points[-1][1]:,}원")
         self.update()
 
+    def set_drawings(self, items: list):
+        self.drawings = list(items)
+        self.update()
+
+    def set_tool(self, tool):
+        self.tool, self.pending = tool, None
+        self.setCursor(Qt.CursorShape.CrossCursor if tool else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def clear_drawings(self):
+        self.pending = None
+        self._change_drawings([])
+
+    def _change_drawings(self, items: list):
+        self.drawings = items
+        self.drawings_changed.emit(list(items))
+        self.update()
+
+    # ── 좌표 ──
     def _plot_rect(self) -> QRectF:
         volume = self.VOLUME_H + 6 if any(self.volumes) else 0
         return QRectF(self.LEFT, self.TOP, max(1, self.width() - self.LEFT - self.RIGHT),
                       max(1, self.height() - self.TOP - self.BOTTOM - volume))
 
-    def mouseMoveEvent(self, event):
-        if self.points:
-            r = self._plot_rect()
-            index = nearest_index(event.position().x(), r.left(), r.width(), len(self.points))
-            if index != self.hover:
-                self.hover = index
-                self.hovered.emit(index)
+    def _slot(self) -> float:
+        return self._plot_rect().width() / max(1, self.view_count)
+
+    def _x_of(self, index: float) -> float:
+        return self._plot_rect().left() + (index - self.view_start + 0.5) * self._slot()
+
+    def _index_at(self, x: float) -> int:
+        index = self.view_start + int((x - self._plot_rect().left()) // self._slot())
+        return max(self.view_start, min(self.view_start + self.view_count - 1, index))
+
+    def _visible(self) -> range:
+        return range(self.view_start, self.view_start + self.view_count)
+
+    def _price_range(self) -> list:
+        """화면에 보이는 값으로만 축을 잡는다 — 멀리 있는 평균 단가 때문에 캔들이 납작해지지 않게."""
+        visible = self._visible()
+        values = [self.bars[i]["high"] or self.bars[i]["close"] for i in visible] + [self.bars[i]["low"] or self.bars[i]["close"] for i in visible]
+        for _, _, line in self.averages:
+            values += [line[i] for i in visible if line[i] is not None]
+        return price_ticks(min(values), max(values))
+
+    def _y_of(self, value: float, ticks: list) -> float:
+        r = self._plot_rect()
+        return r.bottom() - (value - ticks[0]) / max(1, ticks[-1] - ticks[0]) * r.height()
+
+    def _price_at(self, y: float) -> float:
+        ticks, r = self._price_range(), self._plot_rect()
+        return ticks[0] + (r.bottom() - y) / max(1, r.height()) * (ticks[-1] - ticks[0])
+
+    def _history_index(self, date: str) -> float:
+        """기간 밖 날짜도 자리를 잡는다. 휴장일처럼 기록에 없는 날은 그 다음 거래일 자리."""
+        dates = [b["date"] for b in self.history]
+        return bisect_left(dates, date) - self.offset
+
+    def _anchor_at(self, pos: QPointF) -> dict:
+        r = self._plot_rect()
+        y = max(r.top(), min(r.bottom(), pos.y()))
+        return {"date": self.bars[self._index_at(pos.x())]["date"], "price": round(self._price_at(y), 2)}
+
+    def _screen(self, anchor: dict, ticks: list) -> QPointF:
+        return QPointF(self._x_of(self._history_index(anchor["date"])), self._y_of(anchor["price"], ticks))
+
+    # ── 조작 ──
+    def wheelEvent(self, event):
+        if not self.bars:
+            return
+        event.accept()
+        step = event.angleDelta().y()
+        if not step:
+            return
+        count = self.view_count * (0.85 if step > 0 else 1 / 0.85)
+        count = max(min(self.MIN_BARS, len(self.bars)), min(len(self.bars), round(count)))
+        center = self._index_at(event.position().x())
+        share = (center - self.view_start) / max(1, self.view_count)   # 마우스 아래 봉이 제자리에 남게
+        self.view_count = count
+        self.view_start = max(0, min(len(self.bars) - count, round(center - share * count)))
+        self.update()
+
+    def mousePressEvent(self, event):
+        if not self.bars or event.button() != Qt.MouseButton.LeftButton:
+            if event.button() == Qt.MouseButton.RightButton and self.pending:
+                self.pending = None
+                self.update()
+            return
+        event.accept()
+        pos = event.position()
+        if self.tool == "point":
+            self._change_drawings(self.drawings + [{"type": "point", **self._anchor_at(pos)}])
+        elif self.tool == "line":
+            anchor = self._anchor_at(pos)
+            if self.pending is None:
+                self.pending = anchor
+                self.update()
+            else:
+                item = {"type": "line", "start": self.pending, "end": anchor}
+                self.pending = None
+                self._change_drawings(self.drawings + [item])
+        elif self.tool == "erase":
+            hit = self._drawing_at(pos)
+            if hit is not None:
+                self._change_drawings(self.drawings[:hit] + self.drawings[hit + 1:])
+        else:
+            self._drag = (pos.x(), self.view_start)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def mouseReleaseEvent(self, event):
+        if self._drag is not None:
+            self._drag = None
+            self.unsetCursor()
+
+    def mouseDoubleClickEvent(self, event):
+        if not self.tool and self.bars:   # 전체 보기로 돌아간다
+            self.view_start, self.view_count = 0, len(self.bars)
             self.update()
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self.pending:   # 창이 닫히지 않고 그리던 선만 취소
+            self.pending = None
+            self.update()
+            return
+        super().keyPressEvent(event)
+
+    def _drawing_at(self, pos: QPointF):
+        ticks = self._price_range()
+        for i in range(len(self.drawings) - 1, -1, -1):
+            item = self.drawings[i]
+            if item["type"] == "point":
+                gap = QLineF(pos, self._screen(item, ticks)).length()
+            else:
+                gap = _distance_to_segment(pos, self._screen(item["start"], ticks), self._screen(item["end"], ticks))
+            if gap <= self.HIT_PX:
+                return i
+        return None
+
+    def mouseMoveEvent(self, event):
+        if not self.bars:
+            return
+        pos = event.position()
+        if self._drag is not None:
+            moved = round((self._drag[0] - pos.x()) / self._slot())
+            self.view_start = max(0, min(len(self.bars) - self.view_count, self._drag[1] + moved))
+        self.mouse = pos
+        index = self._index_at(pos.x())
+        if index != self.hover:
+            self.hover = index
+            self.hovered.emit(index)
+        self.update()
+
     def leaveEvent(self, event):
-        self.hover = None
+        self.hover, self.mouse = None, None
         self.hovered.emit(None)
         self.update()
 
+    # ── 그리기 ──
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        ink, muted = QColor(self.p["text"]), QColor(self.p["sub"])
-        if not self.points:
+        muted = QColor(self.p["sub"])
+        if not self.bars:
             painter.setPen(muted)
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.message)
             return
-        index = self.hover if self.hover is not None else len(self.points) - 1
-        date, value = self.points[index]
-        readout = f"{date}  {value:,.0f}원"
-        painter.setPen(ink)
-        readout_w = painter.fontMetrics().horizontalAdvance(readout) + 16
+        ticks, r = self._price_range(), self._plot_rect()
+        self._paint_header(painter)
+        self._paint_grid(painter, ticks, r, muted)
+        painter.save()
+        painter.setClipRect(r)
+        shown = max(1, int(round(self.progress * self.view_count)))   # 왼쪽부터 차례로 그린다
+        last = self.view_start + shown
+        self._paint_candles(painter, ticks, range(self.view_start, last))
+        self._paint_averages(painter, ticks, last)
+        self._paint_reference(painter, ticks, r, muted)
+        self._paint_drawings(painter, ticks)
+        painter.restore()
+        if any(self.volumes):
+            self._paint_volume(painter, r, range(self.view_start, last), muted)
+        self._paint_last_price(painter, ticks, r)
+        if self.mouse is not None and r.contains(self.mouse):
+            self._paint_crosshair(painter, r, ticks)
+
+    def _paint_header(self, painter):
+        bar = self.bars[self.hover if self.hover is not None else self.view_start + self.view_count - 1]
+        text = f"{bar['date']}  시 {bar['open'] or bar['close']:,.0f}  고 {bar['high'] or bar['close']:,.0f}  저 {bar['low'] or bar['close']:,.0f}  종 {bar['close']:,.0f}"
         font = painter.font()
         font.setBold(True)
         painter.setFont(font)
-        title = painter.fontMetrics().elidedText(self.title, Qt.TextElideMode.ElideMiddle, max(40, self.width() - readout_w))
-        painter.drawText(QRectF(0, 0, self.width() - readout_w, 26), Qt.AlignmentFlag.AlignVCenter, title)
+        painter.setPen(QColor(self.p["text"]))
+        painter.drawText(QRectF(0, 0, self.width(), 22), Qt.AlignmentFlag.AlignVCenter,
+                         painter.fontMetrics().elidedText(self.title, Qt.TextElideMode.ElideMiddle, self.width()))
         font.setBold(False)
         painter.setFont(font)
+        x = 0.0
+        for length, color in self.AVERAGES:   # 범례 — 선 색과 이름을 함께 적어 색에만 기대지 않는다
+            painter.setPen(QPen(QColor(color), 2))
+            painter.drawLine(QPointF(x, 34), QPointF(x + 14, 34))
+            painter.setPen(QColor(self.p["sub"]))
+            label = f"{length}일"
+            width = painter.fontMetrics().horizontalAdvance(label)
+            painter.drawText(QRectF(x + 18, 24, width + 4, 20), Qt.AlignmentFlag.AlignVCenter, label)
+            x += 28 + width
+        painter.setPen(QColor(self.p["text"]))
+        painter.drawText(QRectF(x, 24, self.width() - x, 20), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                         painter.fontMetrics().elidedText(text, Qt.TextElideMode.ElideLeft, int(self.width() - x)))
 
-        values = [v for _, v in self.points] + ([self.reference] if self.reference else [])
-        ticks = price_ticks(min(values), max(values))
-        low, high = ticks[0], ticks[-1]
-        r = self._plot_rect()
-        x_of = lambda i: r.left() + (r.width() * i / max(1, len(self.points) - 1))
-        y_of = lambda v: r.bottom() - (v - low) / max(1, high - low) * r.height()
-
+    def _paint_grid(self, painter, ticks, r, muted):
         grid = QColor(self.p["sub"])
-        grid.setAlpha(45)
+        grid.setAlpha(40)
         for tick in ticks:
+            y = self._y_of(tick, ticks)
             painter.setPen(QPen(grid, 1))
-            painter.drawLine(QPointF(r.left(), y_of(tick)), QPointF(r.right(), y_of(tick)))
+            painter.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
             painter.setPen(muted)
-            painter.drawText(QRectF(0, y_of(tick) - 10, self.LEFT - 8, 20),
-                             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{tick:,.0f}")
-        painter.setPen(muted)
-        volume_top = r.bottom() + 6
-        date_y = volume_top + (self.VOLUME_H + 6 if any(self.volumes) else 0)
-        for i, align in ((0, Qt.AlignmentFlag.AlignLeft), (len(self.points) - 1, Qt.AlignmentFlag.AlignRight)):
-            painter.drawText(QRectF(r.left(), date_y, r.width(), 20), align, self.points[i][0])
-        shown = max(1, int(round(self.progress * len(self.points))))   # 왼쪽부터 차례로 그린다
-        if any(self.volumes):   # 거래량은 축이 다른 값이라 가격 축에 겹치지 않고 아래에 따로 그린다
-            painter.drawText(QRectF(0, volume_top, self.LEFT - 8, self.VOLUME_H),
-                             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, "거래량")
-            peak = max(self.volumes) or 1
-            width = max(1.0, r.width() / max(1, len(self.volumes)) - 1)
-            bar_color = QColor(self.p["sub"])
-            bar_color.setAlpha(120)
+            painter.drawText(QRectF(r.right() + 6, y - 10, self.RIGHT - 6, 20), Qt.AlignmentFlag.AlignVCenter, f"{tick:,.0f}")
+        date_y = r.bottom() + (self.VOLUME_H + 12 if any(self.volumes) else 4)
+        label_w = painter.fontMetrics().horizontalAdvance("2026-11-06") + 12
+        every = max(1, int(label_w // self._slot()) + 1)
+        for i in self._visible():
+            if (i - self.view_start) % every == 0 and self._x_of(i) - label_w / 2 >= 0 and self._x_of(i) + label_w / 2 <= r.right() + 6:
+                x = self._x_of(i)
+                painter.setPen(QPen(grid, 1))
+                painter.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+                painter.setPen(muted)
+                painter.drawText(QRectF(x - label_w / 2, date_y, label_w, 18), Qt.AlignmentFlag.AlignCenter, self.bars[i]["date"])
+
+    def _candle_color(self, index: int) -> QColor:
+        bar = self.bars[index]
+        start = bar["open"] or bar["close"]
+        if bar["close"] == start:   # 보합 봉은 전날보다 올랐는지로 색을 정한다
+            before = self.bars[index - 1]["close"] if index else bar["close"]
+            return QColor(PROFIT_COLOR if bar["close"] >= before else LOSS_COLOR)
+        return QColor(PROFIT_COLOR if bar["close"] > start else LOSS_COLOR)
+
+    def _paint_candles(self, painter, ticks, indexes):
+        width = max(1.0, self._slot() * 0.72)
+        for i in indexes:
+            bar = self.bars[i]
+            close, start = bar["close"], bar["open"] or bar["close"]
+            high, low = bar["high"] or max(close, start), bar["low"] or min(close, start)
+            color, x = self._candle_color(i), self._x_of(i)
+            painter.setPen(QPen(color, 1))
+            painter.drawLine(QPointF(x, self._y_of(high, ticks)), QPointF(x, self._y_of(low, ticks)))
+            top, bottom = self._y_of(max(close, start), ticks), self._y_of(min(close, start), ticks)
             painter.setPen(Qt.PenStyle.NoPen)
-            for i, volume in enumerate(self.volumes[:shown]):
-                height = volume / peak * self.VOLUME_H
-                painter.setBrush(QColor(self.p["accent"]) if i == self.hover else bar_color)
-                painter.drawRect(QRectF(x_of(i) - width / 2, volume_top + self.VOLUME_H - height, width, height))
+            painter.setBrush(color)
+            painter.drawRect(QRectF(x - width / 2, top, width, max(1.0, bottom - top)))
 
-        if self.reference:
-            pen = QPen(muted, 1, Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.drawLine(QPointF(r.left(), y_of(self.reference)), QPointF(r.right(), y_of(self.reference)))
-
-        line = QColor(self.p["accent"])
-        path = QPainterPath(QPointF(x_of(0), y_of(self.points[0][1])))
-        for i, (_, value) in enumerate(self.points[1:shown], 1):
-            path.lineTo(QPointF(x_of(i), y_of(value)))
-        painter.setPen(QPen(line, 2, cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
+    def _paint_averages(self, painter, ticks, last):
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPath(path)
+        for _, color, line in self.averages:
+            path = QPainterPath()
+            for i in range(self.view_start, last):
+                if line[i] is None:
+                    continue
+                point = QPointF(self._x_of(i), self._y_of(line[i], ticks))
+                path.lineTo(point) if path.elementCount() else path.moveTo(point)
+            painter.setPen(QPen(QColor(color), 1.5))
+            painter.drawPath(path)
 
-        if self.reference:   # 선 위에 그려 글자가 그래프와 겹쳐도 읽히게 한다
-            label = f"내 평균 단가 {self.reference:,.0f}원"
-            width = painter.fontMetrics().horizontalAdvance(label) + 10
-            box = QRectF(r.left() + 4, y_of(self.reference) - 20, width, 18)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(self.p["bg"]))
-            painter.drawRoundedRect(box, 4, 4)
-            painter.setPen(muted)
-            painter.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
+    def _paint_reference(self, painter, ticks, r, muted):
+        """평균 단가가 화면 밖이면 선 대신 위쪽·아래쪽 가장자리에 값과 방향을 적는다."""
+        if not self.reference:
+            return
+        inside = ticks[0] <= self.reference <= ticks[-1]
+        y = self._y_of(self.reference, ticks) if inside else (r.top() + 2 if self.reference > ticks[-1] else r.bottom() - 20)
+        if inside:
+            painter.setPen(QPen(muted, 1, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
+        arrow = "" if inside else (" ▲" if self.reference > ticks[-1] else " ▼")
+        label = f"내 평균 단가 {self.reference:,.0f}원{arrow}"
+        width = painter.fontMetrics().horizontalAdvance(label) + 10
+        box = QRectF(r.left() + 4, y - 20 if inside else y, width, 18)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(self.p["bg"]))
+        painter.drawRoundedRect(box, 4, 4)
+        painter.setPen(muted)
+        painter.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
 
-        if self.hover is None:   # 그리는 중에는 점이 선 끝을 따라간다
-            index = shown - 1
-            value = self.points[index][1]
-        center = QPointF(x_of(index), y_of(value))
-        if self.hover is not None:
-            painter.setPen(QPen(muted, 1))
-            painter.drawLine(QPointF(center.x(), r.top()), QPointF(center.x(), r.bottom()))
-        painter.setPen(QPen(QColor(self.p["bg"]), 2))
-        painter.setBrush(line)
-        painter.drawEllipse(center, 5, 5)
-        painter.setPen(ink)
-        painter.drawText(QRectF(0, 0, self.width(), 26), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, readout)
+    def _paint_drawings(self, painter, ticks):
+        color = QColor(self.DRAW_COLOR)
+        items = list(self.drawings)
+        if self.pending is not None and self.mouse is not None:   # 두 번째 점을 찍기 전 미리 보기
+            items.append({"type": "line", "start": self.pending, "end": self._anchor_at(self.mouse), "preview": True})
+        for item in items:
+            if item["type"] == "point":
+                painter.setPen(QPen(QColor(self.p["bg"]), 1.5))
+                painter.setBrush(color)
+                painter.drawEllipse(self._screen(item, ticks), 5, 5)
+            else:
+                style = Qt.PenStyle.DashLine if item.get("preview") else Qt.PenStyle.SolidLine
+                painter.setPen(QPen(color, 2, style, Qt.PenCapStyle.RoundCap))
+                painter.drawLine(self._screen(item["start"], ticks), self._screen(item["end"], ticks))
+
+    def _paint_volume(self, painter, r, indexes, muted):
+        top = r.bottom() + 6
+        painter.setPen(muted)
+        painter.drawText(QRectF(r.right() + 6, top, self.RIGHT - 6, self.VOLUME_H), Qt.AlignmentFlag.AlignVCenter, "거래량")
+        peak = max(self.volumes[i] for i in self._visible() if i < len(self.volumes)) or 1
+        width = max(1.0, self._slot() * 0.72)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for i in indexes:
+            if i < len(self.volumes):
+                color = self._candle_color(i)
+                color.setAlpha(255 if i == self.hover else 130)
+                height = self.volumes[i] / peak * self.VOLUME_H
+                painter.setBrush(color)
+                painter.drawRect(QRectF(self._x_of(i) - width / 2, top + self.VOLUME_H - height, width, height))
+
+    def _price_tag(self, painter, y, r, text, color, ink="#FFFFFF"):
+        box = QRectF(r.right() + 2, y - 10, self.RIGHT - 2, 20)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        painter.drawRoundedRect(box, 4, 4)
+        painter.setPen(QColor(ink))
+        painter.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
+
+    def _paint_last_price(self, painter, ticks, r):
+        index = self.view_start + self.view_count - 1
+        close = self.bars[index]["close"]
+        y, color = self._y_of(close, ticks), self._candle_color(index)
+        if r.top() <= y <= r.bottom():
+            painter.setPen(QPen(color, 1, Qt.PenStyle.DotLine))
+            painter.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
+            self._price_tag(painter, y, r, f"{close:,.0f}", color)
+
+    def _paint_crosshair(self, painter, r, ticks):
+        ink = QColor(self.p["text"])
+        ink.setAlpha(150)
+        painter.setPen(QPen(ink, 1, Qt.PenStyle.DashLine))
+        x = self._x_of(self.hover if self.hover is not None else self._index_at(self.mouse.x()))
+        painter.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+        painter.drawLine(QPointF(r.left(), self.mouse.y()), QPointF(r.right(), self.mouse.y()))
+        self._price_tag(painter, self.mouse.y(), r, f"{self._price_at(self.mouse.y()):,.0f}", QColor(self.p["text"]), self.p["bg"])
+
+
+def _distance_to_segment(p: QPointF, a: QPointF, b: QPointF) -> float:
+    dx, dy = b.x() - a.x(), b.y() - a.y()
+    length = dx * dx + dy * dy
+    t = max(0.0, min(1.0, ((p.x() - a.x()) * dx + (p.y() - a.y()) * dy) / length)) if length else 0.0
+    return QLineF(p, QPointF(a.x() + t * dx, a.y() + t * dy)).length()
 
 
 class ProfitBars(QWidget):
@@ -376,6 +634,29 @@ class StockDetailDialog(_StockDialog):
         self.period_days = None
         self.chart = PriceChart(self.p)
         self.chart.hovered.connect(self._on_chart_hover)
+        self.chart.drawings_changed.connect(self._save_drawings)
+        tools = QHBoxLayout()
+        tools.setSpacing(6)
+        self.tool_buttons = {}
+        for name, tool, tip in (("이동", None, "끌어서 이동, 휠로 확대, 두 번 눌러 전체 보기"), ("점", "point", "눌러서 점 찍기"),
+                                ("선", "line", "두 곳을 눌러 선 긋기. Esc나 오른쪽 클릭으로 취소"), ("지우개", "erase", "점이나 선을 눌러 지우기")):
+            button = QPushButton(name)
+            button.setObjectName("LinkGhost")
+            button.setAutoDefault(False)
+            button.setToolTip(tip)
+            button.setStyleSheet(TOOL_STYLE)
+            button.clicked.connect(lambda _=False, t=tool: self._choose_tool(t))
+            self.tool_buttons[tool] = button
+            tools.addWidget(button)
+        self.btn_clear_drawings = QPushButton("모두 지우기")
+        self.btn_clear_drawings.setObjectName("LinkGhost")
+        self.btn_clear_drawings.setAutoDefault(False)
+        self.btn_clear_drawings.setStyleSheet(TOOL_STYLE)
+        self.btn_clear_drawings.clicked.connect(self.chart.clear_drawings)
+        tools.addWidget(self.btn_clear_drawings)
+        tools.addStretch(1)
+        right.addLayout(tools)
+        self._show_tool(None)
         right.addWidget(self.chart, 1)
         self.tiles = {name: StatTile(name, self.p) for name in ("기준일", "종가", "전일 대비", "시가", "고가", "저가", "거래량")}
         self.holding_tiles = {name: StatTile(name, self.p) for name in ("내 수량", "평균 단가", "평가금액", "평가손익", "수익률")}
@@ -387,9 +668,9 @@ class StockDetailDialog(_StockDialog):
         left_box, right_box = QWidget(), QWidget()
         left_box.setLayout(left)
         right_box.setLayout(right)
-        left_box.setMinimumWidth(340)
+        left_box.setMinimumWidth(260)
         self.left_box = left_box
-        charts.addWidget(left_box, 4)
+        charts.addWidget(left_box, 2)   # 그래프가 주인공이다
         charts.addWidget(right_box, 5)
         content.addLayout(charts, 3)   # 창을 키우면 그래프가 가장 많이 커진다
         content.addLayout(grid)   # 수치는 긴 금액도 들어가게 창 전체 폭을 쓴다
@@ -525,6 +806,25 @@ class StockDetailDialog(_StockDialog):
         self._filtering = True
         self._fill_stock_list()
         self._filtering = False
+
+    def _choose_tool(self, tool):
+        if tool and not _stock().logged_in():   # 저장할 계정 파일이 없다
+            self.set_status("점과 선은 로그인하면 그리고 저장할 수 있어요.", "err")
+            return
+        self.chart.set_tool(tool)
+        self._show_tool(tool)
+
+    def _show_tool(self, tool):
+        for key, button in self.tool_buttons.items():
+            button.setObjectName("LinkPrimary" if key == tool else "LinkGhost")
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+    def _save_drawings(self, items: list):
+        try:
+            _stock().save_chart_drawings(self.current_code, items)
+        except _stock().StockError as e:
+            self.set_status(str(e), "err")
 
     def _toggle_favorite(self):
         try:
@@ -764,8 +1064,10 @@ class StockDetailDialog(_StockDialog):
 
     def _draw_chart(self):
         bars, held = self._visible_bars(), self._holding()
-        self.chart.set_data(f"{self.current_name} 일별 종가 (최근 {len(bars)}거래일)", [(b["date"], b["close"]) for b in bars],
-                            held.get("avg_price") if held else None, [b.get("volume", 0) for b in bars])
+        self.chart.set_data(f"{self.current_name} 일봉 (최근 {len(bars)}거래일)", [(b["date"], b["close"]) for b in bars],
+                            held.get("avg_price") if held else None, [b.get("volume", 0) for b in bars],
+                            bars, self.history.get(self.current_code))
+        self.chart.set_drawings(_stock().chart_drawings(self.current_code))
         self._show_stats(len(bars) - 1, animate=True)
         for tile in self.holding_tiles.values():
             tile.setVisible(bool(held))

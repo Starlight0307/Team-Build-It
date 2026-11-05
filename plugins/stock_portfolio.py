@@ -10,6 +10,7 @@
 """
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -53,6 +54,7 @@ MARKET_KEY_GUIDE_URL = "https://www.data.go.kr/data/15094808/openapi.do"
 MARKET_SOURCE = "출처: 금융위원회(공공데이터포털)"
 MARKET_CACHE_SECONDS = 1800
 WATCHLIST = ("005930", "000660", "035420", "035720")   # 삼성전자, SK하이닉스, NAVER, 카카오
+MAX_DRAWINGS = 200
 MAX_OVERVIEW = 8   # 시세 표에 한 번에 받는 수 — 공공데이터 서버가 자주 느려진다
 SIDE_NAMES = {"sell": "매도", "buy": "매수"}
 ORDER_UNKNOWN = "주문 결과를 확인하지 못했어요. 이중 주문을 막기 위해 다시 보내지 않았어요. 증권사 앱에서 체결 내역을 확인해 주세요."
@@ -91,7 +93,7 @@ def _path(user_id: str = None) -> str:
 def _defaults() -> dict:
     return {"version": 1, "account": None, "token": None, "token_expires": "",
             "order_enabled": False, "order_limit": DEFAULT_ORDER_LIMIT, "orders": [],
-            "manual": {"broker": "카카오페이증권", "items": []}, "favorites": [],
+            "manual": {"broker": "카카오페이증권", "items": []}, "favorites": [], "drawings": {},
             "auto": {"enabled": False, "max_order": 0, "max_daily_amount": 0, "max_daily_count": 0,
                      "rules": [], "log": [], "stopped_reason": ""}}
 
@@ -1197,6 +1199,48 @@ def toggle_favorite(code: str) -> bool:
         data["favorites"] = codes + [code] if added else [c for c in codes if c != code]
         _save(data)
     return added
+
+
+def _valid_anchor(value) -> bool:
+    return (isinstance(value, dict) and isinstance(value.get("date"), str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value["date"]) is not None
+            and isinstance(value.get("price"), (int, float)) and not isinstance(value.get("price"), bool) and math.isfinite(value["price"]))
+
+
+def _valid_drawing(item) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("type") == "point":
+        return _valid_anchor(item)
+    return item.get("type") == "line" and _valid_anchor(item.get("start")) and _valid_anchor(item.get("end"))
+
+
+def chart_drawings(code: str) -> list:
+    """이 계정이 이 종목 그래프에 그린 점과 선. 즐겨찾기와 같은 계정별 암호화 파일에 있다."""
+    if not logged_in():
+        return []
+    saved = _load()["drawings"]
+    items = saved.get(code) if isinstance(saved, dict) else None
+    return [i for i in items if _valid_drawing(i)] if isinstance(items, list) else []
+
+
+def save_chart_drawings(code: str, items: list):
+    if not logged_in():
+        raise StockError("점과 선은 로그인하면 그리고 저장할 수 있어요.")
+    if not re.fullmatch(r"[0-9A-Z]{6}", code or ""):
+        raise StockError("종목코드가 올바르지 않아요.")
+    if not all(_valid_drawing(i) for i in items):
+        raise StockError("그림 내용이 올바르지 않아요.")
+    if len(items) > MAX_DRAWINGS:
+        raise StockError(f"한 종목에 {MAX_DRAWINGS}개까지 그릴 수 있어요.")
+    with _lock:
+        data = _load()
+        drawings = data["drawings"] if isinstance(data["drawings"], dict) else {}
+        if items:
+            drawings[code] = items
+        else:
+            drawings.pop(code, None)
+        data["drawings"] = drawings
+        _save(data)
 
 
 def stock_list() -> list:
