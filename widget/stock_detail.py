@@ -80,11 +80,16 @@ class PriceChart(QWidget):
             painter.setPen(muted)
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.message)
             return
+        index = self.hover if self.hover is not None else len(self.points) - 1
+        date, value = self.points[index]
+        readout = f"{date}  {value:,.0f}원"
         painter.setPen(ink)
+        readout_w = painter.fontMetrics().horizontalAdvance(readout) + 16
         font = painter.font()
         font.setBold(True)
         painter.setFont(font)
-        painter.drawText(QRectF(0, 0, self.width(), 26), Qt.AlignmentFlag.AlignVCenter, self.title)
+        title = painter.fontMetrics().elidedText(self.title, Qt.TextElideMode.ElideMiddle, max(40, self.width() - readout_w))
+        painter.drawText(QRectF(0, 0, self.width() - readout_w, 26), Qt.AlignmentFlag.AlignVCenter, title)
         font.setBold(False)
         painter.setFont(font)
 
@@ -130,8 +135,6 @@ class PriceChart(QWidget):
             painter.setPen(muted)
             painter.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
 
-        index = self.hover if self.hover is not None else len(self.points) - 1
-        date, value = self.points[index]
         center = QPointF(x_of(index), y_of(value))
         if self.hover is not None:
             painter.setPen(QPen(muted, 1))
@@ -139,15 +142,14 @@ class PriceChart(QWidget):
         painter.setPen(QPen(QColor(self.p["bg"]), 2))
         painter.setBrush(line)
         painter.drawEllipse(center, 5, 5)
-        text = f"{date}  {value:,.0f}원"
         painter.setPen(ink)
-        painter.drawText(QRectF(0, 0, self.width(), 26), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, text)
+        painter.drawText(QRectF(0, 0, self.width(), 26), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, readout)
 
 
 class ProfitBars(QWidget):
     """종목별 평가손익 막대 — 가운데 0을 기준으로 이익은 오른쪽 빨강, 손실은 왼쪽 파랑. 기호로도 구분한다."""
     selected = pyqtSignal(str)   # 종목코드
-    ROW, GAP, NAME_W, VALUE_W = 26, 6, 92, 92
+    ROW, GAP, NAME_W = 26, 6, 92
 
     def __init__(self, palette: dict, parent=None):
         super().__init__(parent)
@@ -183,7 +185,9 @@ class ProfitBars(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         ink, muted = QColor(self.p["text"]), QColor(self.p["sub"])
-        left, right = self.NAME_W, max(self.NAME_W + 20, self.width() - self.VALUE_W)
+        # 금액 칸은 가장 긴 금액에 맞춘다 — 고정 폭이면 큰 금액의 + 기호가 잘렸다
+        value_w = max((painter.fontMetrics().horizontalAdvance(f"{h['pl']:+,.0f}원") for h in self.rows), default=60) + 8
+        left, right = self.NAME_W, max(self.NAME_W + 20, self.width() - value_w)
         peak = max((abs(h["pl"]) for h in self.rows), default=0) or 1
         has_loss = any(h["pl"] < 0 for h in self.rows)
         has_gain = any(h["pl"] > 0 for h in self.rows)
@@ -201,7 +205,7 @@ class ProfitBars(QWidget):
                 painter.setBrush(QColor(PROFIT_COLOR if row["pl"] > 0 else LOSS_COLOR))
                 painter.drawRoundedRect(QRectF(x, y + 7, max(width, 4), self.ROW - 14), 4, 4)
             painter.setPen(ink)
-            painter.drawText(QRectF(right + 6, y, self.VALUE_W - 6, self.ROW),
+            painter.drawText(QRectF(right + 2, y, value_w - 2, self.ROW),
                              Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{row['pl']:+,.0f}원")
         grid = QColor(self.p["sub"])
         grid.setAlpha(110)
@@ -236,16 +240,14 @@ class StockDetailDialog(_StockDialog):
         charts = QHBoxLayout()
         charts.setSpacing(20)
         left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
         left.addWidget(self._section("종목별 평가손익"))
         self.bars = ProfitBars(self.p)
         self.bars.selected.connect(self.show_stock)
         left.addWidget(self.bars)
-        self.bars_note = QLabel()
-        self.bars_note.setWordWrap(True)
-        self.bars_note.setStyleSheet(f"color: {self.p['sub']}; font-size: 12px;")
-        left.addWidget(self.bars_note)
         left.addStretch(1)
         right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
         search = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("종목명 또는 6자리 코드")
@@ -263,6 +265,7 @@ class StockDetailDialog(_StockDialog):
         left_box.setLayout(left)
         right_box.setLayout(right)
         left_box.setMinimumWidth(340)
+        self.left_box = left_box
         charts.addWidget(left_box, 4)
         charts.addWidget(right_box, 5)
         self.body.addLayout(charts)
@@ -273,7 +276,10 @@ class StockDetailDialog(_StockDialog):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)   # 남는 폭은 긴 종목명에 준다
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.table.setMinimumHeight(120)
         self.table.setMaximumHeight(180)   # 작은 화면에서도 창이 넘치지 않게 — 많으면 표 안에서 스크롤한다
         self.table.setStyleSheet(f"""
@@ -285,6 +291,7 @@ class StockDetailDialog(_StockDialog):
             QTableWidget::item:selected {{ background: {self.p['accent']}; color: #FFFFFF; }}""")
         self.table.itemSelectionChanged.connect(self._on_table_selected)
         self.body.addWidget(self.table)
+        self._align_first_header()
 
         if self.status_info["connected"] or self.status_info["has_manual"]:
             self.add_button("새로고침", "LinkGhost", self.reload)
@@ -294,6 +301,11 @@ class StockDetailDialog(_StockDialog):
         else:
             self._show_not_connected()
 
+    def _align_first_header(self):
+        item = self.table.horizontalHeaderItem(0)
+        if item:
+            item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
     def _section(self, text: str) -> QLabel:
         label = QLabel(text)
         label.setStyleSheet("font-size: 13px; font-weight: 700;")
@@ -302,7 +314,7 @@ class StockDetailDialog(_StockDialog):
     def _show_not_connected(self):
         self.summary.setText("시세 키가 필요해요")
         self.summary_note.setText("무료 시세 키를 넣으면 로그인이나 계좌 없이 주식 변동과 가격 그래프를 볼 수 있어요.")
-        self.bars_note.setText("계좌를 연결하거나 보유 종목을 직접 입력하면 종목별 손익이 여기에 나와요.")
+        self.left_box.hide()
         self.chart.set_message("시세 키를 넣으면 가격 그래프를 볼 수 있어요.")
         self.search_input.hide()
         self.btn_search.hide()
@@ -315,10 +327,10 @@ class StockDetailDialog(_StockDialog):
         """로그인·계좌 없이 보는 화면 — 주요 종목의 지난 영업일 시세."""
         self.summary.setText("주요 종목 시세")
         self.summary_note.setText("불러오는 중이에요…")
-        self.bars.hide()
-        self.bars_note.setText("계좌를 연결하거나 보유 종목을 직접 입력하면 종목별 손익이 여기에 나와요.")
+        self.left_box.hide()   # 보유 종목이 없으면 비워 두지 않고 그래프에 폭을 준다
         self.table.setColumnCount(len(MARKET_HEADERS))
         self.table.setHorizontalHeaderLabels(MARKET_HEADERS)
+        self._align_first_header()
         self._spawn(_stock().market_overview, self._on_market)
 
     def _on_market(self, result):
@@ -356,8 +368,7 @@ class StockDetailDialog(_StockDialog):
             self.summary.setStyleSheet("font-size: 22px; font-weight: 800;")
             self.summary_note.setText(str(result))
             self.bars.set_rows([])
-            self.bars.hide()
-            self.bars_note.setText("")
+            self.left_box.hide()
             self.table.setRowCount(0)
             self.table.hide()
             return
@@ -369,9 +380,8 @@ class StockDetailDialog(_StockDialog):
         self.summary_note.setText(f"{result['account']} · 평가금액 {result['total_value']:,.0f}원 · {result['fetched_at']} 기준"
                                   if held else f"{result['account']} · {result['fetched_at']} 기준")
         self.bars.set_rows(self.holdings)
-        self.bars.setVisible(held)
+        self.left_box.setVisible(held)
         self.table.setVisible(held)
-        self.bars_note.setText("" if held else "오른쪽에서 궁금한 종목의 가격을 볼 수 있어요.")
         self._fill_table()
         if not self.current_code:
             self.show_stock(self.holdings[0]["code"] if self.holdings else DEFAULT_STOCK)

@@ -371,7 +371,7 @@ def _market_key() -> str:
 def _fetch_market_rows(code: str, key: str) -> list:
     begin = (datetime.now(KST) - timedelta(days=150)).strftime("%Y%m%d")
     body = None
-    for attempt, wait in enumerate((12, 30)):   # 공공데이터 서버는 가끔 멈춘다 — 다시 보내면 금방 오는 경우가 많다(조회라 안전)
+    for attempt, wait in enumerate((6, 25)):   # 공공데이터 서버는 가끔 멈춘다 — 다시 보내면 금방 오는 경우가 많다(조회라 안전)
         try:
             # 포털이 주는 "인코딩 키"를 그대로 넣으면 이중 인코딩되므로 먼저 푼다
             resp = requests.get(MARKET_URL, timeout=wait, params={

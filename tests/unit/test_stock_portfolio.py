@@ -754,7 +754,7 @@ def test_slow_server_is_retried_once(market, monkeypatch):
         return FakeResponse(good)
     monkeypatch.setattr(sp.requests, "get", flaky)
     sp.set_market_key("K")
-    assert attempts == [12, 30]
+    assert attempts == [6, 25]
 
 
 def test_overview_shows_what_arrived_when_one_stock_fails(market, monkeypatch):

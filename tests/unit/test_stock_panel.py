@@ -51,7 +51,7 @@ def test_order_dialog_sends_nothing_until_confirm_and_only_once(qapp, stock):
     dlg = _order_dialog(qapp)
     assert dlg.btn_confirm.isEnabled() and not dlg.btn_confirm.isDefault()
     assert dlg.btn_confirm.text() == "매도 확정" and dlg.side_input.currentText() == "매도"
-    assert dlg.btn_secondary.isDefault()
+    assert not dlg.btn_secondary.isDefault() and not dlg.btn_secondary.autoDefault()
     assert "예상 금액 700,000원" in dlg.amount_label.text()
     _wait(qapp, lambda: False, 0.1)
     assert stock == []
@@ -108,7 +108,8 @@ def test_panel_shows_profit_with_sign_and_marks_mock(qapp, stock, monkeypatch):
 
 def test_panel_clears_old_numbers_when_refresh_fails(qapp, stock, monkeypatch):
     monkeypatch.setattr(sp, "fetch_portfolio", lambda: {
-        "holdings": [], "total_pl": 1.0, "total_rate": 1.0, "fetched_at": "10:00", "account": "모의 계좌 ****4501"})
+        "holdings": [{"name": "삼성전자", "qty": 1, "pl": 1.0, "rate": 1.0}], "total_pl": 1.0, "total_rate": 1.0,
+        "fetched_at": "10:00", "account": "모의 계좌 ****4501"})
     panel = stock_panel.StockPanel()
     panel.show()
     panel.refresh()

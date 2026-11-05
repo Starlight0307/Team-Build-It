@@ -44,6 +44,9 @@ class _StockDialog(lumi_dialog.LumiDialog):
         super().__init__(parent, title, description, min_width=500)
         self.btn_primary.hide()
         self.btn_secondary.setText("닫기")
+        for button in (self.btn_primary, self.btn_secondary):   # Enter를 눌러도 창이 닫히거나 입력이 사라지지 않게
+            button.setAutoDefault(False)
+            button.setDefault(False)
         self._busy = False
         self._jobs = 0
         self._done.connect(self._on_job_done)
@@ -55,6 +58,7 @@ class _StockDialog(lumi_dialog.LumiDialog):
         self.setStyleSheet(lumi_dialog.qss(p) + f"""
             QComboBox {{ background-color: {p['input']}; color: {p['text']}; border: 1.5px solid {p['focus']};
                          border-radius: 12px; padding: 8px 12px; font-size: 14px; font-weight: 700; }}
+            QComboBox::drop-down {{ border: none; width: 28px; }}
             QComboBox QAbstractItemView {{ background-color: {p['input']}; color: {p['text']}; }}""")
 
     def run_background(self, work, finish):
@@ -213,6 +217,7 @@ class StockMarketKeyDialog(_StockDialog):
             self.set_status("시세 키가 저장돼 있어요.", "ok")
             self.add_button("키 삭제", "LumiDanger", self._delete)
         self.btn_save = self.add_button("확인 후 저장", "LinkPrimary", self._save)
+        self.key_input.returnPressed.connect(self.btn_save.click)
 
     def _delete(self):
         _stock().delete_market_key()
@@ -253,6 +258,8 @@ class StockManualDialog(_StockDialog):
         add.setObjectName("LinkGhost")
         add.setAutoDefault(False)
         add.clicked.connect(self._add)
+        for widget in (self.stock_input, self.qty_input, self.avg_input):
+            widget.returnPressed.connect(add.click)
         self.body.addWidget(add)
         self.rows_box = QWidget()
         self.rows_layout = QVBoxLayout(self.rows_box)
@@ -325,7 +332,6 @@ class StockOrderDialog(_StockDialog):
         self.amount_input.setVisible(self.real)
         self.btn_confirm = self.add_button("주문 확정", "LumiDanger", self._confirm)
         self.btn_confirm.setEnabled(False)
-        self.btn_secondary.setDefault(True)
         self.btn_secondary.setFocus()
         self._master_ready = False
         self._sent = False
@@ -360,7 +366,7 @@ class StockOrderDialog(_StockDialog):
         self.stock_label.setText(f"{name} ({code}){price_note}" if code else "")
         self.amount_label.setText(f"예상 금액 {quantity * price:,}원" if quantity and price else "")
         self.btn_confirm.setEnabled(not problem and not self._busy)
-        self.set_status(problem, "err" if problem else "info")
+        self.set_status(problem)   # 아직 입력 중인 안내라 오류 색으로 보이지 않게
 
     def _show_price(self):
         code = _stock().resolve_stock(self.stock_input.text().strip())[0] if self._master_ready else None
@@ -431,7 +437,7 @@ class StockAutoDialog(_StockDialog):
         self.body.addWidget(self.rules_box)
         self.max_order, self.max_amount, self.max_count = QLineEdit(), QLineEdit(), QLineEdit()
         limits = QHBoxLayout()
-        for label, widget in (("1회 금액", self.max_order), ("하루 총액", self.max_amount), ("하루 횟수", self.max_count)):
+        for label, widget in (("1회 금액(원)", self.max_order), ("하루 총액(원)", self.max_amount), ("하루 횟수(번)", self.max_count)):
             limits.addWidget(QLabel(label))
             limits.addWidget(widget)
         self.body.addLayout(limits)
@@ -587,6 +593,9 @@ class StockPanel(Panel):
             return
         self._loading = True
         self._gen += 1
+        if not self.total.isVisible() and not self.rows.isVisible():   # 처음 받는 동안 멈춘 것처럼 보이지 않게
+            self.message.setText("불러오는 중이에요…")
+            self.message.show()
         gen, signals = self._gen, self.signals
 
         def work():
@@ -633,7 +642,7 @@ class StockPanel(Panel):
         self.message.setText(f"{portfolio['account']} · {portfolio['fetched_at']} 기준"
                              + ("" if lines else " · 보유 종목 없음"))
         self.message.show()
-        self.total.show()
+        self.total.setVisible(bool(lines))   # 보유 종목이 없으면 +0원은 의미가 없다
         self.rows.setVisible(bool(lines))
         self._style_labels()
 

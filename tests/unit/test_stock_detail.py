@@ -68,7 +68,7 @@ def test_shows_summary_table_bars_and_first_holding_chart(qapp, stock):
 def test_no_holdings_still_shows_basic_stock_chart(qapp, stock, monkeypatch):
     monkeypatch.setattr(sp, "fetch_portfolio", lambda: _portfolio([]))
     dlg = _dialog(qapp)
-    assert dlg.summary.text() == "보유 종목이 없어요" and "+0" not in dlg.summary.text() and dlg.table.isHidden()
+    assert dlg.summary.text() == "보유 종목이 없어요" and "+0" not in dlg.summary.text() and dlg.table.isHidden() and dlg.left_box.isHidden()
     assert stock == ["005930"] and dlg.chart.reference is None and dlg.chart.points == POINTS
 
 
@@ -125,7 +125,7 @@ def test_portfolio_failure_clears_numbers(qapp, stock, monkeypatch):
     monkeypatch.setattr(sp, "fetch_portfolio", _portfolio)
     dlg.reload()
     assert _wait(qapp, lambda: "+58,000원" in dlg.summary.text())
-    assert not dlg.table.isHidden() and not dlg.bars.isHidden()
+    assert not dlg.table.isHidden() and not dlg.left_box.isHidden()
 
 
 def test_history_failure_shows_message_not_old_chart(qapp, stock, monkeypatch):
@@ -245,4 +245,66 @@ def test_panel_has_detail_button_and_hand_cursor(qapp, stock):
     panel = stock_panel.StockPanel()
     assert any(b.text().strip() == "상세" for b in panel.findChildren(sd.QPushButton))
     assert panel.cursor().shape() == Qt.CursorShape.PointingHandCursor
+
+
+def _press_enter(widget):
+    from PyQt6.QtTest import QTest
+    QTest.keyClick(widget, Qt.Key.Key_Return)
+
+
+def test_enter_in_search_searches_and_keeps_window_open(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    dlg.search_input.setText("카카오")
+    _press_enter(dlg.search_input)
+    assert _wait(qapp, lambda: "카카오" in dlg.chart.title)
+    assert dlg.isVisible()
+    dlg.close()
+
+
+@pytest.mark.parametrize("make, field", [
+    (lambda: stock_panel.StockAutoDialog(), "stock_input"),
+    (lambda: stock_panel.StockOrderDialog({"side": "sell", "stock": "삼성전자", "quantity": 1, "price": 1000}), "price_input"),
+])
+def test_enter_in_form_does_not_close_or_send(qapp, stock, monkeypatch, make, field):
+    monkeypatch.setattr(sp, "place_order", lambda *a: pytest.fail("Enter로 주문이 나가면 안 된다"))
+    dlg = make()
+    dlg.show()
+    _press_enter(getattr(dlg, field))
+    qapp.processEvents()
+    assert dlg.isVisible()
+    dlg._busy = False
+    dlg.close()
+
+
+def test_bars_value_column_fits_big_amounts(qapp):
+    bars = sd.ProfitBars(lumi_dialog.palette(False))
+    bars.resize(340, 100)
+    bars.set_rows([{**HOLDINGS[0], "pl": 123456789.0}, {**HOLDINGS[1], "pl": -1234567890.0}])
+    assert not bars.grab().isNull()
+
+
+def test_long_title_does_not_break_chart(qapp):
+    chart = sd.PriceChart(lumi_dialog.palette(False))
+    chart.resize(300, 240)
+    chart.set_data("TIGER 엔비디아미국채커버드콜밸런스(합성) 일별 종가 (최근 102거래일)", POINTS)
+    assert not chart.grab().isNull()
+
+
+def test_panel_hides_zero_total_and_shows_loading(qapp, stock, monkeypatch):
+    import threading
+    gate = threading.Event()
+
+    def slow():
+        gate.wait(3)
+        return _portfolio([])
+    monkeypatch.setattr(sp, "fetch_portfolio", slow)
+    panel = stock_panel.StockPanel()
+    panel.show()
+    panel.refresh()
+    assert "불러오는 중" in panel.message.text()
+    gate.set()
+    assert _wait(qapp, lambda: "모의 계좌" in panel.message.text())
+    assert not panel.total.isVisible() and "+0" not in panel.total.text() or not panel.total.isVisible()
+    panel.close()
 
