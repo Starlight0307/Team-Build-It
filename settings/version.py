@@ -10,6 +10,7 @@ GitHub main으로 자동 업데이트되고, 그때 받은 코드의 커밋 번�
 import json
 import os
 import re
+import sys
 import urllib.request
 
 _REPO = "Starlight0307/Team-Build-It"
@@ -133,7 +134,8 @@ def update_now_command(pid: int) -> list:
     """[지금 업데이트] — 설치 폴더의 업데이트 실행기를 띄울 명령. 실행기는 이 루미(pid)가 꺼지길 기다렸다가
     새 버전을 받아 다시 켠다. 설치 프로그램 없이(개발 중) 실행하면 []."""
     root = os.path.dirname(_PROJECT_ROOT)
-    pythonw = os.path.join(root, "venv", "Scripts", "pythonw.exe")
+    pythonw = (os.path.join(root, "venv", "Scripts", "pythonw.exe") if sys.platform == "win32"
+               else os.path.join(root, "venv", "bin", "python"))
     launcher = os.path.join(root, "launcher", "lumi_installer.py")
     if not (installed_state() and os.path.isfile(pythonw) and os.path.isfile(launcher)):
         return []

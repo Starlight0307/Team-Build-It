@@ -81,7 +81,9 @@ lumi_backup_*.zip
 *.lumibak
 selftest_out/
 installer/uv.exe
+installer/uv
 installer/lumi.ico
+installer/lumi.icns
 build/
 dist/
 *.spec

@@ -1,6 +1,7 @@
 """마이페이지 아래쪽 루미 버전 표시와 새 버전 알림."""
 import json
 import os
+import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -85,7 +86,9 @@ def test_update_now_command_only_when_installed(tmp_path, monkeypatch):
     root = tmp_path / "Lumi"
     (root / "venv" / "Scripts").mkdir(parents=True)
     (root / "launcher").mkdir()
-    (root / "venv" / "Scripts" / "pythonw.exe").write_text("")
+    python = root / "venv" / "Scripts" / "pythonw.exe" if sys.platform == "win32" else root / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.write_text("")
     (root / "launcher" / "lumi_installer.py").write_text("")
     monkeypatch.setattr(version, "_PROJECT_ROOT", str(root / "app"))
     monkeypatch.setattr(version, "installed_state", lambda *a: {"sha": SHA_A, "version": "1.1.0"})
