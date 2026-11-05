@@ -159,7 +159,11 @@ def _location():
 def _weather():
     from core import weather
     try:
-        d = weather.fetch_weather("서울")
+        try:
+            d = weather.fetch_weather("서울")
+        except weather.WeatherError:   # 날씨 서버가 한 번 늦는 일이 시험 서버에서 잦다 — 연달아 실패할 때만 문제로 본다
+            time.sleep(3)
+            d = weather.fetch_weather("서울")
     except weather.WeatherError as e:
         # 앱은 안내 문구만 보여주니, 점검에서는 실제 원인(예외·서버 응답)을 같이 남긴다
         cause = e.__cause__
