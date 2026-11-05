@@ -724,6 +724,7 @@ def _settings_clip():
     lumi_tooltip.install(app)
     import app_main
     w = app_main.AssistantApp()
+    _KEEP_ALIVE.append(app)   # app 변수가 사라지면 함수가 끝나는 순간 QApplication이 지워져 access violation이 날 수 있다
     out_dir = os.path.join(ROOT, "selftest_out"); os.makedirs(out_dir, exist_ok=True)
     w.show()
     w.btn_settings.click()
