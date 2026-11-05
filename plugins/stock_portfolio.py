@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -28,7 +28,7 @@ BASE_URL = "https://openapivts.koreainvestment.com:29443"
 KIS_GUIDE_URL = "https://apiportal.koreainvestment.com/"
 MASTER_URL = "https://new.real.download.dws.co.kr/common/master/{}_code.mst.zip"
 MASTER_TAIL = {"kospi": 228, "kosdaq": 222}   # 공식 예제 kis_*_code_mst.py의 뒤쪽 고정 길이 — 그 앞이 코드·이름
-TR_BALANCE, TR_PRICE = "VTTC8434R", "FHKST01010100"
+TR_BALANCE, TR_PRICE, TR_DAILY = "VTTC8434R", "FHKST01010100", "FHKST03010100"
 TR_ORDER = {"sell": "VTTC0011U", "buy": "VTTC0012U"}
 SIDE_NAMES = {"sell": "매도", "buy": "매수"}
 DEFAULT_ORDER_LIMIT = 1_000_000
@@ -295,6 +295,25 @@ def get_price(code: str) -> int:
     if price <= 0:
         raise StockError("현재가를 확인하지 못했어요.")
     return price
+
+
+def get_price_history(code: str, days: int = 150) -> list:
+    """일별 종가 [("2026-11-05", 70000), ...] 오래된 날부터. 증권사가 한 번에 최대 100건까지 준다."""
+    if not re.fullmatch(r"[0-9A-Z]{6}", code or ""):
+        raise StockError("종목코드가 올바르지 않아요.")
+    with _lock:
+        data = _require_account()
+    today = datetime.now(KST)
+    result, _ = _call(data, "GET", "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", TR_DAILY, params={
+        "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": (today - timedelta(days=days)).strftime("%Y%m%d"),
+        "FID_INPUT_DATE_2": today.strftime("%Y%m%d"), "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"})
+    _store_token(data)
+    points = {}
+    for row in result.get("output2") or []:
+        date, close = str(row.get("stck_bsop_date") or ""), int(_num(row.get("stck_clpr")))
+        if re.fullmatch(r"\d{8}", date) and close > 0:
+            points[f"{date[:4]}-{date[4:6]}-{date[6:]}"] = close
+    return sorted(points.items())
 
 
 # ── 종목 이름 ↔ 코드 (증권사가 공개한 종목 파일) ──

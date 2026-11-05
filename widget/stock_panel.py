@@ -2,7 +2,7 @@
 import threading
 import webbrowser
 
-from PyQt6.QtCore import pyqtSignal, QObject, QTimer
+from PyQt6.QtCore import pyqtSignal, QObject, Qt, QTimer
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
                              QVBoxLayout, QWidget)
 
@@ -386,6 +386,7 @@ class StockPanel(Panel):
         _ALIVE.add(self.signals)
         self.notice, self.order_requested = self.signals.notice, self.signals.order_requested
         self.briefing_ready = self.signals.briefing_ready
+        self.add_header_button(" 상세", "보유 종목과 그래프 보기 (위젯을 눌러도 열려요)", self.open_detail)
         self.add_header_button(" 자동", "자동매매 규칙과 켜고 끄기", self.open_auto)
         self.add_header_button("", "계좌 설정", self.open_settings, icon="settings")
         self.add_header_button("", "새로고침", self.refresh, icon="refresh-cw")
@@ -405,6 +406,7 @@ class StockPanel(Panel):
         self.btn_stop.clicked.connect(self.stop_auto)
         for widget in (self.message, self.total, self.rows, self.auto_label, self.btn_stop):
             self.body.addWidget(widget)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.signals.loaded.connect(self._apply)
         self.signals.tick_done.connect(self._on_tick_done)
         self.order_requested.connect(self.open_order)
@@ -525,6 +527,15 @@ class StockPanel(Panel):
 
     def _after_dialog(self):
         self.refresh()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.open_detail()
+
+    def open_detail(self):
+        from widget.stock_detail import StockDetailDialog   # stock_detail이 이 파일을 불러와 순환을 피한다
+        StockDetailDialog(self.window(), open_settings=self.open_settings).exec()
+        self._after_dialog()
 
     def open_settings(self):
         StockAccountDialog(self.window()).exec()

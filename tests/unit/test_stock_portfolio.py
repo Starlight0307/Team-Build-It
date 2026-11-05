@@ -34,6 +34,7 @@ class FakeKis:
         self.price_error = None
         self.token_calls = 0
         self.balance_pages = None
+        self.history_rows = []
 
     def post(self, url, timeout=None, json=None):
         self.token_calls += 1
@@ -47,6 +48,9 @@ class FakeKis:
             if self.order_error:
                 raise self.order_error
             return FakeResponse({"rt_cd": "0", "output": {"ODNO": "0001"}})
+        if url.endswith("/inquire-daily-itemchartprice"):
+            self.history_params = (headers["tr_id"], params)
+            return FakeResponse({"rt_cd": "0", "output2": self.history_rows})
         if url.endswith("/inquire-price"):
             if self.price_error:
                 raise self.price_error
@@ -480,4 +484,27 @@ def test_stock_intent_routes_without_screen_control(text, intent, tmp_path, monk
     monkeypatch.setattr(sp.storage_location, "user_data_dir", lambda name: str(tmp_path))
     (tmp_path / "master.json").write_text(json.dumps({"date": "x", "names": NAMES}), encoding="utf-8")
     assert sp.stock_intent(text) == intent
+
+
+def test_price_history_sorted_oldest_first_and_skips_bad_rows(connected):
+    connected.history_rows = [{"stck_bsop_date": "20261105", "stck_clpr": "71000"},
+                              {"stck_bsop_date": "20261104", "stck_clpr": "70000"},
+                              {"stck_bsop_date": "20261103", "stck_clpr": "69000"},
+                              {"stck_bsop_date": "20261102", "stck_clpr": "69000"},
+                              {"stck_bsop_date": "", "stck_clpr": "1"}, {"stck_bsop_date": "20261101", "stck_clpr": "0"}, {}]
+    assert sp.get_price_history("005930") == [("2026-11-02", 69000), ("2026-11-03", 69000), ("2026-11-04", 70000), ("2026-11-05", 71000)]
+    tr_id, params = connected.history_params
+    assert tr_id == "FHKST03010100"
+    assert params["FID_INPUT_ISCD"] == "005930" and params["FID_PERIOD_DIV_CODE"] == "D" and params["FID_COND_MRKT_DIV_CODE"] == "J"
+    assert params["FID_INPUT_DATE_1"] < params["FID_INPUT_DATE_2"]
+
+
+@pytest.mark.parametrize("code", ["", None, "삼성전자", "12345", "../../x"])
+def test_price_history_rejects_bad_code(connected, code):
+    with pytest.raises(sp.StockError):
+        sp.get_price_history(code)
+
+
+def test_price_history_is_not_an_ai_tool():
+    assert "get_price_history" not in sp.TOOL_SCHEMAS
 
