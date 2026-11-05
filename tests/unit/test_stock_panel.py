@@ -242,3 +242,31 @@ def test_stock_order_goes_to_ai_not_screen_even_with_ui_verbs(qapp, stock, monke
     finally:
         w.shutdown_background_work()
         w.close()
+
+
+def test_closing_order_dialog_during_price_fetch_is_safe(qapp, stock, monkeypatch):
+    """현재가를 받는 도중 창을 닫아도 창이 스레드에서 지워지면 안 된다 (앱이 죽는다)."""
+    import gc
+    import threading
+    release = threading.Event()
+
+    def slow_price(code):
+        release.wait(3)
+        return 70000
+    monkeypatch.setattr(sp, "get_price", slow_price)
+    dlg = _order_dialog(qapp)
+    assert dlg in stock_panel._ALIVE
+    dlg.close()
+    del dlg
+    gc.collect()
+    release.set()
+    assert _wait(qapp, lambda: not any(isinstance(x, stock_panel.StockOrderDialog) for x in stock_panel._ALIVE))
+    gc.collect()
+
+
+def test_current_price_stays_visible_while_typing(qapp, stock):
+    dlg = _order_dialog(qapp)
+    assert _wait(qapp, lambda: "현재가 70,000원" in dlg.stock_label.text())
+    dlg.quantity_input.setText("1")
+    assert "현재가 70,000원" in dlg.stock_label.text()
+
