@@ -293,6 +293,7 @@ class StockMarketKeyDialog(_StockDialog):
     def __init__(self, parent=None):
         super().__init__(parent, "시세 키",
                          "공공데이터포털에서 '금융위원회 주식시세정보' 활용을 신청하면 무료 키를 바로 받을 수 있어요.\n"
+                         "ETF 그래프까지 보려면 '증권상품시세정보'도 같은 방법으로 신청해 주세요.\n"
                          "지난 영업일 종가 기준이라 장중 실시간 가격은 아니에요. 키는 이 컴퓨터에 암호화해 저장해요.")
         self.key_input = QLineEdit()
         self.key_input.setEchoMode(QLineEdit.EchoMode.Password)

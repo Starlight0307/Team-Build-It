@@ -593,7 +593,7 @@ def market(tmp_path, monkeypatch):
 
     def fake_get(url, timeout=None, params=None):
         calls.append(params)
-        assert url == sp.MARKET_URL
+        assert url in (sp.MARKET_URL, sp.MARKET_ETF_URL)
         if isinstance(state["body"], Exception):
             raise state["body"]
         return FakeResponse(state["body"])
@@ -977,4 +977,32 @@ def test_unknown_broker_is_refused(kis):
 def test_kiwoom_auto_rule_uses_kiwoom_order(kiwoom):
     assert sp._submit_order(sp._load(), "sell", "005930", 10, 70000) == "0000138"
     assert kiwoom.calls[-1]["headers"]["api-id"] == "kt10001" and kiwoom.calls[-1]["json"]["ord_qty"] == "10"
+
+
+def test_konex_lines_use_official_tail_length():
+    import io, zipfile
+    line = "0070X0   KR70070X0000" + "에스테크엠" + " " * 30 + "x" * 184
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("konex_code.mst", line.encode("cp949"))
+    assert sp._parse_master(buf.getvalue(), "konex") == {"0070X0": "에스테크엠"}
+
+
+def test_stock_list_sorted_by_name(monkeypatch):
+    monkeypatch.setattr(sp, "load_master", lambda: {"000660": "SK하이닉스", "005930": "삼성전자", "069500": "KODEX 200"})
+    assert [n for _, n in sp.stock_list()] == ["KODEX 200", "SK하이닉스", "삼성전자"]
+
+
+def test_market_falls_back_to_etf_then_explains_missing_approval(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sp, "_query_market", lambda url, code, key: calls.append(url) or [])
+    assert sp._fetch_market_rows("069500", "K") == [] and calls == [sp.MARKET_URL, sp.MARKET_ETF_URL]
+
+    def refused(url, code, key):
+        if url == sp.MARKET_ETF_URL:
+            raise sp.StockError("시세 키를 확인해 주세요.")
+        return []
+    monkeypatch.setattr(sp, "_query_market", refused)
+    with pytest.raises(sp.StockError, match="증권상품시세정보"):
+        sp._fetch_market_rows("069500", "K")
 

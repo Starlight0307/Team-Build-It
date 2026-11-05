@@ -91,10 +91,10 @@ def test_selecting_table_row_and_bar_changes_chart(qapp, stock):
 def test_search_any_stock_and_unknown_stock(qapp, stock):
     dlg = _dialog(qapp)
     dlg.search_input.setText("카카오")
-    dlg.btn_search.click()
+    dlg._search()
     assert _wait(qapp, lambda: "카카오" in dlg.chart.title) and dlg.chart.reference is None
     dlg.search_input.setText("없는종목")
-    dlg.btn_search.click()
+    dlg._search()
     assert _wait(qapp, lambda: "찾지 못했어요" in dlg.chart.message)
     assert dlg.chart.points == []
 
@@ -148,7 +148,7 @@ def test_not_connected_guides_to_connect_without_network(qapp, stock):
     sp.disconnect_account()
     opened = []
     dlg = sd.StockDetailDialog(open_settings=lambda: opened.append(1))
-    assert "시세 키가 필요해요" in dlg.summary.text() and dlg.search_input.isHidden() and dlg.btn_search.isHidden()
+    assert "시세 키가 필요해요" in dlg.summary.text() and not dlg.search_input.isHidden()
     assert stock == []
     next(b for b in dlg.findChildren(sd.QPushButton) if b.text() == "설정 열기").click()
     assert opened == [1]
@@ -478,3 +478,68 @@ def test_error_text_is_not_overwritten_by_running_count_animation(qapp):
     stock_panel.animate_values(label, (5.0,), lambda v: f"{v:+,.0f}원", 50)   # 다음 조회는 처음부터
     assert _wait(qapp, lambda: label.text() == "+5원")
 
+
+def _list_ready(qapp, dlg):
+    assert _wait(qapp, lambda: dlg.stock_model.rowCount() > 0)
+
+
+def _list_text(dlg):
+    return [dlg.stock_proxy.index(r, 0).data() for r in range(dlg.stock_proxy.rowCount())]
+
+
+def test_left_list_shows_all_stocks_with_holdings_first(qapp, stock):
+    dlg = _dialog(qapp)
+    _list_ready(qapp, dlg)
+    assert _wait(qapp, lambda: _list_text(dlg)[0].startswith("보유 · "))
+    assert dlg.stock_model.rowCount() == len(sp.load_master())
+    assert "전체 종목" in dlg.list_title.text()
+    dlg.close()
+
+
+def test_search_filters_ignoring_spaces_and_case_without_loading_other_stock(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    _list_ready(qapp, dlg)
+    assert _wait(qapp, lambda: dlg.current_code)
+    before, count = dlg.current_code, len(stock)
+    dlg.search_input.setText("하 이닉")
+    assert [t for t in _list_text(dlg) if "SK하이닉스" in t] and "검색 결과" in dlg.list_title.text()
+    dlg.search_input.setText("sk하이")
+    assert len(_list_text(dlg)) == 1
+    dlg.search_input.setText("035720")
+    assert len(_list_text(dlg)) == 1
+    _wait(qapp, lambda: False, 0.3)
+    assert dlg.current_code == before and len(stock) == count
+    dlg.close()
+
+
+def test_picking_in_list_opens_that_stock_once_after_settling(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    _list_ready(qapp, dlg)
+    assert _wait(qapp, lambda: dlg.current_code)
+    dlg.search_input.setText("035720")
+    dlg.stock_view.setCurrentIndex(dlg.stock_proxy.index(0, 0))
+    assert _wait(qapp, lambda: dlg.current_code == "035720")
+    assert dlg.stock_view.currentIndex().data(Qt.ItemDataRole.UserRole) == "035720"
+    dlg.close()
+
+
+def test_closed_window_does_not_fetch_after_pick(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    _list_ready(qapp, dlg)
+    assert _wait(qapp, lambda: dlg.current_code)
+    dlg.search_input.setText("035720")
+    dlg.stock_view.setCurrentIndex(dlg.stock_proxy.index(0, 0))
+    dlg.close()
+    count = len(stock)
+    _wait(qapp, lambda: False, 0.35)
+    assert len(stock) == count
+
+
+def test_master_failure_leaves_message_in_list(qapp, stock, monkeypatch):
+    monkeypatch.setattr(sp, "stock_list", lambda: [])
+    dlg = _dialog(qapp)
+    assert _wait(qapp, lambda: "받지 못했어요" in dlg.list_title.text())
+    dlg.close()

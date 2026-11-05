@@ -37,13 +37,14 @@ KIWOOM_GUIDE_URL = "https://openapi.kiwoom.com/main/home"
 KIWOOM_ORDER = {"buy": "kt10000", "sell": "kt10001"}
 KIWOOM_TOKEN_ERROR = re.compile(r"\b(8005|8010|8031|8103)\b")   # 토큰 무효·IP 변경 — return_code 3의 문구 안에 섞여 오기도 한다
 MASTER_URL = "https://new.real.download.dws.co.kr/common/master/{}_code.mst.zip"
-MASTER_TAIL = {"kospi": 228, "kosdaq": 222}   # 공식 예제 kis_*_code_mst.py의 뒤쪽 고정 길이 — 그 앞이 코드·이름
+MASTER_TAIL = {"kospi": 228, "kosdaq": 222, "konex": 184}   # 공식 예제 kis_*_code_mst.py의 뒤쪽 고정 길이 — 그 앞이 코드·이름
 TR_BALANCE = {"demo": "VTTC8434R", "real": "TTTC8434R"}
 TR_PRICE, TR_DAILY = "FHKST01010100", "FHKST03010100"
 TR_ORDER = {"demo": {"sell": "VTTC0011U", "buy": "VTTC0012U"},
             "real": {"sell": "TTTC0011U", "buy": "TTTC0012U"}}
 # 금융위원회 주식시세정보 — 하루 한 번 갱신, 재배포 금지라 사용자마다 자기 무료 키를 쓴다(공공누리 4유형, 출처 표시)
 MARKET_URL = "https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2"
+MARKET_ETF_URL = "https://apis.data.go.kr/1160100/GetSecuritiesProductInfoService_V2/getETFPriceInfo_V2"   # 같은 키로 따로 활용 신청(무료)
 MARKET_KEY_GUIDE_URL = "https://www.data.go.kr/data/15094808/openapi.do"
 MARKET_SOURCE = "출처: 금융위원회(공공데이터포털)"
 MARKET_CACHE_SECONDS = 1800
@@ -498,12 +499,22 @@ def _market_key() -> str:
 
 
 def _fetch_market_rows(code: str, key: str) -> list:
+    rows = _query_market(MARKET_URL, code, key)
+    if rows:
+        return rows
+    try:   # 주식 시세에 없으면 ETF일 수 있다
+        return _query_market(MARKET_ETF_URL, code, key)
+    except StockError:
+        raise StockError("이 종목의 시세를 찾지 못했어요. ETF라면 공공데이터포털에서 '증권상품시세정보'도 활용 신청해 주세요(무료).")
+
+
+def _query_market(url: str, code: str, key: str) -> list:
     begin = (datetime.now(KST) - timedelta(days=150)).strftime("%Y%m%d")
     body = None
     for attempt, wait in enumerate((6, 25)):   # 공공데이터 서버는 가끔 멈춘다 — 다시 보내면 금방 오는 경우가 많다(조회라 안전)
         try:
             # 포털이 주는 "인코딩 키"를 그대로 넣으면 이중 인코딩되므로 먼저 푼다
-            resp = requests.get(MARKET_URL, timeout=wait, params={
+            resp = requests.get(url, timeout=wait, params={
                 "serviceKey": unquote(key), "resultType": "json", "numOfRows": 200, "pageNo": 1,
                 "likeSrtnCd": code, "beginBasDt": begin})
             body = resp.json()
@@ -678,6 +689,11 @@ def load_master() -> dict:
         json.dump({"date": today, "names": names}, f, ensure_ascii=False)
     _master_memo = (today, names)
     return names
+
+
+def stock_list() -> list:
+    """[(코드, 이름)] 이름순. 주식·ETF·코넥스 전체. ETN(Q로 시작)은 주문 코드 형식을 확인하지 못해 뺀다."""
+    return sorted(load_master().items(), key=lambda item: item[1].casefold())
 
 
 def resolve_stock(query: str) -> tuple:

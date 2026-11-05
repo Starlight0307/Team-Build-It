@@ -1,7 +1,7 @@
 """주식 위젯을 누르면 뜨는 상세 창 — 종목별 손익 막대, 가격 그래프, 보유 종목 표."""
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import (QAbstractItemView, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QScrollArea, QToolTip,
+from PyQt6.QtCore import QModelIndex, QPointF, QRectF, QSortFilterProxyModel, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QStandardItem, QStandardItemModel
+from PyQt6.QtWidgets import (QAbstractItemView, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListView, QPushButton, QScrollArea, QToolTip,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from widget import lumi_dialog
@@ -11,6 +11,7 @@ DEFAULT_STOCK = "삼성전자"   # 보유 종목이 없을 때 먼저 보여 줄
 MAX_BARS = 8
 TABLE_HEADERS = ("종목", "수량", "평균 단가", "현재가", "평가금액", "평가손익", "수익률")
 MARKET_HEADERS = ("종목", "기준일", "종가", "전일 대비", "등락률")
+SEARCH_ROLE = Qt.ItemDataRole.UserRole + 1
 PERIODS = (("1개월", 22), ("3개월", 66), ("전체", None))   # 거래일 수
 
 
@@ -297,7 +298,7 @@ class StockDetailDialog(_StockDialog):
 
     def __init__(self, parent=None, open_settings=None):
         super().__init__(parent, "주식 상세")
-        self.setMinimumWidth(1040)
+        self.setMinimumWidth(1240)
         self.max_height = None   # 시험용 — 없으면 실제 화면 높이를 쓴다
         self.status_info = _stock().account_status()
         self.open_settings = open_settings
@@ -322,7 +323,11 @@ class StockDetailDialog(_StockDialog):
         self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
         self.scroll.viewport().setAutoFillBackground(False)
         self.scroll.setWidget(self.content)
-        self.body.addWidget(self.scroll)
+        columns = QHBoxLayout()
+        columns.setSpacing(16)
+        columns.addWidget(self._build_stock_list())
+        columns.addWidget(self.scroll, 1)
+        self.body.addLayout(columns)
         content.addWidget(self.summary)
         content.addWidget(self.summary_note)
 
@@ -337,17 +342,6 @@ class StockDetailDialog(_StockDialog):
         left.addStretch(1)
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
-        search = QHBoxLayout()
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("종목명 또는 6자리 코드")
-        self.search_input.returnPressed.connect(self._search)
-        self.btn_search = QPushButton("그래프 보기")
-        self.btn_search.setObjectName("LinkGhost")
-        self.btn_search.setAutoDefault(False)
-        self.btn_search.clicked.connect(self._search)
-        search.addWidget(self.search_input, 1)
-        search.addWidget(self.btn_search)
-        right.addLayout(search)
         periods = QHBoxLayout()
         periods.setSpacing(6)
         self.period_buttons = {}
@@ -408,6 +402,7 @@ class StockDetailDialog(_StockDialog):
         self.table.itemSelectionChanged.connect(self._on_table_selected)
         content.addWidget(self.table)
         self._align_first_header()
+        self._spawn(_stock().stock_list, self._on_stock_list)
 
         if self.status_info["connected"] or self.status_info["has_manual"]:
             self.add_button("새로고침", "LinkGhost", self.reload)
@@ -416,6 +411,94 @@ class StockDetailDialog(_StockDialog):
             self._show_market()
         else:
             self._show_not_connected()
+
+    def _build_stock_list(self) -> QWidget:
+        """왼쪽 전체 종목 목록. 4천 개가 넘어 모델과 필터를 쓴다."""
+        box = QWidget()
+        box.setFixedWidth(250)
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.list_title = self._section("종목 불러오는 중…")
+        layout.addWidget(self.list_title)
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("종목명 또는 코드 검색")
+        self.search_input.textChanged.connect(self._filter_stocks)
+        self.search_input.returnPressed.connect(self._search)
+        layout.addWidget(self.search_input)
+        self.stock_rows, self.stock_model = [], QStandardItemModel(self)
+        self.stock_proxy = QSortFilterProxyModel(self)
+        self.stock_proxy.setSourceModel(self.stock_model)
+        self.stock_proxy.setFilterRole(SEARCH_ROLE)
+        self.stock_proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.stock_view = QListView()
+        self.stock_view.setModel(self.stock_proxy)
+        self.stock_view.setUniformItemSizes(True)
+        self.stock_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # 긴 이름은 줄이고 툴팁으로 보여 준다
+        self.stock_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.stock_view.setStyleSheet(f"""
+            QListView {{ background: {self.p['input']}; color: {self.p['text']}; border: none; border-radius: 12px;
+                         font-size: 13px; outline: none; padding: 4px; }}
+            QListView::item {{ padding: 6px 8px; border-radius: 8px; }}
+            QListView::item:selected {{ background: {self.p['accent']}; color: #FFFFFF; }}""")
+        self._filtering = False
+        self._pick_timer = QTimer(self)   # 방향키로 훑을 때 지나가는 종목마다 시세를 받지 않게
+        self._pick_timer.setSingleShot(True)
+        self._pick_timer.setInterval(200)
+        self._pick_timer.timeout.connect(self._show_picked)
+        self.stock_view.selectionModel().currentChanged.connect(self._on_stock_picked)
+        self.stock_view.clicked.connect(self._on_stock_picked)   # 불러오기 실패 뒤 같은 줄을 다시 눌러도 된다
+        layout.addWidget(self.stock_view, 1)
+        return box
+
+    def _on_stock_list(self, result):
+        if isinstance(result, Exception) or not result:
+            self.list_title.setText("종목 목록을 받지 못했어요")
+            return
+        self.stock_rows = result
+        self._fill_stock_list()
+
+    def _fill_stock_list(self):
+        """내가 가진 종목을 맨 위에 둔다."""
+        held = {h["code"] for h in self.holdings if "qty" in h}
+        self.stock_model.clear()
+        for code, name in sorted(self.stock_rows, key=lambda row: row[0] not in held):
+            item = QStandardItem(f"{'보유 · ' if code in held else ''}{name} · {code}")
+            item.setToolTip(f"{name} ({code})")
+            item.setData(code, Qt.ItemDataRole.UserRole)
+            item.setData(name.replace(" ", "") + code, SEARCH_ROLE)
+            self.stock_model.appendRow(item)
+        self._update_list_title()
+        self._select_in_list(self.current_code)
+
+    def _update_list_title(self):
+        total, shown = self.stock_model.rowCount(), self.stock_proxy.rowCount()
+        self.list_title.setText(f"전체 종목 {total:,}개" if shown == total else f"검색 결과 {shown:,}개")
+
+    def _filter_stocks(self, text: str):
+        self._filtering = True   # 걸러지며 선택이 옮겨 가도 다른 종목을 불러오지 않는다
+        self.stock_proxy.setFilterFixedString(text.replace(" ", ""))
+        self._filtering = False
+        self._update_list_title()
+        self._select_in_list(self.current_code)
+
+    def _select_in_list(self, code: str):
+        for row in range(self.stock_proxy.rowCount()):
+            index = self.stock_proxy.index(row, 0)
+            if index.data(Qt.ItemDataRole.UserRole) == code:
+                self.stock_view.setCurrentIndex(index)
+                self.stock_view.scrollTo(index)
+                return
+        self.stock_view.setCurrentIndex(QModelIndex())   # 안 보이는 종목 대신 엉뚱한 줄이 선택된 채로 남지 않게
+
+    def _on_stock_picked(self, index):
+        if not self._filtering and index.isValid() and index.data(Qt.ItemDataRole.UserRole) != self.current_code:
+            self._pick_timer.start()
+
+    def _show_picked(self):
+        index = self.stock_view.currentIndex()
+        if self.isVisible() and index.isValid():
+            self.show_stock(index.data(Qt.ItemDataRole.UserRole))
 
     def fit_to_content(self):
         """내용 높이에 맞추되 화면을 넘지 않는다."""
@@ -440,8 +523,6 @@ class StockDetailDialog(_StockDialog):
         self.summary_note.setText("무료 시세 키를 넣으면 로그인이나 계좌 없이 주식 변동과 가격 그래프를 볼 수 있어요.")
         self.left_box.hide()
         self.chart.set_message("시세 키를 넣으면 가격 그래프를 볼 수 있어요.")
-        self.search_input.hide()
-        self.btn_search.hide()
         self.bars.hide()
         self.table.hide()
         if self.open_settings:
@@ -510,6 +591,8 @@ class StockDetailDialog(_StockDialog):
         self.left_box.setVisible(held)
         self.table.setVisible(held)
         self._fill_table()
+        if self.stock_rows:
+            self._fill_stock_list()
         if not self.current_code:
             self.show_stock(self.holdings[0]["code"] if self.holdings else DEFAULT_STOCK)
 
@@ -532,9 +615,15 @@ class StockDetailDialog(_StockDialog):
             self.show_stock(self.holdings[rows[0].row()]["code"])
 
     def _search(self):
+        """Enter — 이름이 정확히 같은 종목, 없으면 검색 결과 맨 위."""
         text = self.search_input.text().strip()
-        if text:
-            self.show_stock(text)
+        if not text:
+            return
+        key = text.replace(" ", "").casefold()
+        names = dict(self.stock_rows)
+        codes = [self.stock_proxy.index(row, 0).data(Qt.ItemDataRole.UserRole) for row in range(self.stock_proxy.rowCount())]
+        exact = [c for c in codes if names[c].replace(" ", "").casefold() == key or c == key.upper()]
+        self.show_stock((exact or codes or [text])[0])
 
     def show_stock(self, query: str):
         """종목 그래프를 불러온다. 늦게 도착한 이전 요청이 새 그래프를 덮어쓰지 않게 순번을 확인한다."""
@@ -557,6 +646,7 @@ class StockDetailDialog(_StockDialog):
             code, name, bars = result
             self.current_code, self.current_name = code, name
             self.history[code] = bars
+            self._select_in_list(code)
             if not bars:
                 self.chart.set_message(f"{name}의 가격 기록이 없어요.")
                 self._clear_stats()
