@@ -763,6 +763,16 @@ class Installer:
                                      data=json.dumps(data).encode() if data is not None else None)
         return urllib.request.urlopen(req, timeout=timeout)
 
+    def _wait_for_ollama(self, seconds: int) -> bool:
+        for _ in range(seconds):
+            self._check()
+            try:
+                self._api("/api/version", timeout=2).close()
+                return True
+            except Exception:
+                time.sleep(1)
+        return False
+
     def _ensure_ollama_running(self):
         try:
             self._api("/api/version", timeout=3).close()
@@ -771,18 +781,18 @@ class Installer:
             pass
         exe = self._ollama_exe()
         self.on_log("AI 엔진 켜는 중")
-        flags = NO_WINDOW | (subprocess.DETACHED_PROCESS if IS_WIN else 0)
-        # 맥은 앱으로 켠다 — 그래야 Ollama가 로그인 항목에 등록돼 재부팅 뒤에도 켜진다
-        args = ["open", "-g", self._ollama_app()] if IS_MAC and self._ollama_app() else [exe, "serve"]
-        subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, creationflags=flags, env=clean_child_env(), close_fds=True)
-        for _ in range(60):
-            self._check()
-            try:
-                self._api("/api/version", timeout=2).close()
+        # 맥은 앱으로 먼저 켠다(로그인 항목에 등록돼 재부팅 뒤에도 켜진다). 처음 켠 앱은 엔진을 바로 안 띄울 수 있어
+        # 응답이 없으면 직접 켠다(GitHub Actions의 빈 맥에서 실제로 60초 넘게 안 켜졌다).
+        app = self._ollama_app() if IS_MAC else ""
+        if app:
+            subprocess.Popen(["open", "-g", app], env=clean_child_env())
+            if self._wait_for_ollama(15):
                 return
-            except Exception:
-                time.sleep(1)
+        flags = NO_WINDOW | (subprocess.DETACHED_PROCESS if IS_WIN else 0)
+        subprocess.Popen([exe, "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=flags, env=clean_child_env(), close_fds=True)
+        if self._wait_for_ollama(60):
+            return
         raise InstallError(f"AI 엔진이 켜지지 않았어요. {'응용 프로그램' if IS_MAC else '작업 표시줄'}의 Ollama를 실행한 뒤 "
                           "다시 시도해 주세요.")
 
@@ -900,6 +910,8 @@ class Installer:
             # 설치 프로그램에서 바로 켜면 맥이 권한을 설치 프로그램 몫으로 묻는다 → Lumi.app으로 켠다
             subprocess.Popen(["open", self._shortcut_targets()[0]], env=clean_child_env())
             return
+        if IS_MAC and self._ollama_app():   # 재부팅 뒤 AI 엔진이 꺼져 있어도 루미를 켜면 같이 켜진다
+            subprocess.Popen(["open", "-g", self._ollama_app()], env=clean_child_env())
         subprocess.Popen([self.p["pythonw"], "app_main.py"], cwd=self.p["app"], env=clean_child_env(),
                          creationflags=(subprocess.DETACHED_PROCESS if IS_WIN else 0), close_fds=True)
 
