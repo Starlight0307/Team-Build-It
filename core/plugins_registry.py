@@ -296,11 +296,11 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "주식 포트폴리오",
-        "desc": "한국투자증권·키움증권 계좌의 손익 브리핑, 직접 확정하는 주문, 직접 정한 규칙의 자동매매(추천은 하지 않아요)",
+        "desc": "증권 계좌(한국투자·키움·토스·KB·NH·LS·메리츠·DB)의 손익 브리핑, 직접 확정하는 주문, 직접 정한 규칙의 자동매매(추천은 하지 않아요)",
         "func_names": ["get_stock_briefing", "open_stock_order", "stop_stock_auto_trading"],
         "module_name": "stock_portfolio",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/stock_portfolio.py",
-        "sha256": "e515658113757c6c5f50e821264d6f001ddf5aa2ee0a3abe58ebd3f4acb7bf67",
+        "sha256": "99f664364357d1f35d99e0cf007716e04373ca14ebf5bbc81ffd3787c64877da",
         "dependencies": []
     },
     {

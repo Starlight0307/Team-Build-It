@@ -6,6 +6,8 @@ import zipfile
 from datetime import datetime
 
 import pytest
+import re
+
 import requests
 
 from plugins import stock_portfolio as sp
@@ -17,8 +19,8 @@ NAMES = {"005930": "삼성전자", "000660": "SK하이닉스"}
 
 
 class FakeResponse:
-    def __init__(self, body, headers=None):
-        self._body, self.headers, self.content = body, headers or {}, b""
+    def __init__(self, body, headers=None, status=200):
+        self._body, self.headers, self.content, self.status_code = body, headers or {}, b"", status
 
     def json(self):
         return self._body
@@ -880,7 +882,7 @@ def test_kiwoom_portfolio_reads_padded_and_negative_numbers(kiwoom):
 
 
 def test_kiwoom_double_minus_stays_negative():
-    assert sp._kiwoom_num("--600") == -600 and sp._kiwoom_num("+600") == 600 and sp._kiwoom_num("") == 0
+    assert sp._signed("--600") == -600 and sp._signed("+600") == 600 and sp._signed("") == 0
 
 
 def test_kiwoom_portfolio_follows_pages(kiwoom):
@@ -964,7 +966,7 @@ def test_kiwoom_failed_login_does_not_save_or_echo_keys(tmp_path, monkeypatch):
 
 
 def test_saved_account_without_broker_stays_kis(connected):
-    assert not sp._is_kiwoom({"app_key": "x"})
+    assert sp._broker({"account": {"app_key": "x"}}) is None
     assert sp.fetch_portfolio()["holdings"][0]["code"] == "005930"
     assert connected.urls[-1].startswith(sp.BASE_URLS["demo"])
 
@@ -1005,4 +1007,336 @@ def test_market_falls_back_to_etf_then_explains_missing_approval(monkeypatch):
     monkeypatch.setattr(sp, "_query_market", refused)
     with pytest.raises(sp.StockError, match="증권상품시세정보"):
         sp._fetch_market_rows("069500", "K")
+
+
+# ── 다른 증권사 — 응답은 각 회사 공식 명세·예시의 필드와 형식을 쓴다 ──
+class FakeServer:
+    """경로로 응답을 고른다. routes[(경로 끝)] = 응답 또는 (응답, 헤더, 상태) 또는 예외."""
+
+    def __init__(self, routes, token_body=None):
+        self.routes, self.calls, self.token_calls = routes, [], []
+        self.token_body = token_body or {"access_token": "T", "expires_in": 86400}
+
+    def post(self, url, timeout=None, **kw):
+        self.token_calls.append((url, kw))
+        return FakeResponse(self.token_body)
+
+    def request(self, method, url, timeout=None, **kw):
+        self.calls.append((method, url, kw))
+        for suffix, reply in self.routes.items():
+            if url.endswith(suffix):
+                if isinstance(reply, list):
+                    reply = reply.pop(0)
+                if isinstance(reply, Exception):
+                    raise reply
+                return FakeResponse(*reply) if isinstance(reply, tuple) else FakeResponse(reply)
+        raise AssertionError(f"예상 못 한 주소 {url}")
+
+
+@pytest.fixture
+def broker_env(tmp_path, monkeypatch):
+    def start(broker, routes, mode="real", number="", token_body=None):
+        fake = FakeServer(routes, token_body)
+        monkeypatch.setattr(sp.storage_location, "user_data_dir", lambda name: str(tmp_path))
+        monkeypatch.setattr(sp, "REQUEST_GAP", 0)
+        monkeypatch.setattr(sp.requests, "post", fake.post)
+        monkeypatch.setattr(sp.requests, "request", fake.request)
+        monkeypatch.setattr(sp, "load_master", lambda: NAMES)
+        monkeypatch.setattr(sp, "market_open", lambda now=None: True)
+        monkeypatch.setattr(sp, "_order_ui_hook", None)
+        sp.set_current_user("tester")
+        sp.connect_account(KEY, SECRET, number, mode, broker)
+        sp.set_order_settings(True, 1_000_000)
+        return fake
+    yield start
+    sp.set_current_user("guest")
+
+
+def _sell(price=70000, qty=2):
+    return sp.place_order("sell", "삼성전자", qty, price, confirm_amount=price * qty)
+
+
+TOSS_HOLDINGS = {"result": {"items": [
+    {"symbol": "005930", "name": "삼성전자", "marketCountry": "KR", "quantity": "10", "lastPrice": "70000", "averagePurchasePrice": "60000",
+     "marketValue": {"purchaseAmount": "600000", "amount": "700000"}, "profitLoss": {"amount": "100000", "rate": "0.1667"}},
+    {"symbol": "AAPL", "name": "애플", "marketCountry": "US", "quantity": "1", "lastPrice": "200", "averagePurchasePrice": "100",
+     "marketValue": {"purchaseAmount": "100", "amount": "200"}, "profitLoss": {"amount": "100", "rate": "1"}}]}}
+
+
+def _toss_routes(**extra):
+    return {"/api/v1/accounts": {"result": [{"accountNo": "11100000001", "accountSeq": 7, "accountType": "BROKERAGE"},
+                                            {"accountNo": "11100000002", "accountSeq": 8, "accountType": "BROKERAGE"}]},
+            "/api/v1/holdings": TOSS_HOLDINGS,
+            "/api/v1/prices": {"result": [{"symbol": "005930", "lastPrice": "71000", "currency": "KRW"}]},
+            "/api/v1/candles": {"result": {"candles": [
+                {"timestamp": datetime.now(sp.KST).strftime("%Y-%m-%dT09:00:00+09:00"), "openPrice": "1", "highPrice": "3", "lowPrice": "1",
+                 "closePrice": "2", "volume": "9", "currency": "KRW"}]}},
+            "/api/v1/orders": {"result": {"orderId": "ORD1"}}, **extra}
+
+
+def test_toss_uses_form_token_account_header_and_only_krw_stocks(broker_env):
+    fake = broker_env("toss", _toss_routes())
+    url, kw = fake.token_calls[0]
+    assert url == "https://openapi.tossinvest.com/oauth2/token"
+    assert kw["data"] == {"grant_type": "client_credentials", "client_id": KEY, "client_secret": SECRET}
+    assert sp.account_status()["account"] == "토스증권 실전 계좌 ****0001"
+    result = sp.fetch_portfolio()
+    assert fake.calls[-1][2]["headers"]["X-Tossinvest-Account"] == "7"
+    assert [h["code"] for h in result["holdings"]] == ["005930"]
+    assert result["total_pl"] == 100000 and result["total_buy"] == 600000 and result["total_rate"] == pytest.approx(16.67, abs=0.01)
+    assert result["holdings"][0]["rate"] == pytest.approx(16.67, abs=0.01)
+    assert sp.get_price("005930") == 71000 and sp.get_price_bars("005930")[0]["close"] == 2
+
+
+def test_toss_chooses_entered_account_and_refuses_unknown_number(broker_env):
+    broker_env("toss", _toss_routes(), number="111-0000-0002")
+    assert sp.account_status()["account"].endswith("0002") and sp._load()["account"]["seq"] == 8
+    with pytest.raises(sp.StockError, match="찾지 못했어요"):
+        sp.connect_account(KEY, SECRET, "999", "real", "toss")
+
+
+def test_toss_order_is_limit_and_rejection_is_not_success(broker_env):
+    fake = broker_env("toss", _toss_routes())
+    assert "ORD1" in _sell()
+    body = fake.calls[-1][2]["json"]
+    assert (body["symbol"], body["side"], body["orderType"], body["quantity"], body["price"]) == ("005930", "SELL", "LIMIT", "2", "70000")
+    assert len(body["clientOrderId"]) > 8
+    fake.routes["/api/v1/orders"] = ({"error": {"requestId": "r", "code": "insufficient-buying-power", "message": "주문 가능 금액 부족"}}, None, 422)
+    with pytest.raises(sp.StockError, match="부족"):
+        _sell()
+    assert sp._load()["orders"][-1]["result"].startswith("rejected")
+
+
+@pytest.mark.parametrize("reply", [requests.Timeout(), ({"error": {"message": "x"}}, None, 500), {"unexpected": 1}])
+def test_toss_unclear_order_is_unknown_and_not_resent(broker_env, reply):
+    fake = broker_env("toss", _toss_routes())
+    fake.routes["/api/v1/orders"] = reply
+    before = len(fake.calls)
+    with pytest.raises(sp.OrderResultUnknown):
+        _sell()
+    assert len(fake.calls) == before + 1
+
+
+KB_OK = {"resultCode": "200", "resultMessage": "성공", "processFlag": "A", "processMessage": "완료"}
+
+
+def _kb_routes():
+    return {"/api/v1/ssqm2952": {"dataHeader": KB_OK, "dataBody": {
+                "val_amt_sum": "000000000000426500", "val_pl_sum": "000000000000066450", "Record1": [
+                    {"is_cd": "A005930", "is_nm": "삼성전자", "hld_q": "000000000000000", "ec_q": "000000000000001", "ordr_psbl_q": "000000000000001",
+                     "byng_avr_prc": "0000000360050.00", "now_prc": "0000000426500.00", "val_amt": "000000000000426500",
+                     "val_pl": "000000000000066450", "val_yld": "000000018.45", "byng_amt": "000000000000360050"}]}},
+            "/api/v1/ivu10140": {"dataHeader": KB_OK, "dataBody": {"now_prc": "229000"}},
+            "/api/v1/ivs11560": {"dataHeader": KB_OK, "dataBody": {"out2": [
+                {"dt": datetime.now(sp.KST).strftime("%Y%m%d"), "opn_prc_p2": "     219000", "hgh_prc_p2": "     230000", "lw_prc_p2": "     217000",
+                 "cls_prc_p2": "     229250", "vlm": "8090086"}]}},
+            "/api/v1/ssam1801": {"dataHeader": KB_OK, "dataBody": {"ordr_no": "0060000709"}},
+            "/api/v1/ssam1802": {"dataHeader": KB_OK, "dataBody": {"ordr_no": "0060000705"}}}
+
+
+def test_kb_official_envelope_and_values(broker_env):
+    fake = broker_env("kb", _kb_routes(), token_body={"dataHeader": KB_OK, "dataBody": {"access_token": "KBT", "expires_in": 86400}})
+    assert fake.token_calls[0][1]["json"]["dataBody"] == {"appKey": KEY, "appSecret": SECRET, "grantType": "client_credentials"}
+    result = sp.fetch_portfolio()
+    kw = fake.calls[-1][2]
+    assert kw["headers"]["Authorization"] == "bearer KBT" and kw["headers"]["appKey"] == KEY and kw["json"]["dataHeader"] == {"ipAddr": "", "macAddr": ""}
+    h = result["holdings"][0]
+    assert (h["code"], h["qty"], h["avg_price"], h["price"], h["value"], h["pl"]) == ("005930", 1, 360050, 426500, 426500, 66450)
+    assert result["total_buy"] == 360050
+    assert sp.get_price("005930") == 229000 and sp.get_price_bars("005930")[0]["close"] == 229250
+    assert sp.account_status()["account"] == "KB증권 실전 계좌"
+    assert "0060000709" in _sell()
+    assert fake.calls[-1][1].endswith("ssam1801")
+    assert fake.calls[-1][2]["json"]["dataBody"] == {"ordr_uprc": "70000", "ordr_ccd": "00", "mkt_tm_clsf": "1", "is_cd": "005930", "ordr_q": "2", "sor_ordr_ccd": "K"}
+
+
+def test_kb_flag_b_is_rejection_and_missing_header_is_unknown(broker_env):
+    fake = broker_env("kb", _kb_routes(), token_body={"dataBody": {"access_token": "KBT", "expires_in": 86400}})
+    fake.routes["/api/v1/ssam1801"] = {"dataHeader": dict(KB_OK, processFlag="B", processMessage="주문가능수량 초과"), "dataBody": {}}
+    with pytest.raises(sp.StockError, match="초과"):
+        _sell()
+    fake.routes["/api/v1/ssam1801"] = {"dataBody": {}}
+    with pytest.raises(sp.OrderResultUnknown):
+        _sell()
+
+
+def test_kb_chart_tries_kosdaq_when_kospi_is_empty(broker_env):
+    fake = broker_env("kb", _kb_routes(), token_body={"dataBody": {"access_token": "KBT", "expires_in": 86400}})
+    filled = fake.routes["/api/v1/ivs11560"]
+    fake.routes["/api/v1/ivs11560"] = [{"dataHeader": KB_OK, "dataBody": {"out2": []}}, filled]
+    assert sp.get_price_bars("005930")
+    assert [c[2]["json"]["dataBody"]["mkt_clsf"] for c in fake.calls[-2:]] == ["0", "1"]
+
+
+def _nh_routes():
+    return {"/n2/acctinfo": {"Output_0": [{"acct_no": "90000000003", "acct_type": "03"}, {"acct_no": "10000000001", "acct_type": "01"}]},
+            "/krstock/inquiry/v1/balance": {"Output_0": {"tot_byn_amt": "600000", "tot_eal_amt": "700000", "tot_eal_pls": "100000"},
+                                            "Output_1": [{"iem_cd": "005930", "iem_nm": "삼성전자", "itg_bnc_qty": "10.000000", "phs_pr": "60000",
+                                                          "now_pr": "70000", "eal_amt": "700000", "eal_pls_amt": "100000"}]},
+            "/krstock/quote/v1/currentPrice": {"Output_0": {"stck_prpr": "70500"}},
+            "/krstock/quote/v1/period": {"Output_0": {}, "Output_1": [{"bsop_date": datetime.now(sp.KST).strftime("%Y%m%d"), "stck_oprc": "1", "stck_hgpr": "3",
+                                                                      "stck_lwpr": "1", "stck_prpr": "2", "vol": "5"}]},
+            "/krstock/order/v1/cashSell": {"Output_0": {"mkt_orr_no": "777"}, "rsp_msg": "정상"},
+            "/krstock/order/v1/cashBuy": {"Output_0": {"mkt_orr_no": "778"}, "rsp_msg": "정상"}}
+
+
+@pytest.mark.parametrize("broker,host", [("nh", "nhplug.com"), ("n2", "n2plug.com")])
+def test_nh_demo_uses_mock_server_mock_account_and_live_token(broker_env, broker, host):
+    fake = broker_env(broker, _nh_routes(), mode="demo")
+    assert fake.token_calls[0][0] == f"https://api.{host}:8443/oauth2/token"
+    assert fake.token_calls[0][1]["params"]["appsecretkey"] == SECRET
+    assert fake.calls[0][1] == f"https://moapi.{host}:8443/n2/acctinfo"
+    assert sp._load()["account"]["number"] == "90000000003"
+    assert sp.fetch_portfolio()["holdings"][0]["qty"] == 10
+    assert fake.calls[-1][2]["json"]["Input_0"]["act_no"] == "90000000003"
+    assert fake.calls[-1][2]["headers"]["x-client-secret"] == SECRET
+
+
+def test_nh_real_uses_live_account_and_order_fields(broker_env):
+    fake = broker_env("nh", _nh_routes())
+    assert fake.calls[0][1].startswith("https://api.nhplug.com:8443") and sp._load()["account"]["number"] == "10000000001"
+    assert "777" in _sell()
+    values = fake.calls[-1][2]["json"]["Input_0"]
+    assert (values["iem_cd"], values["orr_qty"], values["orr_pr"], values["nmn_pr_tp_cd"], values["rmt_mkt_cd"]) == ("005930", 2, 70000, "01", "KRX")
+    assert sp.get_price("005930") == 70500 and sp.get_price_bars("005930")[0]["close"] == 2
+
+
+def test_nh_order_without_number_is_unknown_not_accepted(broker_env):
+    fake = broker_env("nh", _nh_routes())
+    fake.routes["/krstock/order/v1/cashSell"] = {"rsp_cd": "00165", "rsp_msg": "주문가능수량 초과"}
+    with pytest.raises(sp.OrderResultUnknown, match="초과"):
+        _sell()
+    assert sp._load()["orders"][-1]["result"] == "unknown"
+
+
+def test_nh_paging_stops_when_key_repeats(broker_env):
+    fake = broker_env("nh", _nh_routes())
+    page = fake.routes["/krstock/inquiry/v1/balance"]
+    fake.routes["/krstock/inquiry/v1/balance"] = [(page, {"cts": "K1", "cts_flag": "Y"}), (page, {"cts": "K1", "cts_flag": "Y"})]
+    assert len(sp.fetch_portfolio()["holdings"]) == 2
+
+
+def _ls_routes():
+    return {"/stock/accno": {"rsp_cd": "00000", "t0424OutBlock": {"cts_expcode": "", "mamt": 120013, "tappamt": 150283, "tdtsunik": 30270},
+                             "t0424OutBlock1": [{"expcode": "005930", "hname": "삼성전자", "janqty": 2, "mdposqt": 1, "pamt": 60000, "price": 75300,
+                                                 "appamt": 150283, "dtsunik": 30270, "sunikrt": "25.22", "mamt": 120000}]},
+            "/stock/market-data": {"rsp_cd": "00000", "t1102OutBlock": {"price": 4535}},
+            "/stock/chart": {"rsp_cd": "00000", "t8410OutBlock1": [{"date": datetime.now(sp.KST).strftime("%Y%m%d"), "open": 1, "high": 3, "low": 1, "close": 2, "jdiff_vol": 5}]},
+            "/stock/order": {"rsp_cd": "00040", "rsp_msg": "매도 주문이 완료되었습니다.", "CSPAT00601OutBlock2": {"OrdNo": 32004}}}
+
+
+def test_ls_official_examples(broker_env):
+    fake = broker_env("ls", _ls_routes())
+    assert fake.token_calls[0][1]["data"]["scope"] == "oob"
+    h = sp.fetch_portfolio()["holdings"][0]
+    assert (h["qty"], h["sellable"], h["avg_price"], h["pl"]) == (2, 1, 60000, 30270)
+    assert fake.calls[-1][2]["headers"]["tr_cd"] == "t0424"
+    assert sp.get_price("005930") == 4535 and sp.get_price_bars("005930")[0]["close"] == 2
+    assert "32004" in _sell()
+    block = fake.calls[-1][2]["json"]["CSPAT00601InBlock1"]
+    assert (block["IsuNo"], block["OrdQty"], block["OrdPrc"], block["BnsTpCode"], block["OrdprcPtnCode"], block["MbrNo"]) == ("A005930", 2, 70000, "1", "00", "KRX")
+
+
+def test_ls_order_refused_and_expired_token_query_recovers(broker_env):
+    fake = broker_env("ls", _ls_routes())
+    fake.routes["/stock/order"] = {"rsp_cd": "01221", "rsp_msg": "주문가능수량이 부족합니다"}
+    with pytest.raises(sp.StockError, match="부족"):
+        _sell()
+    good = fake.routes["/stock/accno"]
+    fake.routes["/stock/accno"] = [{"rsp_cd": "IGW00121", "rsp_msg": "토큰 오류"}, good]
+    tokens = len(fake.token_calls)
+    assert sp.fetch_portfolio()["holdings"]
+    assert len(fake.token_calls) == tokens + 1
+
+
+def _meritz_routes():
+    return {"/accounts/v1/me/holdings": ({"rsp_cd": "5766", "tr_cont": "0", "data": [
+                {"iscd": "A005930", "isnm": "삼성전자", "pros_trgt_cls_code": "1", "rmnd_qty": 10, "byng_unpr": "10000.00", "psnt_prc": "9000.000000",
+                 "vltn_amt": 90000, "vltn_prls_amt": -10000, "ert": "-10.00000", "byng_amt": 100000},
+                {"iscd": "AAPL", "isnm": "애플", "pros_trgt_cls_code": "J", "rmnd_qty": 1, "vltn_amt": 1, "byng_amt": 1}]}, None, 200),
+            "/market/v1/prices": {"rsp_cd": "깨진값", "data": {"stck_prpr": 1263000}},
+            "/market/v1/candles/days": {"rsp_cd": "0000", "data": [{"date": datetime.now(sp.KST).strftime("%Y%m%d"), "oprc": 1, "hprc": 3, "lprc": 1, "stck_clpr": 2, "acml_vol": 5}]},
+            "/trading/v1/orders/sell": {"rsp_cd": "0001", "rsp_msg": "주문이 완료되었습니다.", "data": {"oder_no": 100, "warn_cls_code": "0"}}}
+
+
+def test_meritz_official_examples_and_mac_header(broker_env):
+    fake = broker_env("meritz", _meritz_routes())
+    assert fake.token_calls[0][1]["data"]["scope"] == "login"
+    result = sp.fetch_portfolio()
+    assert re.fullmatch(r"[0-9A-F]{12}", fake.calls[-1][2]["headers"]["mac_address"])
+    assert [h["code"] for h in result["holdings"]] == ["005930"]
+    assert result["total_pl"] == -10000 and result["total_buy"] == 100000 and result["total_rate"] == -10
+    assert sp.get_price("005930") == 1263000 and sp.get_price_bars("005930")[0]["close"] == 2
+    assert "100" in _sell()
+    body = fake.calls[-1][2]["json"]
+    assert (body["iscd"], body["odqt"], body["oder_unpr"], body["oder_cls_code"], body["warn_cnfr_yn"], body["exch_kind_code"]) == ("A005930", "2", "70000", "01", "N", "01")
+
+
+def test_meritz_warning_is_not_accepted_even_with_success_code_and_http_500_error_shows_reason(broker_env):
+    fake = broker_env("meritz", _meritz_routes())
+    fake.routes["/trading/v1/orders/sell"] = {"rsp_cd": "0001", "data": {"oder_no": 0, "warn_cls_code": "1", "warn_msg": "상한가 경고"}}
+    with pytest.raises(sp.StockError, match="경고"):
+        _sell()
+    assert sp._load()["orders"][-1]["result"].startswith("rejected")
+    fake.routes["/trading/v1/orders/sell"] = ({"rsp_cd": "0760", "rsp_msg": "권한이 없습니다.", "rsp_sub_msg": "계좌 확인"}, None, 500)
+    with pytest.raises(sp.StockError, match="계좌 확인"):
+        _sell()
+
+
+def _db_routes():
+    return {"/inquiry/balance": ({"rsp_cd": "00000", "Out": {"TotBuyAmt": 600000, "TotEvalAmt": 700000, "TotEvalPnlAmt": 100000},
+                                  "Out1": [{"IsuNo": "A005930", "IsuNm": "삼성전자", "BalQty0": 10, "AbleQty": 8, "EvalAmt": 700000, "EvalPnlAmt": 100000,
+                                            "Ernrat": 16.67, "PchsAmt": 600000}]}, {"cont_yn": "N"}),
+            "/inquiry/price": {"rsp_cd": "00000", "Out": {"Prpr": "70500"}},
+            "/kr-chart/day": {"rsp_cd": "00000", "Out": [{"Date": datetime.now(sp.KST).strftime("%Y%m%d"), "Prpr": "2", "Oprc": "1", "Hprc": "3", "Lprc": "1", "CntgVol": "5"}]},
+            "/kr-stock/order": {"rsp_cd": "00040", "rsp_msg": "주문 완료", "Out": {"OrdNo": 55}}}
+
+
+def test_db_official_examples(broker_env):
+    fake = broker_env("db", _db_routes())
+    h = sp.fetch_portfolio()["holdings"][0]
+    assert (h["code"], h["qty"], h["sellable"], h["avg_price"], h["price"], h["pl"]) == ("005930", 10, 8, 60000, 70000, 100000)
+    assert sp.get_price("005930") == 70500 and sp.get_price_bars("005930")[0]["close"] == 2
+    assert "55" in _sell()
+    values = fake.calls[-1][2]["json"]["In"]
+    assert (values["IsuNo"], values["OrdQty"], values["OrdPrc"], values["BnsTpCode"], values["OrdprcPtnCode"], values["LoanDt"]) == ("A005930", 2, 70000, "1", "00", "00000000")
+
+
+def test_db_server_error_on_order_is_unknown_but_business_refusal_is_rejection(broker_env):
+    fake = broker_env("db", _db_routes())
+    fake.routes["/kr-stock/order"] = ({"rsp_cd": "IGW50001", "rsp_msg": "서버 오류"}, None, 500)
+    with pytest.raises(sp.OrderResultUnknown):
+        _sell()
+    fake.routes["/kr-stock/order"] = ({"rsp_cd": "00700", "rsp_msg": "주문가능금액이 부족합니다."}, None, 500)
+    with pytest.raises(sp.StockError, match="부족"):
+        _sell()
+
+
+@pytest.mark.parametrize("broker,routes", [("toss", _toss_routes), ("kb", _kb_routes), ("ls", _ls_routes), ("meritz", _meritz_routes), ("db", _db_routes)])
+def test_brokers_without_mock_refuse_demo_and_real_order_needs_amount_again(broker_env, broker, routes):
+    with pytest.raises(sp.StockError, match="모의"):
+        broker_env(broker, routes(), mode="demo")
+    token = {"dataBody": {"access_token": "T", "expires_in": 86400}, "access_token": "T", "expires_in": 86400}
+    broker_env(broker, routes(), token_body=token)
+    assert sp.account_status()["mode"] == "real"
+    with pytest.raises(sp.StockError, match="금액"):
+        sp.place_order("sell", "삼성전자", 2, 70000)
+
+
+@pytest.mark.parametrize("broker,routes", [("toss", _toss_routes), ("ls", _ls_routes), ("meritz", _meritz_routes), ("db", _db_routes)])
+def test_failed_token_saves_nothing_and_never_echoes_key(broker_env, broker, routes):
+    with pytest.raises(sp.StockError) as e:
+        broker_env(broker, routes(), token_body={"error_description": f"bad {KEY}"})
+    assert KEY not in str(e.value) and SECRET not in str(e.value)
+    assert not sp.account_status()["connected"]
+
+
+def test_auto_rule_runs_through_new_broker(broker_env):
+    fake = broker_env("ls", _ls_routes())
+    fake.routes["/stock/market-data"] = {"rsp_cd": "00000", "t1102OutBlock": {"price": 70500}}
+    sp.set_auto_limits(1_000_000, 1_000_000, 5)
+    sp.add_rule("sell", "삼성전자", 70000, 1)
+    sp.enable_auto(real_money_confirmed=True)
+    sp.auto_tick()
+    assert fake.calls[-1][1].endswith("/stock/order") and fake.calls[-1][2]["json"]["CSPAT00601InBlock1"]["OrdQty"] == 1
 

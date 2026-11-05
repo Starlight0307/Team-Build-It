@@ -1,5 +1,5 @@
 """
-주식 플러그인 — 한국투자증권·키움증권 계좌(모의·실전)의 손익 브리핑, 주문, 사용자 규칙 자동매매
+주식 플러그인 — 증권 계좌(한국투자·키움·토스·KB·NH·LS·메리츠·DB)의 손익 브리핑, 주문, 사용자 규칙 자동매매
 ────────────────────────────────────────────────────────
 ● 사용자가 이미 가진 계좌를 앱 키로 연결한다. 실전은 연결할 때 직접 골라야 하고, 주문마다 금액을 다시
   입력해야 한다(docs/superpowers/specs/2026-11-05-stock-plugin-design.md).
@@ -30,12 +30,15 @@ BASE_URLS = {"demo": "https://openapivts.koreainvestment.com:29443",
              "real": "https://openapi.koreainvestment.com:9443"}
 MODE_NAMES = {"demo": "모의", "real": "실전"}
 KIS_GUIDE_URL = "https://apiportal.koreainvestment.com/"
-BROKER_NAMES = {"kis": "한국투자증권", "kiwoom": "키움증권"}
-# 키움 공식 저장소 Kiwoom-Securities/Kiwoom-REST-API의 명세로 대조했다. 모의·실전은 앱 키가 따로다
-KIWOOM_URLS = {"demo": "https://mockapi.kiwoom.com", "real": "https://api.kiwoom.com"}
-KIWOOM_GUIDE_URL = "https://openapi.kiwoom.com/main/home"
-KIWOOM_ORDER = {"buy": "kt10000", "sell": "kt10001"}
-KIWOOM_TOKEN_ERROR = re.compile(r"\b(8005|8010|8031|8103)\b")   # 토큰 무효·IP 변경 — return_code 3의 문구 안에 섞여 오기도 한다
+BROKER_NAMES = {"kis": "한국투자증권", "kiwoom": "키움증권", "toss": "토스증권", "kb": "KB증권", "nh": "NH투자증권 (나무)", "n2": "NH투자증권 (N2)",
+                "ls": "LS증권", "meritz": "메리츠증권", "db": "DB증권"}
+BROKER_GUIDES = {"kis": KIS_GUIDE_URL, "kiwoom": "https://openapi.kiwoom.com/main/home", "toss": "https://openapi.tossinvest.com",
+                 "kb": "https://openapi.kbsec.com/intro", "nh": "https://www.nhplug.com", "n2": "https://www.n2plug.com",
+                 "ls": "https://openapi.ls-sec.co.kr", "meritz": "https://openapi.imeritz.com", "db": "https://openapi.dbsec.co.kr"}
+DEMO_BROKERS = ("kis", "kiwoom", "nh", "n2")   # 나머지는 모의 서버가 없거나, 주소가 같아 키가 모의인지 가릴 수 없어 실전으로 다룬다
+ACCOUNT_CHOICE_BROKERS = ("nh", "n2", "toss")   # 한 키에 계좌가 여럿일 수 있다
+BROKER_NOTES = {"kiwoom": "포털에 이 컴퓨터의 IP도 등록해 주세요.", "ls": "모의 키를 넣어도 루미는 실전처럼 금액 재입력을 요구해요.",
+                "db": "모의 키를 넣어도 루미는 실전처럼 금액 재입력을 요구해요.", "meritz": "증권사 규정상 이 컴퓨터의 MAC 주소를 함께 보내요."}
 MASTER_URL = "https://new.real.download.dws.co.kr/common/master/{}_code.mst.zip"
 MASTER_TAIL = {"kospi": 228, "kosdaq": 222, "konex": 184}   # 공식 예제 kis_*_code_mst.py의 뒤쪽 고정 길이 — 그 앞이 코드·이름
 TR_BALANCE = {"demo": "VTTC8434R", "real": "TTTC8434R"}
@@ -153,10 +156,6 @@ def _mode(account: dict) -> str:
     return "real" if (account or {}).get("mode") == "real" else "demo"   # 모르면 돈이 안 움직이는 쪽으로
 
 
-def _is_kiwoom(account: dict) -> bool:
-    return (account or {}).get("broker") == "kiwoom"
-
-
 def _base_url(account: dict) -> str:
     return BASE_URLS[_mode(account)]
 
@@ -166,8 +165,9 @@ def _token(data: dict, account: dict = None) -> str:
     if data.get("token") and data.get("token_expires", "") > datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"):
         return data["token"]
     _throttle()
-    if _is_kiwoom(account):
-        return _kiwoom_token(data, account)
+    broker = _broker(data, account)
+    if broker:
+        return broker.issue_token()
     try:
         resp = requests.post(_base_url(account) + "/oauth2/tokenP", timeout=15, json={
             "grant_type": "client_credentials", "appkey": account["app_key"], "appsecret": account["app_secret"]})
@@ -181,57 +181,559 @@ def _token(data: dict, account: dict = None) -> str:
     return data["token"]
 
 
-def _kiwoom_token(data: dict, account: dict) -> str:
-    try:
-        resp = requests.post(KIWOOM_URLS[_mode(account)] + "/oauth2/token", timeout=15,
-                             headers={"Content-Type": "application/json;charset=UTF-8"},
-                             json={"grant_type": "client_credentials", "appkey": account["app_key"], "secretkey": account["app_secret"]})
-        body = resp.json()
-        expires = datetime.strptime(str(body["expires_dt"]), "%Y%m%d%H%M%S")
-        token = body["token"]
-    except (requests.RequestException, ValueError):
-        raise StockError("증권사에 연결하지 못했어요. 인터넷을 확인해 주세요.")
-    except (KeyError, TypeError):   # 키움 오류 문구에 입력값이 담길 수 있어 그대로 보여 주지 않는다
-        raise StockError("키움증권 인증에 실패했어요. 앱 키와 시크릿, 모의·실전 종류, 포털에 등록한 이 컴퓨터의 IP를 확인해 주세요.")
-    data["token"] = token
-    data["token_expires"] = expires.strftime("%Y-%m-%d %H:%M:%S")
-    return token
-
-
-def _kiwoom_call(data: dict, api_id: str, path: str, body: dict, account: dict = None, next_key: str = "",
-                 retry: bool = True) -> tuple:
-    """키움 API 호출 → (응답 JSON, 다음 페이지 키). 전부 POST고 오류도 HTTP 200으로 온다. 주문은 절대 다시 보내지 않는다."""
-    account = account or data["account"]
-    is_order = api_id in KIWOOM_ORDER.values()
-    headers = {"Content-Type": "application/json;charset=UTF-8", "authorization": f"Bearer {_token(data, account)}", "api-id": api_id}
-    if next_key:
-        headers.update({"cont-yn": "Y", "next-key": next_key})
-    _throttle()
-    try:
-        resp = requests.request("POST", KIWOOM_URLS[_mode(account)] + path, headers=headers, json=body, timeout=15)
-        result = resp.json()
-        code, message = str(result.get("return_code")), str(result.get("return_msg") or "")
-    except (requests.RequestException, ValueError, AttributeError):
-        if is_order:
-            raise OrderResultUnknown(ORDER_UNKNOWN)
-        raise StockError("증권사 응답을 받지 못했어요. 잠시 후 다시 시도해 주세요.")
-    if code == "0":
-        return result, resp.headers.get("next-key", "") if resp.headers.get("cont-yn") == "Y" else ""
-    if is_order and code == "None":   # 거절이라는 말이 없으면 접수됐을 수도 있다
-        raise OrderResultUnknown(ORDER_UNKNOWN)
-    if retry and not is_order and KIWOOM_TOKEN_ERROR.search(f"{code} {message}"):
-        data["token"] = None
-        return _kiwoom_call(data, api_id, path, body, account, next_key, retry=False)
-    raise StockError(message.strip()[:200] or "증권사가 요청을 거절했어요.")
-
-
-def _kiwoom_num(value) -> float:
+def _signed(value) -> float:
     """"000000059000", "+600", "-00000000196888"을 숫자로. 음수가 "--600"으로 오는 응답도 있다."""
     return _num(re.sub(r"^-+", "-", str(value or "").strip()))
 
 
-def _kiwoom_price(value) -> int:
-    return int(abs(_kiwoom_num(value)))   # 시세의 부호는 등락 방향이다
+def _abs_int(value) -> int:
+    return int(abs(_signed(value)))   # 시세의 부호는 등락 방향이다
+
+
+def _add_holding(holdings: list, code, name, qty, avg, price, value, pl, rate, sellable, buy=None):
+    """증권사마다 다른 잔고 한 줄을 같은 모양으로. 앞의 A·J·Q는 상품 구분이라 뗀다. 합계용 buy는 매입금액."""
+    if _abs_int(qty) > 0:
+        holdings.append({"code": str(code or "").strip()[-6:], "name": str(name or "").strip(), "qty": _abs_int(qty),
+                         "avg_price": abs(_signed(avg)), "price": abs(_signed(price)), "value": _signed(value), "pl": _signed(pl),
+                         "rate": _signed(rate), "sellable": _abs_int(sellable), "buy": _signed(buy)})
+
+
+def _sum_holdings(holdings: list) -> tuple:
+    """계좌 합계를 안 주거나 해외주식이 섞여 오는 곳은 국내 종목만 더한다."""
+    value, pl = sum(h["value"] for h in holdings), sum(h["pl"] for h in holdings)
+    return holdings, pl, sum(h["buy"] for h in holdings), value
+
+
+def _bars(rows, start: str, date_key: str, open_key: str, high_key: str, low_key: str, close_key: str, volume_key: str) -> list:
+    bars = {}
+    for row in rows or []:
+        date, close = str(row.get(date_key) or "").strip(), _abs_int(row.get(close_key))
+        if re.fullmatch(r"\d{8}", date) and date >= start and close > 0:
+            bars[date] = _bar(date, _abs_int(row.get(open_key)), _abs_int(row.get(high_key)), _abs_int(row.get(low_key)), close,
+                              _abs_int(row.get(volume_key)))
+    return [bars[d] for d in sorted(bars)]
+
+
+def _pick_account(rows, key: str, account_no: str) -> dict:
+    """계좌가 여럿이면 입력한 번호, 없으면 첫 계좌. 입력한 번호가 없으면 다른 계좌로 넘어가지 않는다."""
+    if not rows:
+        raise StockError("이 앱 키로 쓸 수 있는 계좌를 찾지 못했어요. 모의·실전 종류를 확인해 주세요.")
+    wanted = re.sub(r"\D", "", account_no or "")
+    if not wanted:
+        return rows[0]
+    for row in rows:
+        if re.sub(r"\D", "", str(row.get(key))) == wanted:
+            return row
+    raise StockError("입력한 계좌번호를 이 앱 키의 계좌에서 찾지 못했어요.")
+
+
+class _TokenExpired(StockError):
+    """토큰이 무효하다 — 조회는 새로 받아 한 번 더 보내고, 주문은 그대로 거절로 끝낸다."""
+
+
+class _Broker:
+    """한국투자증권 말고 다른 증권사의 공통 틀. 응답 필드와 값은 각 회사 공식 명세·예제로 대조했다.
+    주문은 send로 한 번만 보낸다. 거절이라는 말이 없으면 접수됐을 수 있어 결과 불명으로 처리한다."""
+    auth_hint = "앱 키와 시크릿을 확인해 주세요."
+
+    def __init__(self, data: dict, account: dict):
+        self.data, self.account = data, account
+        self.mode = _mode(account)
+        self.name = BROKER_NAMES[account["broker"]]
+
+    def _fail(self, is_order: bool):
+        if is_order:
+            raise OrderResultUnknown(ORDER_UNKNOWN)
+        raise StockError("증권사 응답을 받지 못했어요. 잠시 후 다시 시도해 주세요.")
+
+    def _http(self, method: str, url: str, is_order: bool = False, **kw) -> tuple:
+        _throttle()
+        try:
+            resp = requests.request(method, url, timeout=15, **kw)
+            body = resp.json()
+        except (requests.RequestException, ValueError):
+            self._fail(is_order)
+        if not isinstance(body, dict):
+            self._fail(is_order)
+        if resp.status_code == 401:
+            raise _TokenExpired("증권사 인증이 만료됐어요. 잠시 후 다시 시도해 주세요.")
+        return resp, body
+
+    def _post_token(self, **kw) -> dict:
+        try:
+            body = requests.post(kw.pop("url"), timeout=15, **kw).json()
+        except (requests.RequestException, ValueError):
+            raise StockError("증권사에 연결하지 못했어요. 인터넷을 확인해 주세요.")
+        return body if isinstance(body, dict) else {}
+
+    def _store(self, token, seconds) -> str:
+        """오류 문구에 입력값이 담길 수 있어 증권사 문구는 그대로 보여 주지 않는다."""
+        if not token:
+            raise StockError(f"{self.name} 인증에 실패했어요. {self.auth_hint}")
+        expires = datetime.now(KST) + timedelta(seconds=max(int(_num(seconds)) - 60, 0))
+        self.data["token"], self.data["token_expires"] = token, expires.strftime("%Y-%m-%d %H:%M:%S")
+        return token
+
+    def _bearer(self) -> str:
+        return f"Bearer {_token(self.data, self.account)}"
+
+    def query(self, *args, **kw):
+        try:
+            return self.send(*args, **kw)
+        except _TokenExpired:
+            self.data["token"] = None
+            return self.send(*args, **kw)
+
+    def connect(self, account_no: str) -> str:
+        """연결할 때 한 번 — 계좌번호를 돌려준다. 앱 키가 계좌에 묶인 곳은 표시용 값만 있으면 된다."""
+        return account_no
+
+
+class _Kiwoom(_Broker):
+    urls = {"demo": "https://mockapi.kiwoom.com", "real": "https://api.kiwoom.com"}
+    auth_hint = "앱 키와 시크릿, 모의·실전 종류, 포털에 등록한 이 컴퓨터의 IP를 확인해 주세요."
+    ORDER = {"buy": "kt10000", "sell": "kt10001"}
+    TOKEN_ERROR = re.compile(r"\b(8005|8010|8031|8103)\b")   # IP 변경 포함. return_code 3의 문구 안에 섞여 오기도 한다
+
+    def issue_token(self) -> str:
+        body = self._post_token(url=self.urls[self.mode] + "/oauth2/token", headers={"Content-Type": "application/json;charset=UTF-8"},
+                                json={"grant_type": "client_credentials", "appkey": self.account["app_key"],
+                                      "secretkey": self.account["app_secret"]})
+        try:
+            expires = datetime.strptime(str(body.get("expires_dt")), "%Y%m%d%H%M%S")
+        except ValueError:
+            expires = None
+        token = self._store(body.get("token") if expires else None, 0)
+        self.data["token_expires"] = expires.strftime("%Y-%m-%d %H:%M:%S")
+        return token
+
+    def send(self, api_id: str, path: str, body: dict, next_key: str = "") -> tuple:
+        """→ (응답, 다음 페이지 키). 전부 POST고 오류도 HTTP 200으로 온다."""
+        is_order = api_id in self.ORDER.values()
+        headers = {"Content-Type": "application/json;charset=UTF-8", "authorization": self._bearer(), "api-id": api_id}
+        if next_key:
+            headers.update({"cont-yn": "Y", "next-key": next_key})
+        resp, result = self._http("POST", self.urls[self.mode] + path, is_order, headers=headers, json=body)
+        code, message = str(result.get("return_code")), str(result.get("return_msg") or "")
+        if code == "0":
+            return result, resp.headers.get("next-key", "") if resp.headers.get("cont-yn") == "Y" else ""
+        if is_order and code == "None":
+            raise OrderResultUnknown(ORDER_UNKNOWN)
+        if self.TOKEN_ERROR.search(f"{code} {message}"):
+            raise _TokenExpired(message.strip()[:200])
+        raise StockError(message.strip()[:200] or "증권사가 요청을 거절했어요.")
+
+    def connect(self, account_no: str) -> str:
+        return str(self.query("ka00001", "/api/dostk/acnt", {})[0].get("acctNo") or "").strip()
+
+    def portfolio(self) -> tuple:
+        holdings, summary, next_key = [], None, ""
+        for _ in range(20):
+            result, next_key = self.query("kt00018", "/api/dostk/acnt", {"qry_tp": "1", "dmst_stex_tp": "KRX"}, next_key)
+            summary = summary or result
+            for row in result.get("acnt_evlt_remn_indv_tot") or []:
+                _add_holding(holdings, row.get("stk_cd"), row.get("stk_nm"), row.get("rmnd_qty"), row.get("pur_pric"), row.get("cur_prc"),
+                             row.get("evlt_amt"), row.get("evltv_prft"), row.get("prft_rt"), row.get("trde_able_qty"))
+            if not next_key:
+                break
+        return holdings, _signed(summary.get("tot_evlt_pl")), _signed(summary.get("tot_pur_amt")), _signed(summary.get("tot_evlt_amt"))
+
+    def price(self, code: str) -> int:
+        return _abs_int(self.query("ka10001", "/api/dostk/stkinfo", {"stk_cd": code})[0].get("cur_prc"))
+
+    def bars(self, code: str, today: datetime, start: str) -> list:
+        rows = self.query("ka10081", "/api/dostk/chart", {"stk_cd": code, "base_dt": today.strftime("%Y%m%d"), "upd_stkpc_tp": "1"})[0]
+        return _bars(rows.get("stk_dt_pole_chart_qry"), start, "dt", "open_pric", "high_pric", "low_pric", "cur_prc", "trde_qty")
+
+    def order(self, side: str, code: str, quantity: int, price: int) -> str:
+        result, _ = self.send(self.ORDER[side], "/api/dostk/ordr", {   # trde_tp 0 = 보통(지정가)
+            "dmst_stex_tp": "KRX", "stk_cd": code, "ord_qty": str(quantity), "ord_uv": str(price), "trde_tp": "0", "cond_uv": ""})
+        return str(result.get("ord_no", ""))
+
+
+class _Toss(_Broker):
+    """공개 명세 https://openapi.tossinvest.com/openapi-docs/latest/openapi.json — API 모의 서버는 없다."""
+    url = "https://openapi.tossinvest.com"
+
+    def issue_token(self) -> str:
+        body = self._post_token(url=self.url + "/oauth2/token", headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                data={"grant_type": "client_credentials", "client_id": self.account["app_key"],
+                                      "client_secret": self.account["app_secret"]})
+        return self._store(body.get("access_token"), body.get("expires_in"))
+
+    def send(self, method: str, path: str, params: dict = None, body: dict = None):
+        is_order = method == "POST"
+        headers = {"Authorization": self._bearer()}
+        if self.account.get("seq"):
+            headers["X-Tossinvest-Account"] = str(self.account["seq"])
+        resp, result = self._http(method, self.url + path, is_order, headers=headers, params=params, json=body)
+        error = result.get("error")
+        if resp.status_code >= 500 or (resp.status_code < 400 and "result" not in result):
+            self._fail(is_order)
+        if resp.status_code >= 400:
+            raise StockError(str((error or {}).get("message") or "증권사가 요청을 거절했어요.").strip()[:200])
+        return result["result"]
+
+    def connect(self, account_no: str) -> str:
+        chosen = _pick_account(self.query("GET", "/api/v1/accounts"), "accountNo", account_no)
+        self.account["seq"] = chosen.get("accountSeq")
+        return str(chosen.get("accountNo", ""))
+
+    def portfolio(self) -> tuple:
+        holdings = []
+        for row in (self.query("GET", "/api/v1/holdings").get("items") or []):
+            if row.get("marketCountry") == "KR":   # 미국 주식은 달러라 합치지 않는다
+                value, pl = row.get("marketValue") or {}, row.get("profitLoss") or {}
+                buy = _num(value.get("purchaseAmount"))
+                _add_holding(holdings, row.get("symbol"), row.get("name"), row.get("quantity"), row.get("averagePurchasePrice"),
+                             row.get("lastPrice"), value.get("amount"), pl.get("amount"),
+                             _num(pl.get("amount")) / buy * 100 if buy else 0, row.get("quantity"), buy)
+        return _sum_holdings(holdings)
+
+    def price(self, code: str) -> int:
+        rows = self.query("GET", "/api/v1/prices", params={"symbols": code})
+        return _abs_int(rows[0].get("lastPrice")) if rows else 0
+
+    def bars(self, code: str, today: datetime, start: str) -> list:
+        rows = self.query("GET", "/api/v1/candles", params={"symbol": code, "interval": "1d", "count": 200, "adjusted": "true"})
+        rows = [dict(r, dt=str(r.get("timestamp"))[:10].replace("-", "")) for r in rows.get("candles") or []]
+        return _bars(rows, start, "dt", "openPrice", "highPrice", "lowPrice", "closePrice", "volume")
+
+    def order(self, side: str, code: str, quantity: int, price: int) -> str:
+        result = self.send("POST", "/api/v1/orders", body={"clientOrderId": uuid.uuid4().hex, "symbol": code, "side": side.upper(),
+                                                           "orderType": "LIMIT", "quantity": str(quantity), "price": str(price)})
+        return str(result.get("orderId", ""))
+
+
+class _KB(_Broker):
+    """공식 저장소 kbsecurities/kb-openapi와 포털 JSON·XLSX 예시. 모의 서버는 없다."""
+    url = "https://developer.kbsec.com:32484"
+    HEADER = {"ipAddr": "", "macAddr": ""}   # 공식 예제가 빈 값으로 보낸다
+    ORDER = {"sell": "ssam1801", "buy": "ssam1802"}
+
+    def issue_token(self) -> str:
+        body = self._post_token(url=self.url + "/oauth2/token", headers={"Content-Type": "application/json"}, json={
+            "dataHeader": self.HEADER,
+            "dataBody": {"appKey": self.account["app_key"], "appSecret": self.account["app_secret"], "grantType": "client_credentials"}})
+        result = body.get("dataBody") or {}
+        return self._store(result.get("access_token"), result.get("expires_in"))
+
+    def send(self, tr: str, body: dict) -> dict:
+        is_order = tr in self.ORDER.values()
+        headers = {"Content-Type": "application/json", "appKey": self.account["app_key"],
+                   "Authorization": self._bearer().replace("Bearer", "bearer")}
+        _, result = self._http("POST", f"{self.url}/api/v1/{tr}", is_order, headers=headers,
+                               json={"dataHeader": self.HEADER, "dataBody": body})
+        header = result.get("dataHeader")
+        if not isinstance(header, dict):
+            self._fail(is_order)
+        if str(header.get("resultCode")) == "200" and header.get("processFlag") == "A":
+            return result.get("dataBody") or {}
+        message = str(header.get("processMessage") or header.get("resultMessage") or "").strip()
+        if "토큰" in message or "token" in message.lower():
+            raise _TokenExpired(message[:200])
+        if not message:
+            self._fail(is_order)
+        raise StockError(message[:200])
+
+    def portfolio(self) -> tuple:
+        # shortcut: 연속조회 규칙이 공식 자료에 없어 첫 응답만 쓴다, KB가 문서화하면 추가
+        body, holdings = self.query("ssqm2952", {"excg_mktpr_ccd": "K"}), []
+        for row in body.get("Record1") or []:
+            # 체결기준 수량은 ec_q다 — 공식 예시에서 hld_q 0, ec_q 1, 평가금액은 1주치였다
+            _add_holding(holdings, row.get("is_cd"), row.get("is_nm"), row.get("ec_q") or row.get("hld_q"), row.get("byng_avr_prc"),
+                         row.get("now_prc"), row.get("val_amt"), row.get("val_pl"), row.get("val_yld"), row.get("ordr_psbl_q"), row.get("byng_amt"))
+        value, pl = _signed(body.get("val_amt_sum")), _signed(body.get("val_pl_sum"))
+        return holdings, pl, value - pl, value
+
+    def price(self, code: str) -> int:
+        return _abs_int(self.query("ivu10140", {"excg_clsf": "1", "shrt_cd": code}).get("now_prc"))
+
+    def bars(self, code: str, today: datetime, start: str) -> list:
+        for market in ("0", "1"):   # 시장 구분이 필수다 — 코스피에 없으면 코스닥
+            rows = self.query("ivs11560", {"info_ccd": "2", "mkt_clsf": market, "chrt_clsf": "D", "minute_tck_indx": "일", "is_cd": code,
+                                           "inq_clsf": "1", "strt_dy": start, "inq_cnt": "200"}).get("out2")
+            if rows:
+                return _bars(rows, start, "dt", "opn_prc_p2", "hgh_prc_p2", "lw_prc_p2", "cls_prc_p2", "vlm")
+        return []
+
+    def order(self, side: str, code: str, quantity: int, price: int) -> str:
+        result = self.send(self.ORDER[side], {"ordr_uprc": str(price), "ordr_ccd": "00", "mkt_tm_clsf": "1", "is_cd": code,
+                                              "ordr_q": str(quantity), "sor_ordr_ccd": "K"})
+        return str(result.get("ordr_no", "")).strip()
+
+
+class _NH(_Broker):
+    """공식 PLUG-OpenAPI/nhplug-sdk. 토큰은 운영 서버에서만 받는다. 같은 rsp_cd가 API마다 뜻이 달라 코드로 판정하지 않는다."""
+    host = "nhplug.com"
+    token_error = re.compile(r"유효하지\s*않은\s*token", re.IGNORECASE)
+
+    def _base(self, mode: str) -> str:
+        return f"https://{'moapi' if mode == 'demo' else 'api'}.{self.host}:8443"
+
+    def issue_token(self) -> str:
+        body = self._post_token(url=self._base("real") + "/oauth2/token", headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                params={"appkey": self.account["app_key"], "appsecretkey": self.account["app_secret"],
+                                        "grant_type": "client_credentials", "scope": "oob"})
+        return self._store(body.get("access_token"), body.get("expires_in"))
+
+    def send(self, path: str, values: dict, cts: str = "") -> tuple:
+        """→ (응답, 응답 헤더). 200이 아닐 때만 전송·인증·유량 오류다."""
+        is_order = "/order/" in path
+        headers = {"x-client-id": self.account["app_key"], "x-client-secret": self.account["app_secret"],
+                   "authorization": self._bearer(), "content-type": "application/json; charset=UTF-8"}
+        if cts:
+            headers.update({"cts": cts, "cts_flag": "Y"})
+        resp, result = self._http("POST", self._base(self.mode) + path, is_order, headers=headers, json={"Input_0": values})
+        message = str(result.get("rsp_msg") or result.get("error_description") or "").strip()
+        if self.token_error.search(message):
+            raise _TokenExpired(message[:200])
+        if resp.status_code >= 500:
+            self._fail(is_order)
+        if resp.status_code != 200:
+            raise StockError(message[:200] or "증권사가 요청을 거절했어요.")
+        return result, {k.lower(): v for k, v in resp.headers.items()}
+
+    def _need(self, result: dict, key: str):
+        """응답 블록은 데이터가 있을 때만 온다 — 없으면 서버가 뭐라고 했는지 보여 준다."""
+        if result.get(key) is None:
+            raise StockError(str(result.get("rsp_msg") or "증권사 응답에 자료가 없어요.").strip()[:200])
+        return result[key]
+
+    def connect(self, account_no: str) -> str:
+        allowed = ("03",) if self.mode == "demo" else ("01", "02")   # 다른 서버의 계좌를 쓰면 실패한다
+        rows = [r for r in self._need(self.query("/n2/acctinfo", {})[0], "Output_0") if r.get("acct_type") in allowed]
+        return str(_pick_account(rows, "acct_no", account_no).get("acct_no", ""))
+
+    def portfolio(self) -> tuple:
+        values = {"act_no": re.sub(r"\D", "", self.account["number"]), "bnc_bse_cd": "5", "ltg_aot_dit_cd": "9", "aet_bse": "2",
+                  "qut_dit_cd": "KRX", "aly_qut_cd": "1"}
+        holdings, summary, cts = [], None, ""
+        for _ in range(20):
+            result, headers = self.query("/krstock/inquiry/v1/balance", values, cts)
+            summary = summary or self._need(result, "Output_0")
+            for row in result.get("Output_1") or []:
+                buy = _num(row.get("phs_pr")) * _num(row.get("itg_bnc_qty"))
+                _add_holding(holdings, row.get("iem_cd"), row.get("iem_nm"), row.get("itg_bnc_qty"), row.get("phs_pr"), row.get("now_pr"),
+                             row.get("eal_amt"), row.get("eal_pls_amt"), _num(row.get("eal_pls_amt")) / buy * 100 if buy else 0, row.get("itg_bnc_qty"))
+            following = (headers.get("cts") or "").strip()
+            if not following or following == cts or headers.get("cts_flag") == "N":   # 같은 키를 다시 보내면 같은 페이지가 계속 온다
+                break
+            cts = following
+        return holdings, _signed(summary.get("tot_eal_pls")), _signed(summary.get("tot_byn_amt")), _signed(summary.get("tot_eal_amt"))
+
+    def price(self, code: str) -> int:
+        result = self.query("/krstock/quote/v1/currentPrice", {"iem_cd": code, "market_cd": "KRX"})[0]
+        return _abs_int(self._need(result, "Output_0").get("stck_prpr"))
+
+    def bars(self, code: str, today: datetime, start: str) -> list:
+        result = self.query("/krstock/quote/v1/period", {"market_cd": "KRX", "iem_cd": code, "edate": today.strftime("%Y%m%d"), "array_cnt": "200",
+                                                         "gubun": "1", "today_cls_code": "0", "fake_tick": "1", "view_main_yn": "Y"})[0]
+        return _bars(result.get("Output_1"), start, "bsop_date", "stck_oprc", "stck_hgpr", "stck_lwpr", "stck_prpr", "vol")
+
+    def order(self, side: str, code: str, quantity: int, price: int) -> str:
+        path = "/krstock/order/v1/cashBuy" if side == "buy" else "/krstock/order/v1/cashSell"
+        result, _ = self.send(path, {"act_no": re.sub(r"\D", "", self.account["number"]), "iem_cd": code, "orr_qty": quantity, "orr_pr": price,
+                                     "nmn_pr_tp_cd": "01", "orr_cnd_dit_cd": "00", "ssl_nmn_pr_dit_cd": "00", "rmt_mkt_cd": "KRX", "sor_mkt_sli_yn": "N"})
+        number = (result.get("Output_0") or {}).get("mkt_orr_no")
+        if not number:   # 코드로 판정할 수 없어 번호가 없으면 접수라고 말하지 않는다
+            raise OrderResultUnknown(f"{ORDER_UNKNOWN} (증권사 안내: {str(result.get('rsp_msg') or '없음').strip()[:100]})")
+        return str(number)
+
+
+class _N2(_NH):
+    host = "n2plug.com"
+
+
+class _LS(_Broker):
+    """공식 포털 openapi.ls-sec.co.kr 예시. 앱 키가 계좌에 묶이고, 모의·실전이 같은 주소라 키로만 갈린다."""
+    url = "https://openapi.ls-sec.co.kr:8080"
+    token_error = re.compile(r"IGW0012[123]")
+
+    def issue_token(self) -> str:
+        body = self._post_token(url=self.url + "/oauth2/token", headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                data={"appkey": self.account["app_key"], "appsecretkey": self.account["app_secret"],
+                                      "grant_type": "client_credentials", "scope": "oob"})
+        return self._store(body.get("access_token"), body.get("expires_in"))
+
+    def send(self, path: str, tr: str, body: dict, following: bool = False) -> tuple:
+        is_order = tr == "CSPAT00601"
+        headers = {"content-type": "application/json; charset=UTF-8", "authorization": self._bearer(), "tr_cd": tr,
+                   "tr_cont": "Y" if following else "N", "tr_cont_key": ""}
+        resp, result = self._http("POST", self.url + path, is_order, headers=headers, json=body)
+        code, message = str(result.get("rsp_cd") or ""), str(result.get("rsp_msg") or "").strip()
+        if self.token_error.search(code):
+            raise _TokenExpired(message[:200])
+        if not code:
+            self._fail(is_order)
+        if is_order or code == "00000":   # 주문 성공 코드는 00040 등이라 주문번호로 판정한다
+            return result, resp.headers.get("tr_cont") == "Y"
+        raise StockError(message[:200] or "증권사가 요청을 거절했어요.")
+
+    def portfolio(self) -> tuple:
+        holdings, summary, cursor, following = [], None, "", False
+        for _ in range(20):
+            result, more = self.query("/stock/accno", "t0424", {"t0424InBlock": {"prcgb": "", "chegb": "", "dangb": "", "charge": "",
+                                                                                 "cts_expcode": cursor}}, following)
+            head = result.get("t0424OutBlock") or {}
+            summary = summary or head
+            for row in result.get("t0424OutBlock1") or []:
+                _add_holding(holdings, row.get("expcode"), row.get("hname"), row.get("janqty"), row.get("pamt"), row.get("price"),
+                             row.get("appamt"), row.get("dtsunik"), row.get("sunikrt"), row.get("mdposqt"), row.get("mamt"))
+            cursor, following = str(head.get("cts_expcode") or ""), True
+            if not more or not cursor:
+                break
+        return holdings, _signed(summary.get("tdtsunik")), _signed(summary.get("mamt")), _signed(summary.get("tappamt"))
+
+    def price(self, code: str) -> int:
+        result, _ = self.query("/stock/market-data", "t1102", {"t1102InBlock": {"shcode": code}})
+        return _abs_int((result.get("t1102OutBlock") or {}).get("price"))
+
+    def bars(self, code: str, today: datetime, start: str) -> list:
+        result, _ = self.query("/stock/chart", "t8410", {"t8410InBlock": {"shcode": code, "gubun": "2", "qrycnt": 200, "sdate": start,
+                                                                          "edate": today.strftime("%Y%m%d"), "cts_date": "", "comp_yn": "N", "sujung": "Y"}})
+        return _bars(result.get("t8410OutBlock1"), start, "date", "open", "high", "low", "close", "jdiff_vol")
+
+    def order(self, side: str, code: str, quantity: int, price: int) -> str:
+        result, _ = self.send("/stock/order", "CSPAT00601", {"CSPAT00601InBlock1": {
+            "IsuNo": f"A{code}", "OrdQty": quantity, "OrdPrc": price, "BnsTpCode": "1" if side == "sell" else "2", "OrdprcPtnCode": "00",
+            "MgntrnCode": "000", "LoanDt": "", "OrdCndiTpCode": "0", "MbrNo": "KRX"}})
+        number = (result.get("CSPAT00601OutBlock2") or {}).get("OrdNo")
+        if not number:
+            raise StockError(str(result.get("rsp_msg") or "증권사가 요청을 거절했어요.").strip()[:200])
+        return str(number)
+
+
+class _Meritz(_Broker):
+    """공식 meritz-securities/open-api. 오류도 HTTP 500으로 와서 rsp_cd로만 가른다. 앱 키가 계좌에 묶이고 모의 서버는 없다."""
+    url = "https://openapi.imeritz.com:9443"
+    OK = ("0000", "0001", "5762", "5766", "5820")
+
+    def issue_token(self) -> str:
+        body = self._post_token(url=self.url + "/oauth2/token", headers={"content-type": "application/x-www-form-urlencoded"},
+                                data={"grant_type": "client_credentials", "client_id": self.account["app_key"],
+                                      "client_secret": self.account["app_secret"], "scope": "login"})
+        return self._store(body.get("access_token"), body.get("expires_in"))
+
+    def send(self, method: str, path: str, params: dict = None, body: dict = None) -> dict:
+        is_order = method == "POST"
+        node = uuid.getnode()   # 게이트웨이 필수 헤더 — 없으면 거절된다. 공식 예제와 같은 12자리
+        headers = {"authorization": self._bearer(), "mac_address": "".join(f"{(node >> s) & 0xFF:02X}" for s in range(40, -1, -8))}
+        if body is not None:
+            headers["content-type"] = "application/json"
+        _, result = self._http(method, self.url + path, is_order, headers=headers, params=params, json=body)
+        code = str(result.get("rsp_cd") or "")
+        message = str(result.get("rsp_sub_msg") or result.get("rsp_msg") or "").strip()[:200]
+        if "EGW00123" in code or "토큰" in message:
+            raise _TokenExpired(message)
+        if not code:
+            self._fail(is_order)
+        # 시세 API는 정상 자료에 손상된 rsp_cd가 오기도 해서(공식 안내) 자료가 있으면 받아들인다
+        if code in self.OK or (path.startswith("/market/") and result.get("data")):
+            return result
+        raise StockError(message or "증권사가 요청을 거절했어요.")
+
+    def portfolio(self) -> tuple:
+        holdings, params = [], {}
+        for _ in range(20):
+            result = self.query("GET", "/accounts/v1/me/holdings", params=params)
+            for row in result.get("data") or []:
+                if str(row.get("pros_trgt_cls_code")) == "1":   # J는 해외주식이다
+                    _add_holding(holdings, row.get("iscd"), row.get("isnm"), row.get("rmnd_qty"), row.get("byng_unpr"), row.get("psnt_prc"),
+                                 row.get("vltn_amt"), row.get("vltn_prls_amt"), row.get("ert"), row.get("rmnd_qty"), row.get("byng_amt"))
+            if str(result.get("tr_cont")) != "1":
+                break
+            params = {"tr_cont": "1", "tr_cont_key": result.get("tr_cont_key", "")}
+        return _sum_holdings(holdings)
+
+    def price(self, code: str) -> int:
+        result = self.query("GET", "/market/v1/prices", params={"mrkt_div_code": "J", "iscd": code})
+        return _abs_int((result.get("data") or {}).get("stck_prpr"))
+
+    def bars(self, code: str, today: datetime, start: str) -> list:
+        result = self.query("GET", "/market/v1/candles/days", params={"mrkt_div_code": "J", "iscd": code, "mod_stpr_cls_code": "0",
+                                                                      "from": start, "to": today.strftime("%Y%m%d")})
+        return _bars(result.get("data"), start, "date", "oprc", "hprc", "lprc", "stck_clpr", "acml_vol")
+
+    def order(self, side: str, code: str, quantity: int, price: int) -> str:
+        result = self.send("POST", f"/trading/v1/orders/{side}", body={
+            "iscd": f"A{code}", "odqt": str(quantity), "oder_unpr": str(price), "oder_cls_code": "01", "oder_cond_cls_code": "0",
+            "orgl_oder_no": "0", "whol_rctf_cncl_yn": "N", "warn_cnfr_yn": "N", "exch_kind_code": "01"})
+        data = result.get("data") or {}
+        if str(result.get("rsp_cd")) != "0001":
+            self._fail(True)
+        if str(data.get("warn_cls_code")) != "0":   # 0001이어도 경고면 시장에 나가지 않았다
+            raise StockError(str(data.get("warn_msg") or "증권사 경고로 주문이 접수되지 않았어요.").strip()[:200])
+        return str(data.get("oder_no", ""))
+
+
+class _DB(_Broker):
+    """공식 DBsecurities/dbsec-open-api. 모의·실전이 같은 주소라 키로만 갈린다. 조회 성공은 00000, 주문은 주문번호로 판정한다."""
+    url = "https://openapi.dbsec.co.kr:8443"
+    token_error = re.compile(r"IGW0012[123]")
+
+    def issue_token(self) -> str:
+        body = self._post_token(url=self.url + "/oauth2/token", headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                data={"grant_type": "client_credentials", "appkey": self.account["app_key"],
+                                      "appsecretkey": self.account["app_secret"], "scope": "oob"})
+        return self._store(body.get("access_token"), body.get("expires_in"))
+
+    def send(self, path: str, values: dict, cont_key: str = "") -> tuple:
+        is_order = path.endswith("/order")
+        headers = {"content-type": "application/json; charset=utf-8", "authorization": self._bearer(),
+                   "cont_yn": "Y" if cont_key else "N", "cont_key": cont_key}
+        resp, result = self._http("POST", self.url + path, is_order, headers=headers, json={"In": values})
+        code, message = str(result.get("rsp_cd") or ""), str(result.get("rsp_msg") or "").strip()
+        if self.token_error.search(code):
+            raise _TokenExpired(message[:200])
+        if not code or code.startswith("IGW5"):   # IGW5xxxx는 서버 오류 — 주문이 들어갔는지 모른다
+            self._fail(is_order)
+        if is_order or code == "00000":
+            return result, resp.headers.get("cont_key", "") if resp.headers.get("cont_yn") == "Y" else ""
+        raise StockError(message[:200] or "증권사가 요청을 거절했어요.")
+
+    def portfolio(self) -> tuple:
+        holdings, summary, cont_key = [], None, ""
+        for _ in range(20):
+            result, cont_key = self.query("/api/v1/trading/kr-stock/inquiry/balance", {"QryTpCode0": "0"}, cont_key)
+            summary = summary or result.get("Out") or {}
+            for row in result.get("Out1") or []:
+                qty = _num(row.get("BalQty0"))
+                # 현재가·평균 단가 칸이 없어 금액을 수량으로 나눈다
+                _add_holding(holdings, row.get("IsuNo"), row.get("IsuNm"), qty, _num(row.get("PchsAmt")) / qty if qty else 0,
+                             _num(row.get("EvalAmt")) / qty if qty else 0, row.get("EvalAmt"), row.get("EvalPnlAmt"), row.get("Ernrat"),
+                             row.get("AbleQty"), row.get("PchsAmt"))
+            if not cont_key:
+                break
+        return holdings, _signed(summary.get("TotEvalPnlAmt")), _signed(summary.get("TotBuyAmt")), _signed(summary.get("TotEvalAmt"))
+
+    def price(self, code: str) -> int:
+        result, _ = self.query("/api/v1/quote/kr-stock/inquiry/price", {"InputCondMrktDivCode": "J", "InputIscd1": code})
+        return _abs_int((result.get("Out") or {}).get("Prpr"))
+
+    def bars(self, code: str, today: datetime, start: str) -> list:
+        result, _ = self.query("/api/v1/quote/kr-chart/day", {"InputOrgAdjPrc": "1", "InputCondMrktDivCode": "J", "InputIscd1": code,
+                                                              "InputDate1": start, "InputDate2": today.strftime("%Y%m%d")})
+        return _bars(result.get("Out"), start, "Date", "Oprc", "Hprc", "Lprc", "Prpr", "CntgVol")
+
+    def order(self, side: str, code: str, quantity: int, price: int) -> str:
+        result, _ = self.send("/api/v1/trading/kr-stock/order", {
+            "IsuNo": f"A{code}", "OrdQty": quantity, "OrdPrc": price, "BnsTpCode": "1" if side == "sell" else "2", "OrdprcPtnCode": "00",
+            "MgntrnCode": "000", "LoanDt": "00000000", "OrdCndiTpCode": "0"})
+        number = (result.get("Out") or {}).get("OrdNo")
+        if not number:
+            raise StockError(str(result.get("rsp_msg") or "증권사가 요청을 거절했어요.").strip()[:200])
+        return str(number)
+
+
+BROKER_CLASSES = {"kiwoom": _Kiwoom, "toss": _Toss, "kb": _KB, "nh": _NH, "n2": _N2, "ls": _LS, "meritz": _Meritz, "db": _DB}
+
+
+def _broker(data: dict, account: dict = None):
+    """한국투자증권은 None — 저장된 옛 계좌에는 broker가 없다."""
+    account = account or data["account"]
+    cls = BROKER_CLASSES.get((account or {}).get("broker"))
+    return cls(data, account) if cls else None
 
 
 def _call(data: dict, method: str, path: str, tr_id: str, params: dict = None, body: dict = None,
@@ -274,8 +776,9 @@ def _split_account(account_no: str) -> tuple:
 
 def _fetch_portfolio(data: dict, account: dict = None) -> dict:
     account = account or data["account"]
-    if _is_kiwoom(account):
-        return _fetch_kiwoom_portfolio(data, account)
+    broker = _broker(data, account)
+    if broker:
+        return _portfolio_result(*broker.portfolio(), account)
     cano, product = _split_account(account["number"])
     params = {"CANO": cano, "ACNT_PRDT_CD": product, "AFHR_FLPR_YN": "N", "OFL_YN": "", "INQR_DVSN": "02",
               "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00",
@@ -301,25 +804,6 @@ def _fetch_portfolio(data: dict, account: dict = None) -> dict:
                              _num(summary.get("evlu_amt_smtl_amt")), account)
 
 
-def _fetch_kiwoom_portfolio(data: dict, account: dict) -> dict:
-    holdings, summary, next_key = [], None, ""
-    for _ in range(20):
-        result, next_key = _kiwoom_call(data, "kt00018", "/api/dostk/acnt", {"qry_tp": "1", "dmst_stex_tp": "KRX"}, account, next_key)
-        summary = summary or result
-        for row in result.get("acnt_evlt_remn_indv_tot") or []:
-            qty = _kiwoom_price(row.get("rmnd_qty"))
-            if qty > 0:
-                holdings.append({"code": str(row.get("stk_cd", ""))[-6:],   # 앞의 A·J·Q는 상품 구분이다
-                                 "name": str(row.get("stk_nm", "")).strip(), "qty": qty,
-                                 "avg_price": _kiwoom_price(row.get("pur_pric")), "price": _kiwoom_price(row.get("cur_prc")),
-                                 "value": _kiwoom_num(row.get("evlt_amt")), "pl": _kiwoom_num(row.get("evltv_prft")),
-                                 "rate": _kiwoom_num(row.get("prft_rt")), "sellable": _kiwoom_price(row.get("trde_able_qty"))})
-        if not next_key:
-            break
-    return _portfolio_result(holdings, _kiwoom_num(summary.get("tot_evlt_pl")), _kiwoom_num(summary.get("tot_pur_amt")),
-                             _kiwoom_num(summary.get("tot_evlt_amt")), account)
-
-
 def _portfolio_result(holdings: list, pl: float, buy: float, value: float, account: dict) -> dict:
     return {"holdings": holdings, "total_pl": pl, "total_buy": buy, "total_value": value,
             "total_rate": pl / buy * 100 if buy else 0.0, "fetched_at": datetime.now(KST).strftime("%H:%M"),
@@ -327,8 +811,9 @@ def _portfolio_result(holdings: list, pl: float, buy: float, value: float, accou
 
 
 def mask_account(number: str, mode: str = "demo", broker: str = None) -> str:
-    prefix = "키움증권 " if broker == "kiwoom" else ""
-    return f"{prefix}{MODE_NAMES[mode]} 계좌 ****" + re.sub(r"\D", "", number or "")[-4:]
+    prefix = f"{BROKER_NAMES[broker]} " if broker in BROKER_CLASSES else ""
+    digits = re.sub(r"\D", "", number or "")
+    return f"{prefix}{MODE_NAMES[mode]} 계좌" + (f" ****{digits[-4:]}" if digits else "")
 
 
 def _require_account() -> dict:
@@ -346,6 +831,8 @@ def connect_account(app_key: str, app_secret: str, account_no: str, mode: str = 
         raise StockError("모의 또는 실전 계좌를 골라 주세요.")
     if broker not in BROKER_NAMES:
         raise StockError("증권사를 골라 주세요.")
+    if mode == "demo" and broker not in DEMO_BROKERS:
+        raise StockError(f"{BROKER_NAMES[broker]}는 모의 계좌로 연결할 수 없어요.")
     if not logged_in():
         raise StockError("주식 기능은 로그인한 사용자만 쓸 수 있어요.")
     app_key, app_secret = (app_key or "").strip(), (app_secret or "").strip()
@@ -357,11 +844,11 @@ def connect_account(app_key: str, app_secret: str, account_no: str, mode: str = 
     with _lock:
         data = _load()
         data.update(account=None, token=None, token_expires="")
-    if broker == "kiwoom":
-        result, _ = _kiwoom_call(data, "ka00001", "/api/dostk/acnt", {}, account)
-        account["number"] = str(result.get("acctNo") or "").strip()
+    adapter = _broker(data, account)
+    if adapter:
+        account["number"] = adapter.connect(account["number"]) or ("키 연결" if broker not in ("kiwoom", "toss", "nh", "n2") else "")
         if not account["number"]:
-            raise StockError("키움증권에서 계좌번호를 받지 못했어요. 앱 키를 발급한 계좌를 확인해 주세요.")
+            raise StockError(f"{BROKER_NAMES[broker]}에서 계좌번호를 받지 못했어요. 앱 키를 발급한 계좌를 확인해 주세요.")
     _fetch_portfolio(data, account)
     with _lock:
         data.update(account=account, order_enabled=False)   # 계좌가 바뀌면 주문은 다시 켜야 한다
@@ -419,9 +906,9 @@ def _store_token(data: dict):
 def get_price(code: str) -> int:
     with _lock:
         data = _require_account()
-    if _is_kiwoom(data["account"]):
-        result, _ = _kiwoom_call(data, "ka10001", "/api/dostk/stkinfo", {"stk_cd": code})
-        price = _kiwoom_price(result.get("cur_prc"))
+    broker = _broker(data)
+    if broker:
+        price = broker.price(code)
     else:
         result, _ = _call(data, "GET", "/uapi/domestic-stock/v1/quotations/inquire-price", TR_PRICE,
                           params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
@@ -439,8 +926,11 @@ def get_price_bars(code: str, days: int = 150) -> list:
     with _lock:
         data = _require_account()
     today = datetime.now(KST)
-    if _is_kiwoom(data["account"]):
-        return _kiwoom_bars(data, code, today, days)
+    broker = _broker(data)
+    if broker:
+        bars = broker.bars(code, today, (today - timedelta(days=days)).strftime("%Y%m%d"))
+        _store_token(data)
+        return bars
     result, _ = _call(data, "GET", "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", TR_DAILY, params={
         "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": (today - timedelta(days=days)).strftime("%Y%m%d"),
         "FID_INPUT_DATE_2": today.strftime("%Y%m%d"), "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"})
@@ -450,18 +940,6 @@ def get_price_bars(code: str, days: int = 150) -> list:
         date, close = str(row.get("stck_bsop_date") or ""), int(_num(row.get("stck_clpr")))
         if re.fullmatch(r"\d{8}", date) and close > 0:
             bars[date] = _bar(date, row.get("stck_oprc"), row.get("stck_hgpr"), row.get("stck_lwpr"), close, row.get("acml_vol"))
-    return [bars[d] for d in sorted(bars)]
-
-
-def _kiwoom_bars(data: dict, code: str, today: datetime, days: int) -> list:
-    result, _ = _kiwoom_call(data, "ka10081", "/api/dostk/chart", {"stk_cd": code, "base_dt": today.strftime("%Y%m%d"), "upd_stkpc_tp": "1"})
-    _store_token(data)
-    start, bars = (today - timedelta(days=days)).strftime("%Y%m%d"), {}
-    for row in result.get("stk_dt_pole_chart_qry") or []:
-        date, close = str(row.get("dt") or ""), _kiwoom_price(row.get("cur_prc"))
-        if re.fullmatch(r"\d{8}", date) and date >= start and close > 0:
-            bars[date] = _bar(date, _kiwoom_price(row.get("open_pric")), _kiwoom_price(row.get("high_pric")),
-                              _kiwoom_price(row.get("low_pric")), close, _kiwoom_price(row.get("trde_qty")))
     return [bars[d] for d in sorted(bars)]
 
 
@@ -735,10 +1213,9 @@ def validate_order(side: str, stock: str, quantity, price) -> str:
 
 
 def _submit_order(data: dict, side: str, code: str, quantity: int, price: int) -> str:
-    if _is_kiwoom(data["account"]):
-        result, _ = _kiwoom_call(data, KIWOOM_ORDER[side], "/api/dostk/ordr", {   # trde_tp 0 = 보통(지정가)
-            "dmst_stex_tp": "KRX", "stk_cd": code, "ord_qty": str(quantity), "ord_uv": str(price), "trde_tp": "0", "cond_uv": ""})
-        return str(result.get("ord_no", ""))
+    broker = _broker(data)
+    if broker:
+        return broker.order(side, code, quantity, price)
     cano, product = _split_account(data["account"]["number"])
     result, _ = _call(data, "POST", "/uapi/domestic-stock/v1/trading/order-cash", TR_ORDER[_mode(data["account"])][side], body={
         "CANO": cano, "ACNT_PRDT_CD": product, "PDNO": code, "ORD_DVSN": "00", "ORD_QTY": str(quantity),

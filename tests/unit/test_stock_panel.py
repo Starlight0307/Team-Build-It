@@ -309,6 +309,11 @@ def test_connect_form_does_not_ask_account_number_for_kiwoom(qapp, stock, monkey
     dlg.broker_input.setCurrentIndex(dlg.broker_input.findData("kiwoom"))
     assert not dlg.account_input.isEnabled()
     assert "IP" in dlg.desc.text()
+    dlg.broker_input.setCurrentIndex(dlg.broker_input.findData("toss"))   # 모의 서버 없음 — 실전으로 고정, 계좌 선택 가능
+    assert dlg.mode_input.currentData() == "real" and not dlg.mode_input.isEnabled() and dlg.account_input.isEnabled()
+    dlg.broker_input.setCurrentIndex(dlg.broker_input.findData("nh"))     # 모의가 되는 곳으로 돌아오면 다시 모의부터
+    assert dlg.mode_input.currentData() == "demo" and dlg.mode_input.isEnabled()
+    dlg.broker_input.setCurrentIndex(dlg.broker_input.findData("kiwoom"))
     dlg.key_input.setText("K"); dlg.secret_input.setText("S")
     dlg._connect()
     assert _wait(qapp, lambda: calls)

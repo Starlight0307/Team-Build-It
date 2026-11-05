@@ -226,20 +226,21 @@ class StockAccountDialog(_StockDialog):
         self.add_button("발급 방법 보기", "LinkGhost", self._open_guide)
         self.btn_connect = self.add_button("연결", "LinkPrimary", self._connect)
 
-    def _is_kiwoom(self) -> bool:
-        return self.broker_input.currentData() == "kiwoom"
-
     def _show_broker(self):
-        kiwoom = self._is_kiwoom()
-        guide = ("키움 REST API 포털에서 앱 키를 받고, 이 컴퓨터의 IP를 등록해 주세요. 계좌번호는 앱 키로 자동으로 확인해요." if kiwoom
-                 else "한국투자증권 KIS Developers에서 계좌의 앱 키를 발급받아 입력해 주세요.")
-        self.desc.setText(f"{guide} 이미 가진 계좌를 그대로 연결해요.\n"
+        stock, broker = _stock(), self.broker_input.currentData()
+        note = stock.BROKER_NOTES.get(broker, "")
+        self.desc.setText(f"{stock.BROKER_NAMES[broker]} 포털에서 앱 키를 받아 입력해 주세요. 이미 가진 계좌를 그대로 연결해요. {note}\n"
                           "키는 이 컴퓨터에 암호화해 저장해요. 보유 종목과 손익은 브리핑할 때 대화 기록에 남을 수 있어요.")
-        self.account_input.setEnabled(not kiwoom)   # 숨기면 창 높이가 바뀌어 여백이 벌어진다
-        self.account_input.setPlaceholderText("앱 키로 자동 확인해요" if kiwoom else "50012345-01")
+        demo = broker in stock.DEMO_BROKERS
+        self.mode_input.setCurrentIndex(0 if demo else 1)   # 모의가 되는 증권사로 돌아오면 다시 모의부터
+        self.mode_input.setEnabled(demo)
+        needs_number = broker == "kis" or broker in stock.ACCOUNT_CHOICE_BROKERS
+        self.account_input.setEnabled(needs_number)   # 숨기면 창 높이가 바뀌어 여백이 벌어진다
+        self.account_input.setPlaceholderText("50012345-01" if broker == "kis" else
+                                              "계좌가 여럿이면 입력 (비우면 첫 계좌)" if needs_number else "앱 키로 자동 확인해요")
 
     def _open_guide(self):
-        webbrowser.open(_stock().KIWOOM_GUIDE_URL if self._is_kiwoom() else _stock().KIS_GUIDE_URL)
+        webbrowser.open(_stock().BROKER_GUIDES[self.broker_input.currentData()])
 
     def _connect(self):
         self.btn_connect.setEnabled(False)
