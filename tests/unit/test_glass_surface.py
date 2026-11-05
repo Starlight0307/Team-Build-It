@@ -309,14 +309,13 @@ def test_top_pills_keep_start_position_and_hug_their_text(qapp, stock_env):
     starts = lambda: [p.mapTo(w.top_bar, p.rect().topLeft()).x() for p in pills]
     first = starts()
 
-    def hugging():
-        _until(qapp, lambda: False, 0.05)
-        return all(p.width() == p.sizeHint().width() for p in pills)
+    def hugging():   # 배치는 이벤트 루프에서 끝나서, 느린 PC에서도 끝날 때까지 기다린다
+        return _until(qapp, lambda: all(p.width() == p.sizeHint().width() for p in pills))
     assert hugging()
-    short = w.weather_pill.width()
+    short = w.weather_pill.sizeHint().width()
     w._on_weather({"temp": -11.2, "city": "아주아주아주 긴 지역 이름입니다 서울특별시", "icon_name": "cloud-sun"})
-    assert "…" in w.weather_pill.text()
-    assert hugging() and starts() == first and w.weather_pill.width() > short
+    assert "…" in w.weather_pill.text() and w.weather_pill.sizeHint().width() > short
+    assert hugging() and starts() == first
     w._ollama_online = False
     w._update_status_pill()
     assert hugging() and starts() == first
