@@ -404,19 +404,19 @@ def test_verify_mac_signature_rejects_other_developer(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not li.IS_MAC, reason="맥 전용")
-def test_ollama_falls_back_to_serve_when_app_does_not_start_engine(tmp_path, monkeypatch):
+@pytest.mark.parametrize("engine_on, expected", [(True, 0), (False, 1)])
+def test_mac_launch_starts_engine_only_when_off_and_never_opens_ollama_app(tmp_path, monkeypatch, engine_on, expected):
     started = []
     inst = li.Installer(str(tmp_path))
 
     def fake_api(path, data=None, timeout=10):
-        if started and started[-1][-1] == "serve":
+        if engine_on:
             return type("R", (), {"close": lambda self: None})()
-        raise OSError("아직 안 켜짐")
+        raise OSError("꺼져 있음")
     monkeypatch.setattr(inst, "_api", fake_api)
-    monkeypatch.setattr(inst, "_ollama_app", lambda: "/Applications/Ollama.app")
     monkeypatch.setattr(inst, "_ollama_exe", lambda: "/x/ollama")
-    monkeypatch.setattr(li.time, "sleep", lambda s: None)
     monkeypatch.setattr(li.subprocess, "Popen", lambda args, **k: started.append(args))
-    inst._ensure_ollama_running()
-    assert started == [["open", "-g", "/Applications/Ollama.app"], ["/x/ollama", "serve"]]
-
+    inst.launch()
+    assert started.count(["/x/ollama", "serve"]) == expected
+    assert not any(a[0] == "open" for a in started)
+    assert started[-1][-1] == "app_main.py"
