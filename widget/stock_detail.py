@@ -6,7 +6,8 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QStandardItem, QSt
 from PyQt6.QtWidgets import (QAbstractItemView, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListView, QPushButton, QScrollArea, QToolTip,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from widget import lumi_dialog
+from settings import theme
+from widget import lumi_dialog, motion
 from widget.stock_panel import LOSS_COLOR, PROFIT_COLOR, SmoothAnimation, _pl_color, _stock, _StockDialog, animate_values, set_plain_text
 
 DEFAULT_STOCK = "삼성전자"   # 보유 종목이 없을 때 먼저 보여 줄 종목
@@ -17,6 +18,8 @@ SEARCH_ROLE = Qt.ItemDataRole.UserRole + 1
 DEFAULT_WIDTH, MIN_WIDTH, MIN_HEIGHT = 1240, 900, 560
 CHROME_HEIGHT = 190     # 제목·버튼·그림자 자리
 LIVE_REFRESH_MS = 60_000
+CARD_RADIUS = 20        # lumi_dialog의 LumiCard 모서리와 같다
+GLASS_INPUT = {False: "rgba(255,255,255,120)", True: "rgba(255,255,255,20)"}
 TOOL_STYLE = "margin: 0; padding: 0 10px; min-height: 26px; max-height: 26px; font-size: 12px; border-radius: 9px;"
 TILE_WIDTH = 118        # 이보다 좁으면 수치 칸을 다음 줄로 내린다
 BARS_MIN_WIDTH = 780    # 이보다 좁으면 손익 막대를 접고 그래프에 폭을 준다
@@ -565,6 +568,8 @@ class StockDetailDialog(_StockDialog):
         self.setMinimumWidth(MIN_WIDTH)
         self.resize(DEFAULT_WIDTH, self.height())
         self.enable_resize()
+        if theme.glass_enabled():
+            self._use_glass()
         self.max_height = None   # 시험용 — 없으면 실제 화면 높이를 쓴다
         self.status_info = _stock().account_status()
         self.open_settings = open_settings
@@ -707,6 +712,17 @@ class StockDetailDialog(_StockDialog):
             self._show_market()
         else:
             self._show_not_connected()
+
+    def _use_glass(self):
+        """앱의 투명 모드와 같은 빛과 유리. 그림자 효과는 빛이 움직일 때마다 다시 계산돼 무거워서 뗀다."""
+        surface = theme.get_palette(self.dark)
+        self.p = dict(self.p, input=GLASS_INPUT[self.dark])
+        self._apply_style()
+        self.setStyleSheet(self.styleSheet() + f"QFrame#LumiCard {{ background: {surface['bg_grad']}; border: 1px solid {self.p['border']}; }}")
+        self.card.setGraphicsEffect(None)
+        self.backdrop = motion.GlassBackdrop(self.card, CARD_RADIUS)
+        self.backdrop.lower()
+        self.backdrop.set_mode(True, self.dark)
 
     def make_independent(self):
         """루미 창과 따로 떠 있게 한다. 모달이면 루미를 쓸 수 없다. 떠 있는 동안 잔고가 낡지 않게 장중에는 다시 읽는다."""

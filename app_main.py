@@ -2260,6 +2260,7 @@ class AssistantApp(QWidget):
         self._sync_surface_buttons()
         motion.cover_window(self)
         self.apply_theme()
+        self.stock_panel.reopen_detail()   # 떠 있는 주식 창도 같은 표면으로
 
     def _on_motion_toggled(self, on: bool):
         app_settings.set("ui_motion_off", not on)

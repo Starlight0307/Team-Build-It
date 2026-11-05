@@ -424,16 +424,18 @@ class GlassBackdrop(QWidget):
     LIGHT = ((139, 120, 238, 215), (70, 160, 240, 215), (240, 130, 205, 150))
     DARK = ((139, 120, 238, 135), (40, 150, 225, 125), (70, 210, 200, 80))
 
-    def __init__(self, parent: QWidget):
+    def __init__(self, parent: QWidget, corner_radius: int = 0):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.dark, self.clock, self._picture = False, 0.0, None
+        self.dark, self.clock, self._picture, self.corner_radius = False, 0.0, None, corner_radius
         self.spots = [list(s) for s in self.SPOTS[0]]
         self._move_anim = None
         self._timer = QTimer(self)
         self._timer.setInterval(self.FRAME_MS)
         self._timer.timeout.connect(self._tick)
         parent.installEventFilter(self)
+        if parent.window() is not parent:   # 창 활성 이벤트는 창에만 온다
+            parent.window().installEventFilter(self)
         self.setGeometry(parent.rect())
 
     def set_mode(self, glass: bool, dark: bool):
@@ -452,7 +454,7 @@ class GlassBackdrop(QWidget):
 
     def eventFilter(self, obj, event):
         kind = event.type()
-        if kind == QEvent.Type.Resize:
+        if kind == QEvent.Type.Resize and obj is self.parentWidget():
             self.setGeometry(obj.rect())
         elif kind in (QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate, QEvent.Type.Show, QEvent.Type.Hide):
             self._sync_timer()
@@ -512,6 +514,11 @@ class GlassBackdrop(QWidget):
             self._picture = self._draw_light()
         painter = QPainter(self)
         painter.setClipRect(event.rect())
+        if self.corner_radius:   # 둥근 카드 모서리 밖으로 빛이 나가지 않게
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(self.rect()), self.corner_radius, self.corner_radius)
+            painter.setClipPath(path, Qt.ClipOperation.IntersectClip)
         painter.drawPixmap(0, 0, self._picture)
 
 

@@ -220,3 +220,39 @@ def test_top_stock_button_follows_plugin_and_settings_selector(qapp, stock_env):
     finally:
         w.stock_panel.close_detail()
         w.close()
+
+
+def test_stock_window_follows_surface_setting(qapp, stock_env):
+    from widget import stock_detail
+    theme.set_glass(True)
+    glass = stock_detail.StockDetailDialog()
+    glass.show()
+    assert not glass.backdrop.isHidden() and glass.card.graphicsEffect() is None
+    assert glass.backdrop.parent() is glass.card and "rgba" in glass.p["input"]
+    assert not glass.grab().isNull()
+    glass.resize(1300, 900)
+    qapp.processEvents()
+    assert glass.backdrop.size() == glass.card.size()
+    glass.close()
+    assert not glass.backdrop._timer.isActive()
+    theme.set_glass(False)
+    solid = stock_detail.StockDetailDialog()
+    assert not hasattr(solid, "backdrop") and solid.card.graphicsEffect() is not None
+    solid.close()
+
+
+def test_surface_change_reopens_floating_stock_window(qapp, stock_env):
+    import app_main
+    w = app_main.AssistantApp()
+    try:
+        w.stock_panel.open_detail()
+        first = w.stock_panel._detail
+        w._surface_buttons[False].click()
+        second = w.stock_panel._detail
+        assert second is not first and not hasattr(second, "backdrop")
+        w._surface_buttons[True].click()
+        assert hasattr(w.stock_panel._detail, "backdrop")
+    finally:
+        w.stock_panel.close_detail()
+        w.close()
+
