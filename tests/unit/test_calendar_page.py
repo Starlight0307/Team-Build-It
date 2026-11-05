@@ -173,3 +173,30 @@ def test_add_button_for_the_other_calendar(page, qapp, monkeypatch):
     page.load_events(); _wait(qapp, page)
     texts = [page.tabs_box.itemAt(i).widget().text().strip() for i in range(page.tabs_box.count())]
     assert texts == ["Apple", "+ Google"]
+
+
+def test_long_event_title_keeps_all_day_cells_same_width(qapp):
+    from datetime import date
+    from PyQt6.QtWidgets import QGridLayout, QWidget
+    from widget.calendar_widget import DayCell
+    host = QWidget()
+    grid = QGridLayout(host)
+    cells = [DayCell() for _ in range(7)]
+    for column, cell in enumerate(cells):
+        grid.setColumnStretch(column, 1)
+        grid.addWidget(cell, 0, column)
+    host.resize(900, 200)
+    long_title = "아주 아주 아주 아주 아주 아주 아주 아주 긴 일정 제목입니다 " * 3
+    cells[3].set_day(date(2026, 11, 5), True, False, False, [{"title": long_title, "start": date(2026, 11, 5), "all_day": True}], "#E5484D")
+    cells[0].set_day(date(2026, 11, 2), True, False, False, [], "#E5484D")
+    host.show()
+    qapp.processEvents()
+    assert len({cell.width() for cell in cells}) <= 2   # 나눠 떨어지지 않는 1픽셀 차이만 허용
+    chip = cells[3].chips[0]
+    assert chip.text().endswith("…") and chip.full_text == long_title and long_title in chip.toolTip()
+    assert chip.fontMetrics().horizontalAdvance(chip.text()) <= chip.width()
+    host.resize(1400, 200)
+    qapp.processEvents()
+    assert len(chip.text()) > 0
+    host.close()
+

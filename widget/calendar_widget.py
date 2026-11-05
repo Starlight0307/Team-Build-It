@@ -130,6 +130,28 @@ class EventEditDialog(lumi_dialog.LumiDialog):
 # 달력 칸
 # ─────────────────────────────────────────────
 
+class _Chip(QLabel):
+    """일정 한 줄. 긴 제목은 칸 폭에 맞춰 …로 줄인다 — 그냥 QLabel은 글자 길이만큼 칸을 늘린다. 전체 내용은 눌러서 본다."""
+
+    def __init__(self):
+        super().__init__("")
+        self.full_text = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def set_full_text(self, text: str):
+        self.full_text = text
+        self._fit()
+
+    def _fit(self):
+        self.ensurePolished()
+        width = self.contentsRect().width()
+        self.setText(self.fontMetrics().elidedText(self.full_text, Qt.TextElideMode.ElideRight, max(0, width - 12)))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit()
+
+
 class DayCell(QFrame):
     clicked = pyqtSignal(object)
     double_clicked = pyqtSignal(object)
@@ -147,7 +169,7 @@ class DayCell(QFrame):
         lay.addWidget(self.num)
         self.chips = []
         for _ in range(3):
-            c = QLabel(""); c.setObjectName("CalChip"); c.hide()
+            c = _Chip(); c.setObjectName("CalChip"); c.hide()
             lay.addWidget(c); self.chips.append(c)
         self.more = QLabel(""); self.more.setObjectName("CalMore"); self.more.hide()
         lay.addWidget(self.more)
@@ -165,7 +187,7 @@ class DayCell(QFrame):
             if i < len(events):
                 ev = events[i]
                 prefix = "" if ev.get("all_day") or not isinstance(ev["start"], datetime) else f"{ev['start']:%H:%M} "
-                chip.setText(f"{prefix}{ev['title']}")
+                chip.set_full_text(f"{prefix}{ev['title']}")
                 chip.setToolTip(f"{ev['title']}\n{_time_label(ev)}")
                 chip.setStyleSheet(f"QLabel#CalChip {{ border-left: 3px solid {color}; }}")
                 chip.show()
@@ -266,6 +288,8 @@ class CalendarWidget(QWidget):
             week.addWidget(lab, 1)
         gl.addLayout(week)
         self.grid = QGridLayout(); self.grid.setSpacing(4)
+        for column in range(7):   # 일정 내용과 상관없이 모든 칸이 같은 폭
+            self.grid.setColumnStretch(column, 1)
         self.cells = []
         for r in range(6):
             for c in range(7):
