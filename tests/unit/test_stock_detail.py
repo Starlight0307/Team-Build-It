@@ -643,3 +643,52 @@ def test_default_height_shows_whole_content_when_screen_allows(qapp, stock):
     assert dlg.height() >= dlg.content.sizeHint().height() + sd.CHROME_HEIGHT - 1
     dlg.close()
 
+
+def test_favorite_button_marks_and_moves_stock_up_and_survives_reopen(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    _list_ready(qapp, dlg)
+    assert _wait(qapp, lambda: dlg.current_code)
+    dlg.show_stock("035720")
+    assert _wait(qapp, lambda: dlg.current_code == "035720")
+    assert dlg.btn_favorite.text() == "☆ 즐겨찾기"
+    dlg.btn_favorite.click()
+    assert dlg.btn_favorite.text() == "★ 즐겨찾기 해제" and sp.favorite_codes() == ["035720"]
+    texts = _list_text(dlg)
+    assert [t for t in texts if "★ " in t and "035720" in t]
+    assert texts.index(next(t for t in texts if "035720" in t)) < texts.index(next(t for t in texts if t.endswith("000000"))) if any(t.endswith("000000") for t in texts) else True
+    assert dlg.current_code == "035720" and dlg.stock_view.currentIndex().data(Qt.ItemDataRole.UserRole) == "035720"
+    dlg.close()
+    again = _dialog(qapp)
+    _list_ready(qapp, again)
+    assert [t for t in _list_text(again) if "★ " in t and "035720" in t]
+    again.close()
+
+
+def test_only_favorites_filter_and_unfavorite(qapp, stock):
+    sp.toggle_favorite("035720")
+    dlg = _dialog(qapp)
+    dlg.show()
+    _list_ready(qapp, dlg)
+    assert _wait(qapp, lambda: dlg.current_code)
+    before = dlg.current_code
+    count = len(stock)
+    dlg.btn_only_favorites.click()
+    assert len(_list_text(dlg)) == 1 and "즐겨찾기 1개" in dlg.list_title.text()
+    _wait(qapp, lambda: False, 0.3)
+    assert dlg.current_code == before and len(stock) == count   # 목록이 바뀌어도 다른 종목을 불러오지 않는다
+    dlg.btn_only_favorites.click()
+    assert len(_list_text(dlg)) == len(sp.load_master())
+    dlg.close()
+
+
+def test_guest_sees_login_message_on_favorite(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    assert _wait(qapp, lambda: dlg.current_code)
+    sp.set_current_user("guest")
+    dlg.btn_favorite.click()
+    assert "로그인" in dlg.status.text() and not dlg.status.isHidden()
+    dlg.close()
+    sp.set_current_user("tester")
+

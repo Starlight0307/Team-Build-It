@@ -362,6 +362,14 @@ class StockDetailDialog(_StockDialog):
             self.period_buttons[days] = button
             periods.addWidget(button)
         periods.addStretch(1)
+        self.btn_favorite = QPushButton("☆ 즐겨찾기")
+        self.btn_favorite.setObjectName("LinkGhost")
+        self.btn_favorite.setAutoDefault(False)
+        self.btn_favorite.setStyleSheet("margin: 0; padding: 0 12px; min-width: 96px; min-height: 28px; max-height: 28px;"
+                                        "font-size: 12px; border-radius: 10px;")
+        self.btn_favorite.clicked.connect(self._toggle_favorite)
+        self.btn_favorite.setEnabled(False)
+        periods.addWidget(self.btn_favorite)
         right.addLayout(periods)
         self.period_days = None
         self.chart = PriceChart(self.p)
@@ -431,6 +439,14 @@ class StockDetailDialog(_StockDialog):
         self.search_input.textChanged.connect(self._filter_stocks)
         self.search_input.returnPressed.connect(self._search)
         layout.addWidget(self.search_input)
+        self.btn_only_favorites = QPushButton("★ 즐겨찾기만 보기")
+        self.btn_only_favorites.setObjectName("LinkGhost")
+        self.btn_only_favorites.setCheckable(True)
+        self.btn_only_favorites.setAutoDefault(False)
+        self.btn_only_favorites.setStyleSheet("margin: 0; min-height: 30px; max-height: 30px; font-size: 12px; border-radius: 10px;")
+        self.btn_only_favorites.toggled.connect(self._on_only_favorites)
+        layout.addWidget(self.btn_only_favorites)
+        self.favorites = _stock().favorite_codes()
         self.stock_rows, self.stock_model = [], QStandardItemModel(self)
         self.stock_proxy = QSortFilterProxyModel(self)
         self.stock_proxy.setSourceModel(self.stock_model)
@@ -464,11 +480,14 @@ class StockDetailDialog(_StockDialog):
         self._fill_stock_list()
 
     def _fill_stock_list(self):
-        """내가 가진 종목을 맨 위에 둔다."""
+        """보유 종목, 즐겨찾기, 나머지 순서. 표시는 글자로도 남겨 색에만 기대지 않는다."""
         held = {h["code"] for h in self.holdings if "qty" in h}
+        favorites = set(self.favorites)
+        rows = [r for r in self.stock_rows if r[0] in favorites] if self.btn_only_favorites.isChecked() else self.stock_rows
         self.stock_model.clear()
-        for code, name in sorted(self.stock_rows, key=lambda row: row[0] not in held):
-            item = QStandardItem(f"{'보유 · ' if code in held else ''}{name} · {code}")
+        for code, name in sorted(rows, key=lambda row: (row[0] not in held, row[0] not in favorites)):
+            marks = ("보유 · " if code in held else "") + ("★ " if code in favorites else "")
+            item = QStandardItem(f"{marks}{name} · {code}")
             item.setToolTip(f"{name} ({code})")
             item.setData(code, Qt.ItemDataRole.UserRole)
             item.setData(name.replace(" ", "") + code, SEARCH_ROLE)
@@ -478,7 +497,36 @@ class StockDetailDialog(_StockDialog):
 
     def _update_list_title(self):
         total, shown = self.stock_model.rowCount(), self.stock_proxy.rowCount()
-        self.list_title.setText(f"전체 종목 {total:,}개" if shown == total else f"검색 결과 {shown:,}개")
+        if self.btn_only_favorites.isChecked():
+            self.list_title.setText(f"즐겨찾기 {shown:,}개")
+        else:
+            self.list_title.setText(f"전체 종목 {total:,}개" if shown == total else f"검색 결과 {shown:,}개")
+
+    def _on_only_favorites(self, on: bool):
+        self.btn_only_favorites.setText("전체 종목 보기" if on else "★ 즐겨찾기만 보기")
+        if on and not _stock().logged_in():
+            self.set_status("즐겨찾기는 로그인하면 쓸 수 있어요.", "err")
+        self._filtering = True
+        self._fill_stock_list()
+        self._filtering = False
+
+    def _toggle_favorite(self):
+        try:
+            _stock().toggle_favorite(self.current_code)
+        except _stock().StockError as e:
+            self.set_status(str(e), "err")
+            return
+        self.favorites = _stock().favorite_codes()
+        self._show_favorite_state()
+        self._filtering = True   # 목록을 다시 채워도 보던 종목은 그대로
+        self._fill_stock_list()
+        self._filtering = False
+
+    def _show_favorite_state(self):
+        on = self.current_code in self.favorites
+        self.btn_favorite.setEnabled(bool(self.current_code))
+        self.btn_favorite.setText("★ 즐겨찾기 해제" if on else "☆ 즐겨찾기")
+        self.btn_favorite.setAccessibleName(f"{self.current_name} 즐겨찾기 {'해제' if on else '추가'}")
 
     def _filter_stocks(self, text: str):
         self._filtering = True   # 걸러지며 선택이 옮겨 가도 다른 종목을 불러오지 않는다
@@ -555,7 +603,7 @@ class StockDetailDialog(_StockDialog):
 
     def _show_market(self):
         """로그인·계좌 없이 보는 화면 — 주요 종목의 지난 영업일 시세."""
-        self.summary.setText("주요 종목 시세")
+        self.summary.setText("즐겨찾기 시세" if self.favorites else "주요 종목 시세")
         self.summary_note.setText("불러오는 중이에요…")
         self.left_box.hide()   # 보유 종목이 없으면 비워 두지 않고 그래프에 폭을 준다
         self.table.setColumnCount(len(MARKET_HEADERS))
@@ -621,7 +669,7 @@ class StockDetailDialog(_StockDialog):
         if self.stock_rows:
             self._fill_stock_list()
         if not self.current_code:
-            self.show_stock(self.holdings[0]["code"] if self.holdings else DEFAULT_STOCK)
+            self.show_stock(self.holdings[0]["code"] if self.holdings else (self.favorites or [DEFAULT_STOCK])[0])
 
     def _fill_table(self):
         self.table.blockSignals(True)
@@ -674,6 +722,7 @@ class StockDetailDialog(_StockDialog):
             self.current_code, self.current_name = code, name
             self.history[code] = bars
             self._select_in_list(code)
+            self._show_favorite_state()
             if not bars:
                 self.chart.set_message(f"{name}의 가격 기록이 없어요.")
                 self._clear_stats()

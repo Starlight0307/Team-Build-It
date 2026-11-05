@@ -1340,3 +1340,106 @@ def test_auto_rule_runs_through_new_broker(broker_env):
     sp.auto_tick()
     assert fake.calls[-1][1].endswith("/stock/order") and fake.calls[-1][2]["json"]["CSPAT00601InBlock1"]["OrdQty"] == 1
 
+
+# ── 즐겨찾기 — 계정별, 암호화 ──
+def _favorite_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp.storage_location, "user_data_dir", lambda name: str(tmp_path))
+    sp.set_current_user("tester")
+
+
+def test_favorites_persist_after_logout_and_login_and_keep_order(tmp_path, monkeypatch):
+    _favorite_env(tmp_path, monkeypatch)
+    try:
+        assert sp.favorite_codes() == []
+        assert sp.toggle_favorite("005930") is True and sp.toggle_favorite("000660") is True
+        sp.set_current_user("guest")
+        assert sp.favorite_codes() == []
+        sp.set_current_user("tester")
+        assert sp.favorite_codes() == ["005930", "000660"]
+        assert sp.toggle_favorite("005930") is False and sp.favorite_codes() == ["000660"]
+    finally:
+        sp.set_current_user("guest")
+
+
+def test_favorites_are_separate_per_account(tmp_path, monkeypatch):
+    _favorite_env(tmp_path, monkeypatch)
+    try:
+        sp.toggle_favorite("005930")
+        sp.set_current_user("other")
+        assert sp.favorite_codes() == []
+        sp.toggle_favorite("000660")
+        sp.set_current_user("tester")
+        assert sp.favorite_codes() == ["005930"]
+    finally:
+        sp.set_current_user("guest")
+
+
+def test_favorites_are_encrypted_on_disk(tmp_path, monkeypatch):
+    from data.secure_store import is_plain_record
+    _favorite_env(tmp_path, monkeypatch)
+    try:
+        sp.toggle_favorite("005930")
+        path = sp._path()
+        raw = open(path, encoding="utf-8").read()
+        assert "005930" not in raw and "favorites" not in raw
+        assert not is_plain_record(path)
+    finally:
+        sp.set_current_user("guest")
+
+
+def test_old_plain_save_without_favorites_still_loads_and_other_data_survives(tmp_path, monkeypatch):
+    from data.secure_store import secure_open
+    _favorite_env(tmp_path, monkeypatch)
+    try:
+        with secure_open(sp._path(), "w") as f:
+            json.dump({"order_limit": 123, "manual": {"broker": "x", "items": []}}, f)
+        assert sp.favorite_codes() == []
+        sp.toggle_favorite("005930")
+        assert sp._load()["order_limit"] == 123
+    finally:
+        sp.set_current_user("guest")
+
+
+def test_broken_favorites_value_is_ignored(tmp_path, monkeypatch):
+    from data.secure_store import secure_open
+    _favorite_env(tmp_path, monkeypatch)
+    try:
+        with secure_open(sp._path(), "w") as f:
+            json.dump({"favorites": "망가짐"}, f)
+        assert sp.favorite_codes() == []
+        with secure_open(sp._path(), "w") as f:
+            json.dump({"favorites": ["005930", 7, None]}, f)
+        assert sp.favorite_codes() == ["005930"]
+    finally:
+        sp.set_current_user("guest")
+
+
+def test_guest_cannot_save_favorites_and_bad_code_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp.storage_location, "user_data_dir", lambda name: str(tmp_path))
+    sp.set_current_user("guest")
+    with pytest.raises(sp.StockError, match="로그인"):
+        sp.toggle_favorite("005930")
+    assert not os.path.exists(sp._path())
+    sp.set_current_user("tester")
+    try:
+        with pytest.raises(sp.StockError):
+            sp.toggle_favorite("../x")
+    finally:
+        sp.set_current_user("guest")
+
+
+def test_overview_shows_favorites_up_to_limit_then_default(tmp_path, monkeypatch):
+    _favorite_env(tmp_path, monkeypatch)
+    asked = []
+    monkeypatch.setattr(sp, "market_quote", lambda code: asked.append(code) or {"code": code})
+    try:
+        sp.market_overview()
+        assert sorted(asked) == sorted(sp.WATCHLIST)
+        asked.clear()
+        for i in range(sp.MAX_OVERVIEW + 3):
+            sp.toggle_favorite(f"{i:06d}")
+        sp.market_overview()
+        assert sorted(asked) == [f"{i:06d}" for i in range(sp.MAX_OVERVIEW)]
+    finally:
+        sp.set_current_user("guest")
+

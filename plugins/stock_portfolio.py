@@ -52,6 +52,7 @@ MARKET_KEY_GUIDE_URL = "https://www.data.go.kr/data/15094808/openapi.do"
 MARKET_SOURCE = "출처: 금융위원회(공공데이터포털)"
 MARKET_CACHE_SECONDS = 1800
 WATCHLIST = ("005930", "000660", "035420", "035720")   # 삼성전자, SK하이닉스, NAVER, 카카오
+MAX_OVERVIEW = 8   # 시세 표에 한 번에 받는 수 — 공공데이터 서버가 자주 느려진다
 SIDE_NAMES = {"sell": "매도", "buy": "매수"}
 ORDER_UNKNOWN = "주문 결과를 확인하지 못했어요. 이중 주문을 막기 위해 다시 보내지 않았어요. 증권사 앱에서 체결 내역을 확인해 주세요."
 DEFAULT_ORDER_LIMIT = 1_000_000
@@ -89,7 +90,7 @@ def _path(user_id: str = None) -> str:
 def _defaults() -> dict:
     return {"version": 1, "account": None, "token": None, "token_expires": "",
             "order_enabled": False, "order_limit": DEFAULT_ORDER_LIMIT, "orders": [],
-            "manual": {"broker": "카카오페이증권", "items": []},
+            "manual": {"broker": "카카오페이증권", "items": []}, "favorites": [],
             "auto": {"enabled": False, "max_order": 0, "max_daily_amount": 0, "max_daily_count": 0,
                      "rules": [], "log": [], "stopped_reason": ""}}
 
@@ -1066,14 +1067,15 @@ def market_quote(code: str) -> dict:
 
 
 def market_overview() -> list:
-    """주요 종목 시세. 받지 못한 종목은 빼고 받은 것만 보여 준다(기준일이 함께 표시된다). 하나도 없으면 StockError."""
+    """즐겨찾기 또는 주요 종목 시세. 받지 못한 종목은 빼고 받은 것만 보여 준다(기준일이 함께 표시된다). 하나도 없으면 StockError."""
     def quote(code):
         try:
             return market_quote(code), None
         except StockError as e:
             return None, e
-    with ThreadPoolExecutor(max_workers=len(WATCHLIST)) as pool:
-        results = list(pool.map(quote, WATCHLIST))
+    codes = favorite_codes()[:MAX_OVERVIEW] or list(WATCHLIST)   # 즐겨찾기가 있으면 그 종목을 보여 준다
+    with ThreadPoolExecutor(max_workers=len(codes)) as pool:
+        results = list(pool.map(quote, codes))
     quotes = [q for q, _ in results if q]
     if not quotes:
         raise next((e for _, e in results if e), StockError("시세 기록을 찾지 못했어요."))
@@ -1167,6 +1169,29 @@ def load_master() -> dict:
         json.dump({"date": today, "names": names}, f, ensure_ascii=False)
     _master_memo = (today, names)
     return names
+
+
+def favorite_codes() -> list:
+    """이 계정의 즐겨찾기 종목코드. 계정별 파일에 암호화해 두므로 로그인하면 그 사람 것을 읽는다."""
+    if not logged_in():
+        return []
+    saved = _load()["favorites"]
+    return [c for c in saved if isinstance(c, str)] if isinstance(saved, list) else []
+
+
+def toggle_favorite(code: str) -> bool:
+    """→ 즐겨찾기에 들어 있으면 True."""
+    if not logged_in():
+        raise StockError("즐겨찾기는 로그인하면 쓸 수 있어요.")
+    if not re.fullmatch(r"[0-9A-Z]{6}", code or ""):
+        raise StockError("종목코드가 올바르지 않아요.")
+    with _lock:
+        data = _load()
+        codes = favorite_codes()
+        added = code not in codes
+        data["favorites"] = codes + [code] if added else [c for c in codes if c != code]
+        _save(data)
+    return added
 
 
 def stock_list() -> list:
