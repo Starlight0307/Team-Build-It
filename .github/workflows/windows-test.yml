@@ -65,6 +65,22 @@ jobs:
         if: always()
         run: python scripts/windows_selftest.py --voice
 
+      # 간헐적인 크래시는 한 번으로 안 잡힌다 — 글자 잘림 판정과 별개로 프로세스가 죽는지만 센다
+      - name: 환경설정 점검 반복 (크래시 확인)
+        if: always()
+        shell: bash
+        run: |
+          crashes=0
+          for i in 1 2 3 4 5 6 7 8; do
+            python scripts/windows_selftest.py --only 환경설정 > repeat.txt 2>&1 || true
+            if grep -q "결과 없이 끝남" repeat.txt; then
+              crashes=$((crashes + 1))
+              grep -m1 "결과 없이 끝남" repeat.txt | cut -c1-600
+            fi
+          done
+          echo "::notice title=crash repeat py${{ matrix.python }}::8회 중 크래시 $crashes 회"
+          exit $crashes
+
       # 툴팁 점검이 찍은 실제 화면 캡처 — Actions 실행 페이지의 Artifacts에서 받을 수 있다
       - name: 화면 캡처 올리기
         if: always()
