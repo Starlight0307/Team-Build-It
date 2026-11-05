@@ -1,8 +1,10 @@
 """앱 전체 움직임 — 창이 뜨는 것, 화면 전환, 말풍선·카드 등장, 버튼 반응.
 신호에 lambda를 잇지 않는다: PyQt가 lambda를 부르는 순간 대상이 지워지면 앱이 죽었다(주식 그래프, 말풍선에서 재현).
 효과는 끝나면 떼어 낸다: 남겨 두면 스크롤할 때 글자가 예전 자리에 그려졌다. 끝나는 도중에 떼면 죽을 수 있어 다음 차례로 미룬다."""
+import math
+
 from PyQt6.QtCore import QEasingCurve, QEvent, QObject, QPointF, QRectF, Qt, QTimer, QVariantAnimation
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QColorDialog, QComboBox, QDialog, QFileDialog, QFontDialog, QGraphicsEffect,
                              QGraphicsOpacityEffect, QLabel, QLineEdit, QPlainTextEdit, QScrollArea, QStackedWidget, QTextEdit, QWidget)
 
@@ -372,6 +374,147 @@ class _Ripple(_ButtonLayer):
         painter.drawEllipse(self.center, self.reach * self.t, self.reach * self.t)
 
 
+class _Shine(QWidget):
+    """빛줄기가 한 번 비스듬히 지나간다. 위젯 그림은 건드리지 않는다."""
+
+    def __init__(self, target, strength: int):
+        super().__init__(target)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setGeometry(target.rect())
+        self.strength, self.t = strength, 0.0
+        self.show()
+        self.anim = SmoothAnimation(self._step, 620, on_done=self.deleteLater, easing=QEasingCurve.Type.InOutSine)
+
+    def _step(self, t):
+        self.t = t
+        self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        radius = min(self.height() / 2, 18)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), radius, radius)
+        painter.setClipPath(path)
+        band = max(60.0, self.width() * 0.28)
+        x = -band + (self.width() + band * 2) * self.t
+        gradient = QLinearGradient(x - band, 0, x + band * 0.6, self.height() * 0.5)
+        clear, light = QColor(255, 255, 255, 0), QColor(255, 255, 255, self.strength)
+        gradient.setColorAt(0.0, clear)
+        gradient.setColorAt(0.5, light)
+        gradient.setColorAt(1.0, clear)
+        painter.fillRect(self.rect(), gradient)
+
+
+def shine(widget: QWidget, strength: int = 110):
+    if _enabled and widget.isVisible() and widget.width() > 0:
+        return _Shine(widget, strength)
+
+
+class GlassBackdrop(QWidget):
+    """앱 맨 뒤의 빛 덩어리. 유리 카드 뒤로 비친다. 빛 자체가 흐려 따로 흐림 처리를 하지 않아도 된다.
+    창 전체를 다시 그려 성능을 쓰므로 창이 활성일 때만, 초당 6~7번만 움직인다. 초당 15번은 맥에서 코어 45%를 더 썼고,
+    빛이 초당 수 픽셀만 움직여 이 정도로 줄여도 끊겨 보이지 않는다."""
+    FRAME_MS = 150
+    # 화면마다 빛의 자리가 달라 전환할 때 천천히 옮겨 간다 — (가로, 세로, 크기) 창 크기 대비
+    SPOTS = {0: ((0.12, 0.18, 0.46), (0.86, 0.12, 0.40), (0.56, 0.96, 0.52)),
+             1: ((0.88, 0.20, 0.46), (0.14, 0.82, 0.44), (0.48, 0.10, 0.34)),
+             2: ((0.20, 0.92, 0.50), (0.78, 0.74, 0.40), (0.36, 0.06, 0.36)),
+             3: ((0.94, 0.86, 0.50), (0.06, 0.40, 0.42), (0.64, 0.10, 0.34))}
+    LIGHT = ((139, 120, 238, 150), (95, 168, 238, 150), (238, 150, 210, 95))
+    DARK = ((139, 120, 238, 135), (40, 150, 225, 125), (70, 210, 200, 80))
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.dark, self.clock, self._picture = False, 0.0, None
+        self.spots = [list(s) for s in self.SPOTS[0]]
+        self._move_anim = None
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.FRAME_MS)
+        self._timer.timeout.connect(self._tick)
+        parent.installEventFilter(self)
+        self.setGeometry(parent.rect())
+
+    def set_mode(self, glass: bool, dark: bool):
+        self.dark = dark
+        self.setVisible(glass)
+        self._sync_timer()
+        self.update()
+
+    def _sync_timer(self):
+        window = self.window()
+        running = _enabled and not self.isHidden() and window.isVisible() and window.isActiveWindow()
+        if running and not self._timer.isActive():
+            self._timer.start()
+        elif not running and self._timer.isActive():
+            self._timer.stop()
+
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if kind == QEvent.Type.Resize:
+            self.setGeometry(obj.rect())
+        elif kind in (QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate, QEvent.Type.Show, QEvent.Type.Hide):
+            self._sync_timer()
+        return False
+
+    def _tick(self):
+        self.clock += self.FRAME_MS / 1000
+        self.update()
+
+    def shift(self, page: int):
+        """화면을 옮기면 빛도 천천히 옮겨 간다."""
+        target = self.SPOTS[page % len(self.SPOTS)]
+        if not _enabled or self.isHidden():
+            self.spots = [list(s) for s in target]
+            self.update()
+            return
+        start = [list(s) for s in self.spots]
+        if self._move_anim is not None:
+            self._move_anim.stop()
+
+        def step(t):
+            self.spots = [[a + (b - a) * t for a, b in zip(s, e)] for s, e in zip(start, target)]
+            self.update()
+
+        def done():
+            self.spots = [list(e) for e in target]
+        self._move_anim = SmoothAnimation(step, 900, on_done=done, easing=QEasingCurve.Type.InOutCubic)
+
+    def update(self):
+        self._picture = None
+        super().update()
+
+    def _draw_light(self) -> QPixmap:
+        ratio = self.devicePixelRatioF()
+        picture = QPixmap(round(self.width() * ratio), round(self.height() * ratio))
+        picture.setDevicePixelRatio(ratio)
+        picture.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(picture)
+        w, h = self.width(), self.height()
+        reach = max(w, h)
+        for i, ((x, y, size), color) in enumerate(zip(self.spots, self.DARK if self.dark else self.LIGHT)):
+            drift = self.clock * (0.11 + i * 0.03)
+            cx = x * w + math.sin(drift + i) * reach * 0.045
+            cy = y * h + math.cos(drift * 1.2 + i * 2) * reach * 0.045
+            radius = size * reach * (1.0 + math.sin(drift * 0.8 + i) * 0.06)
+            gradient = QRadialGradient(QPointF(cx, cy), radius)
+            gradient.setColorAt(0.0, QColor(*color))
+            gradient.setColorAt(0.55, QColor(color[0], color[1], color[2], color[3] // 3))
+            gradient.setColorAt(1.0, QColor(color[0], color[1], color[2], 0))
+            painter.fillRect(QRectF(cx - radius, cy - radius, radius * 2, radius * 2), gradient)
+        painter.end()
+        return picture
+
+    def paintEvent(self, event):
+        # 위에서 오브나 시계가 움직일 때마다 뒤도 다시 그려진다 — 빛은 저장해 둔 그림을 그 자리만 복사한다
+        if self._picture is None or self._picture.deviceIndependentSize().toSize() != self.size():
+            self._picture = self._draw_light()
+        painter = QPainter(self)
+        painter.setClipRect(event.rect())
+        painter.drawPixmap(0, 0, self._picture)
+
+
 def _hover_card(widget) -> bool:
     return any(c.__name__ in HOVER_CARDS for c in type(widget).__mro__)
 
@@ -412,6 +555,8 @@ class _AppMotion(QObject):
             return
         if kind in (QEvent.Type.Enter, QEvent.Type.Leave) and isinstance(obj, QWidget) and _hover_card(obj):
             self._ring(obj, 1.0 if kind == QEvent.Type.Enter else 0.0, 0.45)
+            if kind == QEvent.Type.Enter:
+                shine(obj, 46)
             return
         hoverable = isinstance(obj, (QAbstractButton, QComboBox))
         if not hoverable or not obj.isEnabled() or obj.property("noButtonMotion"):

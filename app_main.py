@@ -51,7 +51,7 @@ from PyQt6.QtGui import QShortcut, QKeySequence, QIcon
 
 from settings.config import MOCK_USER
 from settings import app_settings
-from settings.theme import get_palette
+from settings.theme import get_palette, glass_enabled, set_glass
 from calendar_feature import calendar_preference
 from settings import ui_scale
 from core.ai_worker import (AIWorker, _build_condition_recommendation, is_large_file_followup,
@@ -457,6 +457,7 @@ class AssistantApp(QWidget):
         2026-09-30 사용자 PC에서 마이크(VoiceListener)가 켜진 채 Ctrl+C 등으로
         종료하자 "QThread: Destroyed while thread is still running"으로 앱이 강제
         종료된 충돌 보고서가 두 건 있었다."""
+        self.stock_panel.close_detail()
         if self._screen_worker is not None and self._screen_worker.isRunning():
             self._screen_worker.stop()
             self._screen_worker.wait(3000)
@@ -1042,6 +1043,8 @@ class AssistantApp(QWidget):
     # ─────────────────────────────────────────────
     def apply_theme(self):
         d = self.is_dark_mode
+        set_glass(app_settings.get("ui_glass"))
+        self.backdrop.set_mode(glass_enabled(), d)
         p = get_palette(d)
         lumi_dialog.set_dark(d)   # 앱 공통 팝업도 같은 테마로
         s = ui_scale.get_scale()   # 대화창(말풍선/카드/입력창/사이드바)에만 적용되는 배율
@@ -1100,6 +1103,7 @@ class AssistantApp(QWidget):
         )
         for btn in self.nav_info:
             btn.setStyleSheet(nav_style)
+        self.btn_stock.setStyleSheet(nav_style)
         self.btn_quit.setStyleSheet(nav_style + f"QPushButton:hover {{ border-color: #E5484D; }}")
 
         for panel in self.info_panels:
@@ -1185,6 +1189,7 @@ class AssistantApp(QWidget):
             self.switch_dark.setChecked(self.is_dark_mode)
         motion.cover_window(self)
         self.apply_theme()
+        self.stock_panel.reopen_detail()   # 떠 있는 주식 창도 새 테마로
 
     # ─────────────────────────────────────────────
     # 🔍 대화창 확대/축소 (브라우저 Ctrl+/Ctrl- 방식)
@@ -1215,6 +1220,7 @@ class AssistantApp(QWidget):
         QShortcut(QKeySequence("Ctrl+Shift+Space"), self).activated.connect(self.toggle_voice_conversation)
 
         self.setObjectName("appRoot")   # 앱 전체 배경(그라데이션)을 이 위젯에만 칠한다
+        self.backdrop = motion.GlassBackdrop(self)   # 먼저 만들어 다른 위젯보다 뒤에 놓인다
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -1303,6 +1309,16 @@ class AssistantApp(QWidget):
             btn.clicked.connect(self.navigate_pages)
             tb.addWidget(btn)
         self.btn_chat.setChecked(True)
+        # 화면을 바꾸지 않고 따로 창을 띄워서 nav_info에 넣지 않는다. 창이 떠 있는 동안 켜진 모양
+        self.btn_stock = QPushButton(" 주식")
+        self.btn_stock.setCheckable(True)
+        self.btn_stock.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stock.setToolTip("주식 창 열기 — 띄워 둔 채로 루미를 쓸 수 있어요")
+        self.btn_stock.setIcon(icons.icon("chart-line"))
+        self.btn_stock.setIconSize(QSize(19, 19))
+        self.btn_stock.clicked.connect(self._open_stock_window)
+        self.btn_stock.hide()
+        tb.addWidget(self.btn_stock)
         tb.addSpacing(6)
 
         self.btn_profile = QPushButton()
@@ -1330,6 +1346,7 @@ class AssistantApp(QWidget):
         mal.setSpacing(0)
 
         self.stacked_widget = AutoSizeStackedWidget()
+        self.stacked_widget.currentChanged.connect(self.backdrop.shift)
         self.stacked_widget.setStyleSheet("background: transparent;")
         mal.addWidget(self.stacked_widget)
 
@@ -1439,6 +1456,7 @@ class AssistantApp(QWidget):
         self.session_panel = SessionPanel(self.stats_panel)
         self.iot_panel = IotPanel()
         self.stock_panel = StockPanel()
+        self.stock_panel.detail_changed.connect(self._on_stock_window_changed)
         self.stock_panel.notice.connect(self._show_toast)
         self.stock_panel.briefing_ready.connect(self._on_stock_reply)
         self.info_panels = [self.stats_panel, self.weather_panel, self.today_panel,
@@ -1794,8 +1812,26 @@ class AssistantApp(QWidget):
         self.switch_motion.setChecked(not app_settings.get("ui_motion_off"))
         self.switch_motion.toggled.connect(self._on_motion_toggled)
 
+        self.surface_selector = QWidget()
+        sel = QHBoxLayout(self.surface_selector)
+        sel.setContentsMargins(0, 0, 0, 0)
+        sel.setSpacing(0)
+        self._surface_buttons = {}
+        for i, (value, label) in enumerate(((True, "투명"), (False, "불투명"))):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(30)
+            btn.setMinimumWidth(64)
+            btn.setProperty("segment", "left" if i == 0 else "right")
+            btn.clicked.connect(lambda _c, v=value: self._on_surface_chosen(v))
+            sel.addWidget(btn)
+            self._surface_buttons[value] = btn
+        self._sync_surface_buttons()
+
         outer.addWidget(self._make_settings_card("화면", icon="palette", rows=[
             ("다크 모드", "어두운 배경으로 눈의 피로를 줄여요.", self.switch_dark),
+            ("화면 표면", "투명은 유리처럼 뒤의 빛이 비치지만 성능을 더 써요. 느리면 불투명으로 바꿔 주세요.", self.surface_selector),
             ("움직임 효과", "창, 화면 전환, 말풍선, 버튼의 애니메이션을 보여 줘요.", self.switch_motion),
         ]))
         outer.addSpacing(18)
@@ -2055,6 +2091,7 @@ class AssistantApp(QWidget):
         if not hasattr(self, '_left_layout'):
             return
         hidden = self._hidden_widgets()
+        self.btn_stock.setVisible("stock_portfolio" in self.installed_module_names)
         self.iot_panel.setVisible(False)   # IoT 플러그인이 있으면 아래에서 다시 켠다
         self.stock_panel.setVisible(False)
         for i, wid in enumerate(self._widget_order()):
@@ -2206,9 +2243,28 @@ class AssistantApp(QWidget):
         self.weather_panel.refresh()
         self._show_toast(f"🌤️ 날씨 지역을 '{city}'(으)로 바꿨어요.")
 
+    def _open_stock_window(self):
+        self.stock_panel.open_detail()
+        motion.shine(self.btn_stock)
+
+    def _on_stock_window_changed(self, is_open: bool):
+        self.btn_stock.setChecked(is_open)
+
+    def _sync_surface_buttons(self):
+        current = bool(app_settings.get("ui_glass"))
+        for value, btn in self._surface_buttons.items():
+            btn.setChecked(value == current)
+
+    def _on_surface_chosen(self, glass: bool):
+        app_settings.set("ui_glass", glass)
+        self._sync_surface_buttons()
+        motion.cover_window(self)
+        self.apply_theme()
+
     def _on_motion_toggled(self, on: bool):
         app_settings.set("ui_motion_off", not on)
         motion.set_enabled(on)
+        self.backdrop.set_mode(glass_enabled(), self.is_dark_mode)
 
     def reveal_current_page(self):
         motion.reveal_page(self.stacked_widget.currentWidget())
@@ -2334,6 +2390,7 @@ class AssistantApp(QWidget):
             lbl.setStyleSheet(f"font-size: 13px; color: {p['tc2']}; background: transparent; border: none; "
                               f"padding: 2px 0px;")
         dark = self.is_dark_mode
+        self.settings_fade.setVisible(not glass_enabled())   # 같은 색을 덧칠하는 띠라 움직이는 빛을 가린다
         self.settings_fade.set_colors(*(("#1D1836", "#132640") if dark else ("#F1EAFF", "#E4F1FF")))   # theme.bg_grad
         for line in self._settings_dividers:
             line.setStyleSheet(f"background-color: {p['card_brd']}; border: none;")
@@ -2367,7 +2424,7 @@ class AssistantApp(QWidget):
             f"QPushButton {{ background-color: {p['grad']}; color: #2E2A4F; border: none; border-radius: 12px; "
             f"padding: 6px 16px; font-size: 13px; font-weight: bold; }}"
             f"QPushButton:hover {{ background-color: {p['grad_hover']}; }}")
-        for btn in (*self._voice_model_buttons.values(), *self._close_action_buttons.values()):
+        for btn in (*self._voice_model_buttons.values(), *self._close_action_buttons.values(), *self._surface_buttons.values()):
             radius = {"left": "border-top-left-radius: 15px; border-bottom-left-radius: 15px;",
                       "right": "border-top-right-radius: 15px; border-bottom-right-radius: 15px;"
                       }.get(btn.property("segment"), "border-radius: 0px;")
@@ -2464,6 +2521,7 @@ class AssistantApp(QWidget):
             if stop:
                 stop()
         if m_name == "stock_portfolio":
+            self.stock_panel.close_detail()
             self.stock_panel.before_plugin_removed()
         try:
             uninstall_plugin(m_name, self.installed_tools, self.installed_module_names)
@@ -2586,6 +2644,10 @@ class AssistantApp(QWidget):
         (테마 / 음성 답변 / 날씨 지역 / 홈 위젯 배치 / 스킬 목록 / 앱 사용 기록 이어가기).
         화면에 남은 이전 계정의 대화 내용도 함께 비운다(다른 계정에게 보이면 안 되므로)."""
         self._clear_conversation()
+        self.stock_panel.close_detail()   # 이전 계정의 보유 종목이 떠 있으면 안 된다
+        self._sync_surface_buttons()
+        if bool(app_settings.get("ui_glass")) != glass_enabled():
+            self.apply_theme()
         dark = bool(app_settings.get("dark_mode"))
         for sw, val in ((self.switch_dark, dark),
                         (self.switch_voice_reply, bool(app_settings.get("voice_reply")))):
@@ -2688,6 +2750,7 @@ class AssistantApp(QWidget):
         idx = self._nav_stack_index[btn]
         self.stacked_widget.setCurrentIndex(idx)
         self.update_sidebar_ui()   # 선택된 메뉴 이름 펼치기
+        motion.shine(btn)
         if idx == 0:
             self._refresh_info_panels()   # 다른 화면(캘린더 등)에서 바뀐 일정·할 일을 홈에 반영
             self.bottom_input_wrapper.show()

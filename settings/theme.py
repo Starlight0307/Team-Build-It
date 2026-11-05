@@ -93,5 +93,33 @@ DARK = {
 }
 
 
+def _sheen(top: str, bottom: str) -> str:
+    return f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {top}, stop:1 {bottom})"
+
+
+# 투명: 뒤의 빛 덩어리가 비치는 유리, 불투명: 뒤가 비치지 않아 움직임이 필요 없고 가볍다
+_SURFACES = {
+    (False, True): {"card": _sheen("rgba(255,255,255,205)", "rgba(255,255,255,130)"), "card_brd": "rgba(255,255,255,225)",
+                    "sb": "rgba(255,255,255,120)", "sbrd": "rgba(255,255,255,190)", "pb": "rgba(255,255,255,130)",
+                    "pbrd": "rgba(255,255,255,215)", "bubble_ai": "rgba(255,255,255,185)", "bubble_ai_brd": "rgba(255,255,255,225)"},
+    (True, True): {"card": _sheen("rgba(255,255,255,34)", "rgba(255,255,255,14)"), "card_brd": "rgba(255,255,255,44)",
+                   "sb": "rgba(255,255,255,18)", "sbrd": "rgba(255,255,255,34)", "pb": "rgba(255,255,255,22)",
+                   "pbrd": "rgba(255,255,255,44)", "bubble_ai": "rgba(255,255,255,26)", "bubble_ai_brd": "rgba(255,255,255,44)"},
+    (False, False): {"card": "#FFFFFF", "sb": "#FFFFFF"},
+    (True, False): {"card": "#28224A", "sb": "#231E42"},
+}
+_glass = True
+
+
+def set_glass(on: bool):
+    global _glass
+    _glass = bool(on)
+
+
+def glass_enabled() -> bool:
+    return _glass
+
+
 def get_palette(is_dark_mode: bool) -> dict:
-    return DARK if is_dark_mode else LIGHT
+    base = DARK if is_dark_mode else LIGHT
+    return {**base, **_SURFACES[(bool(is_dark_mode), _glass)]}

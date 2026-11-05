@@ -14,6 +14,7 @@ MARKET_HEADERS = ("종목", "기준일", "종가", "전일 대비", "등락률")
 SEARCH_ROLE = Qt.ItemDataRole.UserRole + 1
 DEFAULT_WIDTH, MIN_WIDTH, MIN_HEIGHT = 1240, 900, 560
 CHROME_HEIGHT = 190     # 제목·버튼·그림자 자리
+LIVE_REFRESH_MS = 60_000
 TILE_WIDTH = 118        # 이보다 좁으면 수치 칸을 다음 줄로 내린다
 BARS_MIN_WIDTH = 780    # 이보다 좁으면 손익 막대를 접고 그래프에 폭을 준다
 PERIODS = (("1개월", 22), ("3개월", 66), ("전체", None))   # 거래일 수
@@ -425,6 +426,20 @@ class StockDetailDialog(_StockDialog):
             self._show_market()
         else:
             self._show_not_connected()
+
+    def make_independent(self):
+        """루미 창과 따로 떠 있게 한다. 모달이면 루미를 쓸 수 없다. 떠 있는 동안 잔고가 낡지 않게 장중에는 다시 읽는다."""
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self._live_timer = QTimer(self)
+        self._live_timer.setInterval(LIVE_REFRESH_MS)
+        self._live_timer.timeout.connect(self._refresh_live)
+        self._live_timer.start()
+
+    def _refresh_live(self):
+        if self.isVisible() and self.status_info["connected"] and _stock().market_open():
+            self.reload()
 
     def _build_stock_list(self) -> QWidget:
         """왼쪽 전체 종목 목록. 4천 개가 넘어 모델과 필터를 쓴다."""

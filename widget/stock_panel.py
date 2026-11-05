@@ -585,7 +585,8 @@ class _PanelSignals(QObject):
 
 
 class StockPanel(Panel):
-
+    detail_changed = pyqtSignal(bool)   # 주식 창이 떠 있는지
+    _detail = None
     REFRESH_MS, AUTO_MS = 5 * 60 * 1000, 30 * 1000
 
     def __init__(self, parent=None):
@@ -757,9 +758,45 @@ class StockPanel(Panel):
             self.open_detail()
 
     def open_detail(self):
+        """따로 떠 있는 창 — 띄워 둔 채로 루미를 쓸 수 있다. 이미 떠 있으면 앞으로 가져온다."""
+        if self._detail is not None:
+            self._detail.showNormal()
+            self._detail.raise_()
+            self._detail.activateWindow()
+            return
         from widget.stock_detail import StockDetailDialog   # stock_detail이 이 파일을 불러와 순환을 피한다
-        StockDetailDialog(self.window(), open_settings=self.open_settings).exec()
+        dlg = StockDetailDialog(None, open_settings=self.open_settings)
+        dlg.make_independent()
+        dlg.finished.connect(self._on_detail_closed)
+        self._detail = dlg
+        dlg.show()
+        host = self.window()
+        if host.isVisible():
+            dlg.move(host.frameGeometry().center() - dlg.rect().center())
+        self.detail_changed.emit(True)
+
+    def _on_detail_closed(self):
+        self._detail = None
+        self.detail_changed.emit(False)
         self._after_dialog()
+
+    def close_detail(self):
+        if self._detail is not None:
+            self._detail.close()
+
+    def reopen_detail(self):
+        """테마가 바뀌면 같은 자리·크기·종목으로 다시 연다."""
+        if self._detail is None:
+            return
+        old = self._detail
+        geometry, user_sized, code = old.geometry(), old.user_sized, old.current_code
+        old.close()
+        self.open_detail()
+        self._detail.user_sized = user_sized
+        self._detail.setGeometry(geometry)
+        if code:
+            self._detail.current_code = code   # 잔고가 먼저 도착해도 첫 종목으로 바뀌지 않게
+            self._detail.show_stock(code)
 
     def open_settings(self):
         StockAccountDialog(self.window()).exec()
