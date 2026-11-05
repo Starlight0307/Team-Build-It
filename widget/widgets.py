@@ -4,7 +4,7 @@ import re
 from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QGraphicsOpacityEffect, QLayout, QWidget,
                              QDialog, QScrollArea, QStackedWidget, QAbstractButton, QSplitter, QSplitterHandle)
-from PyQt6.QtCore import (pyqtSignal, pyqtProperty, Qt, QPropertyAnimation, QEasingCurve,
+from PyQt6.QtCore import (pyqtSignal, pyqtProperty, Qt, QEvent, QPropertyAnimation, QEasingCurve,
                           QTimer, QRect, QRectF, QPoint, QSize)
 from PyQt6.QtGui import QFontMetrics, QFont, QPainter, QColor, QLinearGradient, QKeySequence
 
@@ -16,6 +16,31 @@ from widget import icons
 # ==========================================
 # 📚 현재 페이지 크기만 반영하는 스택 위젯
 # ==========================================
+class FitHeightPage(QFrame):
+    """스크롤 영역 안의 내용. Qt는 최대 폭(760)이 있는 카드의 높이도 페이지 전체 폭 기준으로 재서, 페이지가 넓으면
+    줄바꿈 글자가 한 줄로 계산돼 카드가 눌리고 글자가 잘렸다 — 카드마다 실제 폭으로 잰 높이를 최소로 지킨다."""
+
+    def event(self, e):
+        if e.type() in (QEvent.Type.Resize, QEvent.Type.LayoutRequest) and self.layout() is not None:
+            self._keep_heights()
+        return super().event(e)
+
+    def _keep_heights(self):
+        layout = self.layout()
+        margins = layout.contentsMargins()
+        available = self.width() - margins.left() - margins.right()
+        for i in range(layout.count()):
+            card = layout.itemAt(i).widget()
+            if card is None or card.layout() is None or not card.layout().hasHeightForWidth():
+                continue
+            need = card.layout().totalHeightForWidth(min(available, card.maximumWidth()))
+            if need != card.minimumHeight():
+                card.setMinimumHeight(need)
+        need = layout.totalHeightForWidth(self.width()) if layout.hasHeightForWidth() else layout.sizeHint().height()
+        if need != self.minimumHeight():
+            self.setMinimumHeight(need)
+
+
 class AutoSizeStackedWidget(QStackedWidget):
     """기본 QStackedWidget은 안 보이는 페이지까지 포함해서 가장 큰
     minimumSizeHint를 기준으로 삼는다. 그래서 로그인 화면처럼 세로로 긴

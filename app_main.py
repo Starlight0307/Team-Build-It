@@ -60,7 +60,7 @@ from core.plugin_manager import load_existing_plugins, download_and_install_plug
 from widget.iot_panel import IotPanel
 from widget.stock_panel import StockPanel
 from core.plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
-from widget.widgets import (CommandCard, MessageBubble, TypingIndicator, FlowLayout,
+from widget.widgets import (CommandCard, FitHeightPage, MessageBubble, TypingIndicator, FlowLayout,
                             ResponsiveCardRow, GripSplitter, NotificationToast, RealtimeAlertsDialog,
                             AutoSizeStackedWidget, ToggleSwitch, AgentOverlay, ScrollTopFade)
 from widget.marketplace import PluginMarketplaceWidget
@@ -1756,7 +1756,7 @@ class AssistantApp(QWidget):
             self._show_toast("암호화해서 저장했어요.")
 
     def init_settings_page(self):
-        page = QFrame()
+        page = FitHeightPage()
         page.setStyleSheet("QFrame#settingsPage { background: transparent; }")
         page.setObjectName("settingsPage")
         outer = QVBoxLayout(page)
