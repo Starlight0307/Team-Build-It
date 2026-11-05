@@ -38,7 +38,8 @@ jobs:
         shell: bash
         run: |
           set +e   # GitHub의 bash는 실패하면 바로 멈춰서(-e, pipefail) 아래 알림 줄까지 못 갔다
-          python -m pytest -q -rfE --tb=line -p no:cacheprovider 2>&1 | tee pytest.txt
+          # 간헐적으로 프로세스가 통째로 죽는다(종료 코드 127, 출력 없음) — 어느 테스트에서 죽는지 남긴다
+          PYTHONFAULTHANDLER=1 python -m pytest -q -rfE --tb=line -p no:cacheprovider 2>&1 | tee pytest.txt
           status=${PIPESTATUS[0]}
           if [ $status -ne 0 ]; then
             tail -n 60 pytest.txt | python -c "import sys; print('::error title=pytest failures::' + '%0A'.join(l.rstrip().replace('%', '%25').replace(chr(13), '') for l in sys.stdin))"
