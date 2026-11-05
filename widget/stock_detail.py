@@ -10,6 +10,7 @@ from widget.stock_panel import LOSS_COLOR, PROFIT_COLOR, _pl_color, _stock, _Sto
 DEFAULT_STOCK = "삼성전자"   # 보유 종목이 없을 때 먼저 보여 줄 종목
 MAX_BARS = 8
 TABLE_HEADERS = ("종목", "수량", "평균 단가", "현재가", "평가금액", "평가손익", "수익률")
+MARKET_HEADERS = ("종목", "기준일", "종가", "전일 대비", "등락률")
 
 
 def price_ticks(low: float, high: float, count: int = 4) -> list:
@@ -285,9 +286,11 @@ class StockDetailDialog(_StockDialog):
         self.table.itemSelectionChanged.connect(self._on_table_selected)
         self.body.addWidget(self.table)
 
-        if self.status_info["connected"]:
+        if self.status_info["connected"] or self.status_info["has_manual"]:
             self.add_button("새로고침", "LinkGhost", self.reload)
             self.reload()
+        elif self.status_info["has_market_key"]:
+            self._show_market()
         else:
             self._show_not_connected()
 
@@ -297,16 +300,46 @@ class StockDetailDialog(_StockDialog):
         return label
 
     def _show_not_connected(self):
-        self.summary.setText("연결된 계좌가 없어요")
-        self.summary_note.setText("증권 계좌를 연결하면 보유 종목과 손익, 가격 그래프를 볼 수 있어요.")
-        self.bars_note.setText("계좌를 연결하면 종목별 손익이 여기에 나와요.")
-        self.chart.set_message("계좌를 연결하면 가격 그래프를 볼 수 있어요.")
+        self.summary.setText("시세 키가 필요해요")
+        self.summary_note.setText("무료 시세 키를 넣으면 로그인이나 계좌 없이 주식 변동과 가격 그래프를 볼 수 있어요.")
+        self.bars_note.setText("계좌를 연결하거나 보유 종목을 직접 입력하면 종목별 손익이 여기에 나와요.")
+        self.chart.set_message("시세 키를 넣으면 가격 그래프를 볼 수 있어요.")
         self.search_input.hide()
         self.btn_search.hide()
         self.bars.hide()
         self.table.hide()
         if self.open_settings:
-            self.add_button("계좌 연결", "LinkPrimary", self._connect_account)
+            self.add_button("설정 열기", "LinkPrimary", self._connect_account)
+
+    def _show_market(self):
+        """로그인·계좌 없이 보는 화면 — 주요 종목의 지난 영업일 시세."""
+        self.summary.setText("주요 종목 시세")
+        self.summary_note.setText("불러오는 중이에요…")
+        self.bars.hide()
+        self.bars_note.setText("계좌를 연결하거나 보유 종목을 직접 입력하면 종목별 손익이 여기에 나와요.")
+        self.table.setColumnCount(len(MARKET_HEADERS))
+        self.table.setHorizontalHeaderLabels(MARKET_HEADERS)
+        self._spawn(_stock().market_overview, self._on_market)
+
+    def _on_market(self, result):
+        if isinstance(result, Exception):
+            self.summary_note.setText(str(result))
+            self.table.hide()
+            self.chart.set_message("시세를 받지 못했어요.")
+            return
+        self.summary_note.setText(f"{result[0]['date']} 종가 기준 · 장중 실시간 가격이 아니에요 · {_stock().MARKET_SOURCE}")
+        self.holdings = result
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(result))
+        for row, q in enumerate(result):
+            cells = (q["name"], q["date"], f"{q['close']:,}원", f"{q['change']:+,}원", f"{q['rate']:+.2f}%")
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter
+                                      | (Qt.AlignmentFlag.AlignLeft if col == 0 else Qt.AlignmentFlag.AlignRight))
+                self.table.setItem(row, col, item)
+        self.table.blockSignals(False)
+        self.show_stock(result[0]["code"])
 
     def _connect_account(self):
         self.accept()
@@ -376,7 +409,7 @@ class StockDetailDialog(_StockDialog):
             code, name = _stock().resolve_stock(query)
             if not code:
                 raise _stock().StockError("종목을 찾지 못했어요. 정확한 종목명이나 6자리 코드를 입력해 주세요.")
-            return code, name, self.history.get(code) or _stock().get_price_history(code)
+            return code, name, self.history.get(code) or _stock().price_history(code)
 
         def done(result):
             if seq != self._chart_seq:
@@ -391,5 +424,5 @@ class StockDetailDialog(_StockDialog):
                 self.chart.set_message(f"{name}의 가격 기록이 없어요.")
                 return
             held = next((h for h in self.holdings if h["code"] == code), None)
-            self.chart.set_data(f"{name} 일별 종가 (최근 {len(points)}거래일)", points, held["avg_price"] if held else None)
+            self.chart.set_data(f"{name} 일별 종가 (최근 {len(points)}거래일)", points, held.get("avg_price") if held else None)
         self._spawn(work, done)

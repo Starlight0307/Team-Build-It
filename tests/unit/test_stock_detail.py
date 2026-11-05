@@ -143,9 +143,9 @@ def test_not_connected_guides_to_connect_without_network(qapp, stock):
     sp.disconnect_account()
     opened = []
     dlg = sd.StockDetailDialog(open_settings=lambda: opened.append(1))
-    assert "연결된 계좌가 없어요" in dlg.summary.text() and dlg.search_input.isHidden() and dlg.btn_search.isHidden()
+    assert "시세 키가 필요해요" in dlg.summary.text() and dlg.search_input.isHidden() and dlg.btn_search.isHidden()
     assert stock == []
-    next(b for b in dlg.findChildren(sd.QPushButton) if b.text() == "계좌 연결").click()
+    next(b for b in dlg.findChildren(sd.QPushButton) if b.text() == "설정 열기").click()
     assert opened == [1]
 
 
@@ -202,3 +202,47 @@ def test_charts_paint_in_every_state(qapp):
         bars.set_rows(rows)
         assert not bars.grab().isNull()
     assert bars.hidden == 4 and len(bars.rows) == sd.MAX_BARS
+
+
+QUOTES = [{"code": "005930", "name": "삼성전자", "date": "2026-11-04", "close": 70000, "change": 500, "rate": 0.72},
+          {"code": "000660", "name": "SK하이닉스", "date": "2026-11-04", "close": 200000, "change": -3000, "rate": -1.48}]
+
+
+def test_guest_with_market_key_sees_movement_without_login_or_account(qapp, stock, monkeypatch):
+    sp.set_current_user("guest")
+    monkeypatch.setattr(sp, "_market_key", lambda: "KEY")
+    monkeypatch.setattr(sp, "market_overview", lambda: QUOTES)
+    monkeypatch.setattr(sp, "market_history", lambda code: POINTS)
+    dlg = _dialog(qapp)
+    assert dlg.summary.text() == "주요 종목 시세" and "2026-11-04 종가" in dlg.summary_note.text() and "금융위원회" in dlg.summary_note.text()
+    assert dlg.table.rowCount() == 2 and dlg.table.item(1, 3).text() == "-3,000원" and dlg.table.columnCount() == len(sd.MARKET_HEADERS)
+    assert "삼성전자" in dlg.chart.title and stock == []
+    dlg.table.selectRow(1)
+    assert _wait(qapp, lambda: "SK하이닉스" in dlg.chart.title) and dlg.chart.reference is None
+
+
+def test_panel_shows_market_rows_for_guest(qapp, stock, monkeypatch):
+    sp.set_current_user("guest")
+    monkeypatch.setattr(sp, "_market_key", lambda: "KEY")
+    monkeypatch.setattr(sp, "market_overview", lambda: QUOTES)
+    panel = stock_panel.StockPanel()
+    panel.show()
+    panel.refresh()
+    assert _wait(qapp, lambda: "삼성전자 70,000원" in panel.rows.text())
+    assert "+500원" in panel.rows.text() and "-1.48%" in panel.rows.text() and "금융위원회" in panel.message.text()
+    assert not panel.total.isVisible()
+    panel.close()
+
+
+def test_guest_without_key_gets_guidance(qapp, stock):
+    sp.set_current_user("guest")
+    panel = stock_panel.StockPanel()
+    panel.refresh()
+    assert "로그인 없이" in panel.message.text()
+
+
+def test_panel_has_detail_button_and_hand_cursor(qapp, stock):
+    panel = stock_panel.StockPanel()
+    assert any(b.text().strip() == "상세" for b in panel.findChildren(sd.QPushButton))
+    assert panel.cursor().shape() == Qt.CursorShape.PointingHandCursor
+

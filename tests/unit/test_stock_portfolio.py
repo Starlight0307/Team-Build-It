@@ -575,3 +575,155 @@ def test_daily_limit_counts_demo_and_real_orders_separately(connected):
     sp.auto_tick(OPEN_TIME)
     assert [o[0] for o in connected.orders] == ["VTTC0011U", "TTTC0011U"]
 
+
+def _market_body(rows, code="00"):
+    return {"response": {"header": {"resultCode": code, "resultMsg": "OK"},
+                         "body": {"items": {"item": rows}, "totalCount": len(rows)}}}
+
+
+ROW_NEW = {"basDt": "20261104", "srtnCd": "005930", "itmsNm": "삼성전자", "clpr": "70000", "vs": "-500", "fltRt": "-.71"}
+ROW_OLD = {"basDt": "20261103", "srtnCd": "005930", "itmsNm": "삼성전자", "clpr": "70500", "vs": "100", "fltRt": ".14"}
+ROW_OTHER = {"basDt": "20261104", "srtnCd": "0059300", "itmsNm": "다른 종목", "clpr": "1", "vs": "0", "fltRt": "0"}
+
+
+@pytest.fixture
+def market(tmp_path, monkeypatch):
+    calls = []
+    state = {"body": _market_body([ROW_NEW, ROW_OLD, ROW_OTHER])}
+
+    def fake_get(url, timeout=None, params=None):
+        calls.append(params)
+        assert url == sp.MARKET_URL
+        if isinstance(state["body"], Exception):
+            raise state["body"]
+        return FakeResponse(state["body"])
+    monkeypatch.setattr(sp.storage_location, "user_data_dir", lambda name: str(tmp_path))
+    monkeypatch.setattr(sp.requests, "get", fake_get)
+    monkeypatch.setattr(sp, "load_master", lambda: NAMES)
+    monkeypatch.setattr(sp, "_market_cache", {})
+    sp.set_current_user("guest")
+    yield type("M", (), {"calls": calls, "state": state, "dir": tmp_path})
+    sp.set_current_user("guest")
+
+
+def test_guest_can_save_key_and_see_movement_without_login(market):
+    assert sp.account_status()["has_market_key"] is False
+    sp.set_market_key("  MY-SECRET-KEY  ")
+    assert sp.account_status()["has_market_key"] is True
+    q = sp.market_quote("005930")
+    assert q == {"code": "005930", "name": "삼성전자", "date": "2026-11-04", "close": 70000, "change": -500, "rate": -0.71}
+    assert sp.market_history("005930") == [("2026-11-03", 70500), ("2026-11-04", 70000)]
+    assert b"MY-SECRET-KEY" not in (market.dir / "market_key.json").read_bytes()
+
+
+def test_encoded_portal_key_is_not_double_encoded(market):
+    sp.set_market_key("abc%2Bdef%3D%3D")
+    assert market.calls[0]["serviceKey"] == "abc+def=="
+
+
+def test_market_briefing_for_guest_cites_source_and_date(market):
+    sp.set_market_key("K")
+    text = sp.get_stock_briefing()
+    assert "2026-11-04 종가" in text and "금융위원회" in text and "삼성전자: 70,000원 (-500원, -0.71%)" in text
+    assert "K" not in text.replace("KR", "")
+
+
+@pytest.mark.parametrize("body", [_market_body([], "30"), {"OpenAPI_ServiceResponse": {}}, requests.ConnectionError("https://x?serviceKey=SECRET"), "text"])
+def test_bad_key_or_failure_is_not_saved_and_hides_key(market, body):
+    market.state["body"] = body
+    with pytest.raises(sp.StockError) as e:
+        sp.set_market_key("SECRET")
+    assert "SECRET" not in str(e.value)
+    assert sp.account_status()["has_market_key"] is False
+
+
+def test_empty_result_is_not_saved(market):
+    market.state["body"] = _market_body([])
+    with pytest.raises(sp.StockError):
+        sp.set_market_key("K")
+
+
+def test_single_item_response_and_empty_items_string(market):
+    sp.set_market_key("K")
+    sp._market_cache.clear()
+    market.state["body"] = _market_body(ROW_NEW)
+    assert sp.market_quote("005930")["close"] == 70000
+    sp._market_cache.clear()
+    market.state["body"] = {"response": {"header": {"resultCode": "00"}, "body": {"items": ""}}}
+    with pytest.raises(sp.StockError):
+        sp.market_quote("005930")
+
+
+def test_market_uses_cache_and_needs_key(market):
+    with pytest.raises(sp.StockError):
+        sp.market_quote("005930")
+    sp.set_market_key("K")
+    n = len(market.calls)
+    sp.market_quote("005930"); sp.market_history("005930")
+    assert len(market.calls) == n + 1
+    sp.delete_market_key()
+    with pytest.raises(sp.StockError):
+        sp.market_history("005930")
+
+
+def test_manual_holding_needs_login_and_calculates_profit_from_close(market):
+    with pytest.raises(sp.StockError):
+        sp.add_manual_holding("카카오페이증권", "삼성전자", 10, 60000)
+    sp.set_current_user("tester")
+    sp.set_market_key("K")
+    sp.add_manual_holding("카카오페이증권", "삼성전자", 10, 60000)
+    p = sp.fetch_portfolio()
+    assert p["account"] == "카카오페이증권 직접 입력" and p["mode"] == "manual" and p["fetched_at"] == "2026-11-04 종가"
+    assert p["total_pl"] == 100000 and round(p["total_rate"], 2) == 16.67
+    text = sp.get_stock_briefing()
+    assert "카카오페이증권 직접 입력" in text and "+100,000원" in text
+
+
+def test_manual_holding_replaces_same_stock_and_can_be_deleted(market):
+    sp.set_current_user("tester")
+    sp.add_manual_holding("카카오페이증권", "삼성전자", 10, 60000)
+    sp.add_manual_holding("카카오페이증권", "005930", 20, 50000)
+    assert [(i["qty"], i["avg"]) for i in sp.manual_state()["items"]] == [(20, 50000)]
+    sp.delete_manual_holding("005930")
+    assert sp.manual_state()["items"] == []
+
+
+@pytest.mark.parametrize("args", [("없는종목", 1, 1), ("삼성전자", 0, 1), ("삼성전자", 1, 0), ("삼성전자", 1.5, 1), ("삼성전자", -1, 1)])
+def test_manual_holding_rejects_bad_input(market, args):
+    sp.set_current_user("tester")
+    with pytest.raises(sp.StockError):
+        sp.add_manual_holding("x", *args)
+    assert sp.manual_state()["items"] == []
+
+
+def test_manual_holding_cannot_place_orders(market):
+    sp.set_current_user("tester")
+    sp.add_manual_holding("카카오페이증권", "삼성전자", 10, 60000)
+    assert "연결" in sp.validate_order("sell", "삼성전자", 1, 1000)
+    assert "연결" in sp.open_stock_order("sell", "삼성전자", 1)
+    with pytest.raises(sp.StockError):
+        sp.place_order("sell", "삼성전자", 1, 1000)
+    with pytest.raises(sp.StockError):
+        sp.add_rule("sell", "삼성전자", 1000, 1)
+
+
+def test_manual_failure_gives_error_not_old_numbers(market):
+    sp.set_current_user("tester")
+    sp.set_market_key("K")
+    sp.add_manual_holding("x", "삼성전자", 10, 60000)
+    sp._market_cache.clear()
+    market.state["body"] = requests.ConnectionError()
+    assert sp.get_stock_briefing().startswith("⚠️")
+
+
+def test_connected_account_takes_priority_over_manual_and_public_prices(connected, monkeypatch):
+    sp.add_manual_holding("x", "삼성전자", 1, 1)
+    assert "모의 계좌" in sp.fetch_portfolio()["account"]
+    monkeypatch.setattr(sp, "get_price_history", lambda code: "broker")
+    monkeypatch.setattr(sp, "market_history", lambda code: "public")
+    assert sp.price_history("005930") == "broker"
+
+
+def test_market_key_is_not_an_ai_tool():
+    assert not {"set_market_key", "market_overview", "add_manual_holding"} & set(sp.TOOL_SCHEMAS)
+

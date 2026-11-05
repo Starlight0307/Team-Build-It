@@ -107,10 +107,32 @@ class StockAccountDialog(_StockDialog):
         super().__init__(parent, "주식 계좌 설정")
         self.status_info = _stock().account_status()
         self.changed = False
+        extras = QHBoxLayout()
+        for text, handler in (("시세 키 (로그인 없이 시세 보기)", self._open_market_key), ("직접 입력 (카카오페이증권 등)", self._open_manual)):
+            btn = QPushButton(text)
+            btn.setObjectName("LinkGhost")
+            btn.setAutoDefault(False)
+            btn.clicked.connect(handler)
+            extras.addWidget(btn)
+        self.body.addLayout(extras)
         if self.status_info["connected"]:
             self._build_connected()
-        else:
+        elif self.status_info["logged_in"]:
             self._build_connect_form()
+        else:
+            self.desc.setText("로그인하지 않아도 무료 시세 키를 넣으면 주식 변동을 볼 수 있어요. 계좌 연결과 직접 입력은 로그인 후 쓸 수 있어요.")
+            self.desc.show()
+
+    def _open_market_key(self):
+        StockMarketKeyDialog(self).exec()
+        self.changed = True
+
+    def _open_manual(self):
+        if not self.status_info["logged_in"]:
+            self.set_status("보유 종목을 저장하려면 로그인해 주세요.", "err")
+            return
+        StockManualDialog(self).exec()
+        self.changed = True
 
     def _build_connect_form(self):
         self.desc.setText("한국투자증권 KIS Developers에서 계좌의 앱 키를 발급받아 입력해 주세요. 이미 가진 계좌를 그대로 연결해요.\n"
@@ -174,6 +196,103 @@ class StockAccountDialog(_StockDialog):
             _stock().disconnect_account()
             self.changed = True
             self.accept()
+
+
+class StockMarketKeyDialog(_StockDialog):
+    """공공데이터포털 무료 키 — 로그인이나 계좌 없이 시세를 본다."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent, "시세 키",
+                         "공공데이터포털에서 '금융위원회 주식시세정보' 활용을 신청하면 무료 키를 바로 받을 수 있어요.\n"
+                         "지난 영업일 종가 기준이라 장중 실시간 가격은 아니에요. 키는 이 컴퓨터에 암호화해 저장해요.")
+        self.key_input = QLineEdit()
+        self.key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.field("일반 인증키", self.key_input)
+        self.add_button("키 받으러 가기", "LinkGhost", lambda: webbrowser.open(_stock().MARKET_KEY_GUIDE_URL))
+        if _stock().account_status()["has_market_key"]:
+            self.set_status("시세 키가 저장돼 있어요.", "ok")
+            self.add_button("키 삭제", "LumiDanger", self._delete)
+        self.btn_save = self.add_button("확인 후 저장", "LinkPrimary", self._save)
+
+    def _delete(self):
+        _stock().delete_market_key()
+        self.accept()
+
+    def _save(self):
+        self.btn_save.setEnabled(False)
+        self.set_status("시세를 받아 키를 확인하는 중이에요…")
+        key = self.key_input.text()
+        self.run_background(lambda: _stock().set_market_key(key), self._on_saved)
+
+    def _on_saved(self, result):
+        self.btn_save.setEnabled(True)
+        if isinstance(result, Exception):
+            self.set_status(str(result), "err")
+            return
+        self.accept()
+
+
+class StockManualDialog(_StockDialog):
+    """API가 없는 증권사의 보유 종목을 직접 입력한다. 손익만 계산하고 주문은 나가지 않는다."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent, "보유 종목 직접 입력",
+                         "카카오페이증권처럼 연결할 수 없는 증권사의 종목을 직접 적어 두면 손익을 계산해 드려요.\n"
+                         "증권사 계정 정보는 받지 않고, 주문이나 자동매매는 할 수 없어요. 체결 내역은 자동으로 반영되지 않아요.")
+        state = _stock().manual_state()
+        self.broker_input = QLineEdit(state["broker"])
+        self.field("증권사 이름", self.broker_input)
+        self.stock_input, self.qty_input, self.avg_input = QLineEdit(), QLineEdit(), QLineEdit()
+        form = QHBoxLayout()
+        for label, widget, hint in (("종목", self.stock_input, "삼성전자"), ("수량(주)", self.qty_input, "10"), ("평균 단가(원)", self.avg_input, "60000")):
+            widget.setPlaceholderText(hint)
+            form.addWidget(QLabel(label))
+            form.addWidget(widget)
+        self.body.addLayout(form)
+        add = QPushButton("추가")
+        add.setObjectName("LinkGhost")
+        add.setAutoDefault(False)
+        add.clicked.connect(self._add)
+        self.body.addWidget(add)
+        self.rows_box = QWidget()
+        self.rows_layout = QVBoxLayout(self.rows_box)
+        self.rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.body.addWidget(self.rows_box)
+        self._refresh()
+
+    def _refresh(self):
+        while self.rows_layout.count():
+            item = self.rows_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for held in _stock().manual_state()["items"]:
+            row = QWidget()
+            hl = QHBoxLayout(row)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.addWidget(QLabel(f"{held['name']} {held['qty']:,}주 · 평균 {held['avg']:,}원"), 1)
+            remove = QPushButton("삭제")
+            remove.setObjectName("LinkGhost")
+            remove.setAutoDefault(False)
+            remove.clicked.connect(lambda _=False, c=held["code"]: (_stock().delete_manual_holding(c), self._refresh()))
+            hl.addWidget(remove)
+            self.rows_layout.addWidget(row)
+
+    def _add(self):
+        qty, avg = _to_int(self.qty_input.text()), _to_int(self.avg_input.text())
+        if not qty or not avg:
+            self.set_status("수량과 평균 단가를 숫자로 입력해 주세요.", "err")
+            return
+        broker, name = self.broker_input.text(), self.stock_input.text()
+
+        def added(result):
+            if isinstance(result, Exception):
+                self.set_status(str(result), "err")
+                return
+            self.set_status("")
+            self.stock_input.clear(); self.qty_input.clear(); self.avg_input.clear()
+            self._refresh()
+            self.fit_to_content()
+        self.run_background(lambda: _stock().add_manual_holding(broker, name, qty, avg), added)
 
 
 class StockOrderDialog(_StockDialog):
@@ -405,6 +524,7 @@ class StockPanel(Panel):
         _ALIVE.add(self.signals)
         self.notice, self.order_requested = self.signals.notice, self.signals.order_requested
         self.briefing_ready = self.signals.briefing_ready
+        self.add_header_button(" 상세", "보유 종목과 그래프 보기 (위젯을 눌러도 열려요)", self.open_detail)
         self.add_header_button(" 자동", "자동매매 규칙과 켜고 끄기", self.open_auto)
         self.add_header_button("", "계좌 설정", self.open_settings, icon="settings")
         self.add_header_button("", "새로고침", self.refresh, icon="refresh-cw")
@@ -424,6 +544,7 @@ class StockPanel(Panel):
         self.btn_stop.clicked.connect(self.stop_auto)
         for widget in (self.message, self.total, self.rows, self.auto_label, self.btn_stop):
             self.body.addWidget(widget)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.signals.loaded.connect(self._apply)
         self.signals.tick_done.connect(self._on_tick_done)
         self.order_requested.connect(self.open_order)
@@ -456,11 +577,11 @@ class StockPanel(Panel):
         _stock().set_order_ui_hook(self.order_requested.emit)   # 플러그인을 다시 설치하면 모듈이 새로 로드된다
         self._sync_auto()
         status = _stock().account_status()
-        if not status["logged_in"] or not status["connected"]:
+        has_portfolio = status["connected"] or status["has_manual"]
+        if not has_portfolio and not status["has_market_key"]:
             self._gen += 1
             self._loading = False
-            self._clear_numbers("로그인한 뒤 톱니바퀴를 눌러 증권 계좌를 연결해 주세요." if not status["logged_in"]
-                                else "톱니바퀴를 눌러 증권 계좌를 연결해 주세요.")
+            self._clear_numbers("톱니바퀴에서 무료 시세 키를 넣으면 로그인 없이 주식 변동을 볼 수 있어요.")
             return
         if self._loading:
             return
@@ -470,7 +591,8 @@ class StockPanel(Panel):
 
         def work():
             try:
-                signals.loaded.emit(_stock().fetch_portfolio(), "", gen)
+                signals.loaded.emit(_stock().fetch_portfolio() if has_portfolio
+                                    else {"market": _stock().market_overview()}, "", gen)
             except _stock().StockError as e:
                 signals.loaded.emit(None, str(e), gen)
             except Exception as e:
@@ -491,6 +613,17 @@ class StockPanel(Panel):
         self._loading = False
         if portfolio is None:
             self._clear_numbers(error)
+            return
+        if "market" in portfolio:
+            quotes = portfolio["market"]
+            self.total.hide()
+            self.rows.setText("<br>".join(
+                f"<span style='color:{_pl_color(q['change']) or 'inherit'}'>{q['name']} {q['close']:,}원 "
+                f"{q['change']:+,}원 ({q['rate']:+.2f}%)</span>" for q in quotes))
+            self.rows.show()
+            self.message.setText(f"{quotes[0]['date']} 종가 · {_stock().MARKET_SOURCE}")
+            self.message.show()
+            self._style_labels()
             return
         self.total.setText(f"{portfolio['total_pl']:+,.0f}원 ({portfolio['total_rate']:+.2f}%)")
         self.total.setProperty("plColor", _pl_color(portfolio["total_pl"]))

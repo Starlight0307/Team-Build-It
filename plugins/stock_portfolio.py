@@ -17,6 +17,7 @@ import time
 import uuid
 import zipfile
 from datetime import datetime, timedelta
+from urllib.parse import unquote
 from zoneinfo import ZoneInfo
 
 import requests
@@ -34,6 +35,12 @@ TR_BALANCE = {"demo": "VTTC8434R", "real": "TTTC8434R"}
 TR_PRICE, TR_DAILY = "FHKST01010100", "FHKST03010100"
 TR_ORDER = {"demo": {"sell": "VTTC0011U", "buy": "VTTC0012U"},
             "real": {"sell": "TTTC0011U", "buy": "TTTC0012U"}}
+# 금융위원회 주식시세정보 — 하루 한 번 갱신, 재배포 금지라 사용자마다 자기 무료 키를 쓴다(공공누리 4유형, 출처 표시)
+MARKET_URL = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo"
+MARKET_KEY_GUIDE_URL = "https://www.data.go.kr/data/15094808/openapi.do"
+MARKET_SOURCE = "출처: 금융위원회(공공데이터포털)"
+MARKET_CACHE_SECONDS = 1800
+WATCHLIST = ("005930", "000660", "035420", "035720")   # 삼성전자, SK하이닉스, NAVER, 카카오
 SIDE_NAMES = {"sell": "매도", "buy": "매수"}
 DEFAULT_ORDER_LIMIT = 1_000_000
 REQUEST_GAP = 1.1   # 모의투자 호출 제한(초당 약 1번)
@@ -46,6 +53,7 @@ _lock = threading.RLock()
 _request_lock = threading.Lock()
 _last_request = 0.0
 _order_ui_hook = None
+_market_cache = {}   # 코드 → (받은 시각, 일별 시세)
 _master_memo = (None, {})   # (날짜, {코드: 이름}) — 입력할 때마다 파일을 읽거나 내려받지 않게
 
 
@@ -69,6 +77,7 @@ def _path(user_id: str = None) -> str:
 def _defaults() -> dict:
     return {"version": 1, "account": None, "token": None, "token_expires": "",
             "order_enabled": False, "order_limit": DEFAULT_ORDER_LIMIT, "orders": [],
+            "manual": {"broker": "카카오페이증권", "items": []},
             "auto": {"enabled": False, "max_order": 0, "max_daily_amount": 0, "max_daily_count": 0,
                      "rules": [], "log": [], "stopped_reason": ""}}
 
@@ -274,7 +283,8 @@ def account_status() -> dict:
     number = (data["account"] or {}).get("number")
     mode = _mode(data["account"])
     return {"logged_in": logged_in(), "connected": bool(number), "account": mask_account(number, mode) if number else "",
-            "mode": mode, "order_enabled": data["order_enabled"], "order_limit": data["order_limit"]}
+            "mode": mode, "order_enabled": data["order_enabled"], "order_limit": data["order_limit"],
+            "has_manual": bool(data["manual"]["items"]), "has_market_key": bool(_market_key())}
 
 
 def set_order_settings(enabled: bool, limit: int):
@@ -287,6 +297,11 @@ def set_order_settings(enabled: bool, limit: int):
 
 
 def fetch_portfolio() -> dict:
+    if logged_in():
+        with _lock:
+            data = _load()
+        if not data["account"] and data["manual"]["items"]:
+            return _manual_portfolio(data["manual"])
     with _lock:
         data = _require_account()
     portfolio = _fetch_portfolio(data)
@@ -330,6 +345,150 @@ def get_price_history(code: str, days: int = 150) -> list:
         if re.fullmatch(r"\d{8}", date) and close > 0:
             points[f"{date[:4]}-{date[4:6]}-{date[6:]}"] = close
     return sorted(points.items())
+
+
+def price_history(code: str) -> list:
+    """계좌가 연결돼 있으면 증권사 시세, 아니면 공공데이터 시세."""
+    if logged_in() and _load()["account"]:
+        return get_price_history(code)
+    return market_history(code)
+
+
+# ── 로그인·계좌 없이 보는 시세 (공공데이터, 지난 영업일 기준) ──
+def _market_key_path() -> str:
+    return os.path.join(_data_dir(), "market_key.json")   # 계정과 무관하게 이 컴퓨터에 하나
+
+
+def _market_key() -> str:
+    try:
+        with secure_open(_market_key_path(), "r", encoding="utf-8") as f:
+            return str(json.load(f).get("key") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _fetch_market_rows(code: str, key: str) -> list:
+    begin = (datetime.now(KST) - timedelta(days=150)).strftime("%Y%m%d")
+    try:
+        # 포털이 주는 "인코딩 키"를 그대로 넣으면 이중 인코딩되므로 먼저 푼다
+        resp = requests.get(MARKET_URL, timeout=15, params={
+            "serviceKey": unquote(key), "resultType": "json", "numOfRows": 200, "pageNo": 1,
+            "likeSrtnCd": code, "beginBasDt": begin})
+        body = resp.json()
+    except (requests.RequestException, ValueError):
+        raise StockError("시세를 받지 못했어요. 인터넷과 시세 키를 확인해 주세요.")
+    response = body.get("response") if isinstance(body, dict) else None
+    if not isinstance(response, dict) or response.get("header", {}).get("resultCode") != "00":
+        raise StockError("시세 키를 확인해 주세요. 공공데이터포털에서 활용 승인된 키여야 해요.")
+    items = (response.get("body") or {}).get("items") or {}
+    rows = items.get("item") if isinstance(items, dict) else []
+    rows = [rows] if isinstance(rows, dict) else (rows or [])
+    return sorted((r for r in rows if r.get("srtnCd") == code and int(_num(r.get("clpr"))) > 0),
+                  key=lambda r: str(r.get("basDt")))
+
+
+def _market_rows(code: str) -> list:
+    if not re.fullmatch(r"[0-9A-Z]{6}", code or ""):
+        raise StockError("종목코드가 올바르지 않아요.")
+    key = _market_key()
+    if not key:
+        raise StockError("시세 키가 필요해요. 주식 위젯의 톱니바퀴에서 무료 키를 넣어 주세요.")
+    cached = _market_cache.get(code)
+    if cached and time.monotonic() - cached[0] < MARKET_CACHE_SECONDS:
+        return cached[1]
+    rows = _fetch_market_rows(code, key)
+    _market_cache[code] = (time.monotonic(), rows)
+    return rows
+
+
+def set_market_key(key: str) -> str:
+    """삼성전자 시세를 실제로 받아 본 뒤에만 저장한다."""
+    key = (key or "").strip()
+    if not key:
+        raise StockError("시세 키를 입력해 주세요.")
+    if not _fetch_market_rows(WATCHLIST[0], key):
+        raise StockError("시세를 받지 못했어요. 키가 승인됐는지 확인해 주세요.")
+    with secure_open(_market_key_path(), "w", encoding="utf-8") as f:
+        json.dump({"key": key}, f)
+    _market_cache.clear()
+    return "시세 키를 저장했어요."
+
+
+def delete_market_key():
+    try:
+        os.remove(_market_key_path())
+    except OSError:
+        pass
+    _market_cache.clear()
+
+
+def market_history(code: str) -> list:
+    """일별 종가 [("2026-11-04", 70000), ...] 오래된 날부터."""
+    return [(f"{r['basDt'][:4]}-{r['basDt'][4:6]}-{r['basDt'][6:]}", int(_num(r["clpr"]))) for r in _market_rows(code)]
+
+
+def market_quote(code: str) -> dict:
+    """가장 최근 영업일 시세. 기록이 없으면 StockError."""
+    rows = _market_rows(code)
+    if not rows:
+        raise StockError("시세 기록이 없는 종목이에요.")
+    r = rows[-1]
+    date = str(r["basDt"])
+    return {"code": code, "name": str(r.get("itmsNm") or code), "date": f"{date[:4]}-{date[4:6]}-{date[6:]}",
+            "close": int(_num(r["clpr"])), "change": int(_num(r.get("vs"))), "rate": _num(r.get("fltRt"))}
+
+
+def market_overview() -> list:
+    """주요 종목 시세. 거래 정지 등으로 기록이 없는 종목은 빼고, 하나도 없으면 StockError. 통신 오류는 그대로 알린다."""
+    quotes = [market_quote(code) for code in WATCHLIST if _market_rows(code)]
+    if not quotes:
+        raise StockError("시세 기록을 찾지 못했어요.")
+    return quotes
+
+
+# ── 직접 입력 — API가 없는 증권사(카카오페이증권 등)의 보유 종목. 보기만 하고 주문은 나가지 않는다 ──
+def manual_state() -> dict:
+    return _load()["manual"] if logged_in() else _defaults()["manual"]
+
+
+def add_manual_holding(broker: str, stock: str, quantity: int, avg_price: int) -> dict:
+    if not logged_in():
+        raise StockError("보유 종목을 저장하려면 로그인해 주세요.")
+    code, name = resolve_stock(stock)
+    if not code:
+        raise StockError("종목을 찾지 못했어요. 정확한 종목명이나 6자리 코드를 입력해 주세요.")
+    if not isinstance(quantity, int) or quantity <= 0 or not isinstance(avg_price, int) or avg_price <= 0:
+        raise StockError("수량과 평균 단가는 1 이상의 정수로 입력해 주세요.")
+    item = {"code": code, "name": name, "qty": quantity, "avg": avg_price}
+    with _lock:
+        data = _load()
+        data["manual"]["broker"] = (broker or "").strip()[:30] or "직접 입력"
+        data["manual"]["items"] = [i for i in data["manual"]["items"] if i["code"] != code] + [item]
+        _save(data)
+    return item
+
+
+def delete_manual_holding(code: str):
+    with _lock:
+        data = _load()
+        data["manual"]["items"] = [i for i in data["manual"]["items"] if i["code"] != code]
+        _save(data)
+
+
+def _manual_portfolio(manual: dict) -> dict:
+    holdings, dates = [], []
+    for item in manual["items"]:
+        quote = market_quote(item["code"])
+        value, buy = quote["close"] * item["qty"], item["avg"] * item["qty"]
+        holdings.append({"code": item["code"], "name": item["name"], "qty": item["qty"], "avg_price": float(item["avg"]),
+                         "price": float(quote["close"]), "value": float(value), "pl": float(value - buy),
+                         "rate": (value - buy) / buy * 100, "sellable": 0})
+        dates.append(quote["date"])
+    buy = sum(h["avg_price"] * h["qty"] for h in holdings)
+    pl = sum(h["pl"] for h in holdings)
+    return {"holdings": holdings, "total_pl": pl, "total_buy": buy, "total_value": sum(h["value"] for h in holdings),
+            "total_rate": pl / buy * 100 if buy else 0.0, "fetched_at": f"{min(dates)} 종가",
+            "account": f"{manual['broker']} 직접 입력", "mode": "manual"}
 
 
 # ── 종목 이름 ↔ 코드 (증권사가 공개한 종목 파일) ──
@@ -652,7 +811,12 @@ def stock_intent(text: str):
 # ── AI 도구 ──
 def get_stock_briefing() -> str:
     """보유 종목과 평가손익을 도구가 계산한 문장으로 돌려준다 (AI가 숫자를 만들지 않게)."""
+    status = account_status()
     try:
+        if not status["connected"] and not status["has_manual"] and status["has_market_key"]:
+            quotes = market_overview()
+            return "\n".join([f"[주요 종목 · {quotes[0]['date']} 종가 · {MARKET_SOURCE}]"] + [
+                f"- {q['name']}: {q['close']:,}원 ({q['change']:+,}원, {q['rate']:+.2f}%)" for q in quotes])
         p = fetch_portfolio()
     except StockError as e:
         return f"⚠️ {e}"
