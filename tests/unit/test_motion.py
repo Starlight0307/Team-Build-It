@@ -8,8 +8,8 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
-from PyQt6.QtGui import QEnterEvent, QMouseEvent
-from PyQt6.QtWidgets import QFileDialog, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtGui import QEnterEvent, QFocusEvent, QMouseEvent
+from PyQt6.QtWidgets import QFileDialog, QGraphicsDropShadowEffect, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from widget import lumi_dialog, motion
 from widget.widgets import AutoSizeStackedWidget, MessageBubble, NotificationToast, TypingIndicator
@@ -194,7 +194,7 @@ def test_reveal_moves_top_level_cards_only_and_limits_count(qapp):
     inner = QLabel("안", outer)
     inner.setProperty("motionCard", True)
     lay.addWidget(outer)
-    extra = [QLabel(str(i)) for i in range(30)]
+    extra = [QLabel(str(i)) for i in range(motion.MAX_STAGGERED + 10)]
     for w in extra:
         w.setProperty("motionCard", True)
         lay.addWidget(w)
@@ -240,4 +240,176 @@ def test_button_layer_color_contrasts_with_button(qapp, color, expected):
     qapp.processEvents()
     assert motion._Glow(b).tint == expected
     b.close()
+
+
+def _filter(qapp):
+    filt = motion._AppMotion()
+    qapp.installEventFilter(filt)
+    return filt
+
+
+def test_closing_dialog_is_immediate_and_ghost_goes_away(qapp):
+    filt = _filter(qapp)
+    results = []
+    try:
+        d = lumi_dialog.LumiDialog(None, "닫힘")
+        d.finished.connect(results.append)
+        d.show()
+        assert _until(qapp, lambda: d.windowOpacity() == 1.0)
+        before = qapp.topLevelWidgets()   # 객체를 붙잡아 둔다 — id만 두면 지워진 객체의 번호가 재사용된다
+        d.accept()
+        assert not d.isVisible() and results == [1]   # 진짜 닫힘은 늦추지 않는다
+        new = lambda: [w for w in qapp.topLevelWidgets() if isinstance(w, QLabel) and w.isVisible() and w not in before]
+        assert new()
+        assert _until(qapp, lambda: not new())
+    finally:
+        qapp.removeEventFilter(filt)
+
+
+def test_deleting_visible_dialog_with_filter_does_not_crash(qapp):
+    filt = _filter(qapp)
+    try:
+        d = lumi_dialog.LumiDialog(None, "지움")
+        d.show()
+        _run(qapp, 0.05)
+        d.deleteLater()
+        del d
+        gc.collect()
+        _run(qapp, 0.4)
+    finally:
+        qapp.removeEventFilter(filt)
+
+
+def test_dialog_contents_rise_inside_shadow_card_and_clean_up(qapp):
+    filt = _filter(qapp)
+    try:
+        d = lumi_dialog.LumiDialog(None, "내용", "설명 글")
+        field = QLineEdit()
+        d.field("이름", field)
+        d.show()
+        assert _until(qapp, lambda: field.graphicsEffect() is not None)
+        assert d.card.graphicsEffect() is not None and not isinstance(d.card.graphicsEffect(), motion.RiseEffect)   # 그림자는 그대로
+        assert _until(qapp, lambda: field.graphicsEffect() is None and d.windowOpacity() == 1.0)
+        field.setText("입력")
+        assert field.text() == "입력"
+        d.close()
+    finally:
+        qapp.removeEventFilter(filt)
+
+
+def test_content_items_opens_wrappers_and_skips_hidden(qapp):
+    root = QWidget()
+    lay = QVBoxLayout(root)
+    wrap = QWidget()
+    inner = QVBoxLayout(wrap)
+    a, b, hidden, c = QLabel("가"), QLabel("나"), QLabel("숨김"), QLabel("다")
+    inner.addWidget(a)
+    inner.addWidget(b)
+    only = QWidget()
+    QVBoxLayout(only).addWidget(c)
+    hidden.hide()
+    lay.addWidget(wrap)
+    lay.addWidget(only)
+    lay.addWidget(hidden)
+    assert motion.content_items(root) == [wrap, c]
+    assert motion.content_items(QWidget()) == []
+
+
+def test_page_without_cards_still_moves(qapp):
+    page = QWidget()
+    lay = QVBoxLayout(page)
+    labels = [QLabel(str(i)) for i in range(3)]
+    for w in labels:
+        lay.addWidget(w)
+    page.show()
+    motion.reveal_page(page)
+    assert all(w.graphicsEffect() is not None for w in labels)
+    assert _until(qapp, lambda: all(w.graphicsEffect() is None for w in labels))
+    page.close()
+
+
+def test_input_focus_ring_appears_and_fades_without_stealing_typing(qapp):
+    filt = _filter(qapp)
+    edit = QLineEdit()
+    edit.show()
+    try:
+        qapp.sendEvent(edit, QFocusEvent(QEvent.Type.FocusIn))
+        ring = edit.findChild(motion._Ring)
+        assert ring is not None and ring.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        assert _until(qapp, lambda: ring.level == 1.0)
+        qapp.sendEvent(edit, QFocusEvent(QEvent.Type.FocusOut))
+        assert _until(qapp, lambda: ring.level == 0.0)
+    finally:
+        qapp.removeEventFilter(filt)
+        edit.close()
+
+
+def test_card_hover_ring(qapp):
+    from widget.dashboard import Panel
+    filt = _filter(qapp)
+    card = Panel("monitor", "카드")
+    card.show()
+    try:
+        center = QPointF(10, 10)
+        qapp.sendEvent(card, QEnterEvent(center, center, center))
+        ring = card.findChild(motion._Ring)
+        assert ring is not None and _until(qapp, lambda: ring.level == 1.0)
+        qapp.sendEvent(card, QEvent(QEvent.Type.Leave))
+        assert _until(qapp, lambda: ring.level == 0.0)
+    finally:
+        qapp.removeEventFilter(filt)
+        card.close()
+
+
+def test_slide_width_ends_at_target_without_fixing_width(qapp):
+    b = QPushButton("메뉴")
+    b.show()
+    motion.slide_width(b, 40, 120)
+    assert _until(qapp, lambda: b.minimumWidth() == 120 and b.maximumWidth() == 16777215)
+    b.close()
+
+
+def test_smooth_scroll_reaches_bottom_and_follows_growth(qapp):
+    from PyQt6.QtWidgets import QScrollArea
+    area = QScrollArea()
+    area.resize(200, 100)
+    tall = QLabel("x")
+    tall.setFixedSize(150, 1000)
+    area.setWidget(tall)
+    area.show()
+    qapp.processEvents()
+    bar = area.verticalScrollBar()
+    motion.smooth_scroll_to_bottom(bar)
+    assert bar.value() < bar.maximum()
+    tall.setFixedSize(150, 1400)
+    assert _until(qapp, lambda: bar.value() == bar.maximum())
+    motion.set_enabled(False)
+    bar.setValue(0)
+    motion.smooth_scroll_to_bottom(bar)
+    assert bar.value() == bar.maximum()
+    area.close()
+
+
+def test_theme_cover_goes_away(qapp):
+    w = QWidget()
+    w.resize(200, 100)
+    w.show()
+    motion.cover_window(w)
+    assert w.findChild(QLabel) is not None
+    assert _until(qapp, lambda: w.findChild(QLabel) is None)
+    w.close()
+
+
+def test_content_items_enter_current_stack_page(qapp):
+    from PyQt6.QtWidgets import QStackedWidget
+    root, stack, page = QWidget(), QStackedWidget(), QWidget()
+    a, b = QLabel("가"), QLabel("나")
+    inner = QVBoxLayout(page)
+    inner.addWidget(a)
+    inner.addWidget(b)
+    stack.addWidget(page)
+    QVBoxLayout(root).addWidget(stack)
+    assert motion.content_items(root) == [page]   # 보이는 페이지까지 들어가고, 여러 요소가 든 덩어리는 함께 움직인다
+    page.setGraphicsEffect(QGraphicsDropShadowEffect(page))
+    assert motion.content_items(root) == [a, b]   # 그림자 카드는 안쪽이 움직인다
 

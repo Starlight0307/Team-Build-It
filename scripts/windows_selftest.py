@@ -552,6 +552,9 @@ def _shot(app, widget, path=None):
 @check("애니메이션 — 팝업 창 열림 (실제 화면 캡처)")
 def _motion_window():
     app, out_dir = _real_screen_app()
+    motion_shots = os.path.join(out_dir, "motion_window_mid.png")
+    if os.path.exists(motion_shots):
+        os.remove(motion_shots)
     from PyQt6.QtGui import QColor
     from widget import lumi_dialog, motion
     motion.set_enabled(True)
@@ -581,7 +584,17 @@ def _motion_window():
             problems.append(f"올라오는 움직임 없음 {sorted(set(ys))[:3]}")
         if abs(center.red() - bg.red()) + abs(center.green() - bg.green()) + abs(center.blue() - bg.blue()) > 40:
             problems.append(f"카드 색 {center.name()} (기대 {pal['bg']})")
+        others = app.topLevelWidgets()
         dlg.close()
+        ghosts = [w for w in app.topLevelWidgets() if w not in others]
+        if not ghosts or dlg.isVisible():
+            problems.append("닫힐 때 움직임 없음")
+        _pump(app, 0.05)
+        if ghosts:
+            _shot(app, ghosts[0], os.path.join(out_dir, "motion_window_closing.png"))
+        _pump(app, 0.4)
+        if [w for w in app.topLevelWidgets() if w not in others and w.isVisible()]:
+            problems.append("닫힘 잔상이 남음")
         info = f"단계 {len(set(round(v, 2) for v in levels))}개 · 이동 {len(set(ys))}칸 · 카드 {center.name()}"
         return ("FAIL", "; ".join(problems) + " · " + info) if problems else ("PASS", info)
     finally:
@@ -663,7 +676,7 @@ def _stock_resize():
     app.installEventFilter(filt)
     try:
         dlg = stock_detail.StockDetailDialog()
-        dlg.setGeometry(40, 20, 1000, 640)
+        dlg.setGeometry(10, 20, 920, 640)   # 점검 서버 화면은 1024×768 — 끌 자리가 화면 안에 있어야 한다
         dlg.show()
         _KEEP_ALIVE.append(dlg)
         _pump(app, 0.8)
@@ -671,11 +684,11 @@ def _stock_resize():
         problems = []
         edge = next(e for e in dlg._resize_edges if e.right and e.bottom)
         grip = edge.mapToGlobal(edge.rect().center())
-        _real_drag(app, grip, grip + QPoint(120, 70))
+        _real_drag(app, grip, grip + QPoint(60, 50))
         _pump(app, 0.2)
         grown = dlg.geometry()
-        if (grown.width() - before.width(), grown.height() - before.height()) != (120, 70):
-            problems.append(f"모서리 끌기 {before.width()}x{before.height()} → {grown.width()}x{grown.height()} (기대 +120, +70)")
+        if (grown.width() - before.width(), grown.height() - before.height()) != (60, 50):
+            problems.append(f"모서리 끌기 {before.width()}x{before.height()} → {grown.width()}x{grown.height()} (기대 +60, +50)")
         edge = next(e for e in dlg._resize_edges if e.left and not (e.top or e.bottom))
         grip = edge.mapToGlobal(edge.rect().center())
         _real_drag(app, grip, grip + QPoint(40, 0))

@@ -281,6 +281,7 @@ class StatTile(QFrame):
         self.name = QLabel(name)
         self.name.setStyleSheet(f"color: {palette['sub']}; font-size: 11px;")
         self.value = QLabel("-")
+        self.value.setWordWrap(True)   # 큰 금액은 다음 줄로 — Windows 글꼴은 맥보다 넓어 한 줄이면 잘렸다
         self.value.setStyleSheet(f"color: {palette['text']}; font-size: 13px; font-weight: 700;")
         layout.addWidget(self.name)
         layout.addWidget(self.value)

@@ -1183,6 +1183,7 @@ class AssistantApp(QWidget):
         app_settings.set("dark_mode", self.is_dark_mode)
         if self.switch_dark.isChecked() != self.is_dark_mode:
             self.switch_dark.setChecked(self.is_dark_mode)
+        motion.cover_window(self)
         self.apply_theme()
 
     # ─────────────────────────────────────────────
@@ -2210,7 +2211,7 @@ class AssistantApp(QWidget):
         motion.set_enabled(on)
 
     def reveal_current_page(self):
-        motion.reveal_cards(self.stacked_widget.currentWidget())
+        motion.reveal_page(self.stacked_widget.currentWidget())
 
     def _go_to_page(self, idx: int):
         """상단 메뉴 버튼을 누른 것과 똑같이 화면을 바꾼다(메뉴 강조·화면별 새로 읽기 포함)."""
@@ -2719,6 +2720,7 @@ class AssistantApp(QWidget):
 
     def update_sidebar_ui(self):
         """상단 바 메뉴 아이콘/프로필 버튼 표시 갱신 (이름은 예전 사이드바 시절 그대로)."""
+        old_widths = {btn: btn.width() for btn in self.nav_info}
         for btn, (icon, tip) in self.nav_info.items():
             # 선택된 메뉴는 이름이 펼쳐지고, 나머지는 아이콘만 (이름은 마우스를 올리면 툴팁으로)
             # 선택된 버튼은 밝은 그라데이션 바탕이라 아이콘을 글자색(진한 남보라)으로 칠한다
@@ -2730,7 +2732,9 @@ class AssistantApp(QWidget):
         # 이름이 펼쳐진 버튼이 레이아웃에 눌려 잘리지 않게, 지금 글자가 다 들어가는 폭 아래로 줄지 않게 한다
         for btn in self.nav_info:
             btn.setMinimumWidth(0)
+            btn.setMaximumWidth(16777215)
             btn.setMinimumWidth(btn.sizeHint().width())
+            motion.slide_width(btn, old_widths[btn], btn.sizeHint().width())   # 메뉴 이름이 펼쳐지고 접힌다
 
         logged_in = MOCK_USER["logged_in"]
         p = get_palette(self.is_dark_mode)
@@ -4173,8 +4177,7 @@ class AssistantApp(QWidget):
         webbrowser.open(url)
 
     def auto_scroll_to_bottom(self):
-        sb = self.scroll_area.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        motion.smooth_scroll_to_bottom(self.scroll_area.verticalScrollBar())
 
 
 def _keep_running_on_uncaught_error(error_type, error, trace):
@@ -4220,7 +4223,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[대화기록 위치 이전 오류] {e}")
     ex  = AssistantApp()
-    motion.open_window(ex, rise=0, duration=280)
+    ex.setProperty("motionWindow", True)   # 트레이에서 다시 열 때도 같은 움직임
     ex.show()
     QTimer.singleShot(80, ex.reveal_current_page)
     app.aboutToQuit.connect(ex.shutdown_background_work)   # Cmd+Q 등 모든 종료 경로

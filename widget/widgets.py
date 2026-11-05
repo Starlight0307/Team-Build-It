@@ -34,7 +34,7 @@ class AutoSizeStackedWidget(QStackedWidget):
             motion.crossfade_from(self, old)
         change(target)
         if not same and self.isVisible():
-            motion.reveal_cards(self.currentWidget())
+            motion.reveal_page(self.currentWidget())
 
     def setCurrentIndex(self, index):
         self._switch(super().setCurrentIndex, index)

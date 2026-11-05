@@ -414,7 +414,9 @@ def test_stat_tiles_have_room_for_long_values(qapp, stock):
     dlg.show()
     qapp.processEvents()
     tile = dlg.tiles["전일 대비"]
-    assert tile.width() >= tile.value.fontMetrics().horizontalAdvance("-1,234,500원 (-12.34%)") - 20
+    tile.set_text("-1,234,500원 (-12.34%)")
+    assert _wait(qapp, lambda: tile.value.height() >= tile.value.heightForWidth(tile.value.width()))   # 줄을 바꿔서라도 다 보인다
+    assert tile.value.wordWrap()
     dlg.close()
 
 

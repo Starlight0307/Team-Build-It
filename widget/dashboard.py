@@ -408,6 +408,8 @@ class _ListPanel(Panel):
             self.clicked.emit()
         super().mouseReleaseEvent(e)
 
+    _last_rows = None
+
     def _set_rows(self, rows, empty_text=None):
         for w in self._rows:
             w.setParent(None)
@@ -438,6 +440,9 @@ class _ListPanel(Panel):
             self._rows.append(w)
         if self._p:
             self._style_rows()
+        if self.isVisible() and rows != self._last_rows:   # 내용이 그대로인 새로고침에는 움직이지 않는다
+            motion.rise_many(rows_widgets, step=40, dy=8)
+        self._last_rows = rows
 
     def _style_rows(self):
         p = self._p
