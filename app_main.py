@@ -2301,6 +2301,7 @@ class AssistantApp(QWidget):
         self._last_weather = data     # 날씨 자세히 창이 열리자마자 맞는 배경을 깔 수 있게
         self.weather_pill.setText(icons.label_html(data.get("icon_name") or "cloud-sun",
                                                    f"{data['temp']:.1f}°C  {data['city']}"))
+        self._center_top_bar()   # 날씨 글자가 길어진 만큼 바로 묶음을 넓힌다 — 다음 시계 갱신까지 시계가 눌려 잘렸다
         if hasattr(self, 'weather_locate_btn') and not self.weather_locate_btn.isEnabled():
             # 위치 찾기가 실패해도 버튼은 되살린다
             self.weather_locate_btn.setEnabled(True)

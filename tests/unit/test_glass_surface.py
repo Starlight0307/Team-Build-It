@@ -256,3 +256,13 @@ def test_surface_change_reopens_floating_stock_window(qapp, stock_env):
         w.stock_panel.close_detail()
         w.close()
 
+
+def test_weather_update_recenters_top_group_at_once(qapp, stock_env, monkeypatch):
+    """다음 시계 갱신을 기다리면 그동안 묶음이 좁아 시계 글자가 잘렸다."""
+    import app_main
+    w = app_main.AssistantApp()
+    calls = []
+    monkeypatch.setattr(w, "_center_top_bar", lambda: calls.append(1))
+    w._on_weather({"temp": 11.2, "city": "서울", "icon_name": "cloud-sun"})
+    assert calls == [1]
+    w.close()
