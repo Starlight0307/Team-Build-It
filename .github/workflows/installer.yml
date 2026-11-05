@@ -7,6 +7,7 @@ on:
   push:
     branches: [installer-test]
   workflow_dispatch:
+  workflow_call:   # release.yml이 공개 전 검증으로 부른다
 
 env:
   UV_VERSION: "0.12.17"
