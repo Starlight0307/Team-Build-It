@@ -673,6 +673,29 @@ def _voice_checks():
             dev = "입력 장치 없음"
         return "PASS", f"마이크: {dev}"
 
+    @check("호출어 감지기 불러오기 (sherpa-onnx, 모델 확인 후 빈 소리 인식)")
+    def _voice_wake():
+        from core import wake_detector
+        if not wake_detector.enabled():
+            return "INFO", "sherpa-onnx 미설치 또는 환경설정에서 꺼짐 — 호출어를 Whisper로 판정함"
+        if not wake_detector.model_ready():
+            return "INFO", "호출어 감지 모델 미설치 (켜 두면 처음 한 번 약 160MB 내려받음)"
+        import numpy as np
+        text = wake_detector.WakeSpotter().recognize(np.zeros(16000, dtype=np.float32))
+        return "PASS", f"불러오기 정상 (무음 인식 결과: {text!r})"
+
+    @check("고품질 목소리 불러오기 (supertonic, 한국어 한 문장 합성)")
+    def _voice_tts():
+        from core import voice
+        if not voice.neural_tts_enabled():
+            return "INFO", "supertonic 미설치 또는 환경설정에서 꺼짐 — OS 기본 음성으로 읽음"
+        if not voice.tts_model_ready():
+            return "INFO", "모델 미설치 (처음 읽을 때 약 400MB 내려받음)"
+        tts = voice._load_tts()
+        wav, dur = tts.synthesize("안녕하세요, 루미예요.", voice._tts_style(tts),
+                                  total_steps=voice.TTS_STEPS, lang=voice.TTS_LANG)
+        return "PASS", f"{float(dur[0]):.1f}초 분량 합성 ({tts.sample_rate}Hz)"
+
 
 def _run_one(index: int):
     """자식 프로세스: 점검 하나만 돌리고 결과를 JSON 한 줄로 출력."""

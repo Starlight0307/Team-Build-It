@@ -42,7 +42,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLineEdit, QPushButton, QLabel,
+                             QLineEdit, QPushButton, QLabel, QComboBox,
                              QScrollArea, QFrame,
                              QSplitter, QSizePolicy, QSpacerItem,
                              QSystemTrayIcon, QMenu)
@@ -80,7 +80,8 @@ class AutoLoginWorker(QThread):
         self.done.emit(try_auto_login() or "")
 from widget.calendar_widget import CalendarWidget
 from data.db import save_chat_to_file
-from core.voice import (VoiceListener, Speaker, VoiceInstallWorker,
+from core.voice import (VoiceListener, Speaker, VoiceInstallWorker, OptionalInstallWorker, missing_optional_packages,
+                        retry_optional_packages,
                         missing_voice_packages, is_stop_phrase, VOICE_MODELS, current_voice_model)
 from core import screen_agent, web_launcher, skills
 from core.skill_agent import SkillAgentWorker
@@ -309,6 +310,7 @@ class AssistantApp(QWidget):
         self._voice_turn             = False  # 이번 요청이 음성으로 들어왔는지 → 답변을 소리로 읽음
         self._voice_conversation     = False  # 🎤 대화 중 — 답변을 읽은 뒤 자동으로 다시 듣기
         self._wake_mode              = False  # 👂 호출어("루미야"/"자비스") 상시 대기
+        self._optional_install_worker = None  # 호출어 감지/고품질 목소리 선택 패키지 백그라운드 설치
         self._voice_after_install    = None   # 설치 끝나면 이어서 할 동작
         # 화면 보고 스스로 작업하기 (core/screen_agent.py)
         self._screen_worker          = None   # 실행 중인 ScreenAgentWorker
@@ -327,6 +329,7 @@ class AssistantApp(QWidget):
         QTimer.singleShot(800, self._run_startup_update_check)
         # 신규 기능 6(앱 사용 통계) — 사용자가 이전에 기록을 켜둔 경우에만 이어서 기록한다.
         QTimer.singleShot(1500, self._resume_usage_tracking)
+        QTimer.singleShot(2500, self._apply_wake_setting)   # 저장된 "호출어 계속 듣기" 설정대로 마이크를 켠다
 
         # 실시간 감시 알림을 주기적으로 확인 — 새 알림이 생겼을 때만 조용히 토스트로 알림
         self._alert_poll_timer = QTimer(self)
@@ -392,6 +395,8 @@ class AssistantApp(QWidget):
     # 종료는 트레이 메뉴에서만 가능하게 한다 — QTimer들은 self(QWidget)의
     # 자식이라 숨기기만 해도(destroy 안 됨) 계속 정상 작동한다.
     def _setup_system_tray(self):
+        self._tray_wake_action = None
+        self._tray_state = None
         if not QSystemTrayIcon.isSystemTrayAvailable():
             self.tray_icon = None  # 트레이가 없는 환경(일부 리눅스 등)에서는 조용히 건너뜀
             return
@@ -402,6 +407,11 @@ class AssistantApp(QWidget):
         menu = QMenu()
         show_action = menu.addAction("열기")
         show_action.triggered.connect(self._show_from_tray)
+        # 창을 닫고 백그라운드로 있을 때도 마이크가 열려 있는지 보고, 창을 열지 않고 끌 수 있는 길
+        self._tray_wake_action = menu.addAction("호출어 듣기")
+        self._tray_wake_action.setCheckable(True)
+        self._tray_wake_action.setChecked(bool(getattr(self, "_wake_mode", False)))
+        self._tray_wake_action.triggered.connect(self._on_tray_wake_toggled)
         stop_screen_action = menu.addAction("화면 작업 중지")
         stop_screen_action.triggered.connect(self._stop_screen_task)
         menu.addSeparator()
@@ -411,6 +421,9 @@ class AssistantApp(QWidget):
 
         self.tray_icon.activated.connect(self._on_tray_icon_activated)
         self.tray_icon.show()
+
+    def _on_tray_wake_toggled(self, checked: bool):
+        self.set_wake_mode(bool(checked))
 
     def _on_tray_icon_activated(self, reason):
         # Windows/대부분의 플랫폼에서 트레이 아이콘 좌클릭은 Trigger로 온다
@@ -450,7 +463,9 @@ class AssistantApp(QWidget):
         for worker in list(self._abandoned_workers):   # '대답 멈추기'로 손 뗀 워커
             worker.wait(2000)
         if self._speaker is not None:
-            self._speaker.stop()
+            self._speaker.shutdown()
+        if self._optional_install_worker is not None and self._optional_install_worker.isRunning():
+            self._optional_install_worker.wait(3000)
         if self._voice_listener is not None:
             self._voice_listener.stop()
             self._voice_listener.wait(2000)
@@ -1430,25 +1445,9 @@ class AssistantApp(QWidget):
         cl.addWidget(pill_widget)
         cl.addStretch(1)
 
-        controls = QHBoxLayout()
-        controls.setSpacing(18)
-        controls.addStretch()
         # (화면 조작 모드 버튼은 2026-10-02에 없앴다 — 화면 조작이 필요한 요청인지는 루미가 판단한다)
-        # 🎤 누르면 한 마디 듣고 → 답변을 읽어준 뒤 → 다시 듣는 대화 모드
-        self.mic_button = QPushButton()
-        self.mic_button.setToolTip("음성으로 대화하기 (Ctrl+Shift+Space)\n'그만'이라고 말하면 대화를 끝냅니다")
-        self.mic_button.clicked.connect(self.toggle_voice_conversation)
-        # 👂 호출어 상시 대기 — 창을 트레이로 숨겨도 "루미야, ..."로 부를 수 있다
-        self.wake_button = QPushButton()
-        self.wake_button.setCheckable(True)
-        self.wake_button.setToolTip("호출어 대기 모드: '루미야' 또는 '자비스'로 부르면 대답합니다")
-        self.wake_button.toggled.connect(self.set_wake_mode)
-        for btn in (self.mic_button, self.wake_button):
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setIconSize(QSize(26, 26))
-            controls.addWidget(btn)
-        controls.addStretch()
-        cl.addLayout(controls)
+        # (마이크·귀 버튼은 없앴다 — 대화는 오브를 누르거나 Ctrl+Shift+Space, 호출어 상시 듣기 켜고 끄기는
+        #  환경설정 > 음성 · 트레이 메뉴, 마이크가 열려 있는지는 오브 아래 상태 문구와 트레이 툴팁으로 본다)
         cl.addSpacing(4)
         hl.addWidget(self.center_column, 3)
 
@@ -1727,6 +1726,18 @@ class AssistantApp(QWidget):
         self.switch_voice_reply.setChecked(bool(app_settings.get("voice_reply")))
         self.switch_voice_reply.toggled.connect(self._on_voice_reply_toggled)
 
+        self.switch_voice_hq = ToggleSwitch()
+        self.switch_voice_hq.setChecked(bool(app_settings.get("voice_hq")))
+        self.switch_voice_hq.toggled.connect(self._on_voice_hq_toggled)
+
+        self.switch_wake_listening = ToggleSwitch()
+        self.switch_wake_listening.setChecked(bool(getattr(self, "_wake_mode", False)))   # 저장값이 아니라 실제 마이크 상태 — _sync_wake_controls가 맞춘다
+        self.switch_wake_listening.toggled.connect(self.set_wake_mode)
+
+        self.switch_wake_stream = ToggleSwitch()
+        self.switch_wake_stream.setChecked(bool(app_settings.get("wake_stream")))
+        self.switch_wake_stream.toggled.connect(self._on_wake_stream_toggled)
+
         outer.addWidget(self._make_settings_card("화면", icon="palette", rows=[
             ("다크 모드", "어두운 배경으로 눈의 피로를 줄여요.", self.switch_dark),
         ]))
@@ -1780,12 +1791,27 @@ class AssistantApp(QWidget):
             ("답변 읽어주기",
              "음성으로 물어보면 루미가 답변을 소리로 읽어줘요. 끄면 음성 대화 중에도 글로만 답해요.",
              self.switch_voice_reply),
+            ("고품질 목소리",
+             "답변을 더 자연스러운 목소리(Supertonic)로 읽어요. 처음 한 번 약 400MB를 내려받고, 준비되기 전이거나 끄면 기본 음성으로 읽어요.",
+             self.switch_voice_hq),
+            ("목소리",
+             "고품질 목소리로 읽을 때 쓸 목소리예요. 고르면 바로 들려줘요. (고품질 목소리가 준비돼 있어야 들려요)",
+             self._make_voice_picker()),
+            ("호출어 상시 듣기",
+             "'루미야' 또는 '자비스'라고 부르는 소리를 앱을 켤 때부터 계속 기다려요. 말은 저장하거나 서버로 보내지 않아요. "
+             "창을 닫아 백그라운드에 있어도 들어요. 끄면 오브를 눌러야만 대화할 수 있어요.",
+             self.switch_wake_listening),
+            ("빠른 호출어 감지",
+             "'루미야'를 가벼운 인식기로 먼저 알아들어서 반응이 빨라요 (처음 한 번 약 160MB). 끄면 소리가 날 때마다 "
+             "음성 인식 모델로 판정해서 느리고 컴퓨터에 부담이 커요. 비슷한 소리의 이름(예: 유미야)에 잘못 반응할 수 있어요.",
+             self.switch_wake_stream),
             ("자주 쓰는 단어",
              "이름·학교·회사처럼 잘 못 알아듣는 말을 쉼표로 적어두면\n받아쓰기 힌트로 써요. (예: 장안대학교, 김민수)",
              self._make_voice_words_editor()),
             ("음성 대화 사용법",
-             "마이크 버튼 또는 Ctrl+Shift+Space로 대화를 시작하고, '그만'이라고 말하면 끝나요.\n"
-             "귀 모양 버튼을 켜두면 '루미야' / '자비스'라고 부를 때마다 대답해요.",
+             "오브를 누르거나 Ctrl+Shift+Space로 대화를 시작하고, '그만'이라고 말하면 끝나요. "
+             "호출어 상시 듣기를 켜두면 '루미야' / '자비스'라고 부를 때마다 대답해요.\n"
+             "오브 아래 문구가 '호출어 듣는 중'이면 마이크가 열려 호출어만 기다리는 중이고, '호출어 꺼짐'이면 닫힌 상태예요.",
              None),
         ]))
         outer.addSpacing(18)
@@ -2249,12 +2275,25 @@ class AssistantApp(QWidget):
         self.settings_fade.set_colors(*(("#1D1836", "#132640") if dark else ("#F1EAFF", "#E4F1FF")))   # theme.bg_grad
         for line in self._settings_dividers:
             line.setStyleSheet(f"background-color: {p['card_brd']}; border: none;")
-        for sw in (self.switch_dark, self.switch_voice_reply):
+        for sw in (self.switch_dark, self.switch_voice_reply, self.switch_voice_hq,
+                   self.switch_wake_listening, self.switch_wake_stream):
             sw.set_colors(p['accent'], p['switch_off'], p['accent2'])
         self.voice_words_input.setStyleSheet(
             f"QLineEdit {{ background-color: {p['ib']}; color: {p['tc']}; border: 1px solid {p['ibrd']}; "
             f"border-radius: 15px; padding: 5px 14px; font-size: 13px; }}"
             f"QLineEdit:focus {{ border-color: {p['accent']}; }}")
+        self.voice_picker.setStyleSheet(
+            f"QComboBox {{ background-color: {p['ib']}; color: {p['tc']}; border: 1px solid {p['ibrd']}; "
+            f"border-radius: 15px; padding: 5px 14px; font-size: 13px; }}"
+            f"QComboBox:hover {{ border-color: {p['accent']}; }}"
+            f"QComboBox::drop-down {{ border: none; width: 24px; }}"
+            f"QComboBox QAbstractItemView {{ background-color: {p['card']}; color: {p['tc']}; "
+            f"border: 1px solid {p['card_brd']}; selection-background-color: {p['accent']}; "
+            f"selection-color: #2E2A4F; outline: none; }}")
+        self.voice_preview_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {p['grad']}; color: #2E2A4F; border: none; border-radius: 12px; "
+            f"padding: 6px 16px; font-size: 13px; font-weight: bold; }}"
+            f"QPushButton:hover {{ background-color: {p['grad_hover']}; }}")
         self.voice_words_save_btn.setStyleSheet(
             f"QPushButton {{ background-color: {p['grad']}; color: #2E2A4F; border: none; border-radius: 12px; "
             f"padding: 6px 16px; font-size: 13px; font-weight: bold; }}"
@@ -2305,6 +2344,47 @@ class AssistantApp(QWidget):
         lay.addWidget(self.voice_words_save_btn)
         return box
 
+    def _make_voice_picker(self) -> QWidget:
+        from core.voice import TTS_VOICES, current_tts_voice
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.voice_picker = QComboBox()
+        for voice_id, label in TTS_VOICES:
+            self.voice_picker.addItem(label, voice_id)
+        self.voice_picker.setCurrentIndex(max(0, self.voice_picker.findData(current_tts_voice())))
+        self.voice_picker.setFixedWidth(120)
+        self.voice_picker.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.voice_picker.activated.connect(self._on_tts_voice_chosen)   # 사용자가 직접 고를 때만 (코드로 바꿀 땐 안 울린다)
+        self.voice_preview_btn = QPushButton("미리듣기")
+        self.voice_preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.voice_preview_btn.clicked.connect(self._preview_tts_voice)
+        lay.addWidget(self.voice_picker)
+        lay.addWidget(self.voice_preview_btn)
+        return box
+
+    def _on_tts_voice_chosen(self, index: int):
+        app_settings.set("tts_voice", self.voice_picker.itemData(index))
+        self._preview_tts_voice()
+
+    def _preview_tts_voice(self):
+        """고른 목소리로 짧은 문장을 들려준다. 음성 대화 중이거나 고품질 목소리가 아직 준비되지 않았으면 들려주지 않는다
+        (OS 기본 음성은 목소리 선택이 적용되지 않아 미리듣기가 되지 않는다)."""
+        from core.voice import TTS_PREVIEW_TEXT
+        if self._voice_conversation:
+            self._show_toast("🔊 음성 대화 중에는 미리 들을 수 없어요. 대화를 끝낸 뒤에 눌러 주세요.")
+            return
+        speaker = self._get_speaker()
+        if not speaker.neural_ready():   # 준비 안 됐으면 읽던 답변을 끊지 않는다
+            self._show_toast("🔊 고품질 목소리가 준비되면 들어볼 수 있어요. (환경설정 > 음성 > 고품질 목소리를 켜 두세요)")
+            return
+        speaker.stop()
+        if self._voice_listener is not None:
+            self._voice_listener.pause()          # 미리듣기 소리를 호출어로 듣지 않게 (다 읽으면 _on_speech_finished가 다시 듣는다)
+        speaker.say(TTS_PREVIEW_TEXT)
+        self._refresh_orb()
+
     def _save_voice_words(self):
         app_settings.set("voice_words", self.voice_words_input.text().strip())
         from core.voice import user_words
@@ -2347,8 +2427,26 @@ class AssistantApp(QWidget):
         else:
             self._show_toast(f"🎙️ 음성 인식을 '{label}'으로 바꿨어요. (처음 쓸 때 {size} 내려받음)")
 
+    def _on_wake_stream_toggled(self, on: bool):
+        app_settings.set("wake_stream", on)
+        if on:
+            retry_optional_packages()
+            self._maybe_install_optional(explicit=True)
+        self._show_toast(("👂 호출어를 가벼운 인식기로 먼저 판정해요." if app_settings.get("wake_listening")
+                          else "👂 호출어 상시 듣기를 켜면 가벼운 인식기로 먼저 판정해요.") if on else "👂 호출어를 음성 인식 모델로 판정해요. (느릴 수 있어요)")
+
+    def _on_voice_hq_toggled(self, on: bool):
+        app_settings.set("voice_hq", on)
+        if on:
+            retry_optional_packages()
+            self._maybe_install_optional(explicit=True)
+        self._show_toast("🔊 답변을 고품질 목소리로 읽어요. (준비되기 전에는 기본 음성)" if on
+                         else "🔊 답변을 기본 음성으로 읽어요.")
+
     def _on_voice_reply_toggled(self, on: bool):
         app_settings.set("voice_reply", on)
+        if on:
+            self._maybe_install_optional()
         if not on and self._speaker is not None and self._speaker.is_speaking():
             self._speaker.stop()
             self._on_speech_finished()   # 읽던 중이었으면 대화 흐름은 이어간다
@@ -2469,7 +2567,9 @@ class AssistantApp(QWidget):
         self._clear_conversation()
         dark = bool(app_settings.get("dark_mode"))
         for sw, val in ((self.switch_dark, dark),
-                        (self.switch_voice_reply, bool(app_settings.get("voice_reply")))):
+                        (self.switch_voice_reply, bool(app_settings.get("voice_reply"))),
+                        (self.switch_voice_hq, bool(app_settings.get("voice_hq"))),
+                        (self.switch_wake_stream, bool(app_settings.get("wake_stream")))):
             sw.blockSignals(True)
             sw.setChecked(val)
             sw.blockSignals(False)
@@ -2479,10 +2579,13 @@ class AssistantApp(QWidget):
         self.weather_city_input.setText(app_settings.get("weather_city") or "")
         self.weather_location_desc.setText(self._weather_location_text())
         self.voice_words_input.setText(app_settings.get("voice_words") or "")
+        from core.voice import current_tts_voice
+        self.voice_picker.setCurrentIndex(max(0, self.voice_picker.findData(current_tts_voice())))
         self._apply_widget_layout()
         self._rebuild_widget_editor()   # 환경설정의 위젯 목록도 이 계정의 순서·보이기로(안 하면 예전 목록이 남아 저장 안 된 것처럼 보였다)
         self._sync_voice_model_buttons()
         self._sync_close_action_buttons()
+        self._apply_wake_setting()
         self.weather_panel.reload()   # 지역이 없으면 refresh가 알아서 현재 위치를 찾는다
         if hasattr(self, "skills_page"):
             self.skills_page.refresh()
@@ -3159,21 +3262,9 @@ class AssistantApp(QWidget):
             QTimer.singleShot(0, self._on_speech_finished)
 
     def _update_voice_buttons(self):
-        if not hasattr(self, 'wake_button'):
+        """입력창 안내 문구와 오브 상태를 지금 음성 상태에 맞춘다 (예전엔 마이크·귀 버튼도 여기서 그렸다)."""
+        if not hasattr(self, 'orb'):
             return
-        p = get_palette(self.is_dark_mode)
-        s = ui_scale.get_scale()
-        buttons = [(self.mic_button, self._voice_conversation, "#F5A3B8", "mic"),   # 파스텔 핑크
-                   (self.wake_button, self._wake_mode, "#8EC5FC", "ear")]       # 파스텔 블루
-        for btn, on, on_color, icon_name in buttons:
-            btn.setFixedSize(60, 60)
-            btn.setIcon(icons.tinted(icon_name, "#2E2A4F") if on else icons.icon(icon_name))
-            btn.setStyleSheet(
-                f"QPushButton {{ background-color: {on_color if on else p['card']}; color: {p['tc']}; "
-                f"border-radius: 30px; border: 2px solid {on_color if on else p['card_brd']}; font-size: 22px; }}"
-                f"QPushButton:hover {{ border-color: {p['accent']}; }}"
-            )
-
         state = getattr(self, '_voice_state', 'idle')
         awaiting = self._voice_listener is not None and self._voice_listener._awaiting_command
         if self._voice_install_worker is not None:
@@ -3220,16 +3311,47 @@ class AssistantApp(QWidget):
         elif state == "listening" and awaiting:
             mode, text = "listen", "말씀하세요..."
         elif state == "listening" and self._wake_mode:
-            mode, text = "listen", "'루미야'라고 불러주세요"
+            mode, text = "listen", "호출어 듣는 중 · '루미야'라고 불러주세요"
+        elif not self._wake_mode:
+            mode, text = "idle", "호출어 꺼짐 · 오브를 눌러 대화하세요"
         else:
             mode, text = "idle", "대기 중 · 오브를 누르거나 입력하세요"
+        # 마이크가 실제로 열려 있는가 — 문구와 툴팁으로 알려 준다
+        if state in ("hearing", "transcribing") or (state == "listening" and awaiting):
+            mic = "active"
+        elif state == "listening":
+            mic = "wake" if self._wake_mode else "active"
+        else:
+            mic = "off"
         self.orb.set_mode(mode)
+        self._refresh_mic_hints(mic)
         self.orb_status.setText(f"●  {text}")
         p = get_palette(self.is_dark_mode)
-        dot = p['ok'] if mode in ("idle", "listen") else p['accent']
+        dot = p['tc2'] if (not self._wake_mode and mode == "idle") else (p['ok'] if mode in ("idle", "listen") else p['accent'])
         self.orb_status.setStyleSheet(
             f"color: {dot}; background-color: {p['card']}; border: 1px solid {p['card_brd']}; "
             f"border-radius: 15px; padding: 8px 18px; font-size: 13px; font-weight: bold;")
+
+    _MIC_HINTS = {
+        "wake": "마이크가 열려 있고 '루미야'라고 부르는 소리만 기다려요. 말은 저장하거나 서버로 보내지 않아요.",
+        "active": "말씀을 듣고 있어요.",
+        "paused": "답변하거나 처리하는 동안 잠시 듣기를 멈췄어요. 끝나면 다시 들어요.",
+        "off": "마이크가 닫혀 있어요.",
+    }
+
+    def _refresh_mic_hints(self, mic: str):
+        """오브 툴팁과 트레이 툴팁을 마이크 상태(wake/active/off)에 맞춘다."""
+        hint = self._MIC_HINTS["paused" if mic == "off" and self._wake_mode else mic]
+        if mic == "off" and not self._wake_mode:
+            hint += " 환경설정 > 음성에서 호출어 상시 듣기를 켤 수 있어요."
+        tip = "눌러서 음성으로 대화하기\n" + hint
+        if self.orb.toolTip() != tip:
+            self.orb.setToolTip(tip)
+        tray = getattr(self, "tray_icon", None)
+        if tray is None or getattr(self, "_tray_state", None) == mic:
+            return
+        self._tray_state = mic
+        tray.setToolTip({"wake": "LUMI · 호출어 듣는 중", "active": "LUMI · 말씀을 듣는 중"}.get(mic, "LUMI 로컬 비서"))
 
     def toggle_voice_conversation(self):
         if self._voice_conversation:
@@ -3243,20 +3365,64 @@ class AssistantApp(QWidget):
         self._ensure_listener().listen_for_command()
         self._update_voice_buttons()
 
-    def set_wake_mode(self, enabled: bool):
-        if enabled and not self._ensure_voice_ready(lambda: self.wake_button.setChecked(True)):
-            self.wake_button.blockSignals(True)
-            self.wake_button.setChecked(False)
-            self.wake_button.blockSignals(False)
+    def set_wake_mode(self, enabled: bool, quiet: bool = False, persist: bool = True):
+        """persist=False면 켜고 끈 걸 계정 설정(wake_listening)에 저장하지 않는다 — 저장된 설정을 읽어서
+        반영하거나, 마이크 오류처럼 이번 한 번만 끄는 경우."""
+        enabled = bool(enabled)
+        if enabled and not self._ensure_voice_ready(lambda: self.set_wake_mode(True)):
+            self._sync_wake_controls(False)   # 설치를 기다리는 동안 스위치가 켜진 채로 남지 않게
             return
         self._wake_mode = enabled
+        if persist:
+            app_settings.set("wake_listening", bool(enabled))
         if enabled:
             self._ensure_listener().set_wake_enabled(True)
-            self._show_toast("👂 이제 '루미야' 또는 '자비스'라고 부르면 대답할게요. 창을 닫아도 계속 들어요.")
+            self._maybe_install_optional()
+            if not quiet:
+                self._show_toast("👂 이제 '루미야' 또는 '자비스'라고 부르면 대답할게요. 창을 닫아도 계속 들어요.")
         elif self._voice_listener is not None:
             self._voice_listener.set_wake_enabled(False)
             self._maybe_stop_listener()
+        self._sync_wake_controls(enabled)
         self._update_voice_buttons()
+
+    def _sync_wake_controls(self, on: bool):
+        """환경설정 스위치와 트레이 메뉴 체크를 지금 호출어 상태에 맞춘다 (신호는 막는다 — 다시 set_wake_mode가 불리지 않게)."""
+        sw = self.switch_wake_listening
+        sw.blockSignals(True)
+        sw.setChecked(on)
+        sw.blockSignals(False)
+        action = getattr(self, "_tray_wake_action", None)
+        if action is not None:
+            action.setChecked(on)
+
+    def _apply_wake_setting(self):
+        """저장된 "호출어 계속 듣기" 설정(계정별)을 마이크와 버튼에 반영한다 — 앱 시작, 계정 전환 때.
+        음성 구성요소가 아직 없으면 동의 없이 설치하지 않고 그대로 둔다(오브를 누르거나 호출어 스위치를 켜면 설치를 묻는다)."""
+        if os.environ.get("LUMI_NO_AUTO_LISTEN"):   # 개발/테스트용: 마이크를 자동으로 열지 않는다
+            return
+        login = getattr(self, "_auto_login_worker", None)
+        if login is not None and login.isRunning():
+            # 자동 로그인 중에는 아직 게스트 설정이 적용돼 있다 — 끝나면 _apply_user_settings가 이 함수를 다시 부른다
+            QTimer.singleShot(1000, self._apply_wake_setting)
+            return
+        want = bool(app_settings.get("wake_listening"))
+        if want == self._wake_mode:
+            self._sync_wake_controls(want)
+            self._update_voice_buttons()
+            self._maybe_install_optional()
+            return
+        if want and (self._voice_install_worker is not None or missing_voice_packages()):
+            self._sync_wake_controls(self._wake_mode)   # 켜지 못했는데 스위치만 켜져 보이지 않게
+            return
+        self.set_wake_mode(want, quiet=True, persist=False)   # 저장된 설정을 읽어서 반영하는 중이라 다시 저장하지 않는다
+        self._maybe_install_optional()
+        if self._wake_mode and not app_settings.get("wake_notice_shown"):
+            # 마이크가 자동으로 열리는 걸 모르고 지나가지 않게, 계정마다 처음 한 번만 알려준다
+            app_settings.set("wake_notice_shown", True)
+            self._show_toast("👂 이제 앱을 켜면 '루미야'라고 부르는 소리를 계속 기다려요. "
+                             "말은 저장하거나 서버로 보내지 않아요. 오브 아래에 '호출어 듣는 중'이라고 나오면 듣는 중이에요. "
+                             "끄려면 환경설정 > 음성이나 트레이 아이콘 우클릭 메뉴를 쓰세요.")
 
     def _ensure_voice_ready(self, then) -> bool:
         """음성 패키지가 있으면 True. 없으면 설치 여부를 묻고(설치 후 then 실행) False."""
@@ -3272,12 +3438,17 @@ class AssistantApp(QWidget):
             "음성 대화에 필요한 구성요소를 설치할까요? (처음 한 번만)\n\n"
             f"설치 항목: {', '.join(missing)}\n"
             "· 구성요소 약 200MB + 첫 사용 시 음성 인식 모델 약 480MB를 내려받습니다.\n"
+            "· 이어서 '루미야'를 빨리 알아듣는 호출어 감지(모델 약 160MB)와 자연스러운 목소리(모델 약 400MB)도\n"
+            "  백그라운드로 설치해요. 환경설정 > 음성에서 끌 수 있어요.\n"
+            "· 설치 후 다음 실행부터 앱을 켜면 '루미야'라고 부르는 소리를 계속 기다려요. "
+            "환경설정 > 음성 > 호출어 상시 듣기에서 끌 수 있어요.\n"
             "· 음성 인식은 인터넷 서버가 아니라 이 컴퓨터 안에서 처리됩니다.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return False
+        app_settings.set("optional_install_asked", True)
         self._voice_after_install = then
         self._voice_install_worker = VoiceInstallWorker(self)
         self._voice_install_worker.finished_install.connect(self._on_voice_installed)
@@ -3298,6 +3469,69 @@ class AssistantApp(QWidget):
         then, self._voice_after_install = self._voice_after_install, None
         if then:
             then()
+        self._maybe_install_optional()
+
+    def _maybe_install_optional(self, explicit: bool = False):
+        """호출어 감지(sherpa-onnx)/고품질 목소리(supertonic)가 필요한데 없으면 백그라운드로 설치한다.
+        마이크 기능의 조건이 아니다 — 없으면 예전 방식(Whisper 판정/OS 기본 음성)으로 동작한다.
+        필수 음성 구성요소가 아직 없으면(동의 전) 하지 않는다. 사용자가 설정을 직접 켠 경우(explicit)가 아니면
+        계정마다 처음 한 번 설치해도 되는지 묻는다 — 이전 버전 사용자는 이 구성요소에 동의한 적이 없다."""
+        if os.environ.get("LUMI_NO_AUTO_LISTEN"):   # 개발/테스트용: 자동 설치를 하지 않는다
+            return
+        if (self._optional_install_worker is not None or self._voice_install_worker is not None
+                or getattr(self, "_asking_optional", False) or missing_voice_packages()):
+            return
+        missing = missing_optional_packages()
+        if not missing:
+            return
+        if not explicit and not app_settings.get("optional_install_asked"):
+            from PyQt6.QtWidgets import QMessageBox
+            self._asking_optional = True      # 질문창이 떠 있는 동안 다시 불려도 동의 없이 설치하지 않는다
+            try:
+                reply = lumi_dialog.question(
+                    self, "음성 기능 추가 설치",
+                    "'루미야'를 더 빨리 알아듣고 목소리를 자연스럽게 하는 구성요소를 설치할까요?\n\n"
+                    f"설치 항목: {', '.join(missing)}\n"
+                    "· 구성요소 설치 후 처음 쓸 때 모델을 내려받아요 (호출어 감지 약 160MB, 고품질 목소리 약 400MB).\n"
+                    "· 모두 이 컴퓨터 안에서만 동작하고, 말은 저장하거나 서버로 보내지 않아요.\n"
+                    "· 설치하지 않아도 음성 대화는 쓸 수 있어요. 다만 호출어 상시 듣기를 켜 두면 소리가 날 때마다 "
+                    "음성 인식 모델이 돌아 반응이 느리고 컴퓨터에 부담이 커요 (목소리는 기본 음성).",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+            finally:
+                self._asking_optional = False   # 질문창이 예외로 닫혀도 이후 다시 물을 수 있게
+            app_settings.set("optional_install_asked", True)
+            if reply != QMessageBox.StandardButton.Yes:
+                app_settings.set("wake_stream", False)      # 설정에서 다시 켜면 그때 설치한다
+                app_settings.set("voice_hq", False)
+                self.switch_wake_stream.blockSignals(True)
+                self.switch_voice_hq.blockSignals(True)
+                self.switch_wake_stream.setChecked(False)
+                self.switch_voice_hq.setChecked(False)
+                self.switch_wake_stream.blockSignals(False)
+                self.switch_voice_hq.blockSignals(False)
+                return
+            missing = missing_optional_packages()
+            if not missing:
+                return
+        worker = OptionalInstallWorker(self)
+        self._optional_install_worker = worker
+        worker.finished_install.connect(self._on_optional_installed)
+        worker.finished.connect(worker.deleteLater)
+        self._show_toast("⏬ 호출어를 더 빨리 알아듣고 목소리를 자연스럽게 하는 구성요소를 설치하고 있어요 "
+                         "(음성 대화는 그대로 쓸 수 있어요).")
+        worker.start()
+
+    def _on_optional_installed(self, installed: list):
+        self._optional_install_worker = None
+        from core import voice as _voice
+        if _voice._optional_failed:                 # 일부라도 못 깔았으면 알린다 (그 기능만 기본 방식으로 동작)
+            self._show_toast("⚠️ 일부 구성요소를 설치하지 못했어요. 기본 방식으로 동작해요 "
+                             "(인터넷 연결을 확인하고 환경설정에서 다시 켜 보세요).")
+        elif installed:
+            self._show_toast("✅ 구성요소 설치가 끝났어요. 처음 쓸 때 모델을 내려받아요 "
+                             "(호출어 감지 약 160MB, 고품질 목소리 약 400MB).")
 
     def _ensure_listener(self) -> VoiceListener:
         if self._voice_listener is None or not self._voice_listener.isRunning():
@@ -3307,6 +3541,7 @@ class AssistantApp(QWidget):
             listener.wake_heard.connect(self._on_wake_heard)
             listener.timed_out.connect(self._on_voice_timeout)
             listener.failed.connect(self._on_voice_failed)
+            listener.notice.connect(self._show_toast)
             listener.finished.connect(listener.deleteLater)
             listener.set_wake_enabled(self._wake_mode)
             self._voice_listener = listener
@@ -3379,7 +3614,8 @@ class AssistantApp(QWidget):
         self._voice_conversation = False
         self._voice_turn = False
         if self._wake_mode:
-            self.wake_button.setChecked(False)   # → set_wake_mode(False)
+            self.set_wake_mode(False, quiet=True, persist=False)   # 이번에만 끈다 — 마이크가 잠깐 쓰이던 중일 수도 있어서 다음 실행엔 다시 시도
+            message += " 호출어 듣기를 껐어요. 환경설정 > 음성이나 트레이 메뉴에서 다시 켤 수 있어요."
         self._update_voice_buttons()
         self._show_toast(f"⚠️ {message}")
 

@@ -24,6 +24,12 @@ DEFAULTS = {
     "disabled_skills": [],      # 끈 OpenClaw 스킬 이름 (core/skills.py)
     "skill_auto_pick": True,    # 대화에서 알맞은 스킬을 자동으로 고를지 (core/skill_agent.py)
     "voice_reply": True,   # 음성으로 물어보면 답변을 소리로 읽어주기
+    "wake_listening": True, # 앱을 켜면 "루미야" 호출어를 계속 기다린다 (환경설정 > 음성 · 트레이 메뉴로 켜고 끔) — 계정별 설정
+    "optional_install_asked": False,  # 호출어 감지/고품질 목소리 구성요소 설치를 물어봤는지 (계정별, 최초 1회)
+    "wake_notice_shown": False,  # 호출어 듣기가 자동으로 켜진다는 안내를 보여줬는지 (계정별, 최초 1회)
+    "wake_stream": True,    # 호출어 판정을 가벼운 스트리밍 인식기로 (core/wake_detector.py). 끄면 예전처럼 Whisper로 판정
+    "voice_hq": True,      # 답변을 고품질 목소리(Supertonic)로 읽기 — 꺼져 있거나 준비 전이면 OS 기본 음성 (core/voice.py)
+    "tts_voice": None,     # 고품질 목소리 이름 (M1~M5 / F1~F5) — None이면 F1
     "voice_model": None,   # 음성 인식 모델 — None이면 PC 사양 보고 자동 (core/voice.py)
     "voice_words": "",     # 음성 인식이 잘 못 알아듣는 고유명사(이름/학교/회사 등), 쉼표로 구분
     "quiet_hours_enabled": False,  # 알림 토스트 묵음 시간대 사용 여부 (plugins/reminder.py)

@@ -1,0 +1,8 @@
+# 음성 대화의 선택 구성요소 (core/voice.py) — 설치에 실패해도 음성 대화 자체는 쓸 수 있다.
+#  · sherpa-onnx : 호출어("루미야") 스트리밍 감지 (core/wake_detector.py). 없으면 호출어 판정을 Whisper로 한다.
+#  · supertonic  : 고품질 목소리 (Supertonic 3, 로컬 ONNX). 없으면 OS 기본 음성으로 읽는다.
+# requirements-voice.txt와 분리한 이유: 이 패키지들의 wheel이 없는 환경(일부 Mac, Windows ARM 등)에서
+# 하나 때문에 음성 대화 전체 설치가 실패하지 않게 하려고. 패키지는 하나씩 따로 설치한다.
+# supertonic 1.3.1은 모델 리비전(SHA)을 패키지가 고정한다. 저장소는 아카이브돼 업데이트가 없으니 올릴 일이 없다.
+sherpa-onnx==2.0.1
+supertonic==1.3.1
