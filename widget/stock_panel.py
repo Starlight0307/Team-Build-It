@@ -4,12 +4,13 @@ import tempfile
 import threading
 import webbrowser
 
-from PyQt6.QtCore import pyqtSignal, QEasingCurve, QObject, QPointF, Qt, QTimer, QVariantAnimation
+from PyQt6.QtCore import pyqtSignal, QObject, QPointF, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
                              QVBoxLayout, QWidget)
 
 from widget import lumi_dialog
+from widget.motion import SmoothAnimation
 from widget.dashboard import Panel
 
 PROFIT_COLOR, LOSS_COLOR = "#E5484D", "#3B82F6"   # 한국 관례: 이익 빨강, 손실 파랑 (기호도 함께 쓴다)
@@ -39,30 +40,6 @@ def _arrow_path(dark: bool) -> str:
     painter.end()
     pixmap.save(path)
     return path.replace("\\", "/")
-
-
-class SmoothAnimation(QVariantAnimation):
-    """0→1로 변하며 apply(값)을 부른다. 신호와 lambda를 쓰지 않는다 — PyQt가 lambda를 부르는 순간 대상이
-    쓰레기 수집으로 지워지면 앱이 죽었다(말풍선 페이드 크래시와 같은 원인). 도는 동안 _RUNNING이 붙잡아 둔다."""
-    _RUNNING = set()
-
-    def __init__(self, apply, duration: int):
-        super().__init__()
-        SmoothAnimation._RUNNING -= {a for a in SmoothAnimation._RUNNING
-                                     if a.state() == QVariantAnimation.State.Stopped}
-        SmoothAnimation._RUNNING.add(self)
-        self._apply = apply
-        self.setDuration(duration)
-        self.setStartValue(0.0)
-        self.setEndValue(1.0)
-        self.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self.start()
-
-    def updateCurrentValue(self, value):
-        try:
-            self._apply(float(value))
-        except RuntimeError:   # 대상 창이 먼저 닫혔다
-            self.stop()
 
 
 def set_plain_text(label, text: str):

@@ -19,7 +19,7 @@ from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen, QRadialGradient
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton,
                              QSizePolicy, QVBoxLayout, QWidget)
 
-from widget import icons
+from widget import icons, motion
 
 # 숫자도 둥근 느낌이 나도록 각진 고정폭 글꼴 대신 시스템 기본 글꼴을 쓴다
 NUM_FONT = "'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', sans-serif"
@@ -146,9 +146,17 @@ class StatBar(QWidget):
         self.bar.setFixedHeight(8)
         lay.addWidget(self.bar)
         self._p = None
+        self._bar_anim = None
 
     def set(self, percent: float, text: str):
-        self.bar.setValue(max(0, min(100, round(percent))))
+        target = max(0, min(100, round(percent)))
+        if self._bar_anim is not None:
+            self._bar_anim.stop()
+        start = self.bar.value()
+        if motion.enabled() and self.isVisible() and start != target:   # 막대는 값이 바뀌면 미끄러져 간다
+            self._bar_anim = motion.SmoothAnimation(lambda t: self.bar.setValue(round(start + (target - start) * t)), 420)
+        else:
+            self.bar.setValue(target)
         self.value.setText(text)
         if self._p:
             self._paint_chunk(percent)

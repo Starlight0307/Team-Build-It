@@ -8,6 +8,7 @@ from PyQt6.QtCore import (pyqtSignal, pyqtProperty, Qt, QPropertyAnimation, QEas
                           QTimer, QRect, QRectF, QPoint, QSize)
 from PyQt6.QtGui import QFontMetrics, QFont, QPainter, QColor, QLinearGradient, QKeySequence
 
+from widget import motion
 from settings.theme import get_palette
 from widget import icons
 
@@ -25,6 +26,21 @@ class AutoSizeStackedWidget(QStackedWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.currentChanged.connect(lambda _: self.updateGeometry())
+
+    def _switch(self, change, target):
+        old = self.currentWidget()
+        same = target in (old, self.currentIndex())
+        if not same:
+            motion.crossfade_from(self, old)
+        change(target)
+        if not same and self.isVisible():
+            motion.reveal_cards(self.currentWidget())
+
+    def setCurrentIndex(self, index):
+        self._switch(super().setCurrentIndex, index)
+
+    def setCurrentWidget(self, widget):
+        self._switch(super().setCurrentWidget, widget)
 
     def sizeHint(self):
         w = self.currentWidget()
@@ -420,6 +436,7 @@ class ToggleSwitch(QAbstractButton):
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(46, 26)
+        self.setProperty("noButtonMotion", True)   # 손잡이가 이미 미끄러진다
         self._offset = 0.0
         self._on_color, self._off_color = QColor("#8B78EE"), QColor("#DAD4EE")
         self._on_color2 = QColor("#5FA8EE")   # 켜졌을 때 오른쪽 끝 색 (보라 → 파랑 그라데이션)
@@ -630,20 +647,8 @@ class MessageBubble(QFrame):
 
         self.setStyleSheet("border: none; background: transparent;")
 
-        eff  = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(eff)
-        anim = QPropertyAnimation(eff, b"opacity")
-        anim.setDuration(300)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        # 효과를 남겨 두면 스크롤할 때 글자가 예전 위치로 그려져 말풍선 윗부분이 카드 아래로 잘려 보인다
-        # 애니메이션이 끝나는 도중에 그 대상을 지우면 드물게 앱이 죽는다 → 끝난 뒤로 미룬다. 말풍선이 먼저 지워지면 불리지 않는다
-        anim.finished.connect(self._drop_fade_effect, Qt.ConnectionType.QueuedConnection)
-        anim.start()
-        self.anim = anim
-
-    def _drop_fade_effect(self):
-        self.setGraphicsEffect(None)
+        # 내 말은 오른쪽에서, 루미 말은 왼쪽에서 올라온다. 효과는 끝나면 없어진다(motion.rise_in)
+        self.anim = motion.rise_in(self, duration=300, dx=18 if is_user else -18, dy=10)
 
     def _apply_bubble_width(self, container_width: int):
         cap = bubble_max_width(container_width)
@@ -716,6 +721,7 @@ class TypingIndicator(QFrame):
         layout.addWidget(self.bubble)
         layout.addStretch()
         self.setStyleSheet("border: none; background: transparent;")
+        self.anim = motion.rise_in(self, duration=240, dx=-14, dy=8)
 
         # 점(.) 애니메이션 타이머 (400ms 간격)
         self._timer = QTimer(self)
@@ -783,25 +789,22 @@ class NotificationToast(QFrame):
             "color: #FFFFFF; background: transparent; border: none; font-size: 13px;"
         )
 
-        self._eff = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self._eff)
-        self._anim = QPropertyAnimation(self._eff, b"opacity")
-        self._anim.setDuration(250)
-        self._anim.setStartValue(0.0)
-        self._anim.setEndValue(1.0)
-        self._anim.start()
+        self._anim = motion.rise_in(self, duration=280, dx=26, dy=0)
 
     def mousePressEvent(self, event):
         self.clicked.emit()
 
     def fade_out_and_close(self):
-        anim = QPropertyAnimation(self._eff, b"opacity")
-        anim.setDuration(300)
-        anim.setStartValue(1.0)
-        anim.setEndValue(0.0)
-        anim.finished.connect(self.close)
-        anim.start()
-        self._anim = anim  # 참조 유지 (GC 방지)
+        if self._anim is not None:
+            self._anim.stop()
+        effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(effect)
+        x = self.x()
+
+        def step(t):
+            effect.setOpacity(1.0 - t)
+            self.move(x + round(26 * t), self.y())
+        self._anim = motion.SmoothAnimation(step, 240, on_done=self.close)
 
 
 # ==========================================

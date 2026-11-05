@@ -64,7 +64,7 @@ from widget.widgets import (CommandCard, MessageBubble, TypingIndicator, FlowLay
                             ResponsiveCardRow, GripSplitter, NotificationToast, RealtimeAlertsDialog,
                             AutoSizeStackedWidget, ToggleSwitch, AgentOverlay, ScrollTopFade)
 from widget.marketplace import PluginMarketplaceWidget
-from widget import icons
+from widget import icons, motion
 from widget.dashboard import (Panel, SystemStatsPanel, WeatherPanel, TodayPanel, TodoPanel,
                               SessionPanel, LumiOrb, NUM_FONT)
 
@@ -1567,6 +1567,7 @@ class AssistantApp(QWidget):
 
         # 입력창 — 대화 패널 맨 아래
         self.bottom_input_wrapper = QWidget()
+        self.bottom_input_wrapper.setProperty("motionCard", True)
         self.bottom_input_wrapper.setStyleSheet("background: transparent; border: none;")
         bwl = QVBoxLayout(self.bottom_input_wrapper)
         bwl.setContentsMargins(12, 10, 12, 12)
@@ -1788,8 +1789,13 @@ class AssistantApp(QWidget):
         self.switch_voice_reply.setChecked(bool(app_settings.get("voice_reply")))
         self.switch_voice_reply.toggled.connect(self._on_voice_reply_toggled)
 
+        self.switch_motion = ToggleSwitch()
+        self.switch_motion.setChecked(not app_settings.get("ui_motion_off"))
+        self.switch_motion.toggled.connect(self._on_motion_toggled)
+
         outer.addWidget(self._make_settings_card("화면", icon="palette", rows=[
             ("다크 모드", "어두운 배경으로 눈의 피로를 줄여요.", self.switch_dark),
+            ("움직임 효과", "창, 화면 전환, 말풍선, 버튼의 애니메이션을 보여 줘요.", self.switch_motion),
         ]))
         outer.addSpacing(18)
         # 창 닫기(X) 동작 — 매번 묻기 / 백그라운드 / 종료 (세그먼트 버튼)
@@ -2199,6 +2205,13 @@ class AssistantApp(QWidget):
         self.weather_panel.refresh()
         self._show_toast(f"🌤️ 날씨 지역을 '{city}'(으)로 바꿨어요.")
 
+    def _on_motion_toggled(self, on: bool):
+        app_settings.set("ui_motion_off", not on)
+        motion.set_enabled(on)
+
+    def reveal_current_page(self):
+        motion.reveal_cards(self.stacked_widget.currentWidget())
+
     def _go_to_page(self, idx: int):
         """상단 메뉴 버튼을 누른 것과 똑같이 화면을 바꾼다(메뉴 강조·화면별 새로 읽기 포함)."""
         btn = next((b for b, i in self._nav_stack_index.items() if i == idx), None)
@@ -2257,6 +2270,7 @@ class AssistantApp(QWidget):
     def _make_settings_card(self, section: str, rows: list, icon: str = None) -> QFrame:
         """제목 + (설명, 스위치) 줄들로 이루어진 설정 카드."""
         card = QFrame()
+        card.setProperty("motionCard", True)
         card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         card.setMaximumWidth(760)
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)   # 가운데 정렬에서도 760px까지 넓게
@@ -2322,7 +2336,7 @@ class AssistantApp(QWidget):
         self.settings_fade.set_colors(*(("#1D1836", "#132640") if dark else ("#F1EAFF", "#E4F1FF")))   # theme.bg_grad
         for line in self._settings_dividers:
             line.setStyleSheet(f"background-color: {p['card_brd']}; border: none;")
-        for sw in (self.switch_dark, self.switch_voice_reply):
+        for sw in (self.switch_dark, self.switch_voice_reply, self.switch_motion):
             sw.set_colors(p['accent'], p['switch_off'], p['accent2'])
         self.voice_words_input.setStyleSheet(
             f"QLineEdit {{ background-color: {p['ib']}; color: {p['tc']}; border: 1px solid {p['ibrd']}; "
@@ -4174,6 +4188,8 @@ if __name__ == "__main__":
     sys.excepthook = _keep_running_on_uncaught_error
     lumi_icon.set_windows_app_id()   # QApplication보다 먼저 — 작업 표시줄에 파이썬 대신 루미 아이콘
     app = QApplication(sys.argv)
+    motion.install(app)
+    motion.set_enabled(not app_settings.get("ui_motion_off"))
     app.setApplicationName(lumi_icon.APP_NAME)
     app.setWindowIcon(lumi_icon.app_icon())   # 팝업 등 모든 창의 기본 아이콘
     # 창을 닫아도(트레이로 숨김) 프로세스가 종료되지 않게 한다 — Qt 기본값은
@@ -4204,7 +4220,9 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[대화기록 위치 이전 오류] {e}")
     ex  = AssistantApp()
+    motion.open_window(ex, rise=0, duration=280)
     ex.show()
+    QTimer.singleShot(80, ex.reveal_current_page)
     app.aboutToQuit.connect(ex.shutdown_background_work)   # Cmd+Q 등 모든 종료 경로
     # PC 종료·로그아웃 때는 "창을 닫을까요?"를 묻지 않고 바로 끈다(물으면 PC 종료가 그 창에서 멈춘다)
     app.commitDataRequest.connect(lambda _m: setattr(ex, "_force_quit", True))
