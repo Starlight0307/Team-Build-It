@@ -46,6 +46,29 @@ def test_update_notice():
     assert version.update_notice({}, "9.9.9", SHA_B) == ""                 # 개발 중엔 알리지 않음
 
 
+def test_check_update_tells_failure_apart_from_latest(monkeypatch):
+    monkeypatch.setattr(version, "installed_state", lambda *a: {"sha": SHA_A, "version": "1.1.0"})
+    monkeypatch.setattr(version, "latest_commit_sha", lambda t=5: "")
+    monkeypatch.setattr(version, "latest_release_version", lambda t=5: "")
+    assert version.check_update() == version.CHECK_FAILED
+    monkeypatch.setattr(version, "latest_commit_sha", lambda t=5: SHA_A)
+    monkeypatch.setattr(version, "latest_release_version", lambda t=5: "1.1.0")
+    assert version.check_update() == ""
+    monkeypatch.setattr(version, "latest_commit_sha", lambda t=5: SHA_B)
+    assert version.check_update() == "새로운 업데이트"
+
+
+def test_check_update_in_development_compares_git_head(monkeypatch):
+    monkeypatch.setattr(version, "installed_state", lambda *a: {})
+    monkeypatch.setattr(version, "_git_head", lambda *a: SHA_A)
+    monkeypatch.setattr(version, "latest_commit_sha", lambda t=5: SHA_A)
+    assert version.check_update() == ""
+    monkeypatch.setattr(version, "latest_commit_sha", lambda t=5: SHA_B)
+    assert version.check_update() == version.DEV_NOTICE
+    monkeypatch.setattr(version, "latest_commit_sha", lambda t=5: "")
+    assert version.check_update() == version.CHECK_FAILED
+
+
 def test_git_head_short(tmp_path):
     (tmp_path / ".git" / "refs" / "heads").mkdir(parents=True)
     (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
@@ -84,6 +107,14 @@ def test_settings_page_version_and_update_button(qapp, monkeypatch, tmp_path):
         w._on_update_checked("", manual=True)
         assert "최신 버전이에요" in w.version_desc.text()
         assert w.update_check_btn.text().strip() == "업데이트 확인"
+        w._on_update_checked(version.CHECK_FAILED, manual=True)
+        assert "확인하지 못했어요" in w.version_desc.text()
+        assert "최신 버전이에요" not in w.version_desc.text()
+        toasts = []
+        monkeypatch.setattr(w, "_show_toast", toasts.append)
+        w._on_update_checked("새로운 업데이트", manual=False)
+        w._on_update_checked("새로운 업데이트", manual=False)
+        assert len(toasts) == 1   # 켜 둔 동안 같은 알림을 반복하지 않는다
     finally:
         w.shutdown_background_work()
         w.close()

@@ -5,7 +5,7 @@ from PyQt6.QtCore import pyqtSignal, Qt, QEvent
 
 from widget import icons
 
-from core.plugins_registry import AVAILABLE_PLUGINS
+from core.plugins_registry import MARKETPLACE_PLUGINS
 from widget.widgets import PluginCard
 
 # ==========================================
@@ -13,8 +13,10 @@ from widget.widgets import PluginCard
 # ==========================================
 class PluginMarketplaceWidget(QFrame):
     plugin_install_request = pyqtSignal(str, str, str, QPushButton)
+    plugin_uninstall_request = pyqtSignal(str, str)   # 표시 이름, 모듈 이름
 
     CARD_SIZE = 210
+    SCROLLBAR_ROOM = 12
 
     def __init__(self, parent_app=None):
         super().__init__(parent_app)
@@ -58,6 +60,7 @@ class PluginMarketplaceWidget(QFrame):
 
         self.plugin_layout = QGridLayout(self.scroll_content)
         self.plugin_layout.setSpacing(20)
+        self.plugin_layout.setContentsMargins(0, 0, self.SCROLLBAR_ROOM, 0)
         self.plugin_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         self.scroll_area.setWidget(self.scroll_content)
@@ -81,8 +84,13 @@ class PluginMarketplaceWidget(QFrame):
     def _relayout_grid(self):
         # 1열은 카드 하나만 덩그러니 남아 어색해 보여서 최소 2열로 제한.
         # 창이 2열보다 좁아지면 카드가 찌그러지는 대신 가로 스크롤이 뜬다.
-        unit = self.CARD_SIZE + self.plugin_layout.spacing()
-        cols = max(2, self.scroll_area.viewport().width() // unit)
+        gap = self.plugin_layout.spacing()
+        room = self.scroll_area.viewport().width() - self.SCROLLBAR_ROOM
+        cols = max(2, (room + gap) // (self.CARD_SIZE + gap))
+        # 남는 폭은 카드에 나눠 준다 — 오른쪽만 비어 있으면 치우쳐 보인다
+        card_w = max(self.CARD_SIZE, (room - gap * (cols - 1)) // cols)
+        for card in self.plugin_items:
+            card.setFixedWidth(card_w)
         if cols == self._current_cols:
             return
         self._current_cols = cols
@@ -103,13 +111,17 @@ class PluginMarketplaceWidget(QFrame):
                 widget.setParent(None)
         self.plugin_items.clear()
 
-        for p in AVAILABLE_PLUGINS:
+        for p in MARKETPLACE_PLUGINS:
             f_names = p.get('func_names', [p.get('func_name')])
             card    = PluginCard(p, self.parent_app, f_names)
             self.plugin_items.append(card)
 
         self._current_cols = -1  # 강제로 재배치
         self._relayout_grid()
+
+    def refresh_status(self, installed_modules):
+        for card in self.plugin_items:
+            card.update_btn_status(installed_modules)
 
     def filter_plugins(self, text):
         search_text = text.lower().strip()

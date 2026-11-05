@@ -45,7 +45,7 @@ class Panel(QFrame):
         self.header.setObjectName("panelHeader")
         self.header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         hl = QHBoxLayout(self.header)
-        hl.setContentsMargins(16, 12, 12, 6)
+        hl.setContentsMargins(16, 10, 12, 4)
         hl.setSpacing(6)
         self.title = QLabel(icons.label_html(icon, title, 17))
         hl.addWidget(self.title)
@@ -59,8 +59,8 @@ class Panel(QFrame):
         body = QWidget()
         body.setStyleSheet("background: transparent;")
         self.body = QVBoxLayout(body)
-        self.body.setContentsMargins(14, 8, 14, 14)
-        self.body.setSpacing(8)
+        self.body.setContentsMargins(14, 6, 14, 12)
+        self.body.setSpacing(6)
         outer.addWidget(body, 1)
 
     def add_header_button(self, text: str, tooltip: str, on_click, icon: str = None) -> QPushButton:
@@ -309,6 +309,9 @@ class WeatherPanel(Panel):
         """계정이 바뀐 직후 — 진행 중이던 조회를 무시하고 새 계정의 지역으로 다시 가져온다."""
         self._gen += 1
         self._loading = False
+        # 로그인은 첫 조회(0.5초 뒤)보다 늦게 끝나는 일이 많다. 첫 조회는 비로그인 설정으로 지나가므로,
+        # 여기서 다시 세워야 이 계정의 저장된 지역이 아니라 현재 위치를 찾는다.
+        self._start_pending = True
         self.refresh()
 
     def refresh(self):

@@ -15,6 +15,8 @@ import urllib.request
 _REPO = "Starlight0307/Team-Build-It"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{_REPO}/releases/latest"
 LATEST_COMMIT_API = f"https://api.github.com/repos/{_REPO}/commits/main"
+CHECK_FAILED = "확인 실패"   # check_update: GitHub에 묻지 못했다 — '최신 버전'과 구분한다
+DEV_NOTICE = "GitHub main과 달라요 · git pull"
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 설치 폴더 구조: <설치 폴더>\app\(이 코드) + <설치 폴더>\update.json
@@ -44,8 +46,8 @@ def installed_state(state_file: str = _STATE_FILE) -> dict:
     return {"sha": data["sha"], "version": ".".join(map(str, ver)) if ver else ""}
 
 
-def _git_head_short(root: str = _PROJECT_ROOT) -> str:
-    """개발 중(git으로 받은 폴더) 현재 커밋 앞 7자리 — git 명령 없이 .git 파일만 읽는다."""
+def _git_head(root: str = _PROJECT_ROOT) -> str:
+    """개발 중(git으로 받은 폴더) 현재 커밋 번호 — git 명령 없이 .git 파일만 읽는다."""
     try:
         with open(os.path.join(root, ".git", "HEAD"), encoding="utf-8") as f:
             head = f.read().strip()
@@ -58,9 +60,13 @@ def _git_head_short(root: str = _PROJECT_ROOT) -> str:
             else:   # 압축된 ref
                 with open(os.path.join(root, ".git", "packed-refs"), encoding="utf-8") as f:
                     head = next((l.split()[0] for l in f if l.rstrip().endswith(" " + ref)), "")
-        return head[:7] if _valid_sha(head) else ""
+        return head if _valid_sha(head) else ""
     except OSError:
         return ""
+
+
+def _git_head_short(root: str = _PROJECT_ROOT) -> str:
+    return _git_head(root)[:7]
 
 
 def version_text(state: dict = None) -> str:
@@ -109,11 +115,18 @@ def update_notice(state: dict, latest_version: str, latest_sha: str) -> str:
 
 
 def check_update(timeout: float = 5) -> str:
-    """GitHub에 물어봐서 update_notice 문구를 돌려준다(인터넷이 안 되면 '')."""
+    """GitHub에 물어봐서 update_notice 문구를 돌려준다. 받을 게 없으면 '', 묻지 못했으면 CHECK_FAILED.
+    개발 중(VS Code 등)에는 자동으로 받지 않으므로 지금 커밋이 main과 다른지만 알려준다."""
     state = installed_state()
+    latest_sha = latest_commit_sha(timeout)
     if not state:
-        return ""
-    return update_notice(state, latest_release_version(timeout), latest_commit_sha(timeout))
+        if not latest_sha:
+            return CHECK_FAILED
+        return DEV_NOTICE if latest_sha != _git_head() else ""
+    latest_version = latest_release_version(timeout)
+    if not latest_sha and not latest_version:
+        return CHECK_FAILED
+    return update_notice(state, latest_version, latest_sha)
 
 
 def update_now_command(pid: int) -> list:

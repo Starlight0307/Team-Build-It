@@ -117,7 +117,10 @@ class HistoryBubble(QFrame):
         self.setStyleSheet("border: none; background: transparent;")
         eff = QGraphicsOpacityEffect(self); self.setGraphicsEffect(eff)
         anim = QPropertyAnimation(eff, b"opacity", self)
-        anim.setDuration(250); anim.setStartValue(0.0); anim.setEndValue(1.0); anim.start()
+        anim.setDuration(250); anim.setStartValue(0.0); anim.setEndValue(1.0)
+        # 효과를 남겨 두면 스크롤할 때 글자가 예전 위치로 그려진다 (widget/widgets.py MessageBubble과 같은 이유)
+        anim.finished.connect(lambda: self.setGraphicsEffect(None))
+        anim.start()
         self._anim = anim; self._is_user = is_user
 
     def _apply_bubble_width(self, container_width: int):

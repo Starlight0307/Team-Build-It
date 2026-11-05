@@ -3,7 +3,7 @@ import re
 
 from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QGraphicsOpacityEffect, QLayout, QWidget,
-                             QDialog, QScrollArea, QStackedWidget, QAbstractButton)
+                             QDialog, QScrollArea, QStackedWidget, QAbstractButton, QSplitter, QSplitterHandle)
 from PyQt6.QtCore import (pyqtSignal, pyqtProperty, Qt, QPropertyAnimation, QEasingCurve,
                           QTimer, QRect, QRectF, QPoint, QSize)
 from PyQt6.QtGui import QFontMetrics, QFont, QPainter, QColor, QLinearGradient, QKeySequence
@@ -133,6 +133,28 @@ class FlowLayout(QLayout):
 # ==========================================
 # 🃏 반응형 카드 행 — 폭이 부족하면 카드를 줄이고, 그래도 안 되면 줄바꿈
 # ==========================================
+class _GripHandle(QSplitterHandle):
+    """가운데에 짧은 손잡이를 그린다 — 평소엔 흐리게, 마우스를 올리면 진하게. 파스텔·다크 테마 모두에서 보이는 색."""
+
+    def __init__(self, orientation, parent):
+        super().__init__(orientation, parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(139, 120, 238, 220 if self.underMouse() else 90))
+        h = min(48, self.height())
+        p.drawRoundedRect(QRectF((self.width() - 4) / 2, (self.height() - h) / 2, 4, h), 2, 2)
+        p.end()
+
+
+class GripSplitter(QSplitter):
+    def createHandle(self):
+        return _GripHandle(self.orientation(), self)
+
+
 class ResponsiveCardRow(QWidget):
     """정해진 개수의 카드를 최대한 한 줄에 유지하되, 폭이 부족해지면
     카드 너비를 min_card_w까지 줄여서 계속 한 줄을 유지한다. 그래도
@@ -317,7 +339,7 @@ class PluginCard(QFrame):
         super().__init__()
         self.p = p
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setFixedSize(210, 210)
+        self.setFixedSize(210, 210)   # 폭은 마켓플레이스(_relayout_grid)가 창 너비에 맞춰 늘린다
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 20, 15, 20)
@@ -337,16 +359,32 @@ class PluginCard(QFrame):
         self.btn = QPushButton("설치")
         self.btn.setMinimumSize(70, 34)
         self.btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.update_btn_status(parent_app.installed_module_names)
         self.btn.clicked.connect(
             lambda checked, b=self.btn, n=f_names, m=p['module_name'], u=p['github_url']:
                 parent_app.plugin_page.plugin_install_request.emit(n[0], m, u, b)
         )
-        layout.addWidget(self.btn)
+        self.remove_btn = QPushButton("제거")
+        self.remove_btn.setMinimumSize(60, 34)
+        self.remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remove_btn.clicked.connect(
+            lambda checked: parent_app.plugin_page.plugin_uninstall_request.emit(p['name'], p['module_name']))
+        self.remove_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #E5606E; border: 1px solid #E5606E;"
+            " border-radius: 12px; font-weight: bold; }"
+            "QPushButton:hover { background-color: rgba(229, 96, 110, 0.15); }")
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addWidget(self.btn, 1)
+        buttons.addWidget(self.remove_btn)
+        layout.addLayout(buttons)
+        self.update_btn_status(parent_app.installed_module_names)
 
     def update_btn_status(self, installed_modules):
-        if self.p['module_name'] in installed_modules:
-            self.btn.setText("설치됨")
+        installed = self.p['module_name'] in installed_modules
+        self.remove_btn.setVisible(installed)
+        self.btn.setEnabled(True)
+        self.btn.setText("설치됨" if installed else "설치")
+        if installed:
             self.btn.setStyleSheet(
                 "background-color: transparent; color: gray; "
                 "border: 1px solid #CFC5EE; color: #7A7699; border-radius: 12px; font-weight: bold;"
@@ -453,7 +491,7 @@ class AgentOverlay(QWidget):
 
     def __init__(self):
         import sys
-        flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+        flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint | Qt.WindowType.WindowStaysOnTopHint
                  | Qt.WindowType.WindowTransparentForInput | Qt.WindowType.WindowDoesNotAcceptFocus)
         if sys.platform == "win32":
             flags |= Qt.WindowType.Tool   # 작업 표시줄에 안 보이게 (맥에서는 앱이 비활성화되면 숨어버려서 제외)
@@ -598,6 +636,8 @@ class MessageBubble(QFrame):
         anim.setDuration(300)
         anim.setStartValue(0.0)
         anim.setEndValue(1.0)
+        # 효과를 남겨 두면 스크롤할 때 글자가 예전 위치로 그려져 말풍선 윗부분이 카드 아래로 잘려 보인다
+        anim.finished.connect(lambda: self.setGraphicsEffect(None))
         anim.start()
         self.anim = anim
 

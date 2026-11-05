@@ -87,6 +87,9 @@ def _refresh_session_if_needed():
         if resp.status_code == 200:
             data = resp.json()
             _store_tokens(data.get("access_token"), data.get("refresh_token"))
+            # refresh_token은 쓸 때마다 바뀐다 — 파일도 바꿔 두지 않으면 다음 실행의 자동 로그인이 실패한다
+            if _session.get("remember"):
+                _persist_session()
     except Exception as e:
         print(f"[세션 갱신 오류] {e}")
 
@@ -162,6 +165,7 @@ def set_session(access_token: str, username: str, refresh_token: str = None, rem
     자동 로그인에 쓴다 — "로그인 유지 안 함"을 선택했을 때만 False로 부른다."""
     _store_tokens(access_token, refresh_token)
     _session["username"] = username
+    _session["remember"] = remember
     if remember and _session.get("refresh_token"):
         _persist_session()
     elif not remember:
@@ -335,6 +339,9 @@ def try_auto_login():
             json={"refresh_token": refresh_token},
             timeout=10,
         )
+        if resp.status_code == 429 or resp.status_code >= 500:
+            print(f"[자동 로그인] 서버 오류({resp.status_code}) — 저장된 로그인은 다음 실행 때 다시 쓴다")
+            return None
         if resp.status_code != 200:
             raise ValueError(f"세션 만료 ({resp.status_code})")
 
@@ -343,6 +350,9 @@ def try_auto_login():
             raise ValueError("탈퇴한 계정")
         set_session(data.get("access_token"), username, data.get("refresh_token"), method="자동 로그인")
         return username
+    except requests.RequestException as e:   # 인터넷이 잠깐 끊긴 것 — 로그인 정보까지 지우면 매번 로그인해야 한다
+        print(f"[자동 로그인] 연결 오류 — 저장된 로그인은 다음 실행 때 다시 쓴다: {type(e).__name__}")
+        return None
     except Exception as e:
         print(f"[자동 로그인 실패] {e}")
         clear_persistent_session()

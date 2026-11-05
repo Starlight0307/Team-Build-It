@@ -33,7 +33,7 @@ TOOL_SCHEMAS = {
         "function": {
             "name": "discover_iot_devices",
             "description": (
-                "로컬 네트워크에서 발견되는 TP-Link Kasa 스마트 기기(플러그 등) 목록을 조회합니다. "
+                "등록한 Smart Life 기기와 로컬 네트워크의 TP-Link Kasa 기기 목록을 조회합니다. "
                 "사용자가 '스마트 기기 찾아줘', '연결된 IoT 기기 뭐 있어' 등을 물을 때 호출하세요. "
                 "기기를 켜거나 끄기 전에 먼저 이 함수로 정확한 기기 이름을 확인하는 게 좋습니다."
             ),
@@ -45,7 +45,7 @@ TOOL_SCHEMAS = {
         "function": {
             "name": "control_iot_device",
             "description": (
-                "이름으로 지정한 Kasa 스마트 기기를 켜거나 끕니다. "
+                "이름으로 지정한 스마트 기기(Smart Life·Kasa)를 켜거나 끕니다. "
                 "사용자가 '거실 전등 켜줘', 'TV 전원 꺼줘' 등을 말할 때 호출하세요. "
                 "정확한 기기 이름을 모르면 먼저 discover_iot_devices로 확인하세요."
             ),
@@ -202,7 +202,34 @@ async def _discover_devices(timeout: int = 5) -> dict:
     return await kasa.Discover.discover(discovery_timeout=timeout)
 
 
+def _registered_backends() -> list:
+    from core.iot_local import registered_backends
+    return registered_backends()
+
+
+def _registered_device_lines() -> list:
+    """등록한 Smart Life 기기를 목록 문장으로. 없으면 []."""
+    backends = _registered_backends()
+    if not backends:
+        return []
+    lines = []
+    for device in asyncio.run(_discover_all(backends)):
+        state = {True: "🟢 켜짐", False: "⚪ 꺼짐", None: "상태 없음"}[device.is_on]
+        lines.append(f"  · {device.name or '(이름 없음)'} ({device.vendor}) — {state}")
+    return lines
+
+
 def discover_iot_devices() -> str:
+    """등록한 Smart Life 기기와 로컬 네트워크의 Kasa 기기 목록을 조회한다(제어하지 않음)."""
+    local = _discover_kasa_devices()
+    registered = _registered_device_lines()
+    if not registered:
+        return local
+    header = f"🏠 등록한 스마트 기기 ({len(registered)}개):"
+    return "\n".join([header, *registered] + ([local] if local.startswith("🏠") else []))
+
+
+def _discover_kasa_devices() -> str:
     """로컬 네트워크에서 발견되는 Kasa 스마트 기기 목록을 조회한다(제어하지 않음)."""
     print("\n[IoT 제어] 로컬 네트워크에서 스마트 기기 검색 중...")
     try:
@@ -262,8 +289,23 @@ async def _set_device_state(device_name: str, turn_on: bool) -> str:
     return f"✅ '{target.alias}' 기기를 {state} 처리했습니다."
 
 
+async def _control_registered_device(device_name: str, turn_on: bool):
+    """등록한 Smart Life 기기 중 이름이 같은 기기를 제어한 결과 문장. 없으면 None(Kasa에서 찾는다)."""
+    backends = _registered_backends()
+    if not backends:
+        return None
+    matches = [d for d in _model.match_devices_by_name(await _discover_all(backends), device_name)
+               if d.supports(_model.CAP_ON_OFF)]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        return f"'{device_name}'이라는 이름의 기기가 {len(matches)}개 있어 어느 것을 제어할지 알 수 없습니다. 기기 이름을 다르게 설정해주세요."
+    updated = await _backend_for(backends, matches[0].vendor).set_power(matches[0].key, turn_on)
+    return f"✅ '{updated.name}' 기기를 {'켬' if turn_on else '끔'} 처리했습니다."
+
+
 def control_iot_device(device_name: str, action: str) -> str:
-    """이름으로 지정한 Kasa 스마트 기기를 켜거나 끈다."""
+    """이름으로 지정한 스마트 기기(등록한 Smart Life 기기 또는 Kasa)를 켜거나 끈다."""
     if not isinstance(device_name, str) or not device_name.strip():
         return "⚠️ 제어할 기기 이름을 알려주세요."
 
@@ -273,6 +315,9 @@ def control_iot_device(device_name: str, action: str) -> str:
 
     print(f"\n[IoT 제어] '{device_name}' 기기 {action_norm} 요청 처리 중...")
     try:
+        registered_reply = asyncio.run(_control_registered_device(device_name, action_norm == "on"))
+        if registered_reply is not None:
+            return registered_reply
         return asyncio.run(_set_device_state(device_name, action_norm == "on"))
     except Exception as e:
         print(f"[IoT 제어] 기기 제어 오류: {e}")
@@ -599,7 +644,8 @@ class KasaBackend(_model.DeviceBackend):
 
 def _get_backends() -> list:
     """등록된 제조사 백엔드. 새 제조사는 여기에 추가한다(테스트에서 가짜로 교체 가능)."""
-    return [KasaBackend()]
+    from core.iot_local import registered_backends
+    return [KasaBackend()] + registered_backends()
 
 
 async def _discover_all(backends) -> list:
@@ -833,3 +879,56 @@ def delete_room(room_name: str = "") -> str:
     if not saved:
         return "⚠️ 방 정보를 저장하지 못했어요. 잠시 후 다시 시도해주세요."
     return f"[✅ 방 삭제 완료]\n'{removed['name']}' 방을 삭제했어요(기기 자체는 그대로예요)."
+
+
+# ==========================================
+# 🎛️ 홈 화면 IoT 패널용 (widget/iot_panel.py)
+# ==========================================
+def scan_network_devices() -> list:
+    """같은 네트워크에서 찾은 기기 [(Device, 버전)] — 등록 화면용. Kasa와 Smart Life를 함께 찾는다."""
+    from core.iot_local import scan_tuya
+
+    found = [(d, "") for d in asyncio.run(KasaBackend().discover())]
+    return found + scan_tuya()
+
+
+def list_registered_devices() -> tuple:
+    """(등록한 기기 목록, 오류 문장 목록) — 홈 화면 패널용."""
+    from core.iot_local import IotError, registered_devices
+
+    registered = registered_devices()
+    if not registered:
+        return [], []
+
+    async def run():
+        devices, errors, seen = [], [], set()
+        for backend in _get_backends():
+            try:
+                found = await backend.discover()
+            except IotError as e:
+                errors.append(str(e))
+                continue
+            except Exception as e:
+                print(f"[IoT] {backend.vendor} 기기 확인 실패: {type(e).__name__}")
+                continue
+            devices.extend(d for d in _model.sanitize_devices(backend.vendor, found, seen) if d.key in registered)
+        return devices, errors
+
+    return asyncio.run(run())
+
+
+def _with_discovered_backend(device_key: str, action):
+    """계약대로 같은 인스턴스에서 discover한 뒤 제어한다."""
+    async def run():
+        vendor = device_key.split(":", 1)[0]
+        backend = _backend_for(_get_backends(), vendor)
+        if backend is None:
+            raise LookupError("backend is not configured")
+        await backend.discover()
+        return await action(backend)
+
+    return asyncio.run(run())
+
+
+def set_device_power(device_key: str, on: bool):
+    return _with_discovered_backend(device_key, lambda b: b.set_power(device_key, on))

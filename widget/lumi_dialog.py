@@ -99,7 +99,7 @@ class LumiDialog(QDialog):
         self.dark = is_dark() if dark is None else dark
         self.p = palette(self.dark)
         self.setModal(True)
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMinimumWidth(min_width)
         self.setWindowTitle(title)
@@ -322,7 +322,7 @@ def wrap(dlg: QDialog, title: str, icon_name: str = None, min_width: int = 520):
     if old is not None:
         content.setLayout(old)   # 레이아웃을 새 위젯으로 옮긴다(옮기면 dlg에는 레이아웃이 없어진다)
         old.setContentsMargins(0, 0, 0, 0)   # 여백은 카드가 준다(겹치면 안쪽이 너무 넓어진다)
-    dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+    dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
     dlg.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     dlg.setMinimumWidth(min_width)
 

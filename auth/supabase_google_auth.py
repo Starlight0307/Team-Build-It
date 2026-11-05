@@ -22,7 +22,8 @@ RLS로 실제 데이터 접근을 통제). DB 비밀번호나 구글 client_secr
 구글 캘린더:
     로그인할 때 캘린더 권한(CALENDAR_SCOPES)도 같이 요청한다. 토큰 교환 응답의
     provider_token이 구글 access token이고, plugins/calendar_tool.py가 이걸로
-    캘린더를 쓴다. 이 토큰은 파일로 저장하지 않고 메모리에만 둔다(로그아웃·종료 때 사라짐).
+    캘린더를 쓴다. 이 토큰은 갱신할 수 없어 1시간만 메모리에 둔다. 계속 유지하는 연결은 calendar_tool의
+    _connect_with_saved_token(OAuth 데스크톱 클라이언트 + 암호화 저장)이 맡는다.
     구글 쪽 준비: Google Cloud 프로젝트에서 Calendar API 사용 설정 + OAuth 동의
     화면(데이터 액세스)에 CALENDAR_SCOPES 등록.
 
