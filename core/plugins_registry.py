@@ -222,7 +222,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "calendar_tool",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/calendar_tool.py",
-        "sha256": "78d83961167bec0c5bf522bc75c3eedb7e91a009be42916700640c1cdf36c0f8",
+        "sha256": "8aed02b12f245e2c972ca2e2a9838f9d5b211920f99be6670fe0a46873493a84",
         "dependencies": ["google-api-python-client", "google-auth-httplib2", "google-auth-oauthlib", "tzdata"]
     },
     {
@@ -313,14 +313,14 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "IoT 스마트 기기 제어",
-        "desc": "TP-Link Kasa 스마트 플러그 등 로컬 네트워크의 IoT 기기 검색·전원 제어, 씬, 방(거실 등) 단위 제어",
+        "desc": "같은 Wi-Fi의 Smart Life·TP-Link Kasa 기기를 찾아 등록하고 전원 제어. 씬, 방(거실 등) 단위 제어. 홈 화면에 제어 패널 추가",
         "func_names": ["discover_iot_devices", "control_iot_device",
                        "create_scene", "list_scenes", "run_scene", "delete_scene",
                        "set_device_room", "list_rooms", "control_room", "delete_room"],
         "module_name": "iot_control",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/iot_control.py",
-        "sha256": "ad48d70e076359cc8a5c402aab645252c4a7ec62cb098cda33c29813fb67899c",
-        "dependencies": ["python-kasa"]
+        "sha256": "68d0dc1c246e9e46793af7917d1317627d437f67039565b37304606eaec147b7",
+        "dependencies": ["python-kasa", "tinytuya"]
     },
     {
         "name": "PC 상태 이력/변화 감지",
@@ -418,3 +418,14 @@ AVAILABLE_PLUGINS = [
         "dependencies": []
     },
 ]
+
+
+# 루미에 기본으로 들어 있는 기능 — 항상 켜져 있고 마켓플레이스 목록에는 나오지 않는다.
+# 홈 화면 위젯·캘린더 화면처럼 앱이 직접 쓰는 기능과 일상 기본 기능이다.
+BUILTIN_PLUGINS = frozenset({
+    "weather", "data_backup", "activity_log", "file_explorer", "text_tools", "file_search", "app_usage",
+    "system_info", "calendar_tool", "local_calendar", "reminder", "todo_list", "notes",
+})
+
+# 마켓플레이스에서 직접 설치해야 켜지는 부가 기능
+MARKETPLACE_PLUGINS = [p for p in AVAILABLE_PLUGINS if p["module_name"] not in BUILTIN_PLUGINS]

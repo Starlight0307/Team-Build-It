@@ -87,6 +87,9 @@ def _refresh_session_if_needed():
         if resp.status_code == 200:
             data = resp.json()
             _store_tokens(data.get("access_token"), data.get("refresh_token"))
+            # refresh_token은 쓸 때마다 바뀐다 — 파일도 바꿔 두지 않으면 다음 실행의 자동 로그인이 실패한다
+            if _session.get("remember"):
+                _persist_session()
     except Exception as e:
         print(f"[세션 갱신 오류] {e}")
 
@@ -162,6 +165,7 @@ def set_session(access_token: str, username: str, refresh_token: str = None, rem
     자동 로그인에 쓴다 — "로그인 유지 안 함"을 선택했을 때만 False로 부른다."""
     _store_tokens(access_token, refresh_token)
     _session["username"] = username
+    _session["remember"] = remember
     if remember and _session.get("refresh_token"):
         _persist_session()
     elif not remember:
@@ -335,6 +339,9 @@ def try_auto_login():
             json={"refresh_token": refresh_token},
             timeout=10,
         )
+        if resp.status_code == 429 or resp.status_code >= 500:
+            print(f"[자동 로그인] 서버 오류({resp.status_code}) — 저장된 로그인은 다음 실행 때 다시 쓴다")
+            return None
         if resp.status_code != 200:
             raise ValueError(f"세션 만료 ({resp.status_code})")
 
@@ -343,6 +350,9 @@ def try_auto_login():
             raise ValueError("탈퇴한 계정")
         set_session(data.get("access_token"), username, data.get("refresh_token"), method="자동 로그인")
         return username
+    except requests.RequestException as e:   # 인터넷이 잠깐 끊긴 것 — 로그인 정보까지 지우면 매번 로그인해야 한다
+        print(f"[자동 로그인] 연결 오류 — 저장된 로그인은 다음 실행 때 다시 쓴다: {type(e).__name__}")
+        return None
     except Exception as e:
         print(f"[자동 로그인 실패] {e}")
         clear_persistent_session()
@@ -615,11 +625,33 @@ def encrypt_existing_chats(user_id: str = None) -> int:
 # 🔐 회원 인증 (Supabase Auth)
 # ==========================================
 
+def _login_email(username: str, password: str):
+    """아이디 + 비밀번호가 맞을 때만 그 계정의 이메일을 받는다 (틀리면 None).
+
+    예전에는 rpc_get_email_by_username으로 "아이디만" 넣어도 이메일이 나와서,
+    로그인하지 않은 누구나 아이디를 하나씩 넣어 보며 회원 이메일을 모을 수
+    있었다(보안 점검 2026-11-03). 지금은 서버(rpc_login_email)가 비밀번호까지
+    확인한 뒤에만 이메일을 돌려주고, 틀린 비밀번호가 반복되면 잠시 막는다
+    (data/migrations/007_harden_lookup_and_export_key.sql).
+
+    007 마이그레이션을 아직 적용하지 않은 DB(함수 없음 → 404)에서는 예전
+    함수로 넘어간다 — 적용하고 나면 예전 함수는 권한이 빠져 이 경로는 안 쓰인다."""
+    resp = requests.post(
+        f"{SUPABASE_URL}/rest/v1/rpc/rpc_login_email",
+        headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+        json={"p_username": username, "p_password": password}, timeout=10,
+    )
+    if resp.status_code == 404:
+        return _rpc("rpc_get_email_by_username", {"p_username": username})
+    resp.raise_for_status()
+    return resp.json()
+
+
 def verify_login(username: str, password: str, remember: bool = True) -> bool:
-    """로그인 검증. 아이디→이메일 조회(RPC) 후 Supabase에 비밀번호 검증을
-    맡긴다. 성공하면 세션(access_token)을 저장해 마이페이지 등에서 재사용."""
+    """로그인 검증. 아이디+비밀번호로 이메일을 받은 뒤(_login_email) Supabase에
+    비밀번호 검증을 맡긴다. 성공하면 세션(access_token)을 저장해 마이페이지 등에서 재사용."""
     try:
-        email = _rpc("rpc_get_email_by_username", {"p_username": username})
+        email = _login_email(username, password)
         if not email:
             return False
 
@@ -781,10 +813,24 @@ def finalize_signup(access_token: str, password: str, username: str, name: str, 
         return False
 
 
-def get_username_by_email(email: str):
-    """이메일로 아이디 찾기"""
+def get_username_by_email(email: str, access_token: str = None):
+    """이메일로 아이디 찾기 — 이메일 인증(verify_reset_code)으로 받은 그 사람 본인의
+    세션(access_token)으로 profiles를 읽는다. RLS("본인 정보만 조회") 때문에 본인
+    아이디만 보이므로, 이메일 인증을 안 한 사람은 남의 아이디를 알아낼 수 없다.
+    (예전엔 rpc_get_username_by_email을 로그인 없이 불러서 이메일만 알면 누구나
+    아이디와 가입 여부를 알 수 있었다 — 보안 점검 2026-11-03)"""
+    if not access_token:
+        return None
     try:
-        return _rpc("rpc_get_username_by_email", {"p_email": email})
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/profiles",
+            params={"select": "username"},
+            headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        return rows[0].get("username") if rows else None
     except Exception as e:
         print(f"[아이디 찾기 오류] {e}")
         return None
@@ -853,7 +899,7 @@ def change_password(username: str, current_password: str, new_password: str) -> 
     """로그인된 상태에서 비밀번호 변경. 세션이 있어도 먼저 현재 비밀번호로
     한 번 더 확인한다 (자리 비운 사이 남이 바꾸는 것 방지)."""
     try:
-        email = _rpc("rpc_get_email_by_username", {"p_username": username})
+        email = _login_email(username, current_password)
         if not email:
             return False
 
@@ -890,7 +936,7 @@ def delete_account(username: str, password: str) -> bool:
     구현했다 — 데이터까지 완전히 지워야 하면 팀 관리자가 Supabase
     대시보드(Authentication → Users)에서 직접 삭제해야 한다."""
     try:
-        email = _rpc("rpc_get_email_by_username", {"p_username": username})
+        email = _login_email(username, password)
         if not email:
             return False
 
@@ -991,6 +1037,50 @@ def complete_google_login(access_token: str, refresh_token: str = None, remember
         raise RuntimeError("탈퇴한 계정이에요.")
     set_session(access_token, username, refresh_token, remember=remember, method="Google")
     return username
+
+
+# ==========================================
+# 🔑 내보내기/백업 파일용 계정 비밀값 (data/chat_crypto.py의 계정 키)
+#
+# profiles.export_secret — 본인만 읽을 수 있는 무작위 값(RLS). 계정 uid만으로
+# 키를 만들던 예전 방식(LUMIA1)은 uid가 비밀이 아니라서 파일과 uid만 있으면
+# 누구나 열 수 있었다(보안 점검 2026-11-03, migrations/007).
+# ==========================================
+
+# 007 마이그레이션이 아직 적용되지 않아 서버에 export_secret 컬럼이 없을 때 돌려주는 표시
+EXPORT_SECRET_NOT_DEPLOYED = object()
+_export_secret_cache: dict = {}
+
+
+def get_export_secret():
+    """지금 로그인한 계정의 export_secret 문자열.
+    로그인 안 했거나 서버에 닿지 못하면 None, 서버에 컬럼이 아직 없으면 EXPORT_SECRET_NOT_DEPLOYED."""
+    uid = _current_uid()
+    if not uid:
+        return None
+    if uid in _export_secret_cache:
+        return _export_secret_cache[uid]
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/profiles",
+            params={"select": "export_secret", "id": f"eq.{uid}"},
+            headers=_session_headers(),
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[내보내기 키 조회 오류] {e}")
+        return None
+    if resp.status_code == 400 and "42703" in resp.text:   # undefined_column
+        return EXPORT_SECRET_NOT_DEPLOYED
+    if resp.status_code != 200:
+        print(f"[내보내기 키 조회 오류] {resp.status_code} {resp.text[:200]}")
+        return None
+    rows = resp.json()
+    secret = rows[0].get("export_secret") if rows else None
+    if not secret:
+        return None
+    _export_secret_cache[uid] = secret
+    return secret
 
 
 # ==========================================

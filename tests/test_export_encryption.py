@@ -4,6 +4,14 @@ import pytest
 from data import chat_crypto as cc
 
 
+@pytest.fixture(autouse=True)
+def _fake_server_export_secret(monkeypatch):
+    """서버(profiles.export_secret)에 가지 않게 — 계정마다 다른 가짜 비밀값을 돌려준다."""
+    from data import db
+    monkeypatch.setattr(db, "get_export_secret",
+                        lambda: (f"secret-of-{db._current_uid()}" if db._current_uid() else None))
+
+
 def test_roundtrip():
     raw = cc.encrypt_with_password("나: 비밀 이야기\n루미: 네", "pw1234")
     assert raw.startswith(cc.EXPORT_PREFIX) and "비밀" not in raw
@@ -139,3 +147,44 @@ def test_backup_includes_todos_notes_and_money_records(tmp_path, monkeypatch):
     assert expense._load_expenses("alice") == [{"item": "커피", "price": 4500}]
     assert expense._load_income("alice")[0]["amount"] == 3000000
     assert expense._load_budget("alice") == 500000
+
+
+def test_account_key_needs_server_secret_not_just_uid(monkeypatch):
+    """보안 점검 2026-11-03: 계정 uid만 알아서는 계정 키 파일(LUMIA2)을 못 연다 — 서버 비밀값이 달라지면 실패."""
+    from data import db
+    monkeypatch.setattr(db, "_current_uid", lambda: "uuid-of-alice")
+    raw = cc.encrypt_export("비밀")
+    assert raw.startswith("LUMIA2:")
+    monkeypatch.setattr(db, "get_export_secret", lambda: "attacker-guess")   # uid는 같고 비밀값만 모름
+    with pytest.raises(ValueError):
+        cc.decrypt_export(raw)
+
+
+def test_old_uid_only_account_files_still_open(monkeypatch):
+    """예전(LUMIA1) 파일은 같은 계정으로 로그인하면 계속 열린다."""
+    from data import db
+    monkeypatch.setattr(db, "_current_uid", lambda: "uuid-of-alice")
+    old = cc.LEGACY_ACCOUNT_EXPORT_PREFIX + cc._legacy_account_fernet().encrypt("예전 파일".encode()).decode()
+    assert cc.decrypt_export(old) == "예전 파일"
+    monkeypatch.setattr(db, "_current_uid", lambda: "uuid-of-bob")
+    with pytest.raises(ValueError, match="다른 계정"):
+        cc.decrypt_export(old)
+
+
+def test_before_migration_keeps_old_account_format(monkeypatch):
+    """서버에 007 마이그레이션 전(컬럼 없음)이면 예전 방식 그대로 — 팀원 PC 간 호환 유지."""
+    from data import db
+    monkeypatch.setattr(db, "_current_uid", lambda: "uuid-of-alice")
+    monkeypatch.setattr(db, "get_export_secret", lambda: db.EXPORT_SECRET_NOT_DEPLOYED)
+    raw = cc.encrypt_export("내용")
+    assert raw.startswith(cc.LEGACY_ACCOUNT_EXPORT_PREFIX)
+    assert cc.decrypt_export(raw) == "내용"
+
+
+def test_offline_falls_back_to_this_pc_key(monkeypatch):
+    """서버에 닿지 못하면(비밀값 None) 평문이 아니라 이 PC의 앱 키로 암호화한다."""
+    from data import db
+    monkeypatch.setattr(db, "_current_uid", lambda: "uuid-of-alice")
+    monkeypatch.setattr(db, "get_export_secret", lambda: None)
+    raw = cc.encrypt_export("내용")
+    assert raw.startswith(cc.APP_EXPORT_PREFIX) and "내용" not in raw

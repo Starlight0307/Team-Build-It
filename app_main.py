@@ -56,10 +56,11 @@ from calendar_feature import calendar_preference
 from settings import ui_scale
 from core.ai_worker import (AIWorker, _build_condition_recommendation, is_large_file_followup,
                             build_overall_security_reply)
-from core.plugin_manager import load_existing_plugins, download_and_install_plugin
+from core.plugin_manager import load_existing_plugins, download_and_install_plugin, uninstall_plugin
+from widget.iot_panel import IotPanel
 from core.plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
 from widget.widgets import (CommandCard, MessageBubble, TypingIndicator, FlowLayout,
-                            ResponsiveCardRow, NotificationToast, RealtimeAlertsDialog,
+                            ResponsiveCardRow, GripSplitter, NotificationToast, RealtimeAlertsDialog,
                             AutoSizeStackedWidget, ToggleSwitch, AgentOverlay, ScrollTopFade)
 from widget.marketplace import PluginMarketplaceWidget
 from widget import icons
@@ -265,6 +266,7 @@ DASHBOARD_WIDGETS = {
     "today":   ("calendar-days", "오늘 일정", "오늘 등록된 일정을 보여줘요. (로그인 필요)"),
     "todo":    ("list-todo", "할 일", "아직 끝내지 않은 할 일을 보여줘요. (로그인 필요)"),
     "session": ("timer", "세션", "루미 가동 시간, 명령 수, 시스템 부하를 보여줘요."),
+    "iot":     ("lightbulb", "IoT 제어", "등록한 기기를 켜고 꺼요. (IoT 플러그인 설치 필요)"),
 }
 DEFAULT_WIDGET_ORDER = list(DASHBOARD_WIDGETS)
 
@@ -329,7 +331,13 @@ class AssistantApp(QWidget):
         QTimer.singleShot(800, self._run_startup_update_check)
         # 신규 기능 6(앱 사용 통계) — 사용자가 이전에 기록을 켜둔 경우에만 이어서 기록한다.
         QTimer.singleShot(1500, self._resume_usage_tracking)
-        QTimer.singleShot(2500, self._apply_wake_setting)   # 저장된 "호출어 계속 듣기" 설정대로 마이크를 켠다
+        if "iot_control" in self.installed_module_names:
+            QTimer.singleShot(2000, self.iot_panel.refresh)
+        # 설치본은 바로가기로 켤 때만 자동 업데이트된다 — 창을 닫아 백그라운드로 켜 둔 동안에도 새 버전을 알린다
+        QTimer.singleShot(5000, self._check_for_update)
+        self._update_poll_timer = QTimer(self)
+        self._update_poll_timer.timeout.connect(self._check_for_update)
+        self._update_poll_timer.start(6 * 60 * 60 * 1000)
 
         # 실시간 감시 알림을 주기적으로 확인 — 새 알림이 생겼을 때만 조용히 토스트로 알림
         self._alert_poll_timer = QTimer(self)
@@ -1333,6 +1341,7 @@ class AssistantApp(QWidget):
 
         self.plugin_page = PluginMarketplaceWidget(self)                        # index 1
         self.plugin_page.plugin_install_request.connect(self._on_install_plugin)
+        self.plugin_page.plugin_uninstall_request.connect(self._on_uninstall_plugin)
         self.stacked_widget.addWidget(self.plugin_page)
 
         self.history_page = HistoryWidget(lambda: MOCK_USER)                    # index 2
@@ -1375,24 +1384,50 @@ class AssistantApp(QWidget):
         self._auto_login_worker.done.connect(self._on_auto_login_done)
         self._auto_login_worker.start()
 
+    _LEFT_MIN_WIDTH, _LEFT_MAX_WIDTH, _LEFT_DEFAULT_WIDTH = 260, 560, 300
+    _CENTER_MIN_WIDTH = 240   # LumiOrb 최소 크기와 같게 — 이보다 좁으면 대화창을 늘릴 때 오브가 잘린다
+    _CHAT_MIN_WIDTH, _CHAT_DEFAULT_WIDTH = 320, 420
+
+    def _restore_home_split(self):
+        """이 계정이 맞춰 둔 왼쪽 위젯·대화창 폭을 적용한다 — 가운데가 나머지를 쓴다."""
+        total = self.home_splitter.width()
+        if total <= 0:
+            return
+        left = app_settings.get("home_left_width") or self._LEFT_DEFAULT_WIDTH
+        chat = app_settings.get("home_chat_width") or self._CHAT_DEFAULT_WIDTH
+        self.home_splitter.setSizes([left, max(self._CENTER_MIN_WIDTH, total - left - chat), chat])
+
+    def _save_home_split(self):
+        left, _, chat = self.home_splitter.sizes()
+        if left > 0:   # 창이 좁아 왼쪽 위젯이 숨겨져 있으면 0 — 저장값을 지우지 않는다
+            app_settings.set("home_left_width", left)
+        if chat > 0:
+            app_settings.set("home_chat_width", chat)
+
     def init_chat_page(self):
         """홈(대화) 화면 — 왼쪽 정보 패널 | 가운데 오브 | 오른쪽 대화 패널."""
         page = QFrame()
         hl = QHBoxLayout(page)
         hl.setContentsMargins(18, 16, 18, 16)
+        # 왼쪽 위젯 | 가운데 오브 | 오른쪽 대화 — 경계를 끌어 폭을 바꾼다. 창 크기가 바뀌면 가운데가 늘고 준다.
+        self.home_splitter = GripSplitter(Qt.Orientation.Horizontal)
+        self.home_splitter.setHandleWidth(14)
+        self.home_splitter.setChildrenCollapsible(False)
+        hl.addWidget(self.home_splitter)
         hl.setSpacing(18)
 
         # ── 왼쪽: 정보 패널 (창이 좁으면 resizeEvent에서 숨김) ──
         self.left_column = QScrollArea()
         self.left_column.setWidgetResizable(True)
-        self.left_column.setFixedWidth(300)
+        self.left_column.setMinimumWidth(self._LEFT_MIN_WIDTH)
+        self.left_column.setMaximumWidth(self._LEFT_MAX_WIDTH)
         self.left_column.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.left_column.setFrameShape(QFrame.Shape.NoFrame)
         left_inner = QWidget()
         left_inner.setStyleSheet("background: transparent;")
         ll = QVBoxLayout(left_inner)
         ll.setContentsMargins(0, 0, 4, 0)
-        ll.setSpacing(14)
+        ll.setSpacing(10)
         self.stats_panel   = SystemStatsPanel()
         # 자동으로 찾은 위치(os/ip)면 켤 때마다 다시 찾는다 — 직접 입력한 지역은 그대로 둔다
         self.weather_panel = WeatherPanel(
@@ -1406,18 +1441,19 @@ class AssistantApp(QWidget):
         self.today_panel.clicked.connect(lambda: self._go_to_page(6))   # 오늘 일정 → 캘린더 화면
         self.todo_panel.clicked.connect(self._open_todo_dialog)
         self.session_panel = SessionPanel(self.stats_panel)
+        self.iot_panel = IotPanel()
         self.info_panels = [self.stats_panel, self.weather_panel, self.today_panel,
-                            self.todo_panel, self.session_panel]
+                            self.todo_panel, self.session_panel, self.iot_panel]
         self.panel_by_id = {"stats": self.stats_panel, "weather": self.weather_panel,
                             "today": self.today_panel, "todo": self.todo_panel,
-                            "session": self.session_panel}
+                            "session": self.session_panel, "iot": self.iot_panel}
         for panel in self.info_panels:
             ll.addWidget(panel)
         ll.addStretch()
         self._left_layout = ll
         self._apply_widget_layout()
         self.left_column.setWidget(left_inner)
-        hl.addWidget(self.left_column)
+        self.home_splitter.addWidget(self.left_column)
 
         # ── 가운데: 오브 · 이름 · 상태 · 빠른 실행 · 조작 버튼 ──
         self.center_column = QWidget()
@@ -1449,12 +1485,12 @@ class AssistantApp(QWidget):
         # (마이크·귀 버튼은 없앴다 — 대화는 오브를 누르거나 Ctrl+Shift+Space, 호출어 상시 듣기 켜고 끄기는
         #  환경설정 > 음성 · 트레이 메뉴, 마이크가 열려 있는지는 오브 아래 상태 문구와 트레이 툴팁으로 본다)
         cl.addSpacing(4)
-        hl.addWidget(self.center_column, 3)
+        self.center_column.setMinimumWidth(self._CENTER_MIN_WIDTH)
+        self.home_splitter.addWidget(self.center_column)
 
         # ── 오른쪽: 대화 패널 ──
         self.chat_panel = Panel("message-circle", "대화")
-        self.chat_panel.setMinimumWidth(420)   # 제목 줄 버튼 글자(새 채팅·지우기·내보내기)가 다 들어가는 폭
-        self.chat_panel.setMaximumWidth(560)
+        self.chat_panel.setMinimumWidth(self._CHAT_MIN_WIDTH)
         header = self.chat_panel._header_layout
         # 🔍 대화 글자 확대/축소
         self.zoom_out_btn = QPushButton("－")
@@ -1539,7 +1575,16 @@ class AssistantApp(QWidget):
         ir.addWidget(self.send_button)
         bwl.addWidget(self.input_container)
         body.addWidget(self.bottom_input_wrapper)
-        hl.addWidget(self.chat_panel, 2)
+        self.home_splitter.addWidget(self.chat_panel)
+        self.home_splitter.setStretchFactor(0, 0)
+        self.home_splitter.setStretchFactor(1, 1)
+        self.home_splitter.setStretchFactor(2, 0)
+        self._home_split_save_timer = QTimer(self)
+        self._home_split_save_timer.setSingleShot(True)
+        self._home_split_save_timer.setInterval(400)   # 끄는 동안 파일을 계속 쓰지 않게
+        self._home_split_save_timer.timeout.connect(self._save_home_split)
+        self.home_splitter.splitterMoved.connect(lambda *_: self._home_split_save_timer.start())
+        QTimer.singleShot(0, self._restore_home_split)   # 창이 뜬 뒤 실제 폭을 기준으로
 
         self.update_pills()           # 설치된 플러그인 기반으로 pill 생성
         self._update_voice_buttons()
@@ -1555,6 +1600,8 @@ class AssistantApp(QWidget):
         if hasattr(self, 'clock_pill'):
             self._tick_clock()   # 창 폭에 맞는 시계 형식으로 바로 바꾸고 가운데 위치도 다시 잡는다
 
+    _TOP_MENU_ROOM = 60
+
     def _center_top_bar(self):
         """상단 바 가운데 묶음(시계·날씨)을 정중앙에 둔다. 좌우 묶음과 겹치면 그 사이 빈 공간의 가운데로."""
         top, left, center, right = getattr(self, "_top_groups", (None,) * 4)
@@ -1565,8 +1612,9 @@ class AssistantApp(QWidget):
         # 짧은 형식도 안 들어가면 짧은 형식 그대로 둔다 — 비워둔 자리(_top_center_gap)와 버튼 최소 폭 때문에
         # 창이 그보다 좁아지지 않는다.
         m = top.contentsMargins()
+        # 메뉴 이름이 가장 긴 '마켓플레이스'를 골라도 들어갈 만큼 남겨서, 메뉴를 바꿔도 시계 형식이 달라지지 않게 한다
         room = (self.top_bar.width() - m.left() - m.right() - left.sizeHint().width()
-                - right.sizeHint().width() - 4 * top.spacing())
+                - right.sizeHint().width() - 4 * top.spacing() - self._TOP_MENU_ROOM)
         # 후보 글자 폭은 화면에 없는 같은 모양의 라벨로 잰다 — 진짜 시계에 긴 글자 → 짧은 글자를 번갈아 넣으면
         # 매초 상단 바가 다시 배치되어, 마우스를 올려둔 날씨 알약의 툴팁이 뜨기 전에 계속 취소됐다
         center.layout().invalidate()   # 숨겨져 있던 동안 바뀐 글자 폭도 다시 잰다(안 하면 예전 폭으로 그려 메뉴와 겹친다)
@@ -1595,8 +1643,8 @@ class AssistantApp(QWidget):
         x = (bar_w - hint.width()) // 2
         lo = left.geometry().right() + top.spacing()
         hi = right.geometry().left() - top.spacing() - hint.width()
-        if not lo <= x <= hi:   # 정중앙이면 좌우 묶음과 겹친다 → 둘 사이 빈 공간의 가운데
-            x = max(lo, (lo + hi) // 2)
+        if not lo <= x <= hi:   # 정중앙이면 메뉴와 겹친다 → 왼쪽 묶음 옆에 고정(메뉴를 바꿔도 움직이지 않게)
+            x = max(lo, min(lo + 16, hi))
         center.setGeometry(x, (self.top_bar.height() - hint.height()) // 2, hint.width(), hint.height())
         center.raise_()
 
@@ -1899,6 +1947,7 @@ class AssistantApp(QWidget):
         self._update_notice = ""          # "새로운 버전 1.2.0" / "새로운 업데이트" / ""
         self._update_worker = None
         self._update_checked_at = 0.0
+        self._update_toasted = ""         # 같은 새 버전을 계속 알리지 않도록 마지막으로 알린 문구
 
         outer.addStretch()
         # 항목이 늘어나 창이 작으면 넘칠 수 있어 스크롤되게 한다
@@ -1931,15 +1980,17 @@ class AssistantApp(QWidget):
 
     def _check_for_update(self, manual: bool = False):
         import time
+        from settings import version as _version
         if self._update_worker is not None:
             return
+        if not manual and not _version.installed_state():
+            return   # 개발 버전은 [업데이트 확인]을 눌렀을 때만 GitHub에 묻는다
         if not manual and time.time() - self._update_checked_at < self._UPDATE_CHECK_INTERVAL:
             return
         self._update_checked_at = time.time()
         if manual:
             self.update_check_btn.setEnabled(False)
             self.update_check_btn.setText(" 확인 중...")
-        from settings import version as _version
         w = UpdateCheckWorker(_version.check_update)   # check_update는 실패해도 ''를 돌려준다
         w.result_ready.connect(lambda notice, m=manual: self._on_update_checked(notice, m))
         w.finished.connect(self._on_update_worker_done)
@@ -1953,7 +2004,8 @@ class AssistantApp(QWidget):
 
     def _on_update_checked(self, notice, manual: bool):
         from settings import version as _version
-        self._update_notice = notice if isinstance(notice, str) else ""
+        failed = notice == _version.CHECK_FAILED
+        self._update_notice = notice if isinstance(notice, str) and not failed else ""
         installed = bool(_version.installed_state())
         self.update_check_btn.setEnabled(True)
         if self._update_notice and installed:
@@ -1963,10 +2015,14 @@ class AssistantApp(QWidget):
             self.update_check_btn.setText(" 업데이트 확인")
             self.update_check_btn.setToolTip("")
         status = ""
-        if manual and not self._update_notice:
-            status = ("최신 버전이에요" if installed else
-                      "개발 버전은 git pull로 받아요")
+        if manual and failed:
+            status = "확인하지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요"
+        elif manual and not self._update_notice:
+            status = "최신 버전이에요" if installed else "GitHub main과 같아요"
         self._render_version_desc(status)
+        if not manual and installed and self._update_notice and self._update_notice != self._update_toasted:
+            self._update_toasted = self._update_notice
+            self._show_toast(f"{self._update_notice}이(가) 있어요. 환경설정 > 정보에서 받을 수 있어요.")
 
     def _on_update_button(self):
         from settings import version as _version
@@ -1993,7 +2049,8 @@ class AssistantApp(QWidget):
     def _widget_order(self) -> list:
         """저장된 순서 (모르는 id는 버리고, 새로 생긴 위젯은 뒤에 붙인다)."""
         saved = [w for w in (app_settings.get("dashboard_widgets") or []) if w in DASHBOARD_WIDGETS]
-        return saved + [w for w in DEFAULT_WIDGET_ORDER if w not in saved]
+        order = saved + [w for w in DEFAULT_WIDGET_ORDER if w not in saved]
+        return order if "iot_control" in self.installed_module_names else [w for w in order if w != "iot"]
 
     def _hidden_widgets(self) -> set:
         return set(app_settings.get("hidden_widgets") or [])
@@ -2003,6 +2060,7 @@ class AssistantApp(QWidget):
         if not hasattr(self, '_left_layout'):
             return
         hidden = self._hidden_widgets()
+        self.iot_panel.setVisible(False)   # IoT 플러그인이 있으면 아래에서 다시 켠다
         for i, wid in enumerate(self._widget_order()):
             panel = self.panel_by_id[wid]
             self._left_layout.removeWidget(panel)
@@ -2456,6 +2514,31 @@ class AssistantApp(QWidget):
     # ─────────────────────────────────────────────
     # 🔌 플러그인 설치 콜백
     # ─────────────────────────────────────────────
+    def _sync_plugin_ui(self):
+        """플러그인 목록이 바뀐 뒤 빠른 실행·마켓 버튼·홈 위젯을 맞춘다."""
+        self._select_random_quick_actions()
+        self._build_welcome_cards()
+        self.update_pills()
+        self.plugin_page.refresh_status(self.installed_module_names)
+        self._apply_widget_layout()
+        self._rebuild_widget_editor()
+
+    def _on_uninstall_plugin(self, f_name, m_name):
+        if not lumi_dialog.question(self, "플러그인 제거",
+                                    f"'{f_name}' 기능을 제거할까요?\n이 기능으로 저장한 기록은 지우지 않고, 다시 설치하면 이어서 쓸 수 있어요."):
+            return
+        if m_name == "realtime_monitor":
+            stop = next((f for f in self.installed_tools if f.__name__ == "stop_realtime_monitor"), None)
+            if stop:
+                stop()
+        try:
+            uninstall_plugin(m_name, self.installed_tools, self.installed_module_names)
+        except OSError as e:
+            lumi_dialog.critical(self, "오류", f"'{f_name}' 기능을 제거하지 못했어요.\n{e}")
+            return
+        self._sync_plugin_ui()
+        self._show_toast(f"'{f_name}' 기능을 제거했어요.")
+
     def _on_install_plugin(self, f_name, m_name, url, btn):
         already_installed = m_name in self.installed_module_names
         download_and_install_plugin(
@@ -2463,9 +2546,9 @@ class AssistantApp(QWidget):
             self.installed_tools, self.installed_module_names
         )
         # 플러그인 목록이 바뀌었으니 카드/pill을 다시 뽑고 갱신
-        self._select_random_quick_actions()
-        self._build_welcome_cards()
-        self.update_pills()
+        self._sync_plugin_ui()
+        if m_name == "iot_control" and m_name in self.installed_module_names:
+            self.iot_panel.refresh()
 
         # 설치가 방금 막 완료된 경우에만(재실행 시 X) 안내 메시지 표시
         newly_installed = (not already_installed) and (m_name in self.installed_module_names)
@@ -2587,6 +2670,7 @@ class AssistantApp(QWidget):
         self._sync_close_action_buttons()
         self._apply_wake_setting()
         self.weather_panel.reload()   # 지역이 없으면 refresh가 알아서 현재 위치를 찾는다
+        self._restore_home_split()
         if hasattr(self, "skills_page"):
             self.skills_page.refresh()
         self._refresh_info_panels()   # 오늘 일정/할 일 패널에 이전 계정 내용이 남지 않게 다시 읽는다

@@ -1,5 +1,5 @@
 """
-루미 아이콘(lumi.ico) 만들기 — 설치 프로그램과 바로가기에 쓰는 아이콘을 설치 화면의 로고와 같은 그림으로 만든다.
+루미 아이콘(lumi.ico, 맥은 lumi.icns) 만들기 — 설치 프로그램과 바로가기에 쓰는 아이콘을 설치 화면의 로고와 같은 그림으로 만든다.
 
     python installer/make_icon.py [저장할 경로, 기본: installer/lumi.ico]
 
@@ -24,9 +24,12 @@ def main(out=None):
     app = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])  # noqa: F841 — 그리기 전에 있어야 한다
     buf = QBuffer()
     buf.open(QIODevice.OpenModeFlag.WriteOnly)
-    sparkle_pixmap(256, dpr=1).save(buf, "PNG")
+    sparkle_pixmap(1024 if out.endswith(".icns") else 256, dpr=1).save(buf, "PNG")
     img = Image.open(io.BytesIO(bytes(buf.data()))).convert("RGBA")
-    img.save(out, format="ICO", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    if out.endswith(".icns"):
+        img.save(out, format="ICNS")
+    else:
+        img.save(out, format="ICO", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     print(out)
 
 

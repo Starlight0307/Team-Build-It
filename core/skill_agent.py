@@ -11,6 +11,9 @@ skill_agent.py  ─  OpenClaw 스킬 실행 (core/skills.py가 불러온 스킬�
 안전장치
  - run_command는 매번 사용자 확인(confirm_required)을 받는다. "이 스킬은 계속 허용"을
    고르면 앱을 끌 때까지 그 스킬의 명령은 묻지 않는다 (ALLOWED_SKILLS).
+   단, 이번 요청에서 web_fetch로 외부 페이지를 읽은 뒤에는 "계속 허용"이어도 다시 묻는다 —
+   웹페이지에 숨겨 둔 "이 명령을 실행해" 같은 글(프롬프트 인젝션)에 모델이 넘어가
+   사용자 몰래 명령이 실행되지 않게 하려는 것.
  - read_file은 스킬 폴더 안의 파일만 읽는다. web_fetch는 http(s) GET만, 결과는 잘라서 쓴다.
  - 명령은 60초가 넘으면 멈추고, 도구 호출은 한 요청에 최대 MAX_STEPS번까지만.
 """
@@ -103,6 +106,7 @@ class SkillAgentWorker(QThread):
         self._confirm_event = threading.Event()
         self._confirm_answer = "no"
         self._stop = threading.Event()
+        self._fetched_web = False   # 이번 요청에서 web_fetch로 외부 내용을 읽었는지 (안전장치 참고)
 
     # ── 메인 스레드에서 호출 ──
     def answer_confirm(self, answer: str):
@@ -199,10 +203,13 @@ class SkillAgentWorker(QThread):
             command = str(args.get("command") or "").strip()
             if not command:
                 return "명령이 비어 있어요.", None
-            if skill.name not in ALLOWED_SKILLS:
+            if skill.name not in ALLOWED_SKILLS or self._fetched_web:
+                reason = str(args.get("reason") or "")
+                if self._fetched_web and skill.name in ALLOWED_SKILLS:
+                    reason = ("외부 웹페이지를 읽은 뒤라 한 번 더 확인해요." + (f" {reason}" if reason else ""))
                 self._confirm_event.clear()
                 self.confirm_required.emit({"skill": skill.name, "command": command,
-                                            "reason": str(args.get("reason") or "")})
+                                            "reason": reason})
                 self._confirm_event.wait()
                 if self._stop.is_set() or self._confirm_answer == "no":
                     return "사용자가 이 명령 실행을 거절했어요.", f"⛔ 거절한 명령: {command}"
@@ -214,6 +221,7 @@ class SkillAgentWorker(QThread):
             return read_skill_file(skill.base_dir, str(args.get("path") or "")), f"📄 {args.get('path')}"
         if fn == "web_fetch":
             url = str(args.get("url") or "")
+            self._fetched_web = True
             self.status.emit(f"🌐 가져오는 중: {url[:40]}")
             return web_fetch(url), f"🌐 {url}"
         return f"'{fn}' 도구는 루미에 없어요. run_command, read_file, web_fetch만 쓸 수 있어요.", None

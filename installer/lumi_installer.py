@@ -25,11 +25,17 @@ r"""
   LumiSetup.exe                    설치 화면
   LumiSetup.exe --uninstall        제거 화면 ('앱 및 기능'에서 제거를 누르면 이걸로 실행된다)
   LumiSetup.exe --silent [--dir D] 화면 없이 설치(자동 테스트용), 종료 코드 0 = 성공
-  python lumi_installer.py --demo  설치 없이 화면만 흉내(맥에서 디자인 확인용)
+  python lumi_installer.py --demo  설치 없이 화면만 흉내(디자인 확인용)
+
+맥(LumiSetup.app — .dmg로 배포, 애플 서명 없음)도 같은 순서로 설치한다. 다른 점만:
+  설치 위치 ~/Library/Application Support/LumiApp, 바로가기 대신 ~/Applications의 Lumi.app과 Lumi 제거.app,
+  Ollama는 공식 zip을 받아(서명 확인) /Applications(권한이 없으면 ~/Applications)에 넣는다.
 """
 import json
 import os
+import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -48,6 +54,8 @@ CODE_ZIP_AT = "https://codeload.github.com/Starlight0307/Team-Build-It/zip/{sha}
 # 마이페이지에 보여줄 버전 번호 — 코드를 받을 때의 최신 GitHub Release(v1.1.0 → "1.1.0")
 LATEST_RELEASE_API = "https://api.github.com/repos/Starlight0307/Team-Build-It/releases/latest"
 OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
+OLLAMA_MAC_URL = "https://ollama.com/download/Ollama-darwin.zip"
+OLLAMA_MAC_TEAM_ID = "3MU9H2V9Y9"   # Ollama 맥 앱의 애플 개발자 서명 (Infra Technologies, Inc)
 # Microsoft Visual C++ 2015-2022 재배포 패키지(x64) — 항상 최신 버전으로 연결되는 공식 주소
 VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 VC_RUNTIME_KEY = r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
@@ -64,6 +72,8 @@ DEFAULT_MODEL = "llama3.1"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Lumi"
 USER_AGENT = "LumiSetup/1.0"
 IS_WIN = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
+REQUIREMENT_FILES = ["requirements.txt"] + (["requirements-mac.txt"] if IS_MAC else [])   # core/bootstrap.py와 같은 규칙
 LUMI_PURPLE, LUMI_BLUE = "#B69CF6", "#85C6F6"   # settings/theme.py의 PASTEL_PURPLE / PASTEL_BLUE
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if IS_WIN else 0
 
@@ -77,6 +87,12 @@ STEPS = [
     ("model", "AI 모델 내려받기", "루미의 두뇌가 될 모델을 받아요 (약 4.7GB)", 40),
     ("shortcut", "바로가기 만들기", "바탕화면과 시작 메뉴에 루미를 추가해요", 5),
 ]
+if IS_MAC:
+    STEPS = [(k, t, "응용 프로그램 폴더에 루미를 추가해요" if k == "shortcut" else d, w)
+             for k, t, d, w in STEPS if k != "runtime"]
+    # 묶인 파이썬은 맥의 인증서 위치를 몰라 HTTPS가 전부 실패한다 — 시스템 인증서를 알려 준다
+    if os.path.isfile("/etc/ssl/cert.pem"):
+        os.environ.setdefault("SSL_CERT_FILE", "/etc/ssl/cert.pem")
 
 
 class InstallError(Exception):
@@ -91,6 +107,8 @@ class Cancelled(Exception):
 # 순수 함수 (테스트 대상)
 # ─────────────────────────────────────────────
 def default_install_dir() -> str:
+    if IS_MAC:   # 개인 기록 폴더(Application Support/Lumi)와 달라야 제거할 때 기록이 남는다
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "LumiApp")
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     return os.path.join(base, "Programs", APP_NAME)
 
@@ -107,7 +125,7 @@ def paths(install_dir: str) -> dict:
         "pythonw": os.path.join(scripts, ("pythonw" if IS_WIN else "python") + exe),
         "pythons": os.path.join(install_dir, "python"),
         "cache": os.path.join(install_dir, "cache"),
-        "icon": os.path.join(install_dir, "lumi.ico"),
+        "icon": os.path.join(install_dir, "lumi.icns" if IS_MAC else "lumi.ico"),
         "setup": os.path.join(install_dir, "LumiSetup.exe"),
         "launcher": os.path.join(install_dir, "launcher"),
         "launcher_py": os.path.join(install_dir, "launcher", "lumi_installer.py"),
@@ -272,6 +290,32 @@ def bundled_file(name: str) -> str:
     base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
     p = os.path.join(base, name)
     return p if os.path.isfile(p) else ""
+
+
+def write_mac_app(bundle: str, bundle_id: str, icon: str, command: list):
+    """응용 프로그램 폴더에 넣을 작은 앱 — 윈도우 바로가기에 해당한다. 권한 문구(Info.plist)가 있어야
+    맥이 이 앱으로 켠 루미에게 마이크·캘린더 권한을 물어볼 수 있다."""
+    macos = os.path.join(bundle, "Contents", "MacOS")
+    resources = os.path.join(bundle, "Contents", "Resources")
+    os.makedirs(macos, exist_ok=True)
+    os.makedirs(resources, exist_ok=True)
+    run = os.path.join(macos, "run")
+    with open(run, "w", encoding="utf-8") as f:
+        f.write(f"#!/bin/sh\nexec {shlex.join(command)}\n")
+    os.chmod(run, 0o755)
+    name = os.path.splitext(os.path.basename(bundle))[0]
+    info = {"CFBundleName": name, "CFBundleDisplayName": name, "CFBundleIdentifier": bundle_id,
+            "CFBundleExecutable": "run", "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "1.0",
+            "NSHighResolutionCapable": True,
+            "NSMicrophoneUsageDescription": "음성으로 대화하려면 마이크가 필요해요.",
+            "NSCalendarsUsageDescription": "이 Mac의 캘린더 일정을 보여주고 추가하려면 필요해요.",
+            "NSCalendarsFullAccessUsageDescription": "이 Mac의 캘린더 일정을 보여주고 추가하려면 필요해요.",
+            "NSAppleEventsUsageDescription": "요청하신 앱을 다루려면 필요해요."}
+    if os.path.isfile(icon):
+        shutil.copyfile(icon, os.path.join(resources, os.path.basename(icon)))
+        info["CFBundleIconFile"] = os.path.basename(icon)
+    with open(os.path.join(bundle, "Contents", "Info.plist"), "wb") as f:
+        plistlib.dump(info, f)
 
 
 def vc_runtime_ok(version: str) -> bool:
@@ -495,7 +539,7 @@ class Installer:
                 self.model = read_model_name(f.read())
         except OSError:
             self.model = DEFAULT_MODEL
-        icon = bundled_file("lumi.ico")
+        icon = bundled_file(os.path.basename(self.p["icon"]))
         if icon:
             shutil.copyfile(icon, self.p["icon"])
 
@@ -507,13 +551,18 @@ class Installer:
     def _install_requirements(self, req: str):
         # 설치 파일(wheel)만 — 소스 빌드는 임의 코드를 실행하므로 앱의 자동 설치와 같은 규칙을 지킨다
         uv = bundled_uv()
+        reqs = []
+        for name in REQUIREMENT_FILES:
+            path = os.path.join(os.path.dirname(req), name)
+            if os.path.isfile(path):
+                reqs += ["-r", path]
         if uv:
-            self._run([uv, "pip", "install", "--python", self.p["python"], "--only-binary", ":all:", "-r", req],
+            self._run([uv, "pip", "install", "--python", self.p["python"], "--only-binary", ":all:", *reqs],
                       env=self._uv_env(), what="구성요소 설치")
             shutil.rmtree(self.p["cache"], ignore_errors=True)   # 받은 설치 파일 캐시는 지워 용량을 돌려준다
         else:   # uv를 못 찾으면 전용 환경의 pip로
             self._run([self.p["python"], "-m", "pip", "install", "--disable-pip-version-check",
-                       "--only-binary", ":all:", "-r", req], what="구성요소 설치")
+                       "--only-binary", ":all:", *reqs], what="구성요소 설치")
 
     def _install_launcher(self):
         """업데이트 실행기 = 이 파일 + uv를 설치 폴더의 launcher\에 복사한다(바로가기가 이걸 실행한다)."""
@@ -525,7 +574,7 @@ class Installer:
         dst_uv = os.path.join(self.p["launcher"], os.path.basename(uv)) if uv else ""
         if uv and os.path.abspath(uv) != os.path.abspath(dst_uv):
             try:
-                shutil.copyfile(uv, dst_uv)
+                shutil.copy(uv, dst_uv)   # 실행 권한까지 (맥)
             except OSError as e:   # 실행 중이라 잠겨 있으면 있던 것을 쓴다
                 self.on_log(f"uv 복사 실패: {e}")
 
@@ -543,7 +592,8 @@ class Installer:
             self.on_detail("파일 푸는 중")
             n = safe_extract(z, stage)
             new_req = os.path.join(stage, "requirements.txt")
-            if requirements_text(new_req) != requirements_text(os.path.join(self.p["app"], "requirements.txt")):
+            if any(requirements_text(os.path.join(stage, n)) != requirements_text(os.path.join(self.p["app"], n))
+                   for n in REQUIREMENT_FILES):
                 self.on_detail("구성요소 맞추는 중 — 조금 걸릴 수 있어요")
                 self._install_requirements(new_req)
             self._check()
@@ -583,10 +633,11 @@ class Installer:
             import psutil
         except ImportError:
             return False
-        exes = {os.path.normcase(os.path.abspath(self.p[k])) for k in ("python", "pythonw")}
+        # realpath — 맥의 venv python은 링크라 프로세스에는 진짜 파이썬 경로로 보인다
+        exes = {os.path.normcase(os.path.realpath(self.p[k])) for k in ("python", "pythonw")}
         for proc in psutil.process_iter(["exe", "cmdline"]):
             try:
-                exe = os.path.normcase(os.path.abspath(proc.info["exe"] or ""))
+                exe = os.path.normcase(os.path.realpath(proc.info["exe"] or ""))
                 if exe in exes and any(str(c).endswith("app_main.py") for c in proc.info["cmdline"] or []):
                     return True
             except Exception:
@@ -597,7 +648,33 @@ class Installer:
         cands = [shutil.which("ollama") or ""]
         if IS_WIN:
             cands.append(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe"))
+        if IS_MAC:   # Finder에서 켜면 PATH가 짧아 which로 못 찾는다
+            cands += [os.path.join(self._ollama_app(), "Contents", "Resources", "ollama"),
+                      "/usr/local/bin/ollama", "/opt/homebrew/bin/ollama"]
         return next((c for c in cands if c and os.path.isfile(c)), "")
+
+    def _ollama_app(self) -> str:
+        cands = ("/Applications/Ollama.app", os.path.join(os.path.expanduser("~"), "Applications", "Ollama.app"))
+        return next((c for c in cands if os.path.isdir(c)), "")
+
+    def _install_ollama_mac(self):
+        tmp = tempfile.mkdtemp(prefix="lumi-ollama-")
+        try:
+            z = os.path.join(tmp, "Ollama.zip")
+            self._download(OLLAMA_MAC_URL, z, "AI 엔진")
+            self.on_progress(None)
+            self.on_detail("서명 확인 중")
+            self._run(["ditto", "-x", "-k", z, tmp], what="AI 엔진 풀기")
+            app = os.path.join(tmp, "Ollama.app")
+            verify_mac_signature(app, OLLAMA_MAC_TEAM_ID)
+            clear_quarantine(app)
+            self.on_detail("AI 엔진 설치 중")
+            dest = "/Applications" if os.access("/Applications", os.W_OK) else os.path.join(
+                os.path.expanduser("~"), "Applications")
+            os.makedirs(dest, exist_ok=True)
+            shutil.move(app, os.path.join(dest, "Ollama.app"))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def _verify_signature(self, exe: str, signer: str = "ollama", what: str = "AI 엔진"):
         """받은 설치 파일이 signer(Ollama/Microsoft)가 서명한 파일인지 확인한다 (Windows 서명 검사)."""
@@ -659,8 +736,13 @@ class Installer:
         if self._ollama_exe():
             self.on_detail("이미 설치돼 있어요")
             return
+        if IS_MAC:
+            self._install_ollama_mac()
+            if not self._ollama_exe():
+                raise InstallError("AI 엔진 설치를 마쳤지만 실행 파일을 찾지 못했어요.")
+            return
         if not IS_WIN:
-            raise InstallError("이 설치 프로그램은 Windows용이에요.")
+            raise InstallError("이 설치 프로그램은 Windows·macOS용이에요.")
         tmp = tempfile.mkdtemp(prefix="lumi-ollama-")
         try:
             exe = os.path.join(tmp, "OllamaSetup.exe")
@@ -681,6 +763,22 @@ class Installer:
                                      data=json.dumps(data).encode() if data is not None else None)
         return urllib.request.urlopen(req, timeout=timeout)
 
+    def _wait_for_ollama(self, seconds: int) -> bool:
+        for _ in range(seconds):
+            self._check()
+            try:
+                self._api("/api/version", timeout=2).close()
+                return True
+            except Exception:
+                time.sleep(1)
+        return False
+
+    def _start_ollama_engine(self, exe: str):
+        # 맥에서도 Ollama 앱을 열지 않는다 — 앱을 열면 Ollama 창이 앞에 뜨고, 처음 켠 앱은 엔진을 바로 띄우지도 않는다
+        flags = NO_WINDOW | (subprocess.DETACHED_PROCESS if IS_WIN else 0)
+        subprocess.Popen([exe, "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=flags, env=clean_child_env(), close_fds=True)
+
     def _ensure_ollama_running(self):
         try:
             self._api("/api/version", timeout=3).close()
@@ -689,17 +787,11 @@ class Installer:
             pass
         exe = self._ollama_exe()
         self.on_log("AI 엔진 켜는 중")
-        flags = NO_WINDOW | (subprocess.DETACHED_PROCESS if IS_WIN else 0)
-        subprocess.Popen([exe, "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, creationflags=flags, env=clean_child_env(), close_fds=True)
-        for _ in range(60):
-            self._check()
-            try:
-                self._api("/api/version", timeout=2).close()
-                return
-            except Exception:
-                time.sleep(1)
-        raise InstallError("AI 엔진이 켜지지 않았어요. 작업 표시줄의 Ollama를 실행한 뒤 다시 시도해 주세요.")
+        self._start_ollama_engine(exe)
+        if self._wait_for_ollama(60):
+            return
+        raise InstallError(f"AI 엔진이 켜지지 않았어요. {'응용 프로그램' if IS_MAC else '작업 표시줄'}의 Ollama를 실행한 뒤 "
+                          "다시 시도해 주세요.")
 
     def step_model(self):
         if self.skip_model:
@@ -735,13 +827,25 @@ class Installer:
             raise InstallError(f"AI 모델을 받는 중 연결이 끊겼어요. 다시 시도하면 이어서 받아요.\n({e})")
 
     def _shortcut_targets(self) -> list:
-        """(바로가기 .lnk 경로) 목록 — 바탕화면, 시작 메뉴."""
+        """(바로가기 .lnk 경로) 목록 — 바탕화면, 시작 메뉴. 맥은 ~/Applications의 실행·제거 앱."""
+        if IS_MAC:
+            apps = os.path.join(os.path.expanduser("~"), "Applications")
+            return [os.path.join(apps, "Lumi.app"), os.path.join(apps, "Lumi 제거.app")]
         appdata = os.environ.get("APPDATA", "")
         start = os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Lumi.lnk")
         desktop = os.path.join(_known_folder_desktop(), "Lumi.lnk")
         return [desktop, start]
 
     def step_shortcut(self):
+        if IS_MAC:
+            run_app, remove_app = self._shortcut_targets()
+            write_mac_app(run_app, "com.teambuildit.lumi", self.p["icon"],
+                          [self.p["pythonw"], self.p["launcher_py"], "--launch"])
+            write_mac_app(remove_app, "com.teambuildit.lumi.uninstall", self.p["icon"],
+                          [self.p["pythonw"], self.p["launcher_py"], "--uninstall"])
+            for path in (self.p["root"], run_app, remove_app):
+                clear_quarantine(path)
+            return
         if not IS_WIN:
             return
         # 경로는 환경 변수로 넘긴다 — 폴더 이름에 따옴표 등이 있어도 PowerShell 명령이 바뀌지 않게
@@ -799,16 +903,22 @@ class Installer:
             self.on_step(key, "done")
 
     def launch(self):
+        if IS_MAC and getattr(sys, "frozen", False):
+            # 설치 프로그램에서 바로 켜면 맥이 권한을 설치 프로그램 몫으로 묻는다 → Lumi.app으로 켠다
+            subprocess.Popen(["open", self._shortcut_targets()[0]], env=clean_child_env())
+            return
+        if IS_MAC and self._ollama_exe():   # 재부팅 뒤 AI 엔진이 꺼져 있어도 루미를 켜면 창 없이 같이 켜진다
+            try:
+                self._api("/api/version", timeout=1).close()
+            except Exception:
+                self._start_ollama_engine(self._ollama_exe())
         subprocess.Popen([self.p["pythonw"], "app_main.py"], cwd=self.p["app"], env=clean_child_env(),
                          creationflags=(subprocess.DETACHED_PROCESS if IS_WIN else 0), close_fds=True)
 
     # ── 제거 ──
     def uninstall(self):
-        for lnk in self._shortcut_targets() if IS_WIN else []:
-            try:
-                os.remove(lnk)
-            except OSError:
-                pass
+        for lnk in self._shortcut_targets() if IS_WIN or IS_MAC else []:
+            _rm(lnk)
         if IS_WIN:
             import winreg
             try:
@@ -829,6 +939,20 @@ class Installer:
                              close_fds=True)
         else:
             _rm(root)
+
+
+def clear_quarantine(path: str):
+    """격리 표시를 지운다 — 사용자가 허용한 설치 프로그램이 만든 파일에도 이 표시가 옮겨 붙어,
+    그대로 두면 설치된 Lumi.app을 맥이 다시 막는다."""
+    subprocess.run(["xattr", "-dr", "com.apple.quarantine", path], capture_output=True)
+
+
+def verify_mac_signature(app: str, team_id: str):
+    """받은 앱이 애플이 확인한 그 개발자의 서명 그대로인지 확인한다 (위조·변조면 설치를 멈춘다)."""
+    check = subprocess.run(["codesign", "--verify", "--deep", "--strict", app], capture_output=True, text=True)
+    info = subprocess.run(["codesign", "-dv", app], capture_output=True, text=True)
+    if check.returncode != 0 or f"TeamIdentifier={team_id}" not in info.stderr.splitlines():
+        raise InstallError("받은 AI 엔진 설치 파일의 서명을 확인하지 못해 설치를 멈췄어요.")
 
 
 def shortcut_arguments(p: dict) -> str:
@@ -1151,6 +1275,7 @@ def run_gui(argv):
             self.lbl_dir.setWordWrap(True); self._refresh_dir()
             change = QPushButton("위치 바꾸기"); change.setObjectName("link")
             change.setCursor(Qt.CursorShape.PointingHandCursor); change.clicked.connect(self._choose_dir)
+            change.setVisible(not IS_MAC)   # 맥에서 Application Support를 고르면 개인 기록 폴더(Lumi)와 겹쳐 제거 때 지워진다
             loc.addWidget(self.lbl_dir, 1); loc.addWidget(change)
             v.addLayout(loc)
             need = QLabel("필요한 공간 약 8GB · 인터넷 연결 필요 · 관리자 권한은 필요 없어요")
@@ -1227,10 +1352,13 @@ def run_gui(argv):
         def _build_uninstall(self):
             pg = QWidget(); v = QVBoxLayout(pg); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(14)
             box = QFrame(); box.setObjectName("box"); b = QVBoxLayout(box); b.setContentsMargins(20, 16, 20, 16)
+            shortcuts, records, remover = (
+                ("응용 프로그램 폴더의 루미 아이콘", "~/Library/Application Support/Lumi", "응용 프로그램 폴더") if IS_MAC
+                else ("바탕화면·시작 메뉴 바로가기", "%LOCALAPPDATA%\\Lumi", "'앱 및 기능'"))
             t = QLabel(f"<b>지우는 것</b><br><span style='color:{P['sub']}'>루미 프로그램, 전용 파이썬 환경, "
-                       f"바탕화면·시작 메뉴 바로가기</span><br><br><b>남겨두는 것</b><br>"
-                       f"<span style='color:{P['sub']}'>대화기록·설정 같은 개인 기록(%LOCALAPPDATA%\\Lumi), "
-                       f"AI 엔진(Ollama)과 모델 — 필요 없으면 '앱 및 기능'에서 Ollama를 따로 제거하세요.</span>")
+                       f"{shortcuts}</span><br><br><b>남겨두는 것</b><br>"
+                       f"<span style='color:{P['sub']}'>대화기록·설정 같은 개인 기록({records}), "
+                       f"AI 엔진(Ollama)과 모델 — 필요 없으면 {remover}에서 Ollama를 따로 제거하세요.</span>")
             t.setWordWrap(True); t.setStyleSheet("font-size: 13px;"); b.addWidget(t)
             v.addWidget(box); v.addStretch()
             btns = QHBoxLayout()
@@ -1344,7 +1472,8 @@ def run_gui(argv):
             elif result == "ok":
                 self._set_icon(True)
                 self.res_title.setText("설치가 끝났어요!")
-                self.res_text.setText("바탕화면과 시작 메뉴의 루미 아이콘으로 언제든 실행할 수 있어요.")
+                self.res_text.setText("Spotlight에서 Lumi를 검색하면 언제든 실행할 수 있어요." if IS_MAC
+                                      else "바탕화면과 시작 메뉴의 루미 아이콘으로 언제든 실행할 수 있어요.")
                 self.chk_launch.show(); self.btn_retry.hide(); self.btn_finish.setText("완료")
             else:
                 self._set_icon(False)
@@ -1520,9 +1649,8 @@ def _update_gui(inst, sha, version, log, launch) -> int:
     win = QWidget(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
     win.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     win.setWindowTitle("Lumi 업데이트")
-    icon_path = os.path.join(inst.p["root"], "lumi.ico")
-    if os.path.isfile(icon_path):
-        win.setWindowIcon(QIcon(icon_path))
+    if os.path.isfile(inst.p["icon"]):
+        win.setWindowIcon(QIcon(inst.p["icon"]))
     outer = QVBoxLayout(win); outer.setContentsMargins(18, 18, 18, 18)
     card = QFrame(); card.setObjectName("card")
     card.setStyleSheet(f"QFrame#card {{ background: {P['card']}; border: 1px solid {P['border']}; border-radius: 18px; }}"

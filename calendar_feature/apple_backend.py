@@ -4,8 +4,8 @@
 1) 이 Mac의 캘린더(EventKit) — 맥에서만. 앱스토어 캘린더 앱들처럼 macOS의 캘린더 접근 권한을 받아
    Mac에 로그인된 Apple 계정(iCloud 포함)의 캘린더를 바로 쓴다. 암호를 받지 않고, 한 번 허용하면
    앱을 다시 켜도 다시 연결할 필요가 없다(calendar_preference의 apple_source="mac"으로 기억).
-2) iCloud 직접 연결(CalDAV) — 윈도우·맥 모두. Apple ID + "앱 전용 암호". 암호는 파일로 저장하지 않고
-   메모리에만 둔다 — 로그아웃·계정 전환·앱 종료 때 사라지므로 앱을 켤 때마다 다시 연결한다.
+2) iCloud 직접 연결(CalDAV) — 윈도우·맥 모두. Apple ID + "앱 전용 암호". 계정별로 암호화해 저장하고 앱을 켜면
+   자동으로 다시 연결한다. [연결 끊기]를 누르거나 Apple이 암호를 거부하면 지운다.
    채팅으로는 암호를 받지 않는다(대화 기록에 남지 않게).
 
 ● plugins/calendar_tool.py의 일정 함수들(create_event, get_events_by_date …)이 활성 캘린더가 'apple'이면
@@ -14,8 +14,11 @@
   다른 건 "기간 안 일정 읽기·추가·찾기·수정·삭제"뿐이고, 글 형식은 아래 공통 함수가 만든다.
 ● 일정 id: 한 번짜리 일정은 고유 id, 반복 일정의 한 회차는 "id__YYYYMMDDTHHMM".
 """
+import json
+import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -384,18 +387,77 @@ def _set_source(owner, source, account):
     _session.update(owner=owner, source=source, account=account, connected_at=time.time())
 
 
-def connect(owner: str, apple_id: str, app_password: str):
-    """iCloud에 직접 연결해 본다 → (성공 여부, 안내 문구). 성공하면 메모리에만 연결을 둔다."""
+def _is_auth_error(e: Exception) -> bool:
+    return "Authoriz" in type(e).__name__ or "401" in str(e)
+
+
+def _open_icloud(apple_id: str, app_password: str) -> list:
     import caldav
+    client = caldav.DAVClient(ICLOUD_URL, username=apple_id, password=app_password, timeout=20)
+    return [c for c in client.principal().calendars() if _supports_events(c)]
+
+
+def _saved_login_path(owner: str) -> str:
+    from core.user_context import safe_uid
+    from data import storage_location
+    return os.path.join(storage_location.user_data_dir("apple_calendar"), f"{safe_uid(owner)}.json")
+
+
+def _save_login(owner: str, apple_id: str, app_password: str):
+    from data.secure_store import secure_open
+    with secure_open(_saved_login_path(owner), "w", encoding="utf-8") as f:
+        json.dump({"apple_id": apple_id, "app_password": app_password}, f)
+
+
+def forget_saved_login(owner: str):
+    path = _saved_login_path(owner)
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def restore_saved_login(owner: str) -> bool:
+    """저장한 Apple ID로 다시 연결한다. 인터넷 문제면 저장값을 두고, Apple이 거부하면 지운다."""
+    from data.secure_store import secure_open
+    if _session["source"] is not None and _session["owner"] == owner:
+        return True
+    try:
+        with secure_open(_saved_login_path(owner), "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        apple_id, app_password = saved["apple_id"], saved["app_password"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    try:
+        calendars = _open_icloud(apple_id, app_password)
+    except Exception as e:
+        print(f"[애플 캘린더] 자동 연결 오류: {type(e).__name__}")
+        if _is_auth_error(e):
+            forget_saved_login(owner)
+        return False
+    if not calendars:
+        return False
+    from plugins import calendar_tool
+    if calendar_tool._current_user_id != owner:   # 그 사이 계정이 바뀌었다
+        return False
+    _set_source(owner, ICloudSource(calendars), apple_id)
+    return True
+
+
+def restore_in_background(owner: str):
+    """네트워크를 쓰므로 화면이 멈추지 않게 스레드에서 다시 연결한다. 저장한 게 없으면 아무것도 하지 않는다."""
+    if owner and owner != "guest" and os.path.exists(_saved_login_path(owner)):
+        threading.Thread(target=restore_saved_login, args=(owner,), daemon=True).start()
+
+
+def connect(owner: str, apple_id: str, app_password: str):
+    """iCloud에 직접 연결해 본다 → (성공 여부, 안내 문구). 성공하면 암호화해 저장한다."""
     apple_id, app_password = (apple_id or "").strip(), (app_password or "").strip()
     if not apple_id or not app_password:
         return False, "Apple ID와 앱 전용 암호를 모두 넣어주세요."
     try:
-        client = caldav.DAVClient(ICLOUD_URL, username=apple_id, password=app_password, timeout=20)
-        calendars = [c for c in client.principal().calendars() if _supports_events(c)]
+        calendars = _open_icloud(apple_id, app_password)
     except Exception as e:
         print(f"[애플 캘린더] 연결 오류: {type(e).__name__}: {e}")
-        if "Authoriz" in type(e).__name__ or "401" in str(e):
+        if _is_auth_error(e):
             return False, ("Apple ID 또는 앱 전용 암호가 맞지 않아요. Apple ID 비밀번호가 아니라 "
                            "Apple 계정 페이지에서 만든 '앱 전용 암호'를 넣어주세요.")
         return False, "iCloud에 연결하지 못했어요. 인터넷 연결을 확인하고 잠시 후 다시 시도해 주세요."
@@ -403,8 +465,9 @@ def connect(owner: str, apple_id: str, app_password: str):
         return False, "이 Apple ID에서 일정을 넣을 수 있는 캘린더를 찾지 못했어요."
     _set_source(owner, ICloudSource(calendars), apple_id)
     _remember_mac(False)
+    _save_login(owner, apple_id, app_password)
     return True, (f"애플 캘린더를 연결했어요. ({apple_id}, 캘린더 {len(calendars)}개)\n"
-                  "연결은 앱을 끄거나 로그아웃할 때까지 유지돼요(이 PC에 저장하지 않아요).")
+                  "이 PC에 암호화해 저장돼서 앱을 다시 켜도 자동으로 연결돼요.")
 
 
 def connect_mac(owner: str, ask: bool = True):
@@ -436,6 +499,7 @@ def connect_mac(owner: str, ask: bool = True):
         return False, "Mac 캘린더를 열지 못했어요. 잠시 후 다시 시도해 주세요."
     _set_source(owner, source, "이 Mac의 캘린더")
     _remember_mac(True)
+    forget_saved_login(owner)
     return True, f"이 Mac의 캘린더를 연결했어요. (캘린더 {len(names)}개)\n다음부터는 앱을 켜면 자동으로 연결돼요."
 
 

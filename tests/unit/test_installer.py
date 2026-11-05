@@ -92,7 +92,7 @@ def test_paths_layout(tmp_path):
 
 def test_step_weights_cover_all_steps():
     keys = [k for k, *_ in li.STEPS]
-    assert keys == ["runtime", "python", "code", "packages", "ollama", "model", "shortcut"]
+    assert keys == ["runtime"] * (not li.IS_MAC) + ["python", "code", "packages", "ollama", "model", "shortcut"]
     assert all(hasattr(li.Installer, "step_" + k) for k in keys)
 
 
@@ -358,3 +358,65 @@ def test_api_headers_token_only_when_set(monkeypatch):
     monkeypatch.setenv("LUMI_GITHUB_TOKEN", " abc ")
     h = li.api_headers("application/vnd.github.sha")
     assert h["Authorization"] == "Bearer abc" and h["Accept"] == "application/vnd.github.sha"
+
+
+@pytest.mark.skipif(not li.IS_MAC, reason="맥 전용")
+def test_mac_install_dir_stays_out_of_personal_records():
+    from data import storage_location
+    assert os.path.abspath(li.default_install_dir()) != os.path.abspath(storage_location.app_data_dir())
+
+
+def test_write_mac_app_makes_runnable_bundle(tmp_path):
+    import plistlib
+    import stat
+    import subprocess
+    marker = tmp_path / "ran it.txt"
+    bundle = tmp_path / "Lumi 제거.app"
+    icon = tmp_path / "lumi.icns"
+    icon.write_text("x")
+    li.write_mac_app(str(bundle), "com.example.lumi", str(icon), ["/usr/bin/touch", str(marker)])
+    run = bundle / "Contents" / "MacOS" / "run"
+    assert run.stat().st_mode & stat.S_IXUSR
+    subprocess.run([str(run)], check=True)   # 경로에 공백이 있어도 그대로 실행된다
+    assert marker.exists()
+    info = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
+    assert info["CFBundleExecutable"] == "run" and info["CFBundleIconFile"] == "lumi.icns"
+    assert info["NSMicrophoneUsageDescription"]
+    assert (bundle / "Contents" / "Resources" / "lumi.icns").exists()
+
+
+@pytest.mark.skipif(not li.IS_MAC, reason="맥 전용")
+def test_verify_mac_signature_rejects_other_developer(tmp_path, monkeypatch):
+    import subprocess
+    outputs = {"--verify": ("", 0), "-dv": ("Identifier=x\nTeamIdentifier=OTHERTEAM1\n", 0)}
+
+    def fake(args, **k):
+        err, code = outputs["--verify" if "--verify" in args else "-dv"]
+        return subprocess.CompletedProcess(args, code, "", err)
+    monkeypatch.setattr(li.subprocess, "run", fake)
+    with pytest.raises(li.InstallError):
+        li.verify_mac_signature("x.app", li.OLLAMA_MAC_TEAM_ID)
+    outputs["-dv"] = (f"TeamIdentifier={li.OLLAMA_MAC_TEAM_ID}\n", 0)
+    li.verify_mac_signature("x.app", li.OLLAMA_MAC_TEAM_ID)
+    outputs["--verify"] = ("invalid signature", 1)
+    with pytest.raises(li.InstallError):
+        li.verify_mac_signature("x.app", li.OLLAMA_MAC_TEAM_ID)
+
+
+@pytest.mark.skipif(not li.IS_MAC, reason="맥 전용")
+@pytest.mark.parametrize("engine_on, expected", [(True, 0), (False, 1)])
+def test_mac_launch_starts_engine_only_when_off_and_never_opens_ollama_app(tmp_path, monkeypatch, engine_on, expected):
+    started = []
+    inst = li.Installer(str(tmp_path))
+
+    def fake_api(path, data=None, timeout=10):
+        if engine_on:
+            return type("R", (), {"close": lambda self: None})()
+        raise OSError("꺼져 있음")
+    monkeypatch.setattr(inst, "_api", fake_api)
+    monkeypatch.setattr(inst, "_ollama_exe", lambda: "/x/ollama")
+    monkeypatch.setattr(li.subprocess, "Popen", lambda args, **k: started.append(args))
+    inst.launch()
+    assert started.count(["/x/ollama", "serve"]) == expected
+    assert not any(a[0] == "open" for a in started)
+    assert started[-1][-1] == "app_main.py"

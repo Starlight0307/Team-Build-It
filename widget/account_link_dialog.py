@@ -8,7 +8,7 @@
 import threading
 import webbrowser
 
-from PyQt6.QtCore import QByteArray, QRectF, QSize, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QByteArray, QRectF, QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (QDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QVBoxLayout)
@@ -145,7 +145,14 @@ class GoogleLinkDialog(LinkDialog):
     """구글은 입력할 게 없다 — 브라우저에서 로그인하고, 진행 상태·결과를 여기서 보여준다."""
 
     def __init__(self, parent, is_dark: bool, linked: bool, minutes_left: int = 0):
-        if minutes_left:
+        from plugins import calendar_tool
+        saved = calendar_tool.google_connection_saved()
+        can_stay = calendar_tool.google_can_stay_connected()
+        if saved:
+            desc = "구글 캘린더가 연결돼 있어요. 앱을 다시 켜도 그대로 이어져요."
+        elif minutes_left and can_stay:
+            desc = "지금은 임시 연결이에요. 아래 버튼으로 한 번만 연결하면 앱을 다시 켜도 계속 유지돼요."
+        elif minutes_left:
             desc = f"구글 캘린더가 연결돼 있어요(약 {minutes_left}분 남음). 다시 연결하면 1시간이 새로 시작돼요."
         elif linked:
             desc = "구글 계정이 연동돼 있어요. 구글 캘린더를 쓰려면 브라우저에서 한 번 더 로그인해 주세요."
@@ -153,13 +160,23 @@ class GoogleLinkDialog(LinkDialog):
             desc = ("구글 계정을 연동하면 구글 로그인으로도 루미에 들어올 수 있고, 구글 캘린더를 쓸 수 있어요. "
                     "브라우저가 열리면 계정을 고르고 캘린더 권한을 허용해 주세요.")
         super().__init__(parent, is_dark, "google", "구글 연동", desc)
-        help_ = QLabel("캘린더 연결은 이 PC에 저장하지 않아요. 앱을 끄거나 로그아웃하면 끊기고, 최대 1시간 유지돼요.")
+        help_ = QLabel("연결 정보는 이 PC에 암호화해 저장해요." if can_stay else
+                       "지금은 연결이 최대 1시간 유지되고, 앱을 끄면 끊겨요.")
         help_.setObjectName("LinkHelp"); help_.setWordWrap(True)
         self.body.addWidget(help_)
-        self.btn_primary.setText("다시 연결" if minutes_left else "브라우저에서 로그인")
-        self.btn_primary.clicked.connect(self._start)
         self._worker = None
         self.connected = False
+        if saved:
+            self.btn_primary.setText("연결 끊기")
+            self.btn_primary.clicked.connect(self._disconnect)
+            return
+        self.btn_primary.setText("계속 유지되게 연결" if can_stay else "다시 연결" if minutes_left else "브라우저에서 로그인")
+        self.btn_primary.clicked.connect(self._start)
+
+    def _disconnect(self):
+        from plugins import calendar_tool
+        calendar_tool.disconnect_google_calendar()
+        self.accept()
 
     def _start(self):
         if self.connected:
@@ -196,7 +213,7 @@ class GoogleLinkDialog(LinkDialog):
 # ─────────────────────────────────────────────
 
 class AppleLinkDialog(LinkDialog):
-    """Apple ID + 앱 전용 암호. 암호는 메모리에만(calendar_feature/apple_backend.py), 채팅으로는 받지 않는다."""
+    """Apple ID + 앱 전용 암호. 암호는 암호화해 저장하고(calendar_feature/apple_backend.py), 채팅으로는 받지 않는다."""
 
     def __init__(self, parent, is_dark: bool, owner: str, account: str = None, kind: str = None):
         desc = (f"{account}로 연결돼 있어요." if account else
@@ -260,7 +277,7 @@ class AppleLinkDialog(LinkDialog):
 
         help_ = QLabel(f"Apple ID 비밀번호가 아니라 <a href='{APPLE_APP_PASSWORD_URL}' style='color:{self.p['link']};'>"
                        "Apple 계정 → 로그인 및 보안 → 앱 전용 암호</a>에서 만든 암호예요. "
-                       "이 PC에 저장하지 않아서 앱을 켤 때마다 다시 연결해요.")
+                       "이 PC에 암호화해 저장하고, 다음부터 자동으로 연결해요.")
         help_.setObjectName("LinkHelp"); help_.setWordWrap(True)
         help_.setTextFormat(Qt.TextFormat.RichText)
         help_.linkActivated.connect(lambda url: webbrowser.open(url))
@@ -311,6 +328,7 @@ class AppleLinkDialog(LinkDialog):
     def _disconnect(self):
         from calendar_feature import apple_backend
         apple_backend.disconnect(forget_mac=(self.kind == "mac"))   # Mac 연결은 다음 실행 때 자동 연결도 끈다
+        apple_backend.forget_saved_login(self.owner)
         self.accept()
 
     def _connect_mac(self):
@@ -321,7 +339,17 @@ class AppleLinkDialog(LinkDialog):
         self._worker = _MacWorker(self.owner)
         self._worker.result_ready.connect(self._done)
         self._worker.finished.connect(self._thread_finished)
+        self._mac_hint_timer = QTimer(self)
+        self._mac_hint_timer.setSingleShot(True)
+        self._mac_hint_timer.timeout.connect(self._show_mac_hint)
+        self._mac_hint_timer.start(15000)
+        self._worker.finished.connect(self._mac_hint_timer.stop)
         self._worker.start()
+
+    def _show_mac_hint(self):
+        """권한 창이 뜨지 않으면 2분 동안 아무 일 없는 것처럼 보인다 — 어떻게 하면 되는지 알려준다."""
+        self.set_status("macOS 권한 창이 보이지 않나요? 시스템 설정 → 개인정보 보호 및 보안 → 캘린더에서 루미를 실행한 앱을 "
+                        "허용하거나, 창을 닫고 아래 Apple ID로 연결해 주세요.")
 
     def _set_busy(self, busy: bool):
         for w in (getattr(self, "btn_mac", None), self.input_id, self.input_pw, self.btn_primary):

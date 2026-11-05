@@ -61,6 +61,8 @@ SCOPES = [
 
 BASE_DIR         = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_FILE = os.path.join(BASE_DIR, "credentials.json")
+# 앱에 함께 배포하는 Google OAuth 데스크톱 클라이언트. 있으면 갱신 토큰을 암호화해 저장해 다시 로그인하지 않는다.
+BUNDLED_CLIENT_FILE = os.path.join(os.path.dirname(BASE_DIR), "auth", "google_oauth_client.json")
 TOKEN_DIR        = os.path.join(BASE_DIR, "tokens")
 os.makedirs(TOKEN_DIR, exist_ok=True)
 
@@ -100,12 +102,13 @@ def set_current_user(user_id: str):
         from calendar_feature import apple_backend
         if apple_backend._session["owner"] not in (None, _current_user_id):
             apple_backend.disconnect()
+        apple_backend.restore_in_background(_current_user_id)   # 저장한 iCloud 연결을 다시 잇는다
     except Exception:
         pass
 
 
 # ─────────────────────────────────────────────
-# 🔑 Lumi 구글 로그인으로 받은 캘린더 토큰 — 메모리에만 둔다(파일 저장 안 함)
+# 🔑 Lumi 구글 로그인으로 받은 임시 캘린더 토큰(1시간) — 메모리에만 둔다. 유지되는 연결은 암호화한 토큰 파일을 쓴다
 # ─────────────────────────────────────────────
 _google_token = {"owner": None, "token": None, "expires_at": 0.0}
 _TOKEN_EXPIRY_MARGIN = 60  # 초 — 만료 직전 토큰으로 호출하다 실패하지 않게 조금 일찍 만료로 본다
@@ -151,15 +154,42 @@ def _google_token_state() -> str:
 def google_calendar_status() -> tuple[str, int]:
     """마이페이지 표시용 — (상태 'valid'/'expired'/'none', 남은 분)."""
     import time
+    if google_connection_saved():
+        return "valid", 0     # 저장한 갱신 토큰으로 계속 이어진다 — 남은 시간이 없다
     state = _google_token_state()
     minutes = max(0, int((_google_token["expires_at"] - time.time()) // 60)) if state == "valid" else 0
     return state, minutes
+
+
+def _oauth_client_file():
+    return next((f for f in (BUNDLED_CLIENT_FILE, CREDENTIALS_FILE) if os.path.exists(f)), None)
+
+
+def google_connection_saved() -> bool:
+    """이 사용자의 구글 연결이 이 PC에 암호화 저장돼 있는가."""
+    return _current_user_id != "guest" and os.path.exists(_get_token_file())
+
+
+def google_can_stay_connected() -> bool:
+    """연결을 저장해 둘 수 있는가(OAuth 클라이언트가 있어야 토큰을 갱신할 수 있다)."""
+    return _oauth_client_file() is not None
+
+
+def disconnect_google_calendar():
+    """구글 연결을 끊고 저장한 토큰도 지운다."""
+    clear_google_access_token()
+    token_file = _get_token_file()
+    if os.path.exists(token_file):
+        os.remove(token_file)
 
 
 def _login_needed_message(e: Exception):
     """구글 로그인을 다시 해야 하는 오류면 사용자 안내 문구를, 아니면 None을 돌려준다."""
     if isinstance(e, CalendarLoginRequired):
         return str(e)
+    if type(e).__name__ == "RefreshError":   # 저장한 토큰이 취소·만료됨 — 지워야 다시 연결할 수 있다
+        disconnect_google_calendar()
+        return LOGIN_NEEDED_MESSAGE
     status = getattr(getattr(e, "resp", None), "status", None)
     if status == 401:   # 구글이 토큰을 거부(만료·취소)
         clear_google_access_token()
@@ -419,15 +449,16 @@ TOOL_SCHEMAS = {
 def _get_service(user_id: str = None):
     _import_google()
     state = _google_token_state() if user_id is None else "none"
-    if state == "valid":
+    token_file = _get_token_file(user_id)
+    if state == "valid" and not os.path.exists(token_file):   # 저장한 연결이 있으면 1시간짜리 임시 토큰보다 먼저 쓴다
         return build("calendar", "v3", credentials=Credentials(token=_google_token["token"]),
                      cache_discovery=False)
     if state == "expired":
         clear_google_access_token()
-        raise CalendarLoginRequired(LOGIN_EXPIRED_MESSAGE)
+        if not os.path.exists(token_file):
+            raise CalendarLoginRequired(LOGIN_EXPIRED_MESSAGE)
 
-    # 예전 방식 — credentials.json/저장된 토큰 파일이 있는 PC에서만 동작한다
-    token_file = _get_token_file(user_id)
+    # 저장한 토큰(암호화) — 없으면 credentials.json이 있는 PC에서만 새로 연결할 수 있다
     if not os.path.exists(token_file) and not os.path.exists(CREDENTIALS_FILE):
         raise CalendarLoginRequired(LOGIN_NEEDED_MESSAGE)
     creds = None
@@ -462,7 +493,7 @@ def get_login_status() -> str:
     if _apple_active():   # 활성 캘린더가 애플(iCloud)이면 그쪽으로 — 같은 형식의 글을 돌려준다
         return _apple_call('get_login_status')
     print("\n🔐 [캘린더] 로그인 상태 확인 중...")
-    state = _google_token_state()
+    state = "none" if google_connection_saved() else _google_token_state()
     if state != "none":
         if state == "expired":
             return f"[🔐 로그인 상태] (사용자: {_current_user_id})\n⚠️ 구글 캘린더 연결이 만료됐어요.\n\n" \
@@ -517,6 +548,22 @@ def get_login_status() -> str:
         return "[🔐 로그인 상태]\n⚠️ 로그인 상태를 확인하지 못했어요. '구글 캘린더 연결해줘'라고 다시 말씀해 주세요."
 
 
+def _connect_with_saved_token(client_file: str) -> tuple[bool, str]:
+    """구글 동의 화면을 거쳐 갱신 토큰을 받아 암호화 저장한다 — 한 번 연결하면 앱을 다시 켜도 이어진다."""
+    try:
+        _import_google()
+        flow = InstalledAppFlow.from_client_secrets_file(client_file, SCOPES)
+        creds = flow.run_local_server(port=0, timeout_seconds=_LEGACY_LOGIN_TIMEOUT, open_browser=True,
+                                      access_type="offline", prompt="consent")
+        with secure_open(_get_token_file(), "w") as f:
+            f.write(creds.to_json())
+    except Exception as e:
+        print(f"[캘린더] 구글 연결 오류: {type(e).__name__}")
+        return False, "❌ 구글 캘린더를 연결하지 못했어요. 잠시 후 다시 시도해 주세요."
+    clear_google_access_token()
+    return True, "✅ 구글 캘린더 연결 완료!\n연결 정보는 이 PC에 암호화해 저장돼서 앱을 다시 켜도 그대로 이어져요."
+
+
 def connect_google_calendar(cancel_event=None) -> tuple[bool, str]:
     """지금 로그인한 Lumi 계정으로 구글 캘린더를 연결한다(토큰은 메모리에만 보관). → (성공 여부, 안내 문구)
     - 구글 계정이 이미 연결된 계정: 구글 로그인을 다시 해서 캘린더 토큰만 받는다.
@@ -529,6 +576,9 @@ def connect_google_calendar(cancel_event=None) -> tuple[bool, str]:
     if _current_user_id == "guest" or not db._current_uid():
         return False, "❌ 구글 캘린더는 Lumi에 로그인한 뒤 연결할 수 있어요. 먼저 로그인해주세요."
     owner = _current_user_id
+    client_file = _oauth_client_file()
+    if client_file:
+        return _connect_with_saved_token(client_file)
     try:
         providers = db.linked_login_providers()
         if providers is not None and "google" not in providers:

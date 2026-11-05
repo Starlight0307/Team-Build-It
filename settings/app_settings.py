@@ -21,6 +21,8 @@ DEFAULTS = {
     "weather_source": None, # "os"(Windows/macOS 위치 서비스) / "ip"(대략적) / "manual"(직접 입력)
     "dashboard_widgets": None,  # 홈 화면 왼쪽 위젯 순서 (None이면 기본 순서)
     "hidden_widgets": [],       # 숨긴 위젯 id
+    "home_left_width": None,    # 홈 화면 왼쪽 위젯 폭 — 경계를 끌어 바꾼 값 (None이면 기본)
+    "home_chat_width": None,    # 홈 화면 대화창 폭 — 경계를 끌어 바꾼 값 (None이면 기본)
     "disabled_skills": [],      # 끈 OpenClaw 스킬 이름 (core/skills.py)
     "skill_auto_pick": True,    # 대화에서 알맞은 스킬을 자동으로 고를지 (core/skill_agent.py)
     "voice_reply": True,   # 음성으로 물어보면 답변을 소리로 읽어주기

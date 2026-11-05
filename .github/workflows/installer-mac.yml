@@ -1,0 +1,104 @@
+# 맥 설치 프로그램(LumiSetup-mac-*.dmg) 만들기 + 진짜 맥에서 설치·실행·제거까지 해보기. Apple Silicon·Intel 두 가지.
+# installer-mac-test 브랜치에 푸시하거나, GitHub의 Actions 탭에서 직접 실행(workflow_dispatch)할 수 있다.
+# 만들어진 .dmg는 실행 페이지의 Artifacts에서 받는다.
+name: macOS installer
+
+on:
+  push:
+    branches: [installer-mac-test]
+  workflow_dispatch:
+  workflow_call:   # release.yml이 공개 전 검증으로 부른다
+
+env:
+  UV_VERSION: "0.12.17"
+  # 테스트 서버들은 IP 하나를 같이 써서 인증 없는 GitHub API 한도(시간당 60번)에 자주 걸린다
+  LUMI_GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+            uv_target: aarch64-apple-darwin
+            # https://github.com/astral-sh/uv/releases/download/0.12.17/uv-aarch64-apple-darwin.tar.gz 의 sha256
+            uv_sha256: "85f00cbdc6dd3e97eba4c31b4d014375a9fdfe8f570023b84e5102fc3456896b"
+          - runner: macos-15-intel
+            arch: intel
+            uv_target: x86_64-apple-darwin
+            uv_sha256: "8dcf05a8c809bb3c471d2b614788ba27a6e41298fc8c31ac84b5f4339fd468e5"
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: 빌드 도구 설치
+        run: "python -m pip install --only-binary=:all: pyinstaller==6.22.3 PyQt6==6.11.0 pillow==12.3.0"
+
+      # 설치 프로그램 안에 같이 묶을 uv — 버전을 고정하고 받은 파일의 sha256을 확인한다
+      - name: uv 받기 (해시 확인)
+        run: |
+          curl -fsSL -o uv.tar.gz "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-${{ matrix.uv_target }}.tar.gz"
+          echo "${{ matrix.uv_sha256 }}  uv.tar.gz" | shasum -a 256 -c -
+          tar -xzf uv.tar.gz
+          cp "uv-${{ matrix.uv_target }}/uv" installer/uv
+
+      - name: 아이콘 만들기
+        run: python installer/make_icon.py installer/lumi.icns
+
+      - name: LumiSetup.app 만들기
+        run: >
+          pyinstaller --noconfirm --windowed --name LumiSetup
+          --icon installer/lumi.icns
+          --osx-bundle-identifier com.teambuildit.lumi.setup
+          --add-binary "installer/uv:."
+          --add-data "installer/lumi.icns:."
+          --add-data "installer/lumi_installer.py:."
+          installer/lumi_installer.py
+
+      - name: dmg 만들기
+        run: hdiutil create -volname "Lumi 설치" -srcfolder dist/LumiSetup.app -ov -format UDZO "dist/LumiSetup-mac-${{ matrix.arch }}.dmg"
+
+      - name: 설치 파일 올리기
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumiSetup-mac-${{ matrix.arch }}
+          path: dist/LumiSetup-mac-${{ matrix.arch }}.dmg
+
+      # 진짜 설치 — Python·루미·구성요소·Ollama·모델·실행 앱 전부
+      - name: 실제 설치 (화면 없이)
+        run: dist/LumiSetup.app/Contents/MacOS/LumiSetup --silent
+
+      - name: 설치 결과 확인
+        run: |
+          root="$HOME/Library/Application Support/LumiApp"
+          for f in "$root/app/app_main.py" "$root/venv/bin/python" "$root/lumi.icns" "$root/launcher/lumi_installer.py" \
+                   "$root/launcher/uv" "$root/update.json" "$HOME/Applications/Lumi.app/Contents/MacOS/run" \
+                   "$HOME/Applications/Lumi 제거.app/Contents/MacOS/run" /Applications/Ollama.app/Contents/Resources/ollama; do
+            test -e "$f" || { echo "빠짐: $f"; exit 1; }
+          done
+          test -x "$root/launcher/uv"
+          "$root/venv/bin/python" -c "import EventKit, PyQt6.QtWidgets"
+          curl -fsS http://127.0.0.1:11434/api/tags | grep -q '"llama3.1'
+
+      - name: 설치된 루미 실행
+        run: |
+          root="$HOME/Library/Application Support/LumiApp"
+          open "$HOME/Applications/Lumi.app"
+          sleep 40
+          pgrep -f app_main.py || { cat "$root/launcher/update.log"; echo "루미가 켜지지 않음"; exit 1; }
+          pkill -f app_main.py
+
+      - name: 제거 (화면 없이)
+        run: |
+          root="$HOME/Library/Application Support/LumiApp"
+          "$root/venv/bin/python" "$root/launcher/lumi_installer.py" --uninstall --silent
+          for f in "$root" "$HOME/Applications/Lumi.app" "$HOME/Applications/Lumi 제거.app"; do
+            test ! -e "$f" || { echo "남아 있음: $f"; exit 1; }
+          done

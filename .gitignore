@@ -81,7 +81,12 @@ lumi_backup_*.zip
 *.lumibak
 selftest_out/
 installer/uv.exe
+installer/uv
 installer/lumi.ico
+installer/lumi.icns
 build/
 dist/
 *.spec
+# Google OAuth 데스크톱 클라이언트 — 공개 저장소에 올리지 않는다
+auth/google_oauth_client.json
+auth/client_secret_*.json

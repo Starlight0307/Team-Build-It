@@ -253,8 +253,12 @@ class LoginWidget(QWidget):
 
         r1 = QHBoxLayout()
         self.lbl_err = QLabel(""); self.lbl_err.setObjectName("Err")
-        r1.addWidget(self.lbl_err); r1.addStretch()
-        r1.addWidget(self._link("비밀번호를 잊으셨나요?", self.go_find_pw))
+        # 문구가 길면(예: "아이디 또는 비밀번호가 틀렸습니다.") 카드 폭(390 고정)을 넘어 오른쪽 링크와
+        # 겹쳤다 — 남는 폭 안에서 줄바꿈되게 한다.
+        self.lbl_err.setWordWrap(True)
+        r1.addWidget(self.lbl_err, 1)
+        r1.addWidget(self._link("비밀번호를 잊으셨나요?", self.go_find_pw),
+                     alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
         L.addLayout(r1); L.addSpacing(14)
 
         self.btn_login = QPushButton("로그인"); self.btn_login.setObjectName("P")

@@ -85,7 +85,7 @@ class SkillsPage(QWidget):
         page.setStyleSheet("QWidget#skillsPage { background: transparent; }")
         scroll.setWidget(page)
         lay = QVBoxLayout(page)
-        lay.setContentsMargins(48, 32, 48, 32)
+        lay.setContentsMargins(20, 20, 20, 20)
         lay.setSpacing(12)
         lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 

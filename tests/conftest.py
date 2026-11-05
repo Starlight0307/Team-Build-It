@@ -42,6 +42,19 @@ os.environ["LUMI_NO_AUTO_LISTEN"] = "1"
 # 실제 로그인 파일로 자동 로그인을 시도했고, 테스트용 암호 키로는 못 풀어서 실제 파일을 지워버렸다(2026-10-11).
 from data import db as _db
 _db.SESSION_FILE = os.path.join(_TEST_HOME, "no_session.json")
+# 앱 폴더 안의 비로그인용 파일도 마찬가지 — 메인 창을 만드는 테스트가 테스트용 암호 키로 실제 파일을 덮어써서
+# 진짜 키로 못 읽게 됐다(2026-11-05 settings/app_settings.json, plugins/app_usage/usage.json).
+from settings import app_settings as _app_settings
+_app_settings._GUEST_PATH = _app_settings._PATH = os.path.join(_TEST_HOME, "app_settings.json")
+from plugins import app_usage as _app_usage
+_app_usage._GUEST_USAGE_FILE = _app_usage.USAGE_FILE = os.path.join(_TEST_HOME, "usage.json")
+_app_usage._GUEST_GOALS_FILE = _app_usage.GOALS_FILE = os.path.join(_TEST_HOME, "goals.json")
+# 실제 Google OAuth 클라이언트 파일을 쓰면 테스트가 진짜 구글 인증 창을 띄운다(2026-11-05 실제로 반복해서 떴다)
+from plugins import calendar_tool as _calendar_tool
+_calendar_tool.BUNDLED_CLIENT_FILE = os.path.join(_TEST_HOME, "no_google_client.json")
+_calendar_tool.CREDENTIALS_FILE = os.path.join(_TEST_HOME, "no_credentials.json")
+import webbrowser as _webbrowser
+_webbrowser.open = _webbrowser.open_new = _webbrowser.open_new_tab = lambda *a, **k: False
 
 
 @pytest.fixture

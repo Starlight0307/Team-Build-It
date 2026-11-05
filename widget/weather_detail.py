@@ -434,7 +434,7 @@ class WeatherDetailDialog(QDialog):
         self.c = {"text": "#FFFFFF", "sub": "#DDE6F5", "ring": "#33415C", "track": "#70FFFFFF",
                   "moon_dark": "#40FFFFFF"}
         self.setModal(True)
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowTitle("날씨 자세히")
         self.city, self.coords = city, coords

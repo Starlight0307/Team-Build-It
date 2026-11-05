@@ -130,6 +130,36 @@ def test_weather_panel_click_emits(qapp, monkeypatch):
     assert hits == [1]
 
 
+def test_weather_panel_detects_again_after_login(qapp, monkeypatch):
+    """로그인이 첫 조회보다 늦게 끝나도 저장된 지역이 아니라 현재 위치를 찾는다."""
+    import threading
+    from widget.dashboard import WeatherPanel
+
+    class _NowThread:
+        def __init__(self, target, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    def _no_weather(city, coords=None):
+        raise weather.WeatherError("이 테스트는 위치 찾기만 본다")
+
+    monkeypatch.setattr(threading, "Thread", _NowThread)
+    calls = []
+    monkeypatch.setattr(weather, "detect_location", lambda: calls.append(1) or
+                        {"name": "수원", "lat": 37.2, "lon": 127.0, "source": "os"})
+    monkeypatch.setattr(weather, "fetch_weather", _no_weather)
+    location = [("서울", (37.5, 127.0))]
+    panel = WeatherPanel(lambda: location[0], detect_on_start=lambda: True)
+    panel.refresh()
+    assert len(calls) == 1
+    panel.refresh()            # 30분 타이머 등 평소 갱신은 다시 찾지 않는다
+    assert len(calls) == 1
+    panel.reload()             # 로그인 → 이 계정 설정으로 다시 조회
+    assert len(calls) == 2
+
+
 @pytest.mark.parametrize("icon,day,scene", [("sun", True, "clear_day"), ("moon", True, "clear_night"),
                                             ("cloud-moon", True, "partly_night"), ("cloud-rain", False, "rain_night"),
                                             ("cloud-lightning", True, "thunder_day"), ("cloud-snow", True, "snow_day"),
