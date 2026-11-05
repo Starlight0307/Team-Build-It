@@ -41,6 +41,9 @@ PLUGIN_PILLS = {
     "expense_tracker": [
         ("💰 이번달 지출", "이번달 얼마 썼어?"),
     ],
+    "stock_portfolio": [
+        ("📈 내 주식 손익", "내 주식 어때?"),
+    ],
     "app_usage": [
         ("⏳ 오늘 앱 사용 시간", "오늘 앱 사용 시간 알려줘"),
     ],    "file_search": [
@@ -104,6 +107,9 @@ PLUGIN_CARDS = {
     ],
     "expense_tracker": [
         ("💰", "지출 통계", "최근 지출을 집계해서 보여줍니다.", "이번달 얼마 썼어?"),
+    ],
+    "stock_portfolio": [
+        ("📈", "주식 손익 브리핑", "연결한 모의 계좌의 보유 종목과 평가손익을 알려줍니다. 매수·매도를 추천하지는 않아요.", "내 주식 어때?"),
     ],
     "app_usage": [
         ("⏳", "앱 사용 시간", "프로그램별 사용 시간을 기록하고 조회합니다.", "오늘 앱 사용 시간 알려줘"),
@@ -289,6 +295,15 @@ AVAILABLE_PLUGINS = [
         "dependencies": []
     },
     {
+        "name": "주식 포트폴리오",
+        "desc": "한국투자증권 모의 계좌의 손익 브리핑, 직접 확정하는 주문, 직접 정한 규칙의 자동매매(추천은 하지 않아요)",
+        "func_names": ["get_stock_briefing", "open_stock_order", "stop_stock_auto_trading"],
+        "module_name": "stock_portfolio",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/stock_portfolio.py",
+        "sha256": "8fd35d28a7f49ca9d08c461164bcc93c1b3e9a6aa4eb548be02092fab093731c",
+        "dependencies": []
+    },
+    {
         "name": "화면 시간/앱 사용 통계",
         "desc": "프로그램별 사용 시간을 기록하고 '오늘 게임 몇 시간 했어?' 같은 질문에 답변(명시적으로 시작해야 기록)",
         "func_names": [
@@ -390,7 +405,7 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/activity_log.py",
         # 2026-09-30 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
-        "sha256": "5e85fd22293369b26852a49f49db27db8120a14aef54a668447afe11c681e70b",
+        "sha256": "7d6503a494bf5c553ac4f99e769d771dca025ab54c658221b5a7cc37a066d39b",
         "dependencies": []
     },
     {

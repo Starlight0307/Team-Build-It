@@ -63,6 +63,18 @@ class ToolMetadata:
 
 
 TOOL_METADATA: dict = {
+    "get_stock_briefing": ToolMetadata(
+        name="get_stock_briefing", module="stock_portfolio", category="stock_portfolio",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "open_stock_order": ToolMetadata(
+        name="open_stock_order", module="stock_portfolio", category="stock_portfolio",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "stop_stock_auto_trading": ToolMetadata(
+        name="stop_stock_auto_trading", module="stock_portfolio", category="stock_portfolio",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
     "add_income": ToolMetadata(
         name="add_income", module="expense_tracker", category="expense_tracker",
         risk_level="safe", read_only=False, llm_exposed=True,

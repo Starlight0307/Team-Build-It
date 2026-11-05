@@ -808,6 +808,10 @@ _TOOL_CATEGORIES = {
          "set_quiet_hours", "cancel_quiet_hours", "get_quiet_hours_status",
          "set_weather_condition"),
     ),
+    "stock_portfolio": (
+        ("주식", "종목", "증권", "손익", "수익률", "매수", "매도", "자동매매", "주 팔", "주 사"),
+        ("get_stock_briefing", "open_stock_order", "stop_stock_auto_trading"),
+    ),
     "expense_tracker": (
         ("구매", "샀어", "샀다", "지출", "가계부", "소비", "얼마썼", "얼마 썼", "구매내역", "구매 내역",
          "예산", "수입", "들어왔", "입금", "월급", "용돈", "알바비", "잔액", "모았어",
@@ -5617,6 +5621,9 @@ TOOL_STATUS_NAMES = {
     "delete_income":             "💵  수입 기록 삭제 중",
     "edit_income":               "💵  수입 기록 수정 중",
     "get_balance":               "📊  잔액 조회 중",
+    "get_stock_briefing":        "📈  주식 손익 확인 중",
+    "open_stock_order":          "📈  주문 창 여는 중",
+    "stop_stock_auto_trading":   "📈  자동매매 끄는 중",
     "get_top_cpu_processes":     "📊  CPU 프로세스 조회 중",
     "kill_process":              "⚡  프로세스 종료 중",
     "search_product_price":      "🛒  최저가 검색 중",

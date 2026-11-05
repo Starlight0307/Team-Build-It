@@ -103,7 +103,8 @@ def _sanitize_args(args: dict) -> dict:
 
 
 def log_activity(func_name: str, args: dict, result: str) -> None:
-    """core/ai_worker.py의 메인 도구 호출 디스패치 루프에서만 호출된다
+    """core/ai_worker.py의 메인 도구 호출 디스패치 루프와, AI 도구를 거치지 않는
+    주식 주문(plugins/stock_portfolio.py)에서 호출된다
     (모듈 docstring의 '기록 범위' 참고). TOOL_SCHEMAS에 없는 내부 전용
     함수라 LLM이 직접 호출할 수 없다. 게스트/미로그인 세션은 조용히
     기록하지 않는다 — 실패해도 실제 도구 실행 자체를 막으면 안 되므로

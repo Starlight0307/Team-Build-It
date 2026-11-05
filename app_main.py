@@ -58,6 +58,7 @@ from core.ai_worker import (AIWorker, _build_condition_recommendation, is_large_
                             build_overall_security_reply)
 from core.plugin_manager import load_existing_plugins, download_and_install_plugin, uninstall_plugin
 from widget.iot_panel import IotPanel
+from widget.stock_panel import StockPanel
 from core.plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
 from widget.widgets import (CommandCard, MessageBubble, TypingIndicator, FlowLayout,
                             ResponsiveCardRow, GripSplitter, NotificationToast, RealtimeAlertsDialog,
@@ -110,6 +111,12 @@ def _sync_calendar_user(user_id: str):
         # 로그인한 사용자만 쓸 수 있으므로, 로그인/로그아웃 시 같이 동기화한다.
         from plugins.expense_tracker import set_current_user as set_expense_user
         set_expense_user(user_id)
+    except ImportError:
+        pass
+    try:
+        # 계정이 바뀌면 자동매매가 이어서 돌지 않게 꺼지고, 다른 계정의 키를 쓰지 않는다
+        from plugins.stock_portfolio import set_current_user as set_stock_user
+        set_stock_user(user_id)
     except ImportError:
         pass
     try:
@@ -266,6 +273,7 @@ DASHBOARD_WIDGETS = {
     "todo":    ("list-todo", "할 일", "아직 끝내지 않은 할 일을 보여줘요. (로그인 필요)"),
     "session": ("timer", "세션", "루미 가동 시간, 명령 수, 시스템 부하를 보여줘요."),
     "iot":     ("lightbulb", "IoT 제어", "등록한 기기를 켜고 꺼요. (IoT 플러그인 설치 필요)"),
+    "stock":   ("chart-line", "주식", "보유 종목과 평가손익을 보여줘요. (주식 플러그인 설치 필요)"),
 }
 DEFAULT_WIDGET_ORDER = list(DASHBOARD_WIDGETS)
 
@@ -327,6 +335,7 @@ class AssistantApp(QWidget):
         self._setup_system_tray()
         QTimer.singleShot(50, self.apply_theme)
         QTimer.singleShot(800, self._run_startup_update_check)
+        QTimer.singleShot(1000, self.stock_panel.refresh)
         # 신규 기능 6(앱 사용 통계) — 사용자가 이전에 기록을 켜둔 경우에만 이어서 기록한다.
         QTimer.singleShot(1500, self._resume_usage_tracking)
         if "iot_control" in self.installed_module_names:
@@ -1428,11 +1437,14 @@ class AssistantApp(QWidget):
         self.todo_panel.clicked.connect(self._open_todo_dialog)
         self.session_panel = SessionPanel(self.stats_panel)
         self.iot_panel = IotPanel()
+        self.stock_panel = StockPanel()
+        self.stock_panel.notice.connect(self._show_toast)
+        self.stock_panel.briefing_ready.connect(self._on_stock_reply)
         self.info_panels = [self.stats_panel, self.weather_panel, self.today_panel,
-                            self.todo_panel, self.session_panel, self.iot_panel]
+                            self.todo_panel, self.session_panel, self.iot_panel, self.stock_panel]
         self.panel_by_id = {"stats": self.stats_panel, "weather": self.weather_panel,
                             "today": self.today_panel, "todo": self.todo_panel,
-                            "session": self.session_panel, "iot": self.iot_panel}
+                            "session": self.session_panel, "iot": self.iot_panel, "stock": self.stock_panel}
         for panel in self.info_panels:
             ll.addWidget(panel)
         ll.addStretch()
@@ -2025,7 +2037,8 @@ class AssistantApp(QWidget):
         """저장된 순서 (모르는 id는 버리고, 새로 생긴 위젯은 뒤에 붙인다)."""
         saved = [w for w in (app_settings.get("dashboard_widgets") or []) if w in DASHBOARD_WIDGETS]
         order = saved + [w for w in DEFAULT_WIDGET_ORDER if w not in saved]
-        return order if "iot_control" in self.installed_module_names else [w for w in order if w != "iot"]
+        needs_plugin = {"iot": "iot_control", "stock": "stock_portfolio"}
+        return [w for w in order if needs_plugin.get(w, "") in self.installed_module_names or w not in needs_plugin]
 
     def _hidden_widgets(self) -> set:
         return set(app_settings.get("hidden_widgets") or [])
@@ -2036,6 +2049,7 @@ class AssistantApp(QWidget):
             return
         hidden = self._hidden_widgets()
         self.iot_panel.setVisible(False)   # IoT 플러그인이 있으면 아래에서 다시 켠다
+        self.stock_panel.setVisible(False)
         for i, wid in enumerate(self._widget_order()):
             panel = self.panel_by_id[wid]
             self._left_layout.removeWidget(panel)
@@ -2434,12 +2448,16 @@ class AssistantApp(QWidget):
             stop = next((f for f in self.installed_tools if f.__name__ == "stop_realtime_monitor"), None)
             if stop:
                 stop()
+        if m_name == "stock_portfolio":
+            self.stock_panel.before_plugin_removed()
         try:
             uninstall_plugin(m_name, self.installed_tools, self.installed_module_names)
         except OSError as e:
             lumi_dialog.critical(self, "오류", f"'{f_name}' 기능을 제거하지 못했어요.\n{e}")
             return
         self._sync_plugin_ui()
+        if m_name == "stock_portfolio":
+            self.stock_panel.after_plugin_removed()
         self._show_toast(f"'{f_name}' 기능을 제거했어요.")
 
     def _on_install_plugin(self, f_name, m_name, url, btn):
@@ -2452,6 +2470,8 @@ class AssistantApp(QWidget):
         self._sync_plugin_ui()
         if m_name == "iot_control" and m_name in self.installed_module_names:
             self.iot_panel.refresh()
+        if m_name == "stock_portfolio" and m_name in self.installed_module_names:
+            self.stock_panel.refresh()
 
         # 설치가 방금 막 완료된 경우에만(재실행 시 X) 안내 메시지 표시
         newly_installed = (not already_installed) and (m_name in self.installed_module_names)
@@ -2568,6 +2588,7 @@ class AssistantApp(QWidget):
         self._sync_voice_model_buttons()
         self._sync_close_action_buttons()
         self.weather_panel.reload()   # 지역이 없으면 refresh가 알아서 현재 위치를 찾는다
+        self.stock_panel.refresh()
         self._restore_home_split()
         if hasattr(self, "skills_page"):
             self.skills_page.refresh()
@@ -2775,6 +2796,23 @@ class AssistantApp(QWidget):
             QTimer.singleShot(50, self.auto_scroll_to_bottom)
             return
 
+        # 주식 매수·매도 추천과 전망은 AI에게 넘기지 않고 고정 문장으로 답한다
+        stock_request = False
+        if "stock_portfolio" in self.installed_module_names:
+            import plugins.stock_portfolio as stock_plugin
+            if stock_plugin.is_recommendation_request(txt):
+                self.chat_history.append({'role': 'user', 'content': txt})
+                self.display_ai_response(stock_plugin.RECOMMENDATION_REPLY)
+                QTimer.singleShot(50, self.auto_scroll_to_bottom)
+                return
+            intent = stock_plugin.stock_intent(txt)
+            stock_request = intent is not None   # 주식 요청은 화면 조작으로 넘기지 않는다
+            if intent in ("stop", "turn_on", "briefing"):
+                self.chat_history.append({'role': 'user', 'content': txt})
+                self._handle_stock_intent(intent, stock_plugin)
+                QTimer.singleShot(50, self.auto_scroll_to_bottom)
+                return
+
         # ── 대용량 파일 목록 뒤의 "1번 폴더 열어줘"/"어디 있어?" → 화면 조작 판단 없이 루미가 바로 답한다 ──
         # (2026-10-19: "열어" 때문에 화면 조작으로 가서 이미 열린 탐색기 창을 클릭했다 — 루미는 탐색기 명령으로 연다)
         if is_large_file_followup(txt, self.chat_history):
@@ -2783,7 +2821,7 @@ class AssistantApp(QWidget):
             return
 
         # ── "직접 ~해줘" / "지금 화면에 뭐 있어?" → 화면을 보고 작업/답변 ──
-        screen_mode = screen_agent.classify_screen_request(txt)
+        screen_mode = None if stock_request else screen_agent.classify_screen_request(txt)
         if screen_mode:
             self._start_screen_task(txt, screen_mode)
             QTimer.singleShot(50, self.auto_scroll_to_bottom)
@@ -2854,7 +2892,7 @@ class AssistantApp(QWidget):
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
 
         # ── 다른 프로그램을 조작해야 할 수도 있는 요청이면 루미가 먼저 판단 ──
-        if screen_agent.may_need_screen(txt):
+        if not stock_request and screen_agent.may_need_screen(txt):
             self._start_route_worker(txt)
             return
         self._start_skills_or_ai(txt)
@@ -3523,6 +3561,21 @@ class AssistantApp(QWidget):
         self.chat_history.append({'role': 'assistant', 'content': message})
         self.display_ai_response(f"🤖 로컬 비서: 🌐 {message}")
 
+    def _handle_stock_intent(self, intent: str, stock_plugin):
+        """끄기와 브리핑은 AI를 거치지 않는다 — 끄기는 늘 바로 돼야 하고, 숫자는 도구가 만든 그대로 보여 준다."""
+        if intent == "briefing":
+            self._set_input_enabled(False)
+            self._show_typing_indicator()
+            self.stock_panel.request_briefing()
+            return
+        self._on_stock_reply(stock_plugin.stop_stock_auto_trading() if intent == "stop"
+                             else "자동매매는 안전을 위해 대화로 켤 수 없어요. 주식 위젯의 '자동' 버튼에서 직접 켜 주세요.")
+        self.stock_panel.refresh()
+
+    def _on_stock_reply(self, message: str):
+        self.chat_history.append({'role': 'assistant', 'content': message})
+        self.display_ai_response(f"🤖 로컬 비서: {message}")
+
     def _screen_task_running(self) -> bool:
         return self._screen_worker is not None and self._screen_worker.isRunning()
 
@@ -3542,6 +3595,17 @@ class AssistantApp(QWidget):
             self._start_screen_task(txt, "act")
         else:
             self._start_skills_or_ai(txt)
+
+    def _confirm_screen_control(self, txt: str) -> bool:
+        """화면 조작을 시작하기 전에 항상 묻는다 — AI가 요청을 잘못 판단해도 사용자의 PC를 건드리기 전에 막는다.
+        (실제로 "자동매매 꺼줘"가 화면 조작으로 넘어가 다른 창에 글자를 입력한 일이 있었다)
+        Enter로는 시작되지 않고(버튼을 직접 눌러야 한다) Esc는 취소다. 창을 트레이로 숨긴 상태에서도 보이게 맨 위에 띄운다."""
+        request = txt if len(txt) <= 120 else txt[:120] + "…"
+        return lumi_dialog.choice(
+            self, "마우스와 키보드를 조작할까요?",
+            f"요청: {request}\n\n이 요청을 처리하려면 루미가 이 컴퓨터의 마우스와 키보드를 직접 움직여야 해요.\n"
+            "시작하면 화면의 다른 프로그램을 누르거나 글자를 입력할 수 있어요.",
+            [(False, "취소", "ghost"), (True, "조작 시작", "danger")], kind="warning", on_top=True) is True
 
     def _start_screen_task(self, txt: str, mode: str):
         from PyQt6.QtWidgets import QMessageBox
@@ -3597,6 +3661,11 @@ class AssistantApp(QWidget):
             return
 
         self.chat_history.append({'role': 'user', 'content': txt})
+        if mode == "act" and not self._confirm_screen_control(txt):
+            message = "화면 조작을 취소했어요. 마우스와 키보드는 건드리지 않았어요."
+            self.chat_history.append({'role': 'assistant', 'content': message})
+            self.display_ai_response(f"🤖 로컬 비서: {message}")
+            return
         self._set_input_enabled(False)
         self._show_typing_indicator()
         self._on_status_update("👀 화면을 보는 중")
