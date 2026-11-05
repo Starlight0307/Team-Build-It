@@ -158,3 +158,11 @@
 ## 빌더에게 맡기는 것
 
 파일 분리 방식, 도구 함수 이름과 개수, 위젯 세부 배치, 재시도 간격, 테스트 구성, 어댑터 형태.
+
+## 증권사 연결: 키움증권
+
+- 공식 저장소 `Kiwoom-Securities/Kiwoom-REST-API`의 명세(`kiwoom/_data/kiwoom_api_spec.json`)로 대조했다. 진짜 서버로는 아직 호출하지 않았다.
+- 주소: 실전 `https://api.kiwoom.com`, 모의 `https://mockapi.kiwoom.com`. 앱 키는 모의·실전이 따로다.
+- 토큰 au10001(`/oauth2/token`, `appkey`·`secretkey`, 응답 `token`·`expires_dt`). 사용자가 포털에 이 컴퓨터의 IP를 등록해야 한다.
+- 계좌번호는 입력받지 않고 ka00001로 확인한다. 잔고 kt00018, 현재가 ka10001, 일봉 ka10081, 매수 kt10000, 매도 kt10001(지정가 `trde_tp=0`, KRX).
+- 오류도 HTTP 200으로 오므로 `return_code`로만 판단한다. 주문 응답에 `return_code`가 없거나 응답을 못 받으면 결과 불명으로 처리하고 다시 보내지 않는다.

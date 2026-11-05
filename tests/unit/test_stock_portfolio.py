@@ -789,3 +789,192 @@ def test_market_bars_have_open_high_low_volume(market):
     market.state["body"] = _market_body([{**ROW_NEW, "mkp": "226500", "hipr": "228000", "lopr": "208000", "trqu": "22248738"}])
     assert sp.market_bars("005930")[0] == {"date": "2026-11-04", "open": 226500, "high": 228000, "low": 208000, "close": 70000, "volume": 22248738}
 
+
+# ── 키움증권 — 응답은 공식 저장소 kiwoom_api_spec.json의 예시 값과 형식을 그대로 쓴다 ──
+class FakeKiwoom:
+    def __init__(self):
+        self.calls = []
+        self.token_calls = 0
+        self.token_body = None
+        self.fail = {}    # api_id → 다음 응답 또는 예외(한 번만)
+        self.pages = None
+        self.chart = []
+        self.price = "-69000"
+
+    def post(self, url, timeout=None, headers=None, json=None):
+        self.token_calls += 1
+        self.token_url, self.token_json = url, json
+        if self.token_body is not None:
+            return FakeResponse(self.token_body)
+        return FakeResponse({"expires_dt": "20991107083713", "token_type": "bearer", "token": f"KW-{self.token_calls}",
+                             "return_code": 0, "return_msg": "정상적으로 처리되었습니다"})
+
+    def request(self, method, url, headers=None, params=None, json=None, timeout=None):
+        api_id = headers["api-id"]
+        self.calls.append({"method": method, "url": url, "headers": headers, "json": json})
+        if api_id in self.fail:
+            failure = self.fail.pop(api_id)
+            if isinstance(failure, Exception):
+                raise failure
+            return FakeResponse(failure)
+        if api_id == "ka00001":
+            return FakeResponse({"acctNo": "0123456789", "return_code": 0, "return_msg": "ok"})
+        if api_id == "kt00018":
+            if self.pages:
+                return FakeResponse(*self.pages.pop(0))
+            return FakeResponse({
+                "tot_pur_amt": "000000000373500", "tot_evlt_amt": "000000000177000", "tot_evlt_pl": "-00000000196888", "tot_prft_rt": "-52.71",
+                "acnt_evlt_remn_indv_tot": [
+                    {"stk_cd": "A005930", "stk_nm": "삼성전자", "evltv_prft": "-00000000196888", "prft_rt": "-52.71", "pur_pric": "000000000124500",
+                     "rmnd_qty": "000000000000003", "trde_able_qty": "000000000000002", "cur_prc": "000000059000", "evlt_amt": "000000000177000"},
+                    {"stk_cd": "A000000", "stk_nm": "판매완료", "rmnd_qty": "000000000000000"}],
+                "return_code": 0, "return_msg": "ok"})
+        if api_id == "ka10001":
+            return FakeResponse({"stk_cd": "005930", "cur_prc": self.price, "return_code": 0, "return_msg": "ok"})
+        if api_id == "ka10081":
+            return FakeResponse({"stk_cd": "005930", "stk_dt_pole_chart_qry": self.chart, "return_code": 0, "return_msg": "ok"})
+        return FakeResponse({"ord_no": "0000138", "dmst_stex_tp": "KRX", "return_code": 0, "return_msg": "완료"})
+
+
+@pytest.fixture
+def kiwoom(tmp_path, monkeypatch):
+    fake = FakeKiwoom()
+    monkeypatch.setattr(sp.storage_location, "user_data_dir", lambda name: str(tmp_path))
+    monkeypatch.setattr(sp, "REQUEST_GAP", 0)
+    monkeypatch.setattr(sp.requests, "post", fake.post)
+    monkeypatch.setattr(sp.requests, "request", fake.request)
+    monkeypatch.setattr(sp, "load_master", lambda: NAMES)
+    monkeypatch.setattr(sp, "market_open", lambda now=None: True)
+    monkeypatch.setattr(sp, "_order_ui_hook", None)
+    sp.set_current_user("tester")
+    sp.connect_account(KEY, SECRET, "", "real", "kiwoom")
+    sp.set_order_settings(True, 1_000_000)
+    yield fake
+    sp.set_current_user("guest")
+
+
+def test_kiwoom_connect_gets_account_number_from_key_and_uses_official_auth(kiwoom):
+    assert kiwoom.token_url == "https://api.kiwoom.com/oauth2/token"
+    assert kiwoom.token_json == {"grant_type": "client_credentials", "appkey": KEY, "secretkey": SECRET}
+    call = kiwoom.calls[0]
+    assert call["url"] == "https://api.kiwoom.com/api/dostk/acnt" and call["method"] == "POST"
+    assert call["headers"]["api-id"] == "ka00001" and call["headers"]["authorization"] == "Bearer KW-1"
+    assert sp.account_status()["account"] == "키움증권 실전 계좌 ****6789"
+    assert sp.account_status()["mode"] == "real"
+
+
+def test_kiwoom_demo_goes_to_mock_server(kiwoom):
+    sp.connect_account(KEY, SECRET, "", "demo", "kiwoom")
+    assert kiwoom.calls[-1]["url"].startswith("https://mockapi.kiwoom.com/")
+
+
+def test_kiwoom_portfolio_reads_padded_and_negative_numbers(kiwoom):
+    result = sp.fetch_portfolio()
+    assert kiwoom.calls[-1]["json"] == {"qry_tp": "1", "dmst_stex_tp": "KRX"}
+    assert len(result["holdings"]) == 1
+    h = result["holdings"][0]
+    assert (h["code"], h["name"], h["qty"], h["avg_price"], h["price"], h["value"], h["pl"], h["rate"], h["sellable"]) == (
+        "005930", "삼성전자", 3, 124500, 59000, 177000, -196888, -52.71, 2)
+    assert result["total_pl"] == -196888 and result["total_buy"] == 373500 and result["total_value"] == 177000
+    assert result["total_rate"] == pytest.approx(-52.71, abs=0.01)
+
+
+def test_kiwoom_double_minus_stays_negative():
+    assert sp._kiwoom_num("--600") == -600 and sp._kiwoom_num("+600") == 600 and sp._kiwoom_num("") == 0
+
+
+def test_kiwoom_portfolio_follows_pages(kiwoom):
+    row = {"stk_cd": "A{}", "stk_nm": "x", "rmnd_qty": "1"}
+    kiwoom.pages = [({"tot_pur_amt": "100", "acnt_evlt_remn_indv_tot": [dict(row, stk_cd="A005930")], "return_code": 0}, {"cont-yn": "Y", "next-key": "NEXT"}),
+                    ({"tot_pur_amt": "100", "acnt_evlt_remn_indv_tot": [dict(row, stk_cd="A000660")], "return_code": 0}, {"cont-yn": "N", "next-key": ""})]
+    assert [h["code"] for h in sp.fetch_portfolio()["holdings"]] == ["005930", "000660"]
+    assert kiwoom.calls[-1]["headers"]["cont-yn"] == "Y" and kiwoom.calls[-1]["headers"]["next-key"] == "NEXT"
+
+
+def test_kiwoom_price_ignores_direction_sign(kiwoom):
+    assert sp.get_price("005930") == 69000
+    assert kiwoom.calls[-1]["json"] == {"stk_cd": "005930"} and kiwoom.calls[-1]["headers"]["api-id"] == "ka10001"
+
+
+def test_kiwoom_bars_sorted_with_adjusted_prices(kiwoom):
+    today = datetime.now(sp.KST)
+    day = lambda n: (today - sp.timedelta(days=n)).strftime("%Y%m%d")
+    kiwoom.chart = [{"dt": day(1), "cur_prc": "70100", "open_pric": "69800", "high_pric": "70500", "low_pric": "69600", "trde_qty": "9263135"},
+                    {"dt": day(2), "cur_prc": "-69500", "open_pric": "70300", "high_pric": "+70400", "low_pric": "69500", "trde_qty": "11526724"},
+                    {"dt": day(900), "cur_prc": "1000"}]
+    bars = sp.get_price_bars("005930")
+    assert [b["close"] for b in bars] == [69500, 70100]
+    assert bars[0]["high"] == 70400 and bars[1]["volume"] == 9263135
+    assert kiwoom.calls[-1]["json"]["upd_stkpc_tp"] == "1"
+
+
+@pytest.mark.parametrize("side,api_id", [("buy", "kt10000"), ("sell", "kt10001")])
+def test_kiwoom_order_is_limit_on_krx(kiwoom, side, api_id):
+    message = sp.place_order(side, "삼성전자", 2, 70000, confirm_amount=140000)
+    call = kiwoom.calls[-1]
+    assert call["url"] == "https://api.kiwoom.com/api/dostk/ordr" and call["headers"]["api-id"] == api_id
+    assert call["json"] == {"dmst_stex_tp": "KRX", "stk_cd": "005930", "ord_qty": "2", "ord_uv": "70000", "trde_tp": "0", "cond_uv": ""}
+    assert "0000138" in message
+
+
+def test_kiwoom_rejection_in_http_200_is_an_error_not_success(kiwoom):
+    kiwoom.fail["kt10001"] = {"return_code": 2, "return_msg": "주문가능수량이 부족합니다"}
+    with pytest.raises(sp.StockError, match="부족"):
+        sp.place_order("sell", "삼성전자", 2, 70000, confirm_amount=140000)
+    assert sp._load()["orders"][-1]["result"].startswith("rejected")
+
+
+@pytest.mark.parametrize("failure", [requests.Timeout(), {"unexpected": True}, ["not", "a", "dict"]])
+def test_kiwoom_order_with_unclear_result_is_unknown_and_never_resent(kiwoom, failure):
+    kiwoom.fail["kt10001"] = failure
+    before = len(kiwoom.calls)
+    with pytest.raises(sp.OrderResultUnknown):
+        sp.place_order("sell", "삼성전자", 2, 70000, confirm_amount=140000)
+    assert len(kiwoom.calls) == before + 1
+    assert sp._load()["orders"][-1]["result"] == "unknown"
+
+
+def test_kiwoom_order_with_expired_token_is_not_resent_but_next_query_recovers(kiwoom):
+    kiwoom.fail["kt10001"] = {"return_code": 3, "return_msg": "인증에 실패했습니다[8005:Token이 유효하지 않습니다]"}
+    before = len(kiwoom.calls)
+    with pytest.raises(sp.StockError):
+        sp.place_order("sell", "삼성전자", 2, 70000, confirm_amount=140000)
+    assert len(kiwoom.calls) == before + 1
+    kiwoom.fail["kt00018"] = {"return_code": 8005, "return_msg": "Token이 유효하지 않습니다"}
+    tokens = kiwoom.token_calls
+    assert sp.fetch_portfolio()["holdings"]
+    assert kiwoom.token_calls == tokens + 1
+
+
+def test_kiwoom_failed_login_does_not_save_or_echo_keys(tmp_path, monkeypatch):
+    fake = FakeKiwoom()
+    fake.token_body = {"return_code": 8030, "return_msg": f"투자구분이 달라서 {KEY} 사용 불가"}
+    monkeypatch.setattr(sp.storage_location, "user_data_dir", lambda name: str(tmp_path))
+    monkeypatch.setattr(sp, "REQUEST_GAP", 0)
+    monkeypatch.setattr(sp.requests, "post", fake.post)
+    monkeypatch.setattr(sp.requests, "request", fake.request)
+    sp.set_current_user("tester")
+    try:
+        with pytest.raises(sp.StockError) as e:
+            sp.connect_account(KEY, SECRET, "", "real", "kiwoom")
+        assert KEY not in str(e.value) and "IP" in str(e.value)
+        assert not sp.account_status()["connected"]
+    finally:
+        sp.set_current_user("guest")
+
+
+def test_saved_account_without_broker_stays_kis(connected):
+    assert not sp._is_kiwoom({"app_key": "x"})
+    assert sp.fetch_portfolio()["holdings"][0]["code"] == "005930"
+    assert connected.urls[-1].startswith(sp.BASE_URLS["demo"])
+
+
+def test_unknown_broker_is_refused(kis):
+    with pytest.raises(sp.StockError, match="증권사"):
+        sp.connect_account(KEY, SECRET, ACCOUNT, "real", "samsung")
+
+
+def test_kiwoom_auto_rule_uses_kiwoom_order(kiwoom):
+    assert sp._submit_order(sp._load(), "sell", "005930", 10, 70000) == "0000138"
+    assert kiwoom.calls[-1]["headers"]["api-id"] == "kt10001" and kiwoom.calls[-1]["json"]["ord_qty"] == "10"
+

@@ -296,6 +296,24 @@ def test_connect_form_starts_on_demo_and_passes_real_only_when_chosen(qapp, stoc
     dlg._connect()
     assert _wait(qapp, lambda: calls)
     assert calls[0][3] == "real"
+    assert calls[0][4] == "kis"
+
+
+def test_connect_form_does_not_ask_account_number_for_kiwoom(qapp, stock, monkeypatch):
+    sp.disconnect_account()
+    calls = []
+    monkeypatch.setattr(sp, "connect_account", lambda *a: calls.append(a) or "ok")
+    dlg = stock_panel.StockAccountDialog()
+    dlg.show()
+    assert dlg.account_input.isEnabled() and dlg.mode_input.currentData() == "demo"
+    dlg.broker_input.setCurrentIndex(dlg.broker_input.findData("kiwoom"))
+    assert not dlg.account_input.isEnabled()
+    assert "IP" in dlg.desc.text()
+    dlg.key_input.setText("K"); dlg.secret_input.setText("S")
+    dlg._connect()
+    assert _wait(qapp, lambda: calls)
+    assert calls[0][3:] == ("demo", "kiwoom")
+    dlg.close()
 
 
 def test_closing_order_dialog_during_price_fetch_is_safe(qapp, stock, monkeypatch):

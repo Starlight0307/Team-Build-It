@@ -355,8 +355,9 @@ class StockDetailDialog(_StockDialog):
             button = QPushButton(name)
             button.setObjectName("LinkPrimary" if days is None else "LinkGhost")
             button.setAutoDefault(False)
-            button.setFixedSize(76, 32)
-            button.setStyleSheet("padding: 0; min-height: 0; font-size: 12px; border-radius: 10px;")
+            # setFixedSize는 공통 스타일의 최소 크기에 밀려서 스타일로 크기를 정한다
+            button.setStyleSheet("margin: 0; padding: 0; min-width: 64px; max-width: 64px; min-height: 28px; max-height: 28px;"
+                                 "font-size: 12px; border-radius: 10px;")
             button.clicked.connect(lambda _=False, d=days: self.set_period(d))
             self.period_buttons[days] = button
             periods.addWidget(button)

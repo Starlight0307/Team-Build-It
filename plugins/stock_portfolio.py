@@ -1,5 +1,5 @@
 """
-주식 플러그인 — 한국투자증권 계좌(모의·실전)의 손익 브리핑, 주문, 사용자 규칙 자동매매
+주식 플러그인 — 한국투자증권·키움증권 계좌(모의·실전)의 손익 브리핑, 주문, 사용자 규칙 자동매매
 ────────────────────────────────────────────────────────
 ● 사용자가 이미 가진 계좌를 앱 키로 연결한다. 실전은 연결할 때 직접 골라야 하고, 주문마다 금액을 다시
   입력해야 한다(docs/superpowers/specs/2026-11-05-stock-plugin-design.md).
@@ -30,6 +30,12 @@ BASE_URLS = {"demo": "https://openapivts.koreainvestment.com:29443",
              "real": "https://openapi.koreainvestment.com:9443"}
 MODE_NAMES = {"demo": "모의", "real": "실전"}
 KIS_GUIDE_URL = "https://apiportal.koreainvestment.com/"
+BROKER_NAMES = {"kis": "한국투자증권", "kiwoom": "키움증권"}
+# 키움 공식 저장소 Kiwoom-Securities/Kiwoom-REST-API의 명세로 대조했다. 모의·실전은 앱 키가 따로다
+KIWOOM_URLS = {"demo": "https://mockapi.kiwoom.com", "real": "https://api.kiwoom.com"}
+KIWOOM_GUIDE_URL = "https://openapi.kiwoom.com/main/home"
+KIWOOM_ORDER = {"buy": "kt10000", "sell": "kt10001"}
+KIWOOM_TOKEN_ERROR = re.compile(r"\b(8005|8010|8031|8103)\b")   # 토큰 무효·IP 변경 — return_code 3의 문구 안에 섞여 오기도 한다
 MASTER_URL = "https://new.real.download.dws.co.kr/common/master/{}_code.mst.zip"
 MASTER_TAIL = {"kospi": 228, "kosdaq": 222}   # 공식 예제 kis_*_code_mst.py의 뒤쪽 고정 길이 — 그 앞이 코드·이름
 TR_BALANCE = {"demo": "VTTC8434R", "real": "TTTC8434R"}
@@ -43,6 +49,7 @@ MARKET_SOURCE = "출처: 금융위원회(공공데이터포털)"
 MARKET_CACHE_SECONDS = 1800
 WATCHLIST = ("005930", "000660", "035420", "035720")   # 삼성전자, SK하이닉스, NAVER, 카카오
 SIDE_NAMES = {"sell": "매도", "buy": "매수"}
+ORDER_UNKNOWN = "주문 결과를 확인하지 못했어요. 이중 주문을 막기 위해 다시 보내지 않았어요. 증권사 앱에서 체결 내역을 확인해 주세요."
 DEFAULT_ORDER_LIMIT = 1_000_000
 REQUEST_GAP = 1.1   # 모의투자 호출 제한(초당 약 1번)
 KST = ZoneInfo("Asia/Seoul")
@@ -145,6 +152,10 @@ def _mode(account: dict) -> str:
     return "real" if (account or {}).get("mode") == "real" else "demo"   # 모르면 돈이 안 움직이는 쪽으로
 
 
+def _is_kiwoom(account: dict) -> bool:
+    return (account or {}).get("broker") == "kiwoom"
+
+
 def _base_url(account: dict) -> str:
     return BASE_URLS[_mode(account)]
 
@@ -154,6 +165,8 @@ def _token(data: dict, account: dict = None) -> str:
     if data.get("token") and data.get("token_expires", "") > datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"):
         return data["token"]
     _throttle()
+    if _is_kiwoom(account):
+        return _kiwoom_token(data, account)
     try:
         resp = requests.post(_base_url(account) + "/oauth2/tokenP", timeout=15, json={
             "grant_type": "client_credentials", "appkey": account["app_key"], "appsecret": account["app_secret"]})
@@ -165,6 +178,59 @@ def _token(data: dict, account: dict = None) -> str:
     data["token"] = body["access_token"]
     data["token_expires"] = body.get("access_token_token_expired", "")
     return data["token"]
+
+
+def _kiwoom_token(data: dict, account: dict) -> str:
+    try:
+        resp = requests.post(KIWOOM_URLS[_mode(account)] + "/oauth2/token", timeout=15,
+                             headers={"Content-Type": "application/json;charset=UTF-8"},
+                             json={"grant_type": "client_credentials", "appkey": account["app_key"], "secretkey": account["app_secret"]})
+        body = resp.json()
+        expires = datetime.strptime(str(body["expires_dt"]), "%Y%m%d%H%M%S")
+        token = body["token"]
+    except (requests.RequestException, ValueError):
+        raise StockError("증권사에 연결하지 못했어요. 인터넷을 확인해 주세요.")
+    except (KeyError, TypeError):   # 키움 오류 문구에 입력값이 담길 수 있어 그대로 보여 주지 않는다
+        raise StockError("키움증권 인증에 실패했어요. 앱 키와 시크릿, 모의·실전 종류, 포털에 등록한 이 컴퓨터의 IP를 확인해 주세요.")
+    data["token"] = token
+    data["token_expires"] = expires.strftime("%Y-%m-%d %H:%M:%S")
+    return token
+
+
+def _kiwoom_call(data: dict, api_id: str, path: str, body: dict, account: dict = None, next_key: str = "",
+                 retry: bool = True) -> tuple:
+    """키움 API 호출 → (응답 JSON, 다음 페이지 키). 전부 POST고 오류도 HTTP 200으로 온다. 주문은 절대 다시 보내지 않는다."""
+    account = account or data["account"]
+    is_order = api_id in KIWOOM_ORDER.values()
+    headers = {"Content-Type": "application/json;charset=UTF-8", "authorization": f"Bearer {_token(data, account)}", "api-id": api_id}
+    if next_key:
+        headers.update({"cont-yn": "Y", "next-key": next_key})
+    _throttle()
+    try:
+        resp = requests.request("POST", KIWOOM_URLS[_mode(account)] + path, headers=headers, json=body, timeout=15)
+        result = resp.json()
+        code, message = str(result.get("return_code")), str(result.get("return_msg") or "")
+    except (requests.RequestException, ValueError, AttributeError):
+        if is_order:
+            raise OrderResultUnknown(ORDER_UNKNOWN)
+        raise StockError("증권사 응답을 받지 못했어요. 잠시 후 다시 시도해 주세요.")
+    if code == "0":
+        return result, resp.headers.get("next-key", "") if resp.headers.get("cont-yn") == "Y" else ""
+    if is_order and code == "None":   # 거절이라는 말이 없으면 접수됐을 수도 있다
+        raise OrderResultUnknown(ORDER_UNKNOWN)
+    if retry and not is_order and KIWOOM_TOKEN_ERROR.search(f"{code} {message}"):
+        data["token"] = None
+        return _kiwoom_call(data, api_id, path, body, account, next_key, retry=False)
+    raise StockError(message.strip()[:200] or "증권사가 요청을 거절했어요.")
+
+
+def _kiwoom_num(value) -> float:
+    """"000000059000", "+600", "-00000000196888"을 숫자로. 음수가 "--600"으로 오는 응답도 있다."""
+    return _num(re.sub(r"^-+", "-", str(value or "").strip()))
+
+
+def _kiwoom_price(value) -> int:
+    return int(abs(_kiwoom_num(value)))   # 시세의 부호는 등락 방향이다
 
 
 def _call(data: dict, method: str, path: str, tr_id: str, params: dict = None, body: dict = None,
@@ -180,8 +246,7 @@ def _call(data: dict, method: str, path: str, tr_id: str, params: dict = None, b
         result = resp.json()
     except (requests.RequestException, ValueError):
         if method == "POST":
-            raise OrderResultUnknown("주문 결과를 확인하지 못했어요. 이중 주문을 막기 위해 다시 보내지 않았어요. "
-                                     "증권사 앱에서 체결 내역을 확인해 주세요.")
+            raise OrderResultUnknown(ORDER_UNKNOWN)
         raise StockError("증권사 응답을 받지 못했어요. 잠시 후 다시 시도해 주세요.")
     if result.get("msg_cd") == "EGW00123" and retry and method == "GET":   # 토큰 만료
         data["token"] = None
@@ -208,6 +273,8 @@ def _split_account(account_no: str) -> tuple:
 
 def _fetch_portfolio(data: dict, account: dict = None) -> dict:
     account = account or data["account"]
+    if _is_kiwoom(account):
+        return _fetch_kiwoom_portfolio(data, account)
     cano, product = _split_account(account["number"])
     params = {"CANO": cano, "ACNT_PRDT_CD": product, "AFHR_FLPR_YN": "N", "OFL_YN": "", "INQR_DVSN": "02",
               "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00",
@@ -229,15 +296,38 @@ def _fetch_portfolio(data: dict, account: dict = None) -> dict:
         params["CTX_AREA_FK100"] = result.get("ctx_area_fk100", "")
         params["CTX_AREA_NK100"] = result.get("ctx_area_nk100", "")
         tr_cont = "N"
-    buy = _num(summary.get("pchs_amt_smtl_amt"))
-    pl = _num(summary.get("evlu_pfls_smtl_amt"))
-    return {"holdings": holdings, "total_pl": pl, "total_buy": buy, "total_value": _num(summary.get("evlu_amt_smtl_amt")),
+    return _portfolio_result(holdings, _num(summary.get("evlu_pfls_smtl_amt")), _num(summary.get("pchs_amt_smtl_amt")),
+                             _num(summary.get("evlu_amt_smtl_amt")), account)
+
+
+def _fetch_kiwoom_portfolio(data: dict, account: dict) -> dict:
+    holdings, summary, next_key = [], None, ""
+    for _ in range(20):
+        result, next_key = _kiwoom_call(data, "kt00018", "/api/dostk/acnt", {"qry_tp": "1", "dmst_stex_tp": "KRX"}, account, next_key)
+        summary = summary or result
+        for row in result.get("acnt_evlt_remn_indv_tot") or []:
+            qty = _kiwoom_price(row.get("rmnd_qty"))
+            if qty > 0:
+                holdings.append({"code": str(row.get("stk_cd", ""))[-6:],   # 앞의 A·J·Q는 상품 구분이다
+                                 "name": str(row.get("stk_nm", "")).strip(), "qty": qty,
+                                 "avg_price": _kiwoom_price(row.get("pur_pric")), "price": _kiwoom_price(row.get("cur_prc")),
+                                 "value": _kiwoom_num(row.get("evlt_amt")), "pl": _kiwoom_num(row.get("evltv_prft")),
+                                 "rate": _kiwoom_num(row.get("prft_rt")), "sellable": _kiwoom_price(row.get("trde_able_qty"))})
+        if not next_key:
+            break
+    return _portfolio_result(holdings, _kiwoom_num(summary.get("tot_evlt_pl")), _kiwoom_num(summary.get("tot_pur_amt")),
+                             _kiwoom_num(summary.get("tot_evlt_amt")), account)
+
+
+def _portfolio_result(holdings: list, pl: float, buy: float, value: float, account: dict) -> dict:
+    return {"holdings": holdings, "total_pl": pl, "total_buy": buy, "total_value": value,
             "total_rate": pl / buy * 100 if buy else 0.0, "fetched_at": datetime.now(KST).strftime("%H:%M"),
-            "account": mask_account(account["number"], _mode(account)), "mode": _mode(account)}
+            "account": mask_account(account["number"], _mode(account), account.get("broker")), "mode": _mode(account)}
 
 
-def mask_account(number: str, mode: str = "demo") -> str:
-    return f"{MODE_NAMES[mode]} 계좌 ****" + re.sub(r"\D", "", number or "")[-4:]
+def mask_account(number: str, mode: str = "demo", broker: str = None) -> str:
+    prefix = "키움증권 " if broker == "kiwoom" else ""
+    return f"{prefix}{MODE_NAMES[mode]} 계좌 ****" + re.sub(r"\D", "", number or "")[-4:]
 
 
 def _require_account() -> dict:
@@ -249,26 +339,34 @@ def _require_account() -> dict:
     return data
 
 
-def connect_account(app_key: str, app_secret: str, account_no: str, mode: str = "demo") -> str:
-    """실제로 잔고를 한 번 읽어 본 뒤에만 저장한다. 안내 문장을 돌려준다."""
+def connect_account(app_key: str, app_secret: str, account_no: str, mode: str = "demo", broker: str = "kis") -> str:
+    """실제로 잔고를 한 번 읽어 본 뒤에만 저장한다. 안내 문장을 돌려준다. 키움은 앱 키가 계좌에 묶여 번호를 물어보지 않는다."""
     if mode not in BASE_URLS:
         raise StockError("모의 또는 실전 계좌를 골라 주세요.")
+    if broker not in BROKER_NAMES:
+        raise StockError("증권사를 골라 주세요.")
     if not logged_in():
         raise StockError("주식 기능은 로그인한 사용자만 쓸 수 있어요.")
     app_key, app_secret = (app_key or "").strip(), (app_secret or "").strip()
     if not app_key or not app_secret:
         raise StockError("앱 키와 시크릿을 입력해 주세요.")
-    _split_account(account_no)
-    account = {"app_key": app_key, "app_secret": app_secret, "number": account_no.strip(), "mode": mode}
+    if broker == "kis":
+        _split_account(account_no)
+    account = {"app_key": app_key, "app_secret": app_secret, "number": (account_no or "").strip(), "mode": mode, "broker": broker}
     with _lock:
         data = _load()
         data.update(account=None, token=None, token_expires="")
+    if broker == "kiwoom":
+        result, _ = _kiwoom_call(data, "ka00001", "/api/dostk/acnt", {}, account)
+        account["number"] = str(result.get("acctNo") or "").strip()
+        if not account["number"]:
+            raise StockError("키움증권에서 계좌번호를 받지 못했어요. 앱 키를 발급한 계좌를 확인해 주세요.")
     _fetch_portfolio(data, account)
     with _lock:
         data.update(account=account, order_enabled=False)   # 계좌가 바뀌면 주문은 다시 켜야 한다
         data["auto"]["enabled"] = False
         _save(data)
-    return f"{mask_account(account_no, mode)}를 연결했어요."
+    return f"{mask_account(account['number'], mode, broker)}를 연결했어요."
 
 
 def disconnect_account():
@@ -283,7 +381,7 @@ def account_status() -> dict:
     data = _load() if logged_in() else _defaults()
     number = (data["account"] or {}).get("number")
     mode = _mode(data["account"])
-    return {"logged_in": logged_in(), "connected": bool(number), "account": mask_account(number, mode) if number else "",
+    return {"logged_in": logged_in(), "connected": bool(number), "account": mask_account(number, mode, data["account"].get("broker")) if number else "",
             "mode": mode, "order_enabled": data["order_enabled"], "order_limit": data["order_limit"],
             "has_manual": bool(data["manual"]["items"]), "has_market_key": bool(_market_key())}
 
@@ -320,10 +418,14 @@ def _store_token(data: dict):
 def get_price(code: str) -> int:
     with _lock:
         data = _require_account()
-    result, _ = _call(data, "GET", "/uapi/domestic-stock/v1/quotations/inquire-price", TR_PRICE,
-                      params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
+    if _is_kiwoom(data["account"]):
+        result, _ = _kiwoom_call(data, "ka10001", "/api/dostk/stkinfo", {"stk_cd": code})
+        price = _kiwoom_price(result.get("cur_prc"))
+    else:
+        result, _ = _call(data, "GET", "/uapi/domestic-stock/v1/quotations/inquire-price", TR_PRICE,
+                          params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
+        price = int(_num((result.get("output") or {}).get("stck_prpr")))
     _store_token(data)
-    price = int(_num((result.get("output") or {}).get("stck_prpr")))
     if price <= 0:
         raise StockError("현재가를 확인하지 못했어요.")
     return price
@@ -336,6 +438,8 @@ def get_price_bars(code: str, days: int = 150) -> list:
     with _lock:
         data = _require_account()
     today = datetime.now(KST)
+    if _is_kiwoom(data["account"]):
+        return _kiwoom_bars(data, code, today, days)
     result, _ = _call(data, "GET", "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", TR_DAILY, params={
         "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": (today - timedelta(days=days)).strftime("%Y%m%d"),
         "FID_INPUT_DATE_2": today.strftime("%Y%m%d"), "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"})
@@ -345,6 +449,18 @@ def get_price_bars(code: str, days: int = 150) -> list:
         date, close = str(row.get("stck_bsop_date") or ""), int(_num(row.get("stck_clpr")))
         if re.fullmatch(r"\d{8}", date) and close > 0:
             bars[date] = _bar(date, row.get("stck_oprc"), row.get("stck_hgpr"), row.get("stck_lwpr"), close, row.get("acml_vol"))
+    return [bars[d] for d in sorted(bars)]
+
+
+def _kiwoom_bars(data: dict, code: str, today: datetime, days: int) -> list:
+    result, _ = _kiwoom_call(data, "ka10081", "/api/dostk/chart", {"stk_cd": code, "base_dt": today.strftime("%Y%m%d"), "upd_stkpc_tp": "1"})
+    _store_token(data)
+    start, bars = (today - timedelta(days=days)).strftime("%Y%m%d"), {}
+    for row in result.get("stk_dt_pole_chart_qry") or []:
+        date, close = str(row.get("dt") or ""), _kiwoom_price(row.get("cur_prc"))
+        if re.fullmatch(r"\d{8}", date) and date >= start and close > 0:
+            bars[date] = _bar(date, _kiwoom_price(row.get("open_pric")), _kiwoom_price(row.get("high_pric")),
+                              _kiwoom_price(row.get("low_pric")), close, _kiwoom_price(row.get("trde_qty")))
     return [bars[d] for d in sorted(bars)]
 
 
@@ -603,6 +719,10 @@ def validate_order(side: str, stock: str, quantity, price) -> str:
 
 
 def _submit_order(data: dict, side: str, code: str, quantity: int, price: int) -> str:
+    if _is_kiwoom(data["account"]):
+        result, _ = _kiwoom_call(data, KIWOOM_ORDER[side], "/api/dostk/ordr", {   # trde_tp 0 = 보통(지정가)
+            "dmst_stex_tp": "KRX", "stk_cd": code, "ord_qty": str(quantity), "ord_uv": str(price), "trde_tp": "0", "cond_uv": ""})
+        return str(result.get("ord_no", ""))
     cano, product = _split_account(data["account"]["number"])
     result, _ = _call(data, "POST", "/uapi/domestic-stock/v1/trading/order-cash", TR_ORDER[_mode(data["account"])][side], body={
         "CANO": cano, "ACNT_PRDT_CD": product, "PDNO": code, "ORD_DVSN": "00", "ORD_QTY": str(quantity),

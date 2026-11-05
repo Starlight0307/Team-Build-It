@@ -206,29 +206,47 @@ class StockAccountDialog(_StockDialog):
         self.changed = True
 
     def _build_connect_form(self):
-        self.desc.setText("한국투자증권 KIS Developers에서 계좌의 앱 키를 발급받아 입력해 주세요. 이미 가진 계좌를 그대로 연결해요.\n"
-                          "키는 이 컴퓨터에 암호화해 저장해요. 보유 종목과 손익은 브리핑할 때 대화 기록에 남을 수 있어요.")
         self.desc.show()
         self.key_input, self.secret_input, self.account_input = QLineEdit(), QLineEdit(), QLineEdit()
         self.key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.secret_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.account_input.setPlaceholderText("50012345-01")
         self.mode_input = QComboBox()
         self.mode_input.addItem("모의 계좌 (실제 돈이 움직이지 않아요)", "demo")
         self.mode_input.addItem("실전 계좌 (실제 돈으로 주문돼요)", "real")
+        self.broker_input = QComboBox()
+        for broker, name in _stock().BROKER_NAMES.items():
+            self.broker_input.addItem(name, broker)
+        self.field("증권사", self.broker_input)
         self.field("계좌 종류 (키도 같은 종류로 발급받아야 해요)", self.mode_input)
         self.field("앱 키", self.key_input)
         self.field("앱 시크릿", self.secret_input)
         self.field("계좌번호", self.account_input)
-        self.add_button("발급 방법 보기", "LinkGhost", lambda: webbrowser.open(_stock().KIS_GUIDE_URL))
+        self.broker_input.currentIndexChanged.connect(self._show_broker)
+        self._show_broker()
+        self.add_button("발급 방법 보기", "LinkGhost", self._open_guide)
         self.btn_connect = self.add_button("연결", "LinkPrimary", self._connect)
+
+    def _is_kiwoom(self) -> bool:
+        return self.broker_input.currentData() == "kiwoom"
+
+    def _show_broker(self):
+        kiwoom = self._is_kiwoom()
+        guide = ("키움 REST API 포털에서 앱 키를 받고, 이 컴퓨터의 IP를 등록해 주세요. 계좌번호는 앱 키로 자동으로 확인해요." if kiwoom
+                 else "한국투자증권 KIS Developers에서 계좌의 앱 키를 발급받아 입력해 주세요.")
+        self.desc.setText(f"{guide} 이미 가진 계좌를 그대로 연결해요.\n"
+                          "키는 이 컴퓨터에 암호화해 저장해요. 보유 종목과 손익은 브리핑할 때 대화 기록에 남을 수 있어요.")
+        self.account_input.setEnabled(not kiwoom)   # 숨기면 창 높이가 바뀌어 여백이 벌어진다
+        self.account_input.setPlaceholderText("앱 키로 자동 확인해요" if kiwoom else "50012345-01")
+
+    def _open_guide(self):
+        webbrowser.open(_stock().KIWOOM_GUIDE_URL if self._is_kiwoom() else _stock().KIS_GUIDE_URL)
 
     def _connect(self):
         self.btn_connect.setEnabled(False)
         self.set_status("연결을 확인하는 중이에요…")
         key, secret, number = self.key_input.text(), self.secret_input.text(), self.account_input.text()
-        mode = self.mode_input.currentData()
-        self.run_background(lambda: _stock().connect_account(key, secret, number, mode), self._on_connected)
+        mode, broker = self.mode_input.currentData(), self.broker_input.currentData()
+        self.run_background(lambda: _stock().connect_account(key, secret, number, mode, broker), self._on_connected)
 
     def _on_connected(self, result):
         self.btn_connect.setEnabled(True)
