@@ -119,9 +119,13 @@ class HistoryBubble(QFrame):
         anim = QPropertyAnimation(eff, b"opacity", self)
         anim.setDuration(250); anim.setStartValue(0.0); anim.setEndValue(1.0)
         # 효과를 남겨 두면 스크롤할 때 글자가 예전 위치로 그려진다 (widget/widgets.py MessageBubble과 같은 이유)
-        anim.finished.connect(lambda: self.setGraphicsEffect(None))
+        # 애니메이션이 끝나는 도중에 그 대상을 지우면 드물게 앱이 죽는다 → 끝난 뒤로 미룬다. 말풍선이 먼저 지워지면 불리지 않는다
+        anim.finished.connect(self._drop_fade_effect, Qt.ConnectionType.QueuedConnection)
         anim.start()
         self._anim = anim; self._is_user = is_user
+
+    def _drop_fade_effect(self):
+        self.setGraphicsEffect(None)
 
     def _apply_bubble_width(self, container_width: int):
         cap = bubble_max_width(container_width)

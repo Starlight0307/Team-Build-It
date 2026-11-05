@@ -15,6 +15,7 @@ def test_message_bubble_drops_effect_after_fade(qapp):
     bubble = MessageBubble("안녕하세요", False, max_width=400)
     assert bubble.graphicsEffect() is not None
     _finish(bubble.anim)
+    qapp.processEvents()   # 끝난 뒤로 미뤄서 지운다 (끝나는 도중에 지우면 드물게 앱이 죽는다)
     assert bubble.graphicsEffect() is None
 
 
@@ -23,4 +24,5 @@ def test_history_bubble_drops_effect_after_fade(qapp):
     bubble = HistoryBubble("assistant", "안녕하세요", None, max_width=400)
     assert bubble.graphicsEffect() is not None
     _finish(bubble._anim)
+    qapp.processEvents()   # 끝난 뒤로 미뤄서 지운다 (끝나는 도중에 지우면 드물게 앱이 죽는다)
     assert bubble.graphicsEffect() is None
