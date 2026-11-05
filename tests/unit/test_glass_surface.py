@@ -257,17 +257,6 @@ def test_surface_change_reopens_floating_stock_window(qapp, stock_env):
         w.close()
 
 
-def test_weather_update_recenters_top_group_at_once(qapp, stock_env, monkeypatch):
-    """다음 시계 갱신을 기다리면 그동안 묶음이 좁아 시계 글자가 잘렸다."""
-    import app_main
-    w = app_main.AssistantApp()
-    calls = []
-    monkeypatch.setattr(w, "_center_top_bar", lambda: calls.append(1))
-    w._on_weather({"temp": 11.2, "city": "서울", "icon_name": "cloud-sun"})
-    assert calls == [1]
-    w.close()
-
-
 def test_long_menu_name_never_widens_window_and_returns_when_there_is_room(qapp, stock_env):
     import app_main
     w = app_main.AssistantApp()
@@ -306,33 +295,56 @@ def test_long_menu_name_never_widens_window_and_returns_when_there_is_room(qapp,
     w.close()
 
 
-def test_clock_and_weather_keep_same_place_and_size(qapp, stock_env):
+def test_top_pills_keep_start_position_and_hug_their_text(qapp, stock_env):
     import app_main
     w = app_main.AssistantApp()
     w.resize(1500, 800)
     w.show()
+    w._on_weather({"temp": 1.0, "city": "서울", "icon_name": "cloud-sun"})
     w._tick_clock()
-    _until(qapp, lambda: False, 0.1)
+    _until(qapp, lambda: False, 0.3)   # 첫 표시 뒤 레이아웃이 자리 잡을 때까지
     w._tick_clock()
-    place = lambda: (w.status_pill.width(), w.clock_pill.width(), w.weather_pill.width(), w.clock_pill.mapTo(w.top_bar, w.clock_pill.rect().topLeft()).x(),
-                     w.weather_pill.mapTo(w.top_bar, w.weather_pill.rect().topLeft()).x())
-    first = place()
+    _until(qapp, lambda: False, 0.05)
+    pills = (w.status_pill, w.clock_pill, w.weather_pill)
+    starts = lambda: [p.mapTo(w.top_bar, p.rect().topLeft()).x() for p in pills]
+    first = starts()
+
+    def hugging():
+        _until(qapp, lambda: False, 0.05)
+        return all(p.width() == p.sizeHint().width() for p in pills)
+    assert hugging()
+    short = w.weather_pill.width()
     w._on_weather({"temp": -11.2, "city": "아주아주아주 긴 지역 이름입니다 서울특별시", "icon_name": "cloud-sun"})
     assert "…" in w.weather_pill.text()
-    _until(qapp, lambda: False, 0.1)
-    assert place() == first
+    assert hugging() and starts() == first and w.weather_pill.width() > short
+    w._ollama_online = False
+    w._update_status_pill()
+    assert hugging() and starts() == first
     w.btn_settings.click()
     w.resize(1800, 800)
     _until(qapp, lambda: False, 0.4)
     w._tick_clock()
-    _until(qapp, lambda: False, 0.05)
-    assert place() == first
-    w._ollama_online = False
-    w._update_status_pill()
+    assert hugging() and starts() == first
+    w.close()
+
+
+def test_selected_menu_name_is_never_clipped_at_any_width(qapp, stock_env):
+    import app_main
+    w = app_main.AssistantApp()
+    w.show()
+    w._on_weather({"temp": 11.2, "city": "서울", "icon_name": "cloud-sun"})
     w._tick_clock()
-    _until(qapp, lambda: False, 0.05)
-    assert place() == first
-    assert w.clock_pill.width() >= w.clock_pill.sizeHint().width() and w.weather_pill.width() >= w.weather_pill.sizeHint().width()
-    assert w.status_pill.width() >= w.status_pill.sizeHint().width()
+    _until(qapp, lambda: False, 0.2)
+    w.resize(100, 800)
+    _until(qapp, lambda: False, 0.2)
+    smallest = w.width()
+    for extra in (0, 30, 60, 90, 140):
+        w.resize(smallest + extra, 800)
+        for btn in list(w.nav_info) * 2:   # 두 번째 바퀴까지 — 앞선 선택의 폭이 측정에 남던 문제
+            btn.click()
+            assert _until(qapp, lambda: btn.maximumWidth() == 16777215)
+            _until(qapp, lambda: False, 0.03)
+            assert btn.width() >= btn.sizeHint().width(), (extra, btn.toolTip(), btn.text())
+            assert w.width() == smallest + extra
     w.close()
 

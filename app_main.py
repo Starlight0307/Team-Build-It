@@ -280,7 +280,6 @@ DEFAULT_WIDGET_ORDER = list(DASHBOARD_WIDGETS)
 # 창 닫기(X) 동작 — 환경설정 > 실행 (app_settings "close_action")
 TOP_CLOCK_SAMPLE = "오전 12:59  ·  12월 28일 (수)"
 TOP_WEATHER_SAMPLE = "-18.8°C  서울시"
-STATUS_PILL_WIDTH = 96
 CLOSE_ACTIONS = [(None, "매번 묻기"), ("tray", "백그라운드"), ("quit", "종료")]
 
 
@@ -1095,8 +1094,8 @@ class AssistantApp(QWidget):
                 f"border-radius: 18px; padding: 8px 12px; font-size: 13px; font-weight: bold;")
         self.clock_pill.setStyleSheet(pill)
         self.weather_pill.setStyleSheet(pill)
-        self._fix_top_pill_widths()
         self._update_status_pill()
+        self._fix_top_pill_slots()
         # 둥근 알약 버튼 — 선택된 메뉴는 그라데이션 + 이름이 펼쳐진다 (update_sidebar_ui)
         nav_style = (
             f"QPushButton {{ background-color: {p['card']}; border: 1px solid {p['card_brd']}; border-radius: 19px; "
@@ -1264,16 +1263,15 @@ class AssistantApp(QWidget):
         tb.addWidget(self.brand_title)
         tb.addSpacing(6)
         self.status_pill = QLabel("● 확인 중")
-        self.status_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tb.addWidget(self.status_pill)
+        tb.addWidget(self._pill_slot(self.status_pill))
         tb.addStretch(1)
         self.clock_pill = QLabel()
-        center.addWidget(self.clock_pill)
+        center.addWidget(self._pill_slot(self.clock_pill))
         self.weather_pill = QLabel(icons.label_html("cloud-sun", "--°C"))
         self.weather_pill.setToolTip("누르면 자세한 날씨를 볼 수 있어요 · 지역은 환경설정 > 날씨에서 바꿔요")
         self.weather_pill.setCursor(Qt.CursorShape.PointingHandCursor)
         self.weather_pill.mouseReleaseEvent = lambda e: self._open_weather_detail()
-        center.addWidget(self.weather_pill)
+        center.addWidget(self._pill_slot(self.weather_pill))
         for _pill in (self.clock_pill, self.weather_pill):
             # 모서리 반지름(18px)의 두 배보다 낮으면 Qt가 둥근 모서리를 못 그리고 네모로 그린다
             _pill.setMinimumHeight(36)
@@ -1650,10 +1648,12 @@ class AssistantApp(QWidget):
         if selected is None:
             return
         selected.setText(f" {self.nav_info[selected][1]}" + (badge if selected is self.btn_chat else ""))
-        top, _, _, right = self._top_groups
+        top, left, _, right = self._top_groups
         right.layout().invalidate()   # 버튼은 오른쪽 묶음 안에 있다 — 안 하면 예전 폭으로 잰다
-        top.invalidate()
-        if top.sizeHint().width() + 8 > self.width():   # 눌려서 이름이 잘리기 전에 접는다
+        margins = top.contentsMargins()
+        need = (margins.left() + margins.right() + left.sizeHint().width() + self._top_center_gap.sizeHint().width()
+                + right.sizeHint().width() + 2 * top.spacing())   # top.sizeHint()는 묶음 폭을 캐시해 한 박자 늦는다
+        if need + 8 > self.width():   # 눌려서 이름이 잘리기 전에 접는다
             selected.setText(badge if selected is self.btn_chat else "")
 
     def _center_top_bar(self):
@@ -1672,15 +1672,26 @@ class AssistantApp(QWidget):
         center.setGeometry(x, (self.top_bar.height() - hint.height()) // 2, hint.width(), hint.height())
         center.raise_()
 
-    def _fix_top_pill_widths(self):
-        """가장 긴 글자가 들어가는 폭으로 고정한다."""
-        for pill, name, sample in ((self.clock_pill, "clock", TOP_CLOCK_SAMPLE), (self.weather_pill, "cloud-sun", TOP_WEATHER_SAMPLE)):
+    @staticmethod
+    def _pill_slot(pill: QLabel) -> QWidget:
+        """칸의 시작 위치를 고정하는 자리. 알약은 왼쪽에 붙어 글자 폭만큼만 차지한다."""
+        slot = QWidget()
+        row = QHBoxLayout(slot)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(pill)
+        row.addStretch(1)
+        return slot
+
+    def _fix_top_pill_slots(self):
+        """자리 폭은 가장 긴 글자 기준 — 글자가 바뀌어도 다음 칸의 시작 위치가 움직이지 않는다."""
+        for pill, html in ((self.status_pill, "● 오프라인"),
+                           (self.clock_pill, icons.label_html("clock", TOP_CLOCK_SAMPLE)),
+                           (self.weather_pill, icons.label_html("cloud-sun", TOP_WEATHER_SAMPLE))):
             current = pill.text()
-            pill.setText(icons.label_html(name, sample))
-            pill.setMinimumWidth(0)
-            pill.setMaximumWidth(16777215)
-            pill.setFixedWidth(pill.sizeHint().width())
+            pill.setText(html)
+            pill.parentWidget().setFixedWidth(pill.sizeHint().width())
             pill.setText(current)
+        QTimer.singleShot(0, self._center_top_bar)   # 첫 시계 갱신(1초)까지 기다리면 그동안 연결 상태 칸과 겹친다
 
     def _tick_clock(self):
         now = datetime.now()
@@ -1713,7 +1724,6 @@ class AssistantApp(QWidget):
         color = p['tc2'] if online is None else (p['ok'] if online else p['danger'])
         text = "● 확인 중" if online is None else ("● 온라인" if online else "● 오프라인")
         self.status_pill.setText(text)
-        self.status_pill.setFixedWidth(STATUS_PILL_WIDTH)   # 연결 상태 글자가 바뀌어도 옆 칸이 움직이지 않게
         self.status_pill.setToolTip("" if online else "Ollama가 꺼져 있어요. Ollama를 실행하면 루미가 대답할 수 있어요.")
         self.status_pill.setStyleSheet(
             f"color: {color}; background-color: {p['card']}; border: 1px solid {p['card_brd']}; "
@@ -2301,7 +2311,6 @@ class AssistantApp(QWidget):
         metrics = self.weather_pill.fontMetrics()   # 칸 폭이 고정이라 긴 지역 이름은 줄인다. 전체 이름은 눌러서 본다
         city = metrics.elidedText(data["city"], Qt.TextElideMode.ElideRight, metrics.horizontalAdvance(TOP_WEATHER_SAMPLE.split("  ")[1]))
         self.weather_pill.setText(icons.label_html(data.get("icon_name") or "cloud-sun", f"{data['temp']:.1f}°C  {city}"))
-        self._center_top_bar()   # 날씨 글자가 길어진 만큼 바로 묶음을 넓힌다 — 다음 시계 갱신까지 시계가 눌려 잘렸다
         if hasattr(self, 'weather_locate_btn') and not self.weather_locate_btn.isEnabled():
             # 위치 찾기가 실패해도 버튼은 되살린다
             self.weather_locate_btn.setEnabled(True)
