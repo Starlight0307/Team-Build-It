@@ -33,7 +33,7 @@ def stock(qapp, tmp_path, monkeypatch):
         sp._save(data)
     orders = []
 
-    def fake_place(side, name, quantity, price):
+    def fake_place(side, name, quantity, price, confirm_amount=None):
         orders.append((side, name, quantity, price))
         return "주문을 접수했어요."
     monkeypatch.setattr(sp, "place_order", fake_place)
@@ -242,6 +242,59 @@ def test_stock_order_goes_to_ai_not_screen_even_with_ui_verbs(qapp, stock, monke
     finally:
         w.shutdown_background_work()
         w.close()
+
+
+def _make_real():
+    with sp._lock:
+        data = sp._load()
+        data["account"]["mode"] = "real"
+        sp._save(data)
+
+
+def test_real_order_dialog_warns_and_needs_amount_typed(qapp, stock):
+    _make_real()
+    dlg = _order_dialog(qapp)
+    assert "실제 돈" in dlg.desc.text() and "실전 계좌" in dlg.desc.text()
+    assert not dlg.btn_confirm.isEnabled()
+    dlg.amount_input.setText("699,999")
+    assert not dlg.btn_confirm.isEnabled()
+    dlg.amount_input.setText("700,000")
+    assert dlg.btn_confirm.isEnabled()
+    dlg.quantity_input.setText("11")
+    assert not dlg.btn_confirm.isEnabled()
+
+
+def test_demo_order_dialog_has_no_amount_field_or_money_warning(qapp, stock):
+    dlg = _order_dialog(qapp)
+    assert "실제 돈" not in dlg.desc.text() and dlg.amount_input.isHidden()
+
+
+@pytest.mark.parametrize("agree", [False, True])
+def test_real_auto_dialog_asks_before_turning_on(qapp, stock, monkeypatch, agree):
+    from PyQt6.QtWidgets import QMessageBox
+    _make_real()
+    sp.add_rule("sell", "삼성전자", 70000, 10)
+    asked = []
+    monkeypatch.setattr(stock_panel.lumi_dialog, "question", lambda *a, **k: asked.append(a[1]) or (
+        QMessageBox.StandardButton.Yes if agree else QMessageBox.StandardButton.No))
+    dlg = stock_panel.StockAutoDialog()
+    dlg.max_order.setText("1,000,000"); dlg.max_amount.setText("1,000,000"); dlg.max_count.setText("3")
+    dlg._toggle()
+    assert asked == ["실전 자동매매 켜기"]
+    assert sp.auto_state()["enabled"] is agree
+
+
+def test_connect_form_starts_on_demo_and_passes_real_only_when_chosen(qapp, stock, monkeypatch):
+    sp.disconnect_account()
+    calls = []
+    monkeypatch.setattr(sp, "connect_account", lambda *a: calls.append(a) or "ok")
+    dlg = stock_panel.StockAccountDialog()
+    assert dlg.mode_input.currentData() == "demo"
+    dlg.key_input.setText("K"); dlg.secret_input.setText("S"); dlg.account_input.setText("50012345-01")
+    dlg.mode_input.setCurrentIndex(1)
+    dlg._connect()
+    assert _wait(qapp, lambda: calls)
+    assert calls[0][3] == "real"
 
 
 def test_closing_order_dialog_during_price_fetch_is_safe(qapp, stock, monkeypatch):

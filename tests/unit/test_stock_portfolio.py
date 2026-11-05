@@ -36,13 +36,16 @@ class FakeKis:
         self.balance_pages = None
         self.history_rows = []
 
+
+        self.urls = []
+
     def post(self, url, timeout=None, json=None):
         self.token_calls += 1
         return FakeResponse({"access_token": f"TOKEN-{self.token_calls}",
                              "access_token_token_expired": "2099-01-01 00:00:00"})
 
     def request(self, method, url, headers=None, params=None, json=None, timeout=None):
-        assert url.startswith("https://openapivts.koreainvestment.com:29443/")
+        self.urls.append(url)
         if url.endswith("/order-cash"):
             self.orders.append((headers["tr_id"], json))
             if self.order_error:
@@ -99,11 +102,62 @@ def test_ai_tools_cannot_place_orders_or_turn_on_auto():
     assert set(entry["func_names"]) == set(sp.TOOL_SCHEMAS)
 
 
-def test_only_mock_server_is_in_the_code():
-    with open(sp.__file__, encoding="utf-8") as f:
-        source = f.read()
-    assert "openapi.koreainvestment.com" not in source
-    assert "TTTC" not in source
+def test_demo_is_default_and_never_reaches_real_server(connected):
+    sp.get_stock_briefing()
+    sp.place_order("sell", "삼성전자", 1, 100)
+    assert connected.urls and all(u.startswith("https://openapivts.koreainvestment.com:29443/") for u in connected.urls)
+    assert connected.orders[0][0] == "VTTC0011U"
+
+
+@pytest.fixture
+def real_account(kis):
+    sp.connect_account(KEY, SECRET, ACCOUNT, "real")
+    sp.set_order_settings(True, 1_000_000)
+    return kis
+
+
+def test_real_account_uses_real_server_and_codes(real_account):
+    assert "실전 계좌 ****4501" in sp.get_stock_briefing()
+    assert sp.place_order("sell", "삼성전자", 2, 1000, confirm_amount=2000)
+    assert all(u.startswith("https://openapi.koreainvestment.com:9443/") for u in real_account.urls)
+    assert real_account.orders[0][0] == "TTTC0011U"
+    sp.place_order("buy", "삼성전자", 1, 1000, confirm_amount=1000)
+    assert real_account.orders[1][0] == "TTTC0012U"
+    assert sp._load()["orders"][-1]["mode"] == "real"
+
+
+@pytest.mark.parametrize("amount", [None, 0, 1999, 2001])
+def test_real_order_needs_exact_amount_reentered(real_account, amount):
+    with pytest.raises(sp.StockError):
+        sp.place_order("sell", "삼성전자", 2, 1000, confirm_amount=amount)
+    assert real_account.orders == []
+
+
+def test_real_auto_needs_separate_agreement_each_time(real_account):
+    _auto_ready()
+    with pytest.raises(sp.StockError):
+        sp.enable_auto()
+    assert sp.auto_state()["enabled"] is False
+    sp.enable_auto(real_money_confirmed=True)
+    sp.auto_tick(OPEN_TIME)
+    assert real_account.orders[0][0] == "TTTC0011U"
+
+
+def test_unknown_or_missing_mode_falls_back_to_demo():
+    assert sp._base_url({}) == sp.BASE_URLS["demo"] and sp._base_url(None) == sp.BASE_URLS["demo"]
+    assert sp._base_url({"mode": "typo"}) == sp.BASE_URLS["demo"]
+
+
+def test_switching_account_turns_orders_and_auto_off(connected):
+    _auto_ready()
+    sp.enable_auto()
+    sp.connect_account(KEY, SECRET, ACCOUNT, "real")
+    assert sp.account_status()["order_enabled"] is False and sp.auto_state()["enabled"] is False
+
+
+def test_rejects_unknown_account_mode(kis):
+    with pytest.raises(sp.StockError):
+        sp.connect_account(KEY, SECRET, ACCOUNT, "live")
 
 
 def test_guest_cannot_use_stock_features(kis):
@@ -507,4 +561,17 @@ def test_price_history_rejects_bad_code(connected, code):
 
 def test_price_history_is_not_an_ai_tool():
     assert "get_price_history" not in sp.TOOL_SCHEMAS
+
+
+def test_daily_limit_counts_demo_and_real_orders_separately(connected):
+    sp.set_auto_limits(1_000_000, 10_000_000, 1)
+    sp.add_rule("sell", "삼성전자", 70000, 1)
+    sp.enable_auto()
+    sp.auto_tick(OPEN_TIME)
+    assert len(connected.orders) == 1
+    sp.connect_account(KEY, SECRET, ACCOUNT, "real")
+    sp.add_rule("sell", "SK하이닉스", 70000, 1)
+    sp.enable_auto(real_money_confirmed=True)
+    sp.auto_tick(OPEN_TIME)
+    assert [o[0] for o in connected.orders] == ["VTTC0011U", "TTTC0011U"]
 

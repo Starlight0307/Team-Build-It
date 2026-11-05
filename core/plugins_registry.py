@@ -109,7 +109,7 @@ PLUGIN_CARDS = {
         ("💰", "지출 통계", "최근 지출을 집계해서 보여줍니다.", "이번달 얼마 썼어?"),
     ],
     "stock_portfolio": [
-        ("📈", "주식 손익 브리핑", "연결한 모의 계좌의 보유 종목과 평가손익을 알려줍니다. 매수·매도를 추천하지는 않아요.", "내 주식 어때?"),
+        ("📈", "주식 손익 브리핑", "연결한 증권 계좌의 보유 종목과 평가손익을 알려줍니다. 매수·매도를 추천하지는 않아요.", "내 주식 어때?"),
     ],
     "app_usage": [
         ("⏳", "앱 사용 시간", "프로그램별 사용 시간을 기록하고 조회합니다.", "오늘 앱 사용 시간 알려줘"),
@@ -296,11 +296,11 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "주식 포트폴리오",
-        "desc": "한국투자증권 모의 계좌의 손익 브리핑, 직접 확정하는 주문, 직접 정한 규칙의 자동매매(추천은 하지 않아요)",
+        "desc": "한국투자증권 계좌의 손익 브리핑, 직접 확정하는 주문, 직접 정한 규칙의 자동매매(추천은 하지 않아요)",
         "func_names": ["get_stock_briefing", "open_stock_order", "stop_stock_auto_trading"],
         "module_name": "stock_portfolio",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/stock_portfolio.py",
-        "sha256": "5e92818585ee2741b9ff56a670728daa12d8c5a13a0c00453035400cc7436f1a",
+        "sha256": "965b908e89511b13a51b253e76953e4d8e742b3a6ade8a9afd197474c8a6eeeb",
         "dependencies": []
     },
     {
