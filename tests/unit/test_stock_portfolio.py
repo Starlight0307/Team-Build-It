@@ -727,3 +727,52 @@ def test_connected_account_takes_priority_over_manual_and_public_prices(connecte
 def test_market_key_is_not_an_ai_tool():
     assert not {"set_market_key", "market_overview", "add_manual_holding"} & set(sp.TOOL_SCHEMAS)
 
+
+def test_market_url_is_the_approved_v2_operation():
+    assert sp.MARKET_URL == "https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2"
+
+
+def test_real_response_format_is_parsed(market):
+    """2026-11-05 실제 서버 응답에서 그대로 가져온 형식."""
+    row = {"basDt": "20261104", "srtnCd": "005930", "isinCd": "KR7005930003", "itmsNm": "삼성전자", "mrktCtg": "KOSPI",
+           "clpr": "218000", "vs": "-1500", "fltRt": "-.68", "mkp": "226500", "hipr": "228000", "lopr": "208000",
+           "trqu": "22248738", "trPrc": "4802353031949", "lstgStCnt": "5846278608", "mrktTotAmt": "1274488736544000"}
+    market.state["body"] = _market_body([row])
+    sp.set_market_key("K")
+    assert sp.market_quote("005930") == {"code": "005930", "name": "삼성전자", "date": "2026-11-04", "close": 218000,
+                                         "change": -1500, "rate": -0.68}
+
+
+def test_slow_server_is_retried_once(market, monkeypatch):
+    attempts = []
+    good = _market_body([ROW_NEW])
+
+    def flaky(url, timeout=None, params=None):
+        attempts.append(timeout)
+        if len(attempts) == 1:
+            raise requests.Timeout()
+        return FakeResponse(good)
+    monkeypatch.setattr(sp.requests, "get", flaky)
+    sp.set_market_key("K")
+    assert attempts == [12, 30]
+
+
+def test_overview_shows_what_arrived_when_one_stock_fails(market, monkeypatch):
+    sp.set_market_key("K")
+    sp._market_cache.clear()
+
+    def partly(url, timeout=None, params=None):
+        if params["likeSrtnCd"] == "000660":
+            raise requests.Timeout()
+        return FakeResponse(_market_body([{**ROW_NEW, "srtnCd": params["likeSrtnCd"]}]))
+    monkeypatch.setattr(sp.requests, "get", partly)
+    assert [q["code"] for q in sp.market_overview()] == ["005930", "035420", "035720"]
+
+
+def test_overview_reports_error_when_everything_fails(market):
+    sp.set_market_key("K")
+    sp._market_cache.clear()
+    market.state["body"] = requests.Timeout()
+    with pytest.raises(sp.StockError):
+        sp.market_overview()
+

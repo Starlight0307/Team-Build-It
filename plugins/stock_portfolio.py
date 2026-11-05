@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from urllib.parse import unquote
 from zoneinfo import ZoneInfo
@@ -36,7 +37,7 @@ TR_PRICE, TR_DAILY = "FHKST01010100", "FHKST03010100"
 TR_ORDER = {"demo": {"sell": "VTTC0011U", "buy": "VTTC0012U"},
             "real": {"sell": "TTTC0011U", "buy": "TTTC0012U"}}
 # 금융위원회 주식시세정보 — 하루 한 번 갱신, 재배포 금지라 사용자마다 자기 무료 키를 쓴다(공공누리 4유형, 출처 표시)
-MARKET_URL = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo"
+MARKET_URL = "https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2"
 MARKET_KEY_GUIDE_URL = "https://www.data.go.kr/data/15094808/openapi.do"
 MARKET_SOURCE = "출처: 금융위원회(공공데이터포털)"
 MARKET_CACHE_SECONDS = 1800
@@ -369,14 +370,18 @@ def _market_key() -> str:
 
 def _fetch_market_rows(code: str, key: str) -> list:
     begin = (datetime.now(KST) - timedelta(days=150)).strftime("%Y%m%d")
-    try:
-        # 포털이 주는 "인코딩 키"를 그대로 넣으면 이중 인코딩되므로 먼저 푼다
-        resp = requests.get(MARKET_URL, timeout=15, params={
-            "serviceKey": unquote(key), "resultType": "json", "numOfRows": 200, "pageNo": 1,
-            "likeSrtnCd": code, "beginBasDt": begin})
-        body = resp.json()
-    except (requests.RequestException, ValueError):
-        raise StockError("시세를 받지 못했어요. 인터넷과 시세 키를 확인해 주세요.")
+    body = None
+    for attempt, wait in enumerate((12, 30)):   # 공공데이터 서버는 가끔 멈춘다 — 다시 보내면 금방 오는 경우가 많다(조회라 안전)
+        try:
+            # 포털이 주는 "인코딩 키"를 그대로 넣으면 이중 인코딩되므로 먼저 푼다
+            resp = requests.get(MARKET_URL, timeout=wait, params={
+                "serviceKey": unquote(key), "resultType": "json", "numOfRows": 200, "pageNo": 1,
+                "likeSrtnCd": code, "beginBasDt": begin})
+            body = resp.json()
+            break
+        except (requests.RequestException, ValueError):
+            if attempt:
+                raise StockError("시세를 받지 못했어요. 인터넷과 시세 키를 확인해 주세요.")
     response = body.get("response") if isinstance(body, dict) else None
     if not isinstance(response, dict) or response.get("header", {}).get("resultCode") != "00":
         raise StockError("시세 키를 확인해 주세요. 공공데이터포털에서 활용 승인된 키여야 해요.")
@@ -439,10 +444,17 @@ def market_quote(code: str) -> dict:
 
 
 def market_overview() -> list:
-    """주요 종목 시세. 거래 정지 등으로 기록이 없는 종목은 빼고, 하나도 없으면 StockError. 통신 오류는 그대로 알린다."""
-    quotes = [market_quote(code) for code in WATCHLIST if _market_rows(code)]
+    """주요 종목 시세. 받지 못한 종목은 빼고 받은 것만 보여 준다(기준일이 함께 표시된다). 하나도 없으면 StockError."""
+    def quote(code):
+        try:
+            return market_quote(code), None
+        except StockError as e:
+            return None, e
+    with ThreadPoolExecutor(max_workers=len(WATCHLIST)) as pool:
+        results = list(pool.map(quote, WATCHLIST))
+    quotes = [q for q, _ in results if q]
     if not quotes:
-        raise StockError("시세 기록을 찾지 못했어요.")
+        raise next((e for _, e in results if e), StockError("시세 기록을 찾지 못했어요."))
     return quotes
 
 
