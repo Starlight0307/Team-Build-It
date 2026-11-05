@@ -278,6 +278,9 @@ DASHBOARD_WIDGETS = {
 DEFAULT_WIDGET_ORDER = list(DASHBOARD_WIDGETS)
 
 # 창 닫기(X) 동작 — 환경설정 > 실행 (app_settings "close_action")
+TOP_CLOCK_SAMPLE = "오전 12:59  ·  12월 28일 (수)"
+TOP_WEATHER_SAMPLE = "-18.8°C  서울시"
+STATUS_PILL_WIDTH = 96
 CLOSE_ACTIONS = [(None, "매번 묻기"), ("tray", "백그라운드"), ("quit", "종료")]
 
 
@@ -1089,14 +1092,15 @@ class AssistantApp(QWidget):
         self.brand_title.setStyleSheet(
             f"color: {p['grad']}; font-size: 24px; font-weight: 900; background: transparent;")
         pill = (f"color: {p['tc']}; background-color: {p['card']}; border: 1px solid {p['card_brd']}; "
-                f"border-radius: 18px; padding: 8px 18px; font-size: 13px; font-weight: bold;")
+                f"border-radius: 18px; padding: 8px 12px; font-size: 13px; font-weight: bold;")
         self.clock_pill.setStyleSheet(pill)
         self.weather_pill.setStyleSheet(pill)
+        self._fix_top_pill_widths()
         self._update_status_pill()
         # 둥근 알약 버튼 — 선택된 메뉴는 그라데이션 + 이름이 펼쳐진다 (update_sidebar_ui)
         nav_style = (
             f"QPushButton {{ background-color: {p['card']}; border: 1px solid {p['card_brd']}; border-radius: 19px; "
-            f"font-size: 15px; min-width: 40px; min-height: 38px; padding: 0 10px; color: {p['tc']}; "
+            f"font-size: 15px; min-width: 34px; min-height: 38px; padding: 0 10px; color: {p['tc']}; "
             f"font-weight: bold; }}"
             f"QPushButton:hover {{ border-color: {p['accent']}; }}"
             f"QPushButton:checked {{ background-color: {p['grad']}; border: none; color: #2E2A4F; padding: 0 16px; }}"
@@ -1259,13 +1263,12 @@ class AssistantApp(QWidget):
         self.brand_title = QLabel("LUMI")
         tb.addWidget(self.brand_title)
         tb.addSpacing(6)
-        self.status_pill = QLabel("● 연결 확인 중")
+        self.status_pill = QLabel("● 확인 중")
+        self.status_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tb.addWidget(self.status_pill)
         tb.addStretch(1)
         self.clock_pill = QLabel()
         center.addWidget(self.clock_pill)
-        self._clock_probe = QLabel()   # 화면에 띄우지 않고 시계 글자 폭만 재는 용도(_center_top_bar)
-        self._clock_probe.setMinimumHeight(36)
         self.weather_pill = QLabel(icons.label_html("cloud-sun", "--°C"))
         self.weather_pill.setToolTip("누르면 자세한 날씨를 볼 수 있어요 · 지역은 환경설정 > 날씨에서 바꿔요")
         self.weather_pill.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1631,68 +1634,63 @@ class AssistantApp(QWidget):
             w = self.width()
             self.left_column.setVisible(w >= 1180)
             self.center_column.setVisible(w >= 860)
+        if hasattr(self, 'nav_info') and hasattr(self, '_unread_alert_count'):
+            self._fit_menu_names()
         if hasattr(self, 'clock_pill'):
             self._tick_clock()   # 창 폭에 맞는 시계 형식으로 바로 바꾸고 가운데 위치도 다시 잡는다
 
-    _TOP_MENU_ROOM = 60
+    def _fit_menu_names(self):
+        """선택한 메뉴 이름은 자리가 있을 때만 펼친다. 최소 폭에 이름을 넣으면 긴 이름을 고를 때 창이 저절로 넓어졌다."""
+        badge = f"  🔴{self._unread_alert_count}" if self._unread_alert_count > 0 else ""   # 대화 메뉴의 미확인 알림 뱃지
+        for btn in self.nav_info:
+            btn.setMaximumWidth(16777215)   # 펼침 애니메이션의 폭 제한이 남아 있으면 필요한 폭을 작게 잰다
+            btn.setText(badge if btn is self.btn_chat else "")
+            btn.setMinimumWidth(btn.sizeHint().width())
+        selected = next((btn for btn in self.nav_info if btn.isChecked()), None)
+        if selected is None:
+            return
+        selected.setText(f" {self.nav_info[selected][1]}" + (badge if selected is self.btn_chat else ""))
+        top, _, _, right = self._top_groups
+        right.layout().invalidate()   # 버튼은 오른쪽 묶음 안에 있다 — 안 하면 예전 폭으로 잰다
+        top.invalidate()
+        if top.sizeHint().width() + 8 > self.width():   # 눌려서 이름이 잘리기 전에 접는다
+            selected.setText(badge if selected is self.btn_chat else "")
 
     def _center_top_bar(self):
-        """상단 바 가운데 묶음(시계·날씨)을 정중앙에 둔다. 좌우 묶음과 겹치면 그 사이 빈 공간의 가운데로."""
-        top, left, center, right = getattr(self, "_top_groups", (None,) * 4)
+        """시계·날씨 칸을 왼쪽 묶음 바로 옆 같은 자리에 둔다. 창 폭이나 고른 메뉴가 달라도 움직이지 않는다."""
+        top, left, center, _right = getattr(self, "_top_groups", (None,) * 4)
         if top is None:
             return
-        # 남는 자리에 맞춰 시계 형식을 고른다(긴 형식 → 짧은 형식). 창 폭만 보고 고르던 때는 선택된 메뉴
-        # 이름("환경설정")이 길어 자리가 모자라면 레이아웃이 메뉴 버튼을 눌러 "환경·"처럼 잘렸다(Windows에서 실제로 발생).
-        # 짧은 형식도 안 들어가면 짧은 형식 그대로 둔다 — 비워둔 자리(_top_center_gap)와 버튼 최소 폭 때문에
-        # 창이 그보다 좁아지지 않는다.
-        m = top.contentsMargins()
-        # 메뉴 이름이 가장 긴 '마켓플레이스'를 골라도 들어갈 만큼 남겨서, 메뉴를 바꿔도 시계 형식이 달라지지 않게 한다
-        room = (self.top_bar.width() - m.left() - m.right() - left.sizeHint().width()
-                - right.sizeHint().width() - 4 * top.spacing() - self._TOP_MENU_ROOM)
-        # 후보 글자 폭은 화면에 없는 같은 모양의 라벨로 잰다 — 진짜 시계에 긴 글자 → 짧은 글자를 번갈아 넣으면
-        # 매초 상단 바가 다시 배치되어, 마우스를 올려둔 날씨 알약의 툴팁이 뜨기 전에 계속 취소됐다
-        center.layout().invalidate()   # 숨겨져 있던 동안 바뀐 글자 폭도 다시 잰다(안 하면 예전 폭으로 그려 메뉴와 겹친다)
+        center.layout().invalidate()
         hint = center.sizeHint()
-        texts = getattr(self, "_clock_texts", None)
-        if texts:
-            probe = self._clock_probe
-            if probe.styleSheet() != self.clock_pill.styleSheet():
-                probe.setStyleSheet(self.clock_pill.styleSheet())
-            # 재는 라벨은 창 밖이라 글꼴이 몇 px 다르게 잡힌다 → 지금 시계 글자로 차이를 재서 빼준다
-            probe.setText(self.clock_pill.text())
-            others = hint.width() - probe.sizeHint().width()
-            for html in (icons.label_html("clock", t) for t in texts):
-                probe.setText(html)
-                if others + probe.sizeHint().width() <= room:
-                    break
-            if self.clock_pill.text() != html:
-                self.clock_pill.setText(html)
-                center.layout().invalidate()
-                hint = center.sizeHint()
         gap_w = hint.width() + 2 * top.spacing()
-        if self._top_center_gap.sizeHint().width() != gap_w:   # 가운데 묶음 폭만큼 레이아웃에 자리를 비워둔다
+        if self._top_center_gap.sizeHint().width() != gap_w:   # 묶음 폭만큼 레이아웃에 자리를 비워둔다
             self._top_center_gap.changeSize(gap_w, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
             top.invalidate()
-        bar_w = self.top_bar.width()
-        x = (bar_w - hint.width()) // 2
-        lo = left.geometry().right() + top.spacing()
-        hi = right.geometry().left() - top.spacing() - hint.width()
-        if not lo <= x <= hi:   # 정중앙이면 메뉴와 겹친다 → 왼쪽 묶음 옆에 고정(메뉴를 바꿔도 움직이지 않게)
-            x = max(lo, min(lo + 16, hi))
+            self._fit_menu_names()
+        x = top.contentsMargins().left() + left.sizeHint().width() + 16   # 레이아웃이 다시 잡히는 중에도 같은 값이 나오도록 실제 위치 대신 권장 폭으로
         center.setGeometry(x, (self.top_bar.height() - hint.height()) // 2, hint.width(), hint.height())
         center.raise_()
+
+    def _fix_top_pill_widths(self):
+        """가장 긴 글자가 들어가는 폭으로 고정한다."""
+        for pill, name, sample in ((self.clock_pill, "clock", TOP_CLOCK_SAMPLE), (self.weather_pill, "cloud-sun", TOP_WEATHER_SAMPLE)):
+            current = pill.text()
+            pill.setText(icons.label_html(name, sample))
+            pill.setMinimumWidth(0)
+            pill.setMaximumWidth(16777215)
+            pill.setFixedWidth(pill.sizeHint().width())
+            pill.setText(current)
 
     def _tick_clock(self):
         now = datetime.now()
         ampm = "오전" if now.hour < 12 else "오후"
         hour = now.hour % 12 or 12
         weekday = "월화수목금토일"[now.weekday()]
-        # 넓으면 연도·초까지, 자리가 모자라면 짧게 — 어느 쪽을 쓸지는 _center_top_bar가 남는 자리를 보고 고른다
-        self._clock_texts = (
-            f"{ampm} {hour}:{now:%M:%S}   |   {now.year}년 {now.month}월 {now.day}일 ({weekday})",
-            f"{ampm} {hour}:{now:%M}  ·  {now.month}월 {now.day}일 ({weekday})",
-        )
-        self._center_top_bar()   # 프로필 이름·연결 상태 글자가 바뀌어 묶음 폭이 달라져도 가운데를 유지
+        html = icons.label_html("clock", f"{ampm} {hour}:{now:%M}  ·  {now.month}월 {now.day}일 ({weekday})")
+        if self.clock_pill.text() != html:
+            self.clock_pill.setText(html)
+        self._center_top_bar()   # 왼쪽 묶음이 늦게 자리 잡아도 바로 옆에 붙는다
 
     def _check_ollama(self):
         """Ollama가 켜져 있는지 백그라운드에서 확인 (화면 멈춤 없게 스레드로)."""
@@ -1713,8 +1711,9 @@ class AssistantApp(QWidget):
         p = get_palette(self.is_dark_mode)
         online = self._ollama_online
         color = p['tc2'] if online is None else (p['ok'] if online else p['danger'])
-        text = "● 연결 확인 중" if online is None else ("● 온라인" if online else "● 오프라인")
+        text = "● 확인 중" if online is None else ("● 온라인" if online else "● 오프라인")
         self.status_pill.setText(text)
+        self.status_pill.setFixedWidth(STATUS_PILL_WIDTH)   # 연결 상태 글자가 바뀌어도 옆 칸이 움직이지 않게
         self.status_pill.setToolTip("" if online else "Ollama가 꺼져 있어요. Ollama를 실행하면 루미가 대답할 수 있어요.")
         self.status_pill.setStyleSheet(
             f"color: {color}; background-color: {p['card']}; border: 1px solid {p['card_brd']}; "
@@ -2299,8 +2298,9 @@ class AssistantApp(QWidget):
 
     def _on_weather(self, data: dict):
         self._last_weather = data     # 날씨 자세히 창이 열리자마자 맞는 배경을 깔 수 있게
-        self.weather_pill.setText(icons.label_html(data.get("icon_name") or "cloud-sun",
-                                                   f"{data['temp']:.1f}°C  {data['city']}"))
+        metrics = self.weather_pill.fontMetrics()   # 칸 폭이 고정이라 긴 지역 이름은 줄인다. 전체 이름은 눌러서 본다
+        city = metrics.elidedText(data["city"], Qt.TextElideMode.ElideRight, metrics.horizontalAdvance(TOP_WEATHER_SAMPLE.split("  ")[1]))
+        self.weather_pill.setText(icons.label_html(data.get("icon_name") or "cloud-sun", f"{data['temp']:.1f}°C  {city}"))
         self._center_top_bar()   # 날씨 글자가 길어진 만큼 바로 묶음을 넓힌다 — 다음 시계 갱신까지 시계가 눌려 잘렸다
         if hasattr(self, 'weather_locate_btn') and not self.weather_locate_btn.isEnabled():
             # 위치 찾기가 실패해도 버튼은 되살린다
@@ -2790,15 +2790,8 @@ class AssistantApp(QWidget):
             # 선택된 메뉴는 이름이 펼쳐지고, 나머지는 아이콘만 (이름은 마우스를 올리면 툴팁으로)
             # 선택된 버튼은 밝은 그라데이션 바탕이라 아이콘을 글자색(진한 남보라)으로 칠한다
             btn.setIcon(icons.tinted(icon, "#2E2A4F") if btn.isChecked() else icons.icon(icon))
-            btn.setText(f" {tip}" if btn.isChecked() else "")
-        # 대화 아이콘에 실시간 감시 미확인 알림 뱃지 표시
-        if self._unread_alert_count > 0:
-            self.btn_chat.setText(self.btn_chat.text() + f"  🔴{self._unread_alert_count}")
-        # 이름이 펼쳐진 버튼이 레이아웃에 눌려 잘리지 않게, 지금 글자가 다 들어가는 폭 아래로 줄지 않게 한다
+        self._fit_menu_names()
         for btn in self.nav_info:
-            btn.setMinimumWidth(0)
-            btn.setMaximumWidth(16777215)
-            btn.setMinimumWidth(btn.sizeHint().width())
             motion.slide_width(btn, old_widths[btn], btn.sizeHint().width())   # 메뉴 이름이 펼쳐지고 접힌다
 
         logged_in = MOCK_USER["logged_in"]

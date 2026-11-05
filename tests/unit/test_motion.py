@@ -361,11 +361,14 @@ def test_card_hover_ring(qapp):
         card.close()
 
 
-def test_slide_width_ends_at_target_without_fixing_width(qapp):
+def test_slide_width_never_raises_minimum_and_releases_limit(qapp):
     b = QPushButton("메뉴")
+    b.setMinimumWidth(40)
     b.show()
     motion.slide_width(b, 40, 120)
-    assert _until(qapp, lambda: b.minimumWidth() == 120 and b.maximumWidth() == 16777215)
+    assert b.maximumWidth() < 120 and b.minimumWidth() == 40
+    assert _until(qapp, lambda: b.maximumWidth() == 16777215)
+    assert b.minimumWidth() == 40
     b.close()
 
 

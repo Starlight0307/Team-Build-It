@@ -266,3 +266,73 @@ def test_weather_update_recenters_top_group_at_once(qapp, stock_env, monkeypatch
     w._on_weather({"temp": 11.2, "city": "서울", "icon_name": "cloud-sun"})
     assert calls == [1]
     w.close()
+
+
+def test_long_menu_name_never_widens_window_and_returns_when_there_is_room(qapp, stock_env):
+    import app_main
+    w = app_main.AssistantApp()
+    if "stock_portfolio" not in w.installed_module_names:
+        (w.installed_module_names.add if hasattr(w.installed_module_names, "add") else w.installed_module_names.append)("stock_portfolio")
+    w._apply_widget_layout()
+    w.show()
+    w._on_weather({"temp": 11.2, "city": "서울", "icon_name": "cloud-sun"})
+    w._tick_clock()
+    qapp.processEvents()
+    _until(qapp, lambda: False, 0.2)
+    w.resize(100, 800)
+    _until(qapp, lambda: False, 0.2)
+    narrow = w.width() + 10   # 아이콘만 들어가는 폭
+    w.resize(narrow, 800)
+    assert _until(qapp, lambda: w.width() == narrow)
+    w.btn_plugin.click()
+    assert _until(qapp, lambda: w.btn_plugin.maximumWidth() == 16777215)
+    _until(qapp, lambda: False, 0.1)
+    assert w.width() == narrow and w.btn_plugin.text() == "" and w.btn_plugin.toolTip() == "마켓플레이스"
+    w.resize(1800, 800)
+    assert _until(qapp, lambda: w.btn_plugin.text().strip() == "마켓플레이스")
+    w.btn_plugin.click()
+    w.resize(narrow, 800)
+    assert _until(qapp, lambda: w.btn_plugin.text() == "" and w.width() == narrow)
+    w.btn_chat.click()
+    assert _until(qapp, lambda: w.btn_chat.maximumWidth() == 16777215)
+    assert w.btn_plugin.text() == "" and w.width() == narrow
+    w.resize(1800, 800)
+    assert _until(qapp, lambda: w.btn_chat.text().strip() == "대화")
+    w._unread_alert_count = 3
+    w.update_sidebar_ui()
+    assert "🔴3" in w.btn_chat.text() and "대화" in w.btn_chat.text()
+    w.resize(narrow, 800)
+    assert _until(qapp, lambda: w.btn_chat.text().strip() == "🔴3")   # 이름은 접혀도 알림 뱃지는 남는다
+    w.close()
+
+
+def test_clock_and_weather_keep_same_place_and_size(qapp, stock_env):
+    import app_main
+    w = app_main.AssistantApp()
+    w.resize(1500, 800)
+    w.show()
+    w._tick_clock()
+    _until(qapp, lambda: False, 0.1)
+    w._tick_clock()
+    place = lambda: (w.status_pill.width(), w.clock_pill.width(), w.weather_pill.width(), w.clock_pill.mapTo(w.top_bar, w.clock_pill.rect().topLeft()).x(),
+                     w.weather_pill.mapTo(w.top_bar, w.weather_pill.rect().topLeft()).x())
+    first = place()
+    w._on_weather({"temp": -11.2, "city": "아주아주아주 긴 지역 이름입니다 서울특별시", "icon_name": "cloud-sun"})
+    assert "…" in w.weather_pill.text()
+    _until(qapp, lambda: False, 0.1)
+    assert place() == first
+    w.btn_settings.click()
+    w.resize(1800, 800)
+    _until(qapp, lambda: False, 0.4)
+    w._tick_clock()
+    _until(qapp, lambda: False, 0.05)
+    assert place() == first
+    w._ollama_online = False
+    w._update_status_pill()
+    w._tick_clock()
+    _until(qapp, lambda: False, 0.05)
+    assert place() == first
+    assert w.clock_pill.width() >= w.clock_pill.sizeHint().width() and w.weather_pill.width() >= w.weather_pill.sizeHint().width()
+    assert w.status_pill.width() >= w.status_pill.sizeHint().width()
+    w.close()
+

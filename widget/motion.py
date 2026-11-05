@@ -216,17 +216,20 @@ def smooth_scroll_to_bottom(bar):
 
 
 def slide_width(widget: QWidget, old: int, new: int):
-    """상단 메뉴처럼 폭이 바뀌는 버튼 — 끝나면 폭 제한을 풀고 원래 최소 폭으로 돌려 둔다."""
+    """상단 메뉴처럼 폭이 바뀌는 버튼. 최대 폭만 움직인다 — 최소 폭까지 올리면 창이 밀려 넓어졌다."""
+    previous = getattr(widget, "_slide_anim", None)
+    if previous is not None:   # 빠르게 연달아 누르면 앞선 애니메이션이 폭을 덮어쓴다
+        previous.stop()
     if not _enabled or not widget.isVisible() or abs(old - new) < 4:
+        widget.setMaximumWidth(16777215)
         return
 
     def step(t):
-        widget.setFixedWidth(round(old + (new - old) * t))
+        widget.setMaximumWidth(round(old + (new - old) * t))
 
     def done():
-        widget.setMinimumWidth(new)
         widget.setMaximumWidth(16777215)
-    SmoothAnimation(step, 240, on_done=done)
+    widget._slide_anim = SmoothAnimation(step, 240, on_done=done)
 
 
 def crossfade_from(stack: QWidget, old_page: QWidget):
