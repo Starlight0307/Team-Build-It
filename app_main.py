@@ -1371,7 +1371,7 @@ class AssistantApp(QWidget):
         self._auto_login_worker.start()
 
     _LEFT_MIN_WIDTH, _LEFT_MAX_WIDTH, _LEFT_DEFAULT_WIDTH = 260, 560, 300
-    _CENTER_MIN_WIDTH = 220
+    _CENTER_MIN_WIDTH = 240   # LumiOrb 최소 크기와 같게 — 이보다 좁으면 대화창을 늘릴 때 오브가 잘린다
     _CHAT_MIN_WIDTH, _CHAT_DEFAULT_WIDTH = 320, 420
 
     def _restore_home_split(self):

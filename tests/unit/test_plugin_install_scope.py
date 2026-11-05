@@ -93,6 +93,10 @@ def test_marketplace_lists_only_addons_and_home_split_is_saved(fresh_install, qa
         w._restore_home_split()
         assert w.home_splitter.sizes()[0] == 380
         assert w.home_splitter.sizes()[2] == 520
+        # 대화창을 끝까지 늘려도 오브가 잘리지 않는다
+        w.home_splitter.moveSplitter(0, 2)
+        qapp.processEvents()
+        assert w.center_column.width() >= w.orb.minimumWidth()
     finally:
         w.shutdown_background_work()
         w.close()
