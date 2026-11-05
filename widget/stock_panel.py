@@ -41,6 +41,39 @@ def _arrow_path(dark: bool) -> str:
     return path.replace("\\", "/")
 
 
+class SmoothAnimation(QVariantAnimation):
+    """0→1로 변하며 apply(값)을 부른다. 신호와 lambda를 쓰지 않는다 — PyQt가 lambda를 부르는 순간 대상이
+    쓰레기 수집으로 지워지면 앱이 죽었다(말풍선 페이드 크래시와 같은 원인). 도는 동안 _RUNNING이 붙잡아 둔다."""
+    _RUNNING = set()
+
+    def __init__(self, apply, duration: int):
+        super().__init__()
+        SmoothAnimation._RUNNING -= {a for a in SmoothAnimation._RUNNING
+                                     if a.state() == QVariantAnimation.State.Stopped}
+        SmoothAnimation._RUNNING.add(self)
+        self._apply = apply
+        self.setDuration(duration)
+        self.setStartValue(0.0)
+        self.setEndValue(1.0)
+        self.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.start()
+
+    def updateCurrentValue(self, value):
+        try:
+            self._apply(float(value))
+        except RuntimeError:   # 대상 창이 먼저 닫혔다
+            self.stop()
+
+
+def set_plain_text(label, text: str):
+    """숫자 애니메이션을 멈추고 글자를 넣는다 — 돌던 애니메이션이 오류 문구를 이전 숫자로 덮어쓰면 안 된다."""
+    previous = getattr(label, "_count_anim", None)
+    if previous is not None:
+        previous.stop()
+    label.setProperty("countValues", None)
+    label.setText(text)
+
+
 def animate_values(label, values: tuple, fmt, duration: int = 600):
     """숫자가 이전 값에서 새 값까지 부드럽게 변한다. fmt(*values) → 글자. 끝나면 정확한 값으로 맞춘다."""
     old = label.property("countValues") or tuple(0.0 for _ in values)
@@ -51,15 +84,10 @@ def animate_values(label, values: tuple, fmt, duration: int = 600):
     if tuple(old) == tuple(values) or len(old) != len(values):
         label.setText(fmt(*values))
         return
-    anim = QVariantAnimation(label)
-    anim.setDuration(duration)
-    anim.setStartValue(0.0)
-    anim.setEndValue(1.0)
-    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-    anim.valueChanged.connect(lambda t: label.setText(fmt(*(a + (b - a) * t for a, b in zip(old, values)))))
-    anim.finished.connect(lambda: label.setText(fmt(*values)))
-    label._count_anim = anim
-    anim.start()
+
+    def show(t):
+        label.setText(fmt(*values) if t >= 1 else fmt(*(a + (b - a) * t for a, b in zip(old, values))))
+    label._count_anim = SmoothAnimation(show, duration)
 
 
 def _pl_color(value: float) -> str:
@@ -650,6 +678,7 @@ class StockPanel(Panel):
 
     def _clear_numbers(self, text: str):
         """실패하면 이전 숫자를 지운다 — 오래된 값을 현재 손익처럼 보이지 않게."""
+        set_plain_text(self.total, "")
         self.total.hide()
         self.rows.hide()
         self.message.setText(text)

@@ -1,11 +1,11 @@
 """주식 위젯을 누르면 뜨는 상세 창 — 종목별 손익 막대, 가격 그래프, 보유 종목 표."""
-from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QVariantAnimation, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (QAbstractItemView, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QScrollArea, QToolTip,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from widget import lumi_dialog
-from widget.stock_panel import LOSS_COLOR, PROFIT_COLOR, _pl_color, _stock, _StockDialog, animate_values
+from widget.stock_panel import LOSS_COLOR, PROFIT_COLOR, SmoothAnimation, _pl_color, _stock, _StockDialog, animate_values, set_plain_text
 
 DEFAULT_STOCK = "삼성전자"   # 보유 종목이 없을 때 먼저 보여 줄 종목
 MAX_BARS = 8
@@ -20,18 +20,11 @@ def _reveal(widget, attr: str, duration: int = 650):
     if previous is not None:
         previous.stop()
     setattr(widget, attr, 0.0)
-    anim = QVariantAnimation(widget)
-    anim.setDuration(duration)
-    anim.setStartValue(0.0)
-    anim.setEndValue(1.0)
-    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     def step(value):
         setattr(widget, attr, value)
         widget.update()
-    anim.valueChanged.connect(step)
-    widget._reveal_anim = anim
-    anim.start()
+    widget._reveal_anim = SmoothAnimation(step, duration)
 
 
 def price_ticks(low: float, high: float, count: int = 4) -> list:
@@ -288,11 +281,7 @@ class StatTile(QFrame):
         layout.addWidget(self.value)
 
     def set_text(self, text: str, color: str = ""):
-        self.value.setProperty("countValues", None)
-        previous = getattr(self.value, "_count_anim", None)
-        if previous is not None:
-            previous.stop()
-        self.value.setText(text)
+        set_plain_text(self.value, text)
         self._color(color)
 
     def set_number(self, value: float, fmt, color: str = ""):
@@ -321,7 +310,8 @@ class StockDetailDialog(_StockDialog):
         self.summary_note.setStyleSheet(f"color: {self.p['sub']}; font-size: 12px;")
         # 내용이 화면보다 길면 창 안에서 스크롤한다 — 작은 노트북에서 버튼이 화면 밖으로 나가지 않게
         self.content = QWidget()
-        self.content.setStyleSheet("background: transparent;")
+        self.content.setObjectName("detailContent")   # 선택자 없이 쓰면 안의 버튼 배경까지 투명해진다
+        self.content.setStyleSheet("#detailContent { background: transparent; }")
         content = QVBoxLayout(self.content)
         content.setContentsMargins(0, 0, 8, 0)
         content.setSpacing(10)
@@ -330,6 +320,7 @@ class StockDetailDialog(_StockDialog):
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        self.scroll.viewport().setAutoFillBackground(False)
         self.scroll.setWidget(self.content)
         self.body.addWidget(self.scroll)
         content.addWidget(self.summary)
@@ -364,6 +355,8 @@ class StockDetailDialog(_StockDialog):
             button = QPushButton(name)
             button.setObjectName("LinkPrimary" if days is None else "LinkGhost")
             button.setAutoDefault(False)
+            button.setFixedSize(76, 32)
+            button.setStyleSheet("padding: 0; min-height: 0; font-size: 12px; border-radius: 10px;")
             button.clicked.connect(lambda _=False, d=days: self.set_period(d))
             self.period_buttons[days] = button
             periods.addWidget(button)
@@ -494,7 +487,7 @@ class StockDetailDialog(_StockDialog):
     def _on_portfolio(self, result):
         if isinstance(result, Exception):   # 실패하면 이전 숫자를 지운다 — 오래된 값을 현재 손익처럼 보이지 않게
             self.holdings = []
-            self.summary.setText("잔고를 불러오지 못했어요")
+            set_plain_text(self.summary, "잔고를 불러오지 못했어요")
             self.summary.setStyleSheet("font-size: 22px; font-weight: 800;")
             self.summary_note.setText(str(result))
             self.bars.set_rows([])
@@ -507,7 +500,7 @@ class StockDetailDialog(_StockDialog):
         if held:
             animate_values(self.summary, (result["total_pl"], result["total_rate"]), lambda pl, rate: f"{pl:+,.0f}원 ({rate:+.2f}%)")
         else:
-            self.summary.setText("보유 종목이 없어요")
+            set_plain_text(self.summary, "보유 종목이 없어요")
         color = _pl_color(result["total_pl"]) or self.p["text"]
         self.summary.setStyleSheet(f"color: {color}; font-size: 22px; font-weight: 800;")
         self.summary_note.setText(f"{result['account']} · 평가금액 {result['total_value']:,.0f}원 · {result['fetched_at']} 기준"

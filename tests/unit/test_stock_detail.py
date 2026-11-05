@@ -429,3 +429,52 @@ def test_uncaught_error_is_logged_and_does_not_kill_app(monkeypatch):
         app_main._keep_running_on_uncaught_error(type(e), e, e.__traceback__)
     assert str(logged[0]) == "boom"
 
+
+def test_selected_period_button_is_visibly_different(qapp, stock):
+    dlg = _dialog(qapp)
+    dlg.show()
+    qapp.processEvents()
+    selected, other = dlg.period_buttons[None], dlg.period_buttons[22]
+    assert selected.objectName() == "LinkPrimary" and other.objectName() == "LinkGhost"
+    image = selected.grab().toImage()
+    corner = other.grab().toImage()
+    center = lambda img: img.pixelColor(6, img.height() // 2).name()   # 글자를 피한 왼쪽 안쪽 색
+    assert center(image) != center(corner)
+    dlg.period_buttons[22].click()
+    assert dlg.period_buttons[22].objectName() == "LinkPrimary" and dlg.period_buttons[None].objectName() == "LinkGhost"
+    dlg.close()
+
+
+def test_closing_window_during_animation_is_safe(qapp, stock):
+    import gc
+    dlg = _dialog(qapp)
+    dlg.show()
+    dlg.reload()
+    dlg.chart.set_data("x", POINTS)
+    dlg.close()
+    del dlg
+    gc.collect()
+    _wait(qapp, lambda: False, 0.9)
+    gc.collect()
+
+
+def test_finished_animations_do_not_pile_up(qapp):
+    label = sd.QLabel()
+    for i in range(30):
+        stock_panel.animate_values(label, (float(i),), lambda v: f"{v:.0f}", 1)
+        _wait(qapp, lambda: False, 0.01)
+    _wait(qapp, lambda: False, 0.05)
+    stock_panel.animate_values(label, (99.0,), lambda v: f"{v:.0f}", 1)
+    assert len(stock_panel.SmoothAnimation._RUNNING) < 10
+
+
+def test_error_text_is_not_overwritten_by_running_count_animation(qapp):
+    label = sd.QLabel()
+    stock_panel.animate_values(label, (100000.0,), lambda v: f"{v:+,.0f}원", 300)
+    _wait(qapp, lambda: False, 0.05)
+    stock_panel.set_plain_text(label, "잔고를 불러오지 못했어요")
+    _wait(qapp, lambda: False, 0.45)
+    assert label.text() == "잔고를 불러오지 못했어요"
+    stock_panel.animate_values(label, (5.0,), lambda v: f"{v:+,.0f}원", 50)   # 다음 조회는 처음부터
+    assert _wait(qapp, lambda: label.text() == "+5원")
+
