@@ -32,6 +32,14 @@ RESULTS = []   # (이름, "PASS"/"FAIL"/"SKIP"/"INFO", 설명)
 _KEEP_ALIVE = []
 
 
+def _qapp():
+    """앱 변수만 믿으면 점검 함수가 끝나는 순간 QApplication이 지워져 access violation으로 죽는다."""
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication(sys.argv)
+    _KEEP_ALIVE.append(app)
+    return app
+
+
 def check(name):
     def deco(fn):
         def run():
@@ -86,7 +94,7 @@ def _app():
     from settings import app_settings
     app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _qapp()
     import app_main
     w = app_main.AssistantApp()
     w.resize(1400, 850)
@@ -133,7 +141,7 @@ def _tts():
 @check("음성 출력 (Speaker 준비)")
 def _speaker():
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)   # 변수에 담아야 바로 사라지지 않는다
+    app = _qapp()   # 변수에 담아야 바로 사라지지 않는다
     from core.voice import Speaker
     sp = Speaker()
     return ("PASS" if sp.available else "FAIL"), f"명령: {sp._command[0] if sp._command else None}"
@@ -164,7 +172,8 @@ def _weather():
             body = " ".join(r.text.split())[:300]
             detail += f" · 직접 요청: HTTP {r.status_code} {body}"
         except Exception as e2:
-            detail += f" · 직접 요청도 실패: {type(e2).__name__}: {e2}"
+            # 앱을 거치지 않은 요청까지 끊기면 앱 문제가 아니라 시험 서버와 날씨 서버 사이의 연결 문제다
+            return "INFO", detail + f" · 직접 요청도 실패: {type(e2).__name__}: {e2}"
         return "FAIL", detail
     return "PASS", f"{d['city']} {d['temp']}°C {d['desc']}"
 
@@ -172,7 +181,7 @@ def _weather():
 @check("화면 캡처 (mss)")
 def _capture():
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)   # 변수에 담아야 바로 사라지지 않는다
+    app = _qapp()   # 변수에 담아야 바로 사라지지 않는다
     from core import screen_agent
     b64, mon = screen_agent.capture_screen()
     return "PASS", f"모니터 {mon['width']}x{mon['height']} · 이미지 {len(b64) // 1024}KB"
@@ -192,7 +201,7 @@ def _affinity():
     import ctypes
     from PyQt6.QtWidgets import QApplication
     from widget.widgets import AgentOverlay
-    app = QApplication.instance() or QApplication(sys.argv)   # 변수에 담아야 바로 사라지지 않는다
+    app = _qapp()   # 변수에 담아야 바로 사라지지 않는다
     o = AgentOverlay()
     o.show()
     QApplication.processEvents()
@@ -307,7 +316,7 @@ def _ime_typing():
     import ctypes
     import tempfile
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)   # 한글 섞인 글은 클립보드로 붙여넣는다
+    app = _qapp()   # 한글 섞인 글은 클립보드로 붙여넣는다
     from core import input_source as ins
     from core.screen_agent import InputController
     user32 = ctypes.windll.user32
@@ -372,7 +381,7 @@ def _tooltip_shot(dark: bool):
     from PyQt6.QtCore import QEvent, QPoint, Qt
     from PyQt6.QtGui import QColor, QHelpEvent
     from PyQt6.QtWidgets import QApplication, QPushButton, QWidget
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _qapp()
     from widget import lumi_dialog, lumi_tooltip
     filt = lumi_tooltip.install(app)
     lumi_dialog.set_dark(dark)
@@ -445,7 +454,7 @@ def _tooltip_hover():
     from settings import app_settings
     app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _qapp()
     app.setQuitOnLastWindowClosed(False)
     from widget import lumi_tooltip
     filt = lumi_tooltip.install(app)   # app_main.__main__과 같은 순서
@@ -530,7 +539,7 @@ def _real_screen_app():
     """offscreen이 아닌 진짜 화면 — 창 투명도와 클릭은 운영체제가 처리하는 부분이라 여기서만 확인된다."""
     os.environ.pop("QT_QPA_PLATFORM", None)
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _qapp()
     out_dir = os.path.join(ROOT, "selftest_out"); os.makedirs(out_dir, exist_ok=True)
     return app, out_dir
 
@@ -719,12 +728,11 @@ def _settings_clip():
     from settings import app_settings
     app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _qapp()
     from widget import lumi_tooltip
     lumi_tooltip.install(app)
     import app_main
     w = app_main.AssistantApp()
-    _KEEP_ALIVE.append(app)   # app 변수가 사라지면 함수가 끝나는 순간 QApplication이 지워져 access violation이 날 수 있다
     out_dir = os.path.join(ROOT, "selftest_out"); os.makedirs(out_dir, exist_ok=True)
     w.show()
     w.btn_settings.click()
@@ -793,7 +801,7 @@ def _title_icon():
     from settings import app_settings
     app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _qapp()
     app.setApplicationName(lumi_icon.APP_NAME)
     app.setWindowIcon(lumi_icon.app_icon())
     import app_main
@@ -816,7 +824,7 @@ def _title_icon():
     out_dir = os.path.join(ROOT, "selftest_out"); os.makedirs(out_dir, exist_ok=True)
     app.primaryScreen().grabWindow(0, fg.x(), fg.y(), fg.width(), 120).save(
         os.path.join(out_dir, "window_titlebar.png"))
-    w.shutdown_background_work(); w.close()
+    w.shutdown_background_work(); w.hide()   # close()는 닫기 확인 창을 띄워 점검이 끝나지 않는다
     _KEEP_ALIVE.append(w)
     try:
         os.remove(app_settings._PATH)

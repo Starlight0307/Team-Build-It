@@ -4,6 +4,7 @@
 (.github/workflows/installer.yml)."""
 import importlib.util
 import os
+import sys
 import zipfile
 
 import pytest
@@ -376,7 +377,7 @@ def test_write_mac_app_makes_runnable_bundle(tmp_path):
     icon.write_text("x")
     li.write_mac_app(str(bundle), "com.example.lumi", str(icon), ["/usr/bin/touch", str(marker)])
     run = bundle / "Contents" / "MacOS" / "run"
-    assert run.stat().st_mode & stat.S_IXUSR
+    assert sys.platform == "win32" or run.stat().st_mode & stat.S_IXUSR   # 윈도우 파일에는 실행 권한이 없다
     subprocess.run([str(run)], check=True)   # 경로에 공백이 있어도 그대로 실행된다
     assert marker.exists()
     info = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
