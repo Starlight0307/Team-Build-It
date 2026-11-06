@@ -100,6 +100,7 @@ class FakeWin:
         self.keys, self.typed, self.front, self.titles = [], [], 1, {1: "카카오톡", 2: "민수"}
         self.kakao, self.focus_class, self.boxes, self.opens = True, "Edit", {2: ""}, 2
         self.foreign_change = False
+        self.main_found = True
 
     def tap(self, key, ctrl=False):
         self.keys.append(key)
@@ -114,6 +115,9 @@ class FakeWin:
 
     def title(self, hwnd):
         return self.titles.get(hwnd, "")
+
+    def raise_main(self):
+        return self.main_found
 
     def is_kakao(self, hwnd):
         return self.kakao
@@ -161,6 +165,13 @@ def test_windows_sends_after_checks(win):
 
 def _message_enter_count(win):
     return win.keys.count(ks._Win.VK_RETURN)
+
+
+def test_windows_stops_when_main_window_cannot_come_to_front(win):
+    win.main_found = False
+    with pytest.raises(ks.KakaoSendError, match="앞으로"):
+        ks.send("민수", "내일 봐")
+    assert win.typed == [] and win.keys == []
 
 
 def test_windows_name_is_not_typed_unless_in_search_box(win):

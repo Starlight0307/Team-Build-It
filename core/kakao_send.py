@@ -204,6 +204,40 @@ class _Win:
         from core import app_launcher
         return bool(hwnd) and hwnd == self.foreground() and "kakaotalk" in app_launcher._win_foreground_exe()
 
+    def _exe_of(self, hwnd: int) -> str:
+        import ctypes
+        from ctypes import wintypes
+        pid = wintypes.DWORD()
+        self._user32().GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid.value)   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ""
+        try:
+            buf, size = ctypes.create_unicode_buffer(512), wintypes.DWORD(512)
+            kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+            return buf.value.rsplit("\\", 1)[-1].casefold()
+        finally:
+            kernel32.CloseHandle(handle)
+
+    def raise_main(self) -> bool:
+        """카카오톡 메인 창을 앞으로. 실행만으로는 앞으로 오지 않고(트레이), 윈도우는 뒤의 앱이 앞으로 나오는 것을 막는다 (실측)."""
+        import ctypes
+        user32 = self._user32()
+        windows = []
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def visit(hwnd, _):
+            if "kakaotalk" in self._exe_of(hwnd) and self.title(hwnd) in ("카카오톡", "KakaoTalk"):
+                windows.append(hwnd)
+            return True
+        user32.EnumWindows(callback_type(visit), None)
+        if not windows:
+            return False
+        user32.ShowWindow(windows[0], 9)   # SW_RESTORE
+        self.tap(0x12)   # Alt를 한 번 누르면 앞으로 올리는 것이 허용된다
+        return bool(user32.SetForegroundWindow(windows[0]))
+
     def focus_child_class(self) -> str:
         """포커스가 있는 입력칸의 클래스 이름."""
         import ctypes
@@ -264,7 +298,7 @@ def _send_windows(to: str, text: str, press_enter: bool) -> str:
         app_launcher.launch(_APP, exact=True)
     except app_launcher.AppNotFound as e:
         raise KakaoSendError("카카오톡이 설치돼 있지 않아요.") from e
-    if not _wait(lambda: _win.is_kakao(_win.foreground()), 4):
+    if not _wait(lambda: _win.raise_main() and _win.is_kakao(_win.foreground()), 4):
         raise KakaoSendError("카카오톡을 앞으로 가져오지 못해서 보내지 않았어요.")
     _win.tap(_Win.VK_F, ctrl=True)   # 검색창
     time.sleep(0.5)
