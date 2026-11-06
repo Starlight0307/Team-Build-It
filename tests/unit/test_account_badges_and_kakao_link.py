@@ -107,3 +107,16 @@ def test_badges_do_not_pile_up_on_repeated_refresh(page):
     w.refresh("tester")
     w.refresh("tester")
     assert _badges(w) == ["Lumi 계정"]
+
+
+def test_linked_kakao_dialog_offers_calendar_and_can_disconnect(qapp, monkeypatch, tmp_path):
+    from calendar_feature import kakao_calendar as kc
+    from widget import account_link_dialog as link
+    monkeypatch.setattr(kc, "_path", lambda owner: str(tmp_path / f"{owner}.json"))
+    off = link.KakaoLinkDialog(None, True, True, "kim")
+    assert not off.btn_primary.isHidden() and off.btn_primary.text() == "톡캘린더 연결"
+    kc.save_tokens("kim", "A", "R", 3600)
+    on = link.KakaoLinkDialog(None, True, True, "kim")
+    assert on.btn_primary.text() == "톡캘린더 연결 끊기"
+    on.btn_primary.click()
+    assert not kc.is_connected("kim") and on.btn_primary.text() == "톡캘린더 연결"

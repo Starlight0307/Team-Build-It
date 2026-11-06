@@ -463,8 +463,9 @@ class CalendarWidget(QWidget):
         title = QLabel(("🔁 " if ev.get("recurring") else "") + ev["title"]); title.setObjectName("CalCardTitle")
         title.setWordWrap(True)
         top.addWidget(title, 1)
-        for icon_name, tip, fn in (("notebook-pen", "수정", lambda _=False, e=ev: self._edit_event(e)),
-                                   ("trash-2", "삭제", lambda _=False, e=ev: self._delete_event(e))):
+        actions = () if ev.get("read_only") else (("notebook-pen", "수정", lambda _=False, e=ev: self._edit_event(e)),
+                                                  ("trash-2", "삭제", lambda _=False, e=ev: self._delete_event(e)))
+        for icon_name, tip, fn in actions:
             b = QPushButton(); b.setObjectName("CalIcon"); b.setIcon(icons.icon(icon_name)); b.setToolTip(tip)
             b.setFixedSize(28, 28); b.setCursor(Qt.CursorShape.PointingHandCursor); b.clicked.connect(fn)
             top.addWidget(b, 0, Qt.AlignmentFlag.AlignTop)

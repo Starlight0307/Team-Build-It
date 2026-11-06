@@ -181,13 +181,59 @@ class LocalSource:
         self._check(local_calendar.local_delete_event(event_id))
 
 
-SOURCES = {s.key: s for s in (GoogleSource(), AppleSource(), LocalSource())}
+class KakaoSource:
+    """루미에서 만든 일정은 제목까지, 다른 곳에서 만든 일정은 카카오 정책상 시간만 온다 → 읽기 전용으로 보여 준다."""
+    key, label = "kakao", "카카오"
+
+    def connected(self, owner) -> bool:
+        from calendar_feature import kakao_calendar
+        return kakao_calendar.is_connected(owner)
+
+    def _run(self, fn, *args):
+        from calendar_feature import kakao_calendar
+        try:
+            return fn(*args)
+        except kakao_calendar.KakaoCalendarError as e:
+            raise SourceError(str(e)) from e
+
+    def events_between(self, owner, start, end) -> list:
+        from calendar_feature import kakao_calendar
+        out = []
+        for e in self._run(kakao_calendar.list_events, owner, start, end, _aware):
+            when = e.get("time") or {}
+            s, t = _parse_any(when.get("start_at")), _parse_any(when.get("end_at"))
+            if s is None:
+                continue
+            editable = bool(e.get("title")) and bool(e.get("id")) and e.get("is_host") is not False
+            out.append({"id": e.get("id"), "title": e.get("title") or "(다른 곳에서 만든 일정)", "start": s, "end": t or s,
+                        "location": "", "description": "", "recurring": bool(e.get("is_recur_event")),
+                        "all_day": bool(when.get("all_day")), "read_only": not editable})
+        return out
+
+    def _body(self, title, start, end, location, description):
+        from calendar_feature import kakao_calendar
+        return kakao_calendar.event_body(title, start, end, location, description, _aware)
+
+    def create(self, owner, title, start, end, location="", description=""):
+        from calendar_feature import kakao_calendar
+        self._run(kakao_calendar.create, owner, self._body(title, start, end, location, description))
+
+    def update(self, owner, event_id, title, start, end, location="", description=""):
+        from calendar_feature import kakao_calendar
+        self._run(kakao_calendar.update, owner, event_id, self._body(title, start, end, location, description))
+
+    def delete(self, owner, event_id):
+        from calendar_feature import kakao_calendar
+        self._run(kakao_calendar.delete, owner, event_id)
+
+
+SOURCES = {s.key: s for s in (GoogleSource(), AppleSource(), LocalSource(), KakaoSource())}
 
 
 def connected_sources(owner: str) -> list:
-    """캘린더 화면 탭 — 연결된 구글·애플. 둘 다 없으면 내부 캘린더(로그인했을 때)."""
+    """캘린더 화면 탭 — 연결된 구글·애플·카카오. 모두 없으면 내부 캘린더(로그인했을 때)."""
     linked = []
-    for key in ("google", "apple"):
+    for key in ("google", "apple", "kakao"):
         try:
             if SOURCES[key].connected(owner):
                 linked.append(SOURCES[key])

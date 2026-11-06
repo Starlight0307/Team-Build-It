@@ -1,0 +1,6 @@
+# 카카오는 Supabase 로그인 토큰 없이 웹훅을 보낸다. 대신 함수가 어드민 키로 직접 확인한다.
+[functions.kakao-unlink]
+verify_jwt = false
+
+[functions.kakao-token]
+verify_jwt = true
