@@ -1,6 +1,7 @@
 """core/wake_detector.py + VoiceListener 호출어 판정 흐름 — 마이크/모델 없이 가짜 인식기로 확인한다."""
 import hashlib
 import json
+import os
 import sys
 import threading
 import time
@@ -153,7 +154,7 @@ def test_package_check_is_cached_then_forgotten(monkeypatch):
 # ── 필수/선택 패키지 ──
 @pytest.fixture
 def pkg_env(monkeypatch, tmp_path):
-    store = {"wake_stream": True, "wake_listening": True, "voice_hq": True, "voice_reply": True}
+    store = {"wake_stream": True, "wake_kws": True, "wake_listening": True, "voice_hq": True, "voice_reply": True}
     saved = {}
     monkeypatch.setattr(app_settings, "get", lambda k, *a: saved.get(k, store.get(k)))
     monkeypatch.setattr(app_settings, "set", lambda k, v: saved.__setitem__(k, v))
@@ -172,6 +173,7 @@ def test_optional_packages_do_not_gate_the_microphone(pkg_env):
 
 def test_optional_packages_follow_settings(pkg_env):
     pkg_env.store["wake_stream"] = False
+    pkg_env.store["wake_kws"] = False                 # 호출어 감지 기능을 둘 다 꺼야 sherpa-onnx가 필요 없다
     assert [r.split("==")[0] for r in voice.missing_optional_packages()] == ["supertonic"]
     pkg_env.store["voice_hq"] = False
     assert voice.missing_optional_packages() == []
@@ -441,3 +443,169 @@ def test_waiting_for_wake_word_does_not_show_hearing_for_every_sound():
 def test_hearing_is_shown_while_listening_for_the_command():
     assert "hearing" in _capture_states(wake_enabled=True, awaiting=True)       # 호출어 뒤 명령을 듣는 중
     assert "hearing" in _capture_states(wake_enabled=False, awaiting=True)      # 오브를 눌러 시작한 대화
+
+
+# ── 키워드 점수 게이트 (KeywordGate) ──
+class FakeKeywordSpotter:
+    """sherpa_onnx.KeywordSpotter 대역: 만들 때 키워드 파일을 읽어 두고, 정해 둔 횟수만큼 결과를 돌려준다."""
+    instances = []
+
+    def __init__(self, **kw):
+        self.kw = kw
+        with open(kw["keywords_file"], encoding="utf-8") as f:
+            self.keywords_text = f.read()
+        self.hits = 0                 # 앞으로 get_result가 돌려줄 호출어 횟수
+        self.ready = 0                # is_ready가 True를 돌려줄 횟수
+        self.chunks, self.resets, self.streams = [], 0, 0
+        FakeKeywordSpotter.instances.append(self)
+
+    def create_stream(self):
+        self.streams += 1
+        spotter = self
+
+        class Stream:
+            def accept_waveform(self, rate, samples):
+                spotter.chunks.append((rate, samples))
+                spotter.ready = 1
+        return Stream()
+
+    def is_ready(self, stream):
+        return self.ready > 0
+
+    def decode_stream(self, stream):
+        self.ready -= 1
+
+    def get_result(self, stream):
+        if self.hits > 0:
+            self.hits -= 1
+            return "루미야"
+        return ""
+
+    def reset_stream(self, stream):
+        self.resets += 1
+
+
+@pytest.fixture
+def kws_env(monkeypatch, tmp_path):
+    pytest.importorskip("numpy")
+    FakeKeywordSpotter.instances = []
+    monkeypatch.setenv("LUMI_WAKE_MODEL_DIR", str(tmp_path))
+    names = list(wake_detector.MODEL_FILES)
+    (tmp_path / "tokens.txt").write_text("<blk> 0\n루 1\n미 2\n야 3\n자 4\n비 5\n스 6\n", encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", types.SimpleNamespace(KeywordSpotter=FakeKeywordSpotter))
+    return tmp_path, names
+
+
+def test_keyword_line_splits_syllables():
+    assert wake_detector.keyword_line("루미야") == "루 미 야"
+    assert wake_detector.keyword_line("자비스") == "자 비 스"
+    assert wake_detector.keyword_line("루 미야") == "루 미 야"
+
+
+def test_kws_constants_match_poc():
+    assert wake_detector.KWS_SCORE == 10.0 and wake_detector.KWS_THRESHOLD == 0.0
+    assert wake_detector.KWS_TRAILING_BLANKS == 0 and wake_detector.KWS_MAX_PATHS == 64
+    assert wake_detector.KWS_WORDS[0] == wake_detector.WAKE_WORD and "자비스" in wake_detector.KWS_WORDS
+
+
+def test_gate_builds_spotter_with_poc_settings_and_cleans_up(kws_env):
+    import os
+    tmp_path, _ = kws_env
+    before = set(os.listdir(tmp_path))
+    wake_detector.KeywordGate()
+    fake = FakeKeywordSpotter.instances[0]
+    assert fake.keywords_text.splitlines() == ["루 미 야", "자 비 스"]
+    assert fake.kw["keywords_score"] == 10.0 and fake.kw["keywords_threshold"] == 0.0
+    assert fake.kw["num_trailing_blanks"] == 0 and fake.kw["max_active_paths"] == 64
+    assert fake.kw["sample_rate"] == 16000 and fake.kw["feature_dim"] == 80
+    assert set(os.listdir(tmp_path)) == before                           # 모델 폴더에 키워드 파일을 남기지 않는다
+    assert not os.path.exists(os.path.dirname(fake.kw["keywords_file"]))  # 임시 폴더도 지운다
+
+
+def test_gate_missing_token_raises_runtime_error(kws_env):
+    tmp_path, _ = kws_env
+    (tmp_path / "tokens.txt").write_text("<blk> 0\n루 1\n미 2\n자 4\n비 5\n스 6\n", encoding="utf-8")   # "야" 없음
+    with pytest.raises(RuntimeError, match="야"):
+        wake_detector.KeywordGate()
+    assert FakeKeywordSpotter.instances == []                              # 인식기를 만들기 전에 막는다
+
+
+def test_gate_feed_fires_only_on_result_and_resets_stream(kws_env):
+    np = pytest.importorskip("numpy")
+    gate = wake_detector.KeywordGate()
+    fake = FakeKeywordSpotter.instances[0]
+    chunk = np.zeros(1600, dtype=np.float32)
+    assert gate.feed(chunk) is False and fake.resets == 0
+    fake.hits = 1
+    assert gate.feed(chunk) is True and fake.resets == 1                   # 호출어 뒤에는 스트림을 비운다
+    assert gate.feed(chunk) is False and fake.resets == 1
+
+
+def test_gate_tolerates_empty_chunk_and_converts_dtype(kws_env):
+    np = pytest.importorskip("numpy")
+    gate = wake_detector.KeywordGate()
+    fake = FakeKeywordSpotter.instances[0]
+    assert gate.feed(np.zeros(0, dtype=np.float32)) is False and fake.chunks == []
+    assert gate.feed([]) is False
+    gate.feed(np.zeros(800, dtype=np.float64))
+    gate.feed([0.0, 0.1, 0.2])
+    assert [c[1].dtype for c in fake.chunks] == [np.float32, np.float32]
+    assert all(c[0] == 16000 for c in fake.chunks)
+
+
+def test_gate_reset_starts_fresh_stream(kws_env):
+    gate = wake_detector.KeywordGate()
+    fake = FakeKeywordSpotter.instances[0]
+    assert fake.streams == 1
+    gate.reset()
+    assert fake.streams == 2
+
+
+def test_kws_enabled_follows_setting_and_sherpa(monkeypatch):
+    store = {"wake_kws": True}
+    monkeypatch.setattr(app_settings, "get", lambda k, *a: store.get(k))
+    monkeypatch.setattr(wake_detector, "sherpa_available", lambda: True)
+    assert wake_detector.kws_enabled() is True
+    store["wake_kws"] = False
+    assert wake_detector.kws_enabled() is False
+    store["wake_kws"] = True
+    monkeypatch.setattr(wake_detector, "sherpa_available", lambda: False)
+    assert wake_detector.kws_enabled() is False
+
+
+def test_gate_feed_passes_native_sample_rate(kws_env):
+    np = pytest.importorskip("numpy")
+    gate = wake_detector.KeywordGate()
+    fake = FakeKeywordSpotter.instances[0]
+    gate.feed(np.zeros(4410, dtype=np.float64), 44100)
+    gate.feed(np.zeros(800, dtype=np.float32))
+    assert [(c[0], c[1].dtype) for c in fake.chunks] == [(44100, np.float32), (16000, np.float32)]
+
+
+def test_real_model_gate_ignores_silence_and_noise(monkeypatch):
+    """실제 모델 스모크 테스트. conftest가 HOME을 바꿔 두므로 실제 모델 폴더는 LUMI_REAL_MODEL_DIR로 알려줘야 한다."""
+    np = pytest.importorskip("numpy")
+    real = os.environ.get("LUMI_REAL_MODEL_DIR") or os.environ.get("LUMI_WAKE_MODEL_DIR")
+    if not real:
+        pytest.skip("LUMI_REAL_MODEL_DIR(실제 호출어 모델 폴더)가 지정되지 않음")
+    monkeypatch.setenv("LUMI_WAKE_MODEL_DIR", real)
+    if not wake_detector.sherpa_available() or not wake_detector.model_ready():
+        pytest.skip(f"sherpa-onnx가 없거나 {real}에 호출어 모델이 없음")
+    gate = wake_detector.KeywordGate()
+    assert gate.feed(np.zeros(16000 * 3, dtype=np.float32)) is False
+    noise = np.random.default_rng(0).standard_normal(16000 * 3)
+    noise = (noise * (0.01 / np.sqrt(np.mean(noise ** 2)))).astype(np.float32)      # rms 0.01
+    fired = False
+    for off in range(0, len(noise), 1600):
+        fired = fired or gate.feed(noise[off:off + 1600])
+    assert fired is False
+
+
+def test_sherpa_is_needed_when_only_one_of_the_two_wake_features_is_on(pkg_env):
+    """호출어 점수 감지(wake_kws)만 켜져 있어도 sherpa-onnx가 필요하다 — 둘 다 꺼야 설치하지 않는다."""
+    pkg_env.store["wake_stream"] = False
+    assert "sherpa-onnx" in [r.split("==")[0] for r in voice.missing_optional_packages()]     # wake_kws는 켜짐
+    pkg_env.store["wake_kws"] = False
+    assert "sherpa-onnx" not in [r.split("==")[0] for r in voice.missing_optional_packages()]  # 둘 다 꺼짐
+    pkg_env.store["wake_stream"] = True
+    assert "sherpa-onnx" in [r.split("==")[0] for r in voice.missing_optional_packages()]

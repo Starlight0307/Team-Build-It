@@ -300,6 +300,28 @@ TOP_WEATHER_SAMPLE = "-18.8°C  서울시"
 CLOSE_ACTIONS = [(None, "매번 묻기"), ("tray", "백그라운드"), ("quit", "종료")]
 
 
+SETTINGS_CARD_MAX_WIDTH = 760
+SETTINGS_CARD_MARGIN_X = 24
+
+
+class _CappedWidthVBox(QVBoxLayout):
+    """높이를 계산할 때 쓰는 폭에 상한을 둔다.
+
+    설정 카드는 폭이 760px까지만 늘어난다. 그런데 바깥 레이아웃은 카드 높이를 "창 전체 폭에서 설명 글이 몇 줄이 되는지"로
+    구해서, 실제로는 760px에서 줄이 더 늘어나는 긴 설명이 있는 카드는 높이가 모자라 아랫부분이 잘렸다(설명이 한 줄로
+    끝나는 카드는 티가 안 나다가, 글이 길어지는 순간 드러난다). 카드 안쪽 폭의 상한으로 계산하면 실제 폭과 맞는다."""
+
+    def __init__(self, parent, max_inner_width: int):
+        super().__init__(parent)
+        self._cap = max_inner_width
+
+    def heightForWidth(self, w):
+        return super().heightForWidth(min(w, self._cap))
+
+    def minimumHeightForWidth(self, w):
+        return super().minimumHeightForWidth(min(w, self._cap))
+
+
 class AssistantApp(QWidget):
     def __init__(self):
         super().__init__()
@@ -361,6 +383,7 @@ class AssistantApp(QWidget):
             self.stock_panel.start_updates()
         # 신규 기능 6(앱 사용 통계) — 사용자가 이전에 기록을 켜둔 경우에만 이어서 기록한다.
         QTimer.singleShot(1500, self._resume_usage_tracking)
+        QTimer.singleShot(2500, self._apply_wake_setting)   # 저장된 "호출어 계속 듣기" 설정대로 마이크를 켠다
         if "iot_control" in self.installed_module_names:
             QTimer.singleShot(2000, self.iot_panel.refresh)
         # 설치본은 바로가기로 켤 때만 자동 업데이트된다 — 창을 닫아 백그라운드로 켜 둔 동안에도 새 버전을 알린다
@@ -1849,6 +1872,10 @@ class AssistantApp(QWidget):
         self.switch_wake_listening.setChecked(bool(getattr(self, "_wake_mode", False)))   # 저장값이 아니라 실제 마이크 상태 — _sync_wake_controls가 맞춘다
         self.switch_wake_listening.toggled.connect(self.set_wake_mode)
 
+        self.switch_wake_kws = ToggleSwitch()
+        self.switch_wake_kws.setChecked(bool(app_settings.get("wake_kws")))
+        self.switch_wake_kws.toggled.connect(self._on_wake_kws_toggled)
+
         self.switch_wake_stream = ToggleSwitch()
         self.switch_wake_stream.setChecked(bool(app_settings.get("wake_stream")))
         self.switch_wake_stream.toggled.connect(self._on_wake_stream_toggled)
@@ -1938,6 +1965,12 @@ class AssistantApp(QWidget):
              "'루미야' 또는 '자비스'라고 부르는 소리를 앱을 켤 때부터 계속 기다려요. 말은 저장하거나 서버로 보내지 않아요. "
              "창을 닫아 백그라운드에 있어도 들어요. 끄면 오브를 눌러야만 대화할 수 있어요.",
              self.switch_wake_listening),
+            ("호출어 점수 감지 (실험)",
+             "소리를 글자로 바꾸지 않고 '루미야'와 닮았는지 점수만 계산해서 호출어를 먼저 찾아요. 호출어로 보이면 직전 "
+             "약 2초만 글자로 확인하고 바로 \"네, 말씀하세요\"라고 대답해요. 명령은 그 대답 뒤에 따로 말해 주세요 "
+             "('루미야 불 꺼줘'처럼 한 번에 말하면 뒷말은 못 들어요). 듣는 동안 CPU를 조금 더 쓰고, 아직 실제 마이크로 "
+             "충분히 검증하지 못했어요 — 잘 안 맞으면 끄세요.",
+             self.switch_wake_kws),
             ("빠른 호출어 감지",
              "'루미야'를 가벼운 인식기로 먼저 알아들어서 반응이 빨라요 (처음 한 번 약 160MB). 끄면 소리가 날 때마다 "
              "음성 인식 모델로 판정해서 느리고 컴퓨터에 부담이 커요. 비슷한 소리의 이름(예: 유미야)에 잘못 반응할 수 있어요.",
@@ -1945,11 +1978,6 @@ class AssistantApp(QWidget):
             ("자주 쓰는 단어",
              "이름·학교·회사처럼 잘 못 알아듣는 말을 쉼표로 적어두면\n받아쓰기 힌트로 써요. (예: 장안대학교, 김민수)",
              self._make_voice_words_editor()),
-            ("음성 대화 사용법",
-             "오브를 누르거나 Ctrl+Shift+Space로 대화를 시작하고, '그만'이라고 말하면 끝나요. "
-             "호출어 상시 듣기를 켜두면 '루미야' / '자비스'라고 부를 때마다 대답해요.\n"
-             "오브 아래 문구가 '호출어 듣는 중'이면 마이크가 열려 호출어만 기다리는 중이고, '호출어 꺼짐'이면 닫힌 상태예요.",
-             None),
         ]))
         outer.addSpacing(18)
 
@@ -2395,10 +2423,10 @@ class AssistantApp(QWidget):
         card = QFrame()
         card.setProperty("motionCard", True)
         card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        card.setMaximumWidth(760)
+        card.setMaximumWidth(SETTINGS_CARD_MAX_WIDTH)
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)   # 가운데 정렬에서도 760px까지 넓게
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(24, 20, 24, 12)
+        cl = _CappedWidthVBox(card, SETTINGS_CARD_MAX_WIDTH - 2 * SETTINGS_CARD_MARGIN_X)   # 높이도 760px 기준으로 계산
+        cl.setContentsMargins(SETTINGS_CARD_MARGIN_X, 20, SETTINGS_CARD_MARGIN_X, 12)
         cl.setSpacing(0)
 
         if icon and icons.exists(icon):
@@ -2461,7 +2489,7 @@ class AssistantApp(QWidget):
         for line in self._settings_dividers:
             line.setStyleSheet(f"background-color: {p['card_brd']}; border: none;")
         for sw in (self.switch_dark, self.switch_voice_reply, self.switch_voice_hq,
-                   self.switch_wake_listening, self.switch_wake_stream, self.switch_motion):
+                   self.switch_wake_listening, self.switch_wake_kws, self.switch_wake_stream, self.switch_motion):
             sw.set_colors(p['accent'], p['switch_off'], p['accent2'])
         self.voice_words_input.setStyleSheet(
             f"QLineEdit {{ background-color: {p['ib']}; color: {p['tc']}; border: 1px solid {p['ibrd']}; "
@@ -2611,6 +2639,20 @@ class AssistantApp(QWidget):
                 self._ensure_listener()
         else:
             self._show_toast(f"🎙️ 음성 인식을 '{label}'으로 바꿨어요. (처음 쓸 때 {size} 내려받음)")
+
+    def _on_wake_kws_toggled(self, on: bool):
+        app_settings.set("wake_kws", on)
+        if on:
+            retry_optional_packages()
+            self._maybe_install_optional(explicit=True)
+        if not on:
+            self._show_toast("👂 호출어 점수 감지를 껐어요. 소리가 날 때마다 글자로 확인해요.")
+        elif not app_settings.get("wake_listening"):
+            self._show_toast("👂 호출어 상시 듣기를 켜면 호출어를 소리 점수로 먼저 찾아요.")
+        elif self._optional_install_worker is not None:
+            self._show_toast("👂 호출어 감지 구성요소를 설치하는 중이에요. 끝나면 소리 점수로 먼저 찾아요.")
+        else:
+            self._show_toast("👂 호출어를 소리 점수로 먼저 찾아요. (잘 안 맞으면 환경설정에서 끌 수 있어요)")
 
     def _on_wake_stream_toggled(self, on: bool):
         app_settings.set("wake_stream", on)
@@ -2792,6 +2834,7 @@ class AssistantApp(QWidget):
         for sw, val in ((self.switch_dark, dark),
                         (self.switch_voice_reply, bool(app_settings.get("voice_reply"))),
                         (self.switch_voice_hq, bool(app_settings.get("voice_hq"))),
+                        (self.switch_wake_kws, bool(app_settings.get("wake_kws"))),
                         (self.switch_wake_stream, bool(app_settings.get("wake_stream")))):
             sw.blockSignals(True)
             sw.setChecked(val)
@@ -3748,13 +3791,12 @@ class AssistantApp(QWidget):
             app_settings.set("optional_install_asked", True)
             if reply != QMessageBox.StandardButton.Yes:
                 app_settings.set("wake_stream", False)      # 설정에서 다시 켜면 그때 설치한다
+                app_settings.set("wake_kws", False)         # 점수 감지도 sherpa-onnx가 필요하다 — 거절했으면 같이 끈다
                 app_settings.set("voice_hq", False)
-                self.switch_wake_stream.blockSignals(True)
-                self.switch_voice_hq.blockSignals(True)
-                self.switch_wake_stream.setChecked(False)
-                self.switch_voice_hq.setChecked(False)
-                self.switch_wake_stream.blockSignals(False)
-                self.switch_voice_hq.blockSignals(False)
+                for sw in (self.switch_wake_stream, self.switch_wake_kws, self.switch_voice_hq):
+                    sw.blockSignals(True)
+                    sw.setChecked(False)
+                    sw.blockSignals(False)
                 return
             missing = missing_optional_packages()
             if not missing:

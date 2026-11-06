@@ -12,12 +12,26 @@ Whisper가 뒤의 명령을 받아쓴다 (core/voice.py VoiceListener).
   "유미야/수미야"는 구분하지 못한다 → 후보는 가벼운 인식기가 걸러내는 용도이고, 글자가 정확한 호출어가
   아니거나 명령이 이어진 경우엔 Whisper 글자를 정확한 호출어 목록과 대조해 확인한다 (core/voice.py).
 - 실제 마이크로는 아직 검증하지 못했다. 환경설정 "wake_stream"을 끄면 예전 방식(Whisper)으로 돌아간다.
+- 키워드 점수 게이트(KeywordGate): 소리가 날 때마다 받아쓰지 않고, 같은 모델로 "루 미 야"(음절 토큰) 키워드 점수만
+  본다 (sherpa-onnx KeywordSpotter, 글자는 만들지 않는다). 합성 음성 PoC(10개 목소리): 기본값(score 1.0,
+  threshold 0.25)은 한 번도 반응하지 않았고, score 10.0 / threshold 0.0 / trailing_blanks 0이면 반응한다.
+  조용한 조건(max_active_paths 16, 실제 KeywordGate, 0.1초 조각, 합성 목소리 10개): "루미야" 38/40(95%), "자비스" 27/30(90%),
+  소리가 비슷한 말("유미야 수미야 누미야 우미야 루미나")은 0/50, 평범한 문장은 0/60이지만 "자비서" 7/10, "자바스" 2/10은 반응한다.
+  그러나 약한 잡음(말소리의 1%)만 섞어도 호출어 반응이 크게 떨어진다 — max_active_paths 16: 75%(약한 잡음)/67%(중간 잡음),
+  64: 97%/85%, 일반 문장 오반응 1/80. 처리 비용은 16과 64가 비슷하다(실시간의 0.063배 vs 0.066배) → 64를 쓴다.
+  대기 중 계속 돌리는 비용은 30초 잡음 처리에 CPU 7.8초(한 코어의 약 25%)다.
+  한계: 합성 음성으로만 쟀고(자비스도 합성 음성으로만) 실제 마이크/소음은 아직 검증하지 못했다. 게이트는 후보를 고르는 1단계일 뿐이며,
+  게이트가 울리면 기다리지 않고 바로, 울린 말이 시작된 곳부터 울린 순간까지(최대 2초)만 WakeSpotter 글자 인식기로
+  한 번 더 확인하고(core/voice.py _accept_wake_hit) 곧바로 응답한다 — 울린 뒤의 소리는 명령 단계가 되기 전까지 모으지 않고,
+  Whisper는 부르지 않는다. 환경설정 "wake_kws"로 끈다.
 - 들은 말은 글자로도 저장하지 않는다 — 호출어인지 판정한 결과만 쓰고 바로 버린다.
 """
 import hashlib
 import json
 import os
 import re
+import shutil
+import tempfile
 import threading
 
 from core import pkgcheck
@@ -34,9 +48,22 @@ MODEL_FILES = {                      # 파일 이름 → SHA-256 (모델 저장�
 }
 _MARKER = ".verified"
 
+# ── 키워드 점수 게이트 설정 (합성 음성 PoC 2026-11-06로 정한 값) ──
+# 기본값(1.0 / 0.25)은 한 번도 반응하지 않았다. 아래 값이면(실제 KeywordGate, 0.1초 조각, 합성 목소리 10개)
+# "루미야" 38/40, "자비스" 27/30 반응, 비슷한 말 "유미야 수미야 누미야 우미야 루미나" 0/50, 평범한 문장 0/60
+# (조용한 조건, max_active_paths 16). 단 "자비서" 7/10, "자바스" 2/10은 반응한다.
+# 잡음이 섞이면 max_active_paths 16은 67~75%로 떨어지고 64는 85~97%를 유지한다(처리 비용은 같다) → 64.
+# 합성 음성으로만 쟀고 실제 마이크로는 아직 검증하지 못했다.
+KWS_SCORE = 10.0
+KWS_THRESHOLD = 0.0
+KWS_TRAILING_BLANKS = 0
+KWS_MAX_PATHS = 64
+# 모델 토큰은 한글 음절 하나씩이라 키워드는 "루 미 야"처럼 음절을 띄어 쓴다. "자비스"도 합성 음성으로만 측정했다.
+KWS_WORDS = ("루미야", "자비스")
+
 WAKE_WORD = "루미야"
 SPOT_MAX_DISTANCE = 2        # 스트리밍 인식기 글자: 자모 편집거리 이내면 호출어 "후보"로 본다 (PoC로 정한 값)
-# (호출어, 허용 거리). "자비스"는 PoC에서 측정하지 못해 더 엄격하게(1) 본다 — 후보를 놓치면 Whisper를 거치지
+# (호출어, 허용 거리). "자비스"는 합성 음성으로만 측정해 더 엄격하게(1) 본다 — 후보를 놓치면 Whisper를 거치지
 # 않고 버려지므로 철자가 조금 달라도 후보에는 들어가야 한다.
 WAKE_TARGETS = ((WAKE_WORD, SPOT_MAX_DISTANCE), ("자비스", 1))
 SAMPLE_RATE = 16000
@@ -97,14 +124,16 @@ def _loose_ok(seg: list, start: int, at_boundary: bool) -> bool:
     return "".join(seg) == "루미" and at_boundary
 
 
-def strip_wake(text: str, max_distance: int = None):
+def strip_wake(text: str, max_distance: int = None, only: str = None):
     """글 앞부분이 호출어("루미야", "자비스")와 (자모 기준) 비슷하면 그 뒤의 말을 돌려준다. 아니면 None.
-    max_distance로 허용 거리를 더 줄일 수 있다.
+    max_distance로 허용 거리를 더 줄일 수 있고, only에 호출어 하나를 주면 그 호출어만 비교한다.
     "루미아 CPU 확인해줘" → "CPU 확인해줘",  "룸이야오늘좀알려줘" → "오늘좀알려줘",  "오늘 날씨" → None"""
     chars, index = _normalize_with_map(text)
     text = text or ""
     best = None                                   # (단어 경계 아님, 거리, 길이, 시작) — 작을수록 좋음
     for word, limit in WAKE_TARGETS:
+        if only is not None and word != only:
+            continue
         limit = limit if max_distance is None else min(limit, max_distance)
         for start in range(0, min(_MAX_PREFIX, len(chars)) + 1):
             for length in (2, 3, 4):
@@ -150,6 +179,11 @@ def sherpa_available() -> bool:
 def enabled() -> bool:
     """환경설정이 켜져 있고 sherpa-onnx 패키지가 있는가 (모델 파일은 따로 확인)."""
     return bool(app_settings.get("wake_stream")) and sherpa_available()
+
+
+def kws_enabled() -> bool:
+    """환경설정 "wake_kws"가 켜져 있고 sherpa-onnx 패키지가 있는가 (모델 파일은 따로 확인)."""
+    return bool(app_settings.get("wake_kws")) and sherpa_available()
 
 
 def model_ready() -> bool:
@@ -231,3 +265,68 @@ class WakeSpotter:
                 self._rec.decode_stream(stream)
             result = self._rec.get_result(stream)
         return (result if isinstance(result, str) else getattr(result, "text", "")).strip()
+
+
+def keyword_line(word: str) -> str:
+    """"루미야" → "루 미 야" (공백을 뺀 음절을 띄어 쓴 키워드 한 줄)."""
+    return " ".join(ch for ch in word if not ch.isspace())
+
+
+class KeywordGate:
+    """말을 글자로 바꾸지 않고 호출어 키워드 점수만 보는 1단계 게이트 (sherpa-onnx KeywordSpotter).
+    float32 조각을 계속 먹이면 호출어가 들렸을 때 True를 돌려준다. 만든 스레드에서만 쓴다."""
+
+    def __init__(self):
+        import sherpa_onnx
+        d = model_dir()
+        tokens = os.path.join(d, "tokens.txt")
+        with open(tokens, encoding="utf-8") as f:
+            known = {line.strip().rsplit(None, 1)[0] for line in f if line.strip()}
+        lines = [keyword_line(w) for w in KWS_WORDS]
+        for word, line in zip(KWS_WORDS, lines):
+            missing = [t for t in line.split() if t not in known]
+            if missing:
+                raise RuntimeError(f"호출어 키워드 '{word}'의 토큰이 모델에 없어요: {' '.join(missing)}")
+        enc, dec, joi = (os.path.join(d, n) for n in MODEL_FILES if n != "tokens.txt")
+        tmp = tempfile.mkdtemp(prefix="lumi-kws-")          # 모델 폴더에는 아무것도 남기지 않는다
+        try:
+            kf = os.path.join(tmp, "keywords.txt")
+            with open(kf, "w", encoding="utf-8", newline="\n") as f:
+                f.write("\n".join(lines) + "\n")
+            self._ks = sherpa_onnx.KeywordSpotter(
+                tokens=tokens, encoder=enc, decoder=dec, joiner=joi, keywords_file=kf,
+                num_threads=2, sample_rate=SAMPLE_RATE, feature_dim=80,
+                keywords_score=KWS_SCORE, keywords_threshold=KWS_THRESHOLD,
+                num_trailing_blanks=KWS_TRAILING_BLANKS, max_active_paths=KWS_MAX_PATHS)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self._lock = threading.Lock()
+        self._stream = self._ks.create_stream()
+
+    def feed(self, audio, sample_rate: int = SAMPLE_RATE) -> bool:
+        """모노 조각(길이 상관없음)을 먹인다. sample_rate가 16kHz가 아니면 sherpa가 안에서 바꿔 준다 (조각마다
+        따로 바꾸면 경계에서 소리가 깨져서, 마이크 원래 샘플레이트 그대로 넣는다).
+        이 조각 안에서 호출어가 들렸으면 True (스트림은 비우고 새로 시작)."""
+        import numpy as np
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if audio.size == 0:
+            return False
+        hit = False
+        with self._lock:
+            self._stream.accept_waveform(int(sample_rate), audio)
+            while self._ks.is_ready(self._stream):
+                self._ks.decode_stream(self._stream)
+                if self._ks.get_result(self._stream):
+                    hit = True
+                    self._ks.reset_stream(self._stream)
+        return hit
+
+    def reset(self):
+        """말이 끝났거나 한동안 쉬었다 다시 들을 때: 쌓인 소리를 버리고 새 스트림으로 시작."""
+        with self._lock:
+            self._stream = self._ks.create_stream()
+
+    def close(self):
+        with self._lock:
+            self._stream = None
+            self._ks = None

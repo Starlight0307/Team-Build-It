@@ -30,6 +30,7 @@ DEFAULTS = {
     "wake_listening": True, # 앱을 켜면 "루미야" 호출어를 계속 기다린다 (환경설정 > 음성 · 트레이 메뉴로 켜고 끔) — 계정별 설정
     "optional_install_asked": False,  # 호출어 감지/고품질 목소리 구성요소 설치를 물어봤는지 (계정별, 최초 1회)
     "wake_notice_shown": False,  # 호출어 듣기가 자동으로 켜진다는 안내를 보여줬는지 (계정별, 최초 1회)
+    "wake_kws": True,       # 호출어를 글자로 받아쓰지 않고 "루미야와 닮은 소리인가" 점수로만 먼저 찾는다 (core/wake_detector.py KeywordGate). 끄면 예전 방식
     "wake_stream": True,    # 호출어 판정을 가벼운 스트리밍 인식기로 (core/wake_detector.py). 끄면 예전처럼 Whisper로 판정
     "voice_hq": True,      # 답변을 고품질 목소리(Supertonic)로 읽기 — 꺼져 있거나 준비 전이면 OS 기본 음성 (core/voice.py)
     "tts_voice": None,     # 고품질 목소리 이름 (M1~M5 / F1~F5) — None이면 F1
@@ -61,6 +62,14 @@ def set_current_user(user_id) -> None:
     _cache = None
 
 
+def _sherpa_installed() -> bool:
+    try:
+        from core import pkgcheck
+        return pkgcheck.package_installed("sherpa_onnx")
+    except Exception:
+        return False
+
+
 def _load() -> dict:
     global _cache
     if _cache is None:
@@ -70,6 +79,12 @@ def _load() -> dict:
                 saved = json.load(f)
             if isinstance(saved, dict):
                 _cache.update({k: v for k, v in saved.items() if k in DEFAULTS})
+                # 이전 버전에서 "추가 구성요소 설치"를 거절한 계정(질문은 했고, 호출어 감지는 껐고, sherpa-onnx는 없다)에
+                # 새 기능 wake_kws가 기본값(켜짐)으로 적용돼 동의 없이 설치되지 않게 한다. 이미 설치돼 있으면 동의한 사람이고
+                # (그 뒤 wake_stream만 직접 껐을 수 있다) 새 기능은 기본값 그대로 둔다.
+                if ("wake_kws" not in saved and saved.get("optional_install_asked") and saved.get("wake_stream") is False
+                        and not _sherpa_installed()):
+                    _cache["wake_kws"] = False
         except (OSError, ValueError):
             pass
     return _cache

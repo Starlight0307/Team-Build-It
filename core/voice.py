@@ -29,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 
 from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 
@@ -195,6 +196,44 @@ def _copies_prompt(text: str) -> bool:
             return True
     return False
 
+# ── 호출어 대기 방식: 2단계 ──
+# 1단계(키워드 게이트): 호출어만 기다리는 동안 마이크 소리를 점수만 매기는 가벼운 감지기(KeywordGate)에
+#   계속 흘려 넣는다. 이 단계에서는 어떤 소리도 글자로 바뀌지 않는다 — 호출어와 닮지 않은 소리는
+#   점수만 계산되고 바로 버려진다.
+# 2단계(빠른 확인): 점수가 기준을 넘으면 기다리지 않고 바로, 울린 말이 시작된 곳부터 울린 순간까지(최대
+#   KWS_VERIFY_MAX_SEC)만 글자 인식기로 한 번 확인한다(_accept_wake_hit). 맞으면 곧바로 응답하고, 명령은 그 뒤에 따로
+#   받는다(앱의 명령 대기 흐름). 이 경로에서는 Whisper를 부르지 않는다.
+# 솔직한 프라이버시 설명: 호출어가 아닌 소리는 글자로 만들지 않는다. 점수가 넘은 순간(오작동 포함)에만 그 직전
+#   최대 2초가 작은 글자 인식기에 한 번 들어가 호출어를 다시 확인하고, 호출어가 아니면 그 글자는 저장·전송 없이 즉시
+#   버린다. 울린 뒤의 소리는 사용자의 명령 단계가 되기 전까지 녹음하지 않으며, Whisper는 명령을 받아쓸 때만 돈다.
+# 한계: "루미야 불 꺼줘"처럼 호출어와 명령을 한 숨에 말하는 것은 이 방식에서 지원하지 않는다 — 호출어 직후에
+#   먼저 응답하고, 명령은 그 뒤에 따로 말해야 한다.
+KWS_RING_SEC = 3.0           # 게이트가 울리기 직전 소리를 이만큼만 메모리에 들고 있는다
+KWS_VERIFY_MAX_SEC = 2.0     # 울린 순간 확인용으로 글자 인식기에 넘기는 소리의 최대 길이 (울린 쪽 끝에서부터)
+KWS_FEED_SEC = 0.1           # 이만큼 모아서 게이트에 넣는다 (기기 샘플레이트 그대로 — 16kHz 변환은 마지막에 한 번만)
+KWS_NOISE_SEC = 5.0          # 대기 중 소리 크기를 이만큼 기억해 두었다가, 울린 순간의 바닥 소음(하위 백분위)을 구한다
+KWS_NOISE_PERCENTILE = 20
+KWS_ONSET_GAP_SEC = 0.4      # 이만큼 조용한 틈이 있으면 그 앞 소리는 호출어와 다른 말로 보고 2단계에 넘기지 않는다
+KWS_ONSET_PREROLL_SEC = 0.3  # 말 시작 앞에 붙이는 여유 (첫 음절이 잘리지 않게)
+KWS_RECHECK_BLOCKS = 10      # 대기 중 설정(wake_kws)이 꺼졌는지 이 블록 수마다 확인한다
+_KWS_FALLBACK = False        # _listen_for_keyword가 "게이트를 못 쓴다 → 예전 방식으로"라는 뜻으로 돌려주는 값
+
+
+def onset_start(rms_list, threshold, gap_blocks, preroll_blocks) -> int:
+    """링 버퍼(블록별 rms)에서 울린 말이 시작된 위치. 끝에서부터 거슬러 올라가다 gap_blocks 이상 이어진
+    조용한 틈(rms < threshold)을 처음 만나면, 그 틈 바로 뒤를 말의 시작으로 보고 preroll_blocks만큼 앞을 더 붙인다.
+    틈이 없거나 소리가 아예 없으면 0(전부 유지). 끝쪽의 조용한 블록은 틈으로 세지 않는다."""
+    onset, quiet = None, 0
+    for i in range(len(rms_list) - 1, -1, -1):
+        if rms_list[i] >= threshold:
+            onset, quiet = i, 0
+        elif onset is not None:
+            quiet += 1
+            if quiet >= gap_blocks:
+                return max(0, onset - preroll_blocks)
+    return 0
+
+
 # "그만", "대화 끝" 같은 말이면 이어 듣기를 끝낸다
 STOP_PHRASES = ("그만", "대화 종료", "대화 끝", "됐어", "이제 됐어", "종료해", "고마워", "수고했어")
 
@@ -203,7 +242,9 @@ STOP_PHRASES = ("그만", "대화 종료", "대화 끝", "됐어", "이제 됐�
 # 📦 패키지 확인/설치
 # ─────────────────────────────────────────────
 # 선택 패키지 → 그 기능을 실제로 쓰는 환경설정들 (하나라도 꺼져 있으면 설치하지 않는다)
-_OPTIONAL_SETTINGS = {"sherpa-onnx": ("wake_stream", "wake_listening"), "supertonic": ("voice_hq", "voice_reply")}
+# 값은 "모두 켜져 있어야" 하는 설정들. sherpa-onnx는 호출어 점수 감지(wake_kws)와 글자 확인(wake_stream) 중 하나만 써도 필요하다.
+_OPTIONAL_SETTINGS = {"sherpa-onnx": ("wake_listening",), "supertonic": ("voice_hq", "voice_reply")}
+_OPTIONAL_ANY_SETTINGS = {"sherpa-onnx": ("wake_stream", "wake_kws")}   # 이 중 하나라도 켜져 있으면 필요
 # 이번 실행에서 설치에 실패한 선택 패키지. 네트워크 오류와 "이 PC용 wheel 없음"이 pip 메시지로는 구별되지 않아
 # (둘 다 "No matching distribution") 영구 기록하지 않는다 — 다음 실행에 다시 시도하고, wheel이 없는 PC는 실패만 반복한다.
 _optional_failed = set()
@@ -225,6 +266,9 @@ def _optional_requirements() -> list:
     for r in reqs:
         name = _pkg_name(r)
         if any(not app_settings.get(s) for s in _OPTIONAL_SETTINGS.get(name, ())):
+            continue
+        anyof = _OPTIONAL_ANY_SETTINGS.get(name)
+        if anyof and not any(app_settings.get(s) for s in anyof):
             continue
         if name in _optional_failed:
             continue
@@ -389,9 +433,11 @@ class VoiceListener(QThread):
         self._wake_enabled = False
         self._spotter = None             # 호출어 판정용 가벼운 인식기 (core/wake_detector.py)
         self._spotter_retry_at = 0.0     # 이 시각 전에는 Whisper로 판정 (실패 뒤 잠시 쉬었다가 다시 시도한다)
-        self._spotter_warned = False     # 실패 안내는 한 번만 (재시도할 때마다 알리지 않는다)
+        self._detector_warned = False    # 감지기 문제 안내는 리스너당 한 번만 (인식기/게이트 어느 쪽이든)
         self._spotter_dl_notified = False
         self._spotter_download = None
+        self._gate = None                # 호출어 키워드 게이트 (core/wake_detector.py KeywordGate)
+        self._gate_retry_at = 0.0
 
     # ── 메인 스레드에서 호출 ──
     def listen_for_command(self, timeout: float = 8.0):
@@ -439,9 +485,13 @@ class VoiceListener(QThread):
         except RuntimeError:             # 스레드가 이미 정리된 뒤의 늦은 신호
             pass
 
-    def _spotter_or_none(self):
-        """쓸 수 있는 호출어 인식기. 패키지/모델이 아직 없으면 None (그동안은 Whisper로 판정)."""
-        if time.monotonic() < self._spotter_retry_at or not wake_detector.enabled():
+    def _spotter_or_none(self, for_gate: bool = False):
+        """쓸 수 있는 호출어 인식기. 패키지/모델이 아직 없으면 None (그동안은 Whisper로 판정).
+        for_gate=True는 키워드 게이트가 울린 소리를 확인하는 용도(검증기) — 게이트와 같은 패키지/모델이라
+        wake_stream 설정과 상관없이 쓴다. 그 밖의 조건(쉬는 시간, 모델 준비, 생성 실패)은 똑같이 적용한다."""
+        if time.monotonic() < self._spotter_retry_at:
+            return None
+        if not for_gate and not wake_detector.enabled():
             return None
         if self._spotter is not None:
             return self._spotter
@@ -461,9 +511,52 @@ class VoiceListener(QThread):
         self._spotter = None
         self._spotter_retry_at = time.monotonic() + retry_after
         print(f"[호출어 감지] {why} → {int(retry_after)}초 동안 Whisper로 판정")
-        if not self._spotter_warned:
-            self._spotter_warned = True
+        self._warn_detector_once()
+
+    def _gate_or_none(self):
+        """쓸 수 있는 키워드 게이트. 설정이 꺼져 있거나 모델/패키지가 없거나 실패 뒤 쉬는 중이면 None
+        (그동안은 예전 방식 — 말소리를 잡아 글자 인식기로 판정)."""
+        if not wake_detector.kws_enabled():
+            if self._gate is not None:
+                self._drop_gate()
+            return None
+        if time.monotonic() < self._gate_retry_at:
+            return None
+        if self._gate is not None:
+            return self._gate
+        if not wake_detector.model_ready():
+            if time.monotonic() >= self._spotter_retry_at:       # 내려받기 실패 뒤 쉬는 중에는 새로 받지 않는다
+                self._start_spotter_download()
+            return None
+        try:
+            self._gate = wake_detector.KeywordGate()
+        except Exception as e:
+            self._gate_failed(f"시작 실패: {e}", retry_after=300)
+            return None
+        return self._gate
+
+    def _gate_failed(self, why: str, retry_after: float):
+        """게이트를 못 쓰게 됐다 → 한동안 예전 방식으로 듣고, 시간이 지나면 다시 시도한다."""
+        self._gate = None
+        self._gate_retry_at = time.monotonic() + retry_after
+        print(f"[호출어 키워드] {why} → {int(retry_after)}초 동안 기본 방식으로 듣기")
+        self._warn_detector_once()
+
+    def _warn_detector_once(self):
+        if not self._detector_warned:
+            self._detector_warned = True
             self._notice("호출어 감지기에 문제가 생겨 잠시 기본 방식으로 들어요.")
+
+    def _drop_gate(self, gate=None):
+        """게이트를 버린다 (설정이 꺼졌을 때 모델이 메모리에 계속 올라가 있지 않게)."""
+        gate = gate if gate is not None else self._gate
+        if gate is self._gate:
+            self._gate = None
+        try:
+            if gate is not None:
+                gate.close()
+        except Exception:
+            pass
 
     def _start_spotter_download(self):
         if self._spotter_download is not None:
@@ -518,6 +611,24 @@ class VoiceListener(QThread):
             return
         self._wake_with_whisper(model, audio, np)
 
+    def _accept_wake_hit(self, spotter, audio) -> bool:
+        """게이트가 울린 소리(최대 KWS_VERIFY_MAX_SEC)가 정말 호출어로 시작하는지 글자 인식기로 빠르게 확인한다
+        (Whisper 없음, 기다림 없음). 정확한 호출어 목록이거나 "루미야"와 느슨하게 비슷하면 통과 — 느슨한 일치는
+        "루미야"만 본다("자비서" 같은 자비스 비슷한 말은 목록과 정확히 같아야 통과).
+        확인할 수 없으면 통과시키지 않는다(fail-closed): 게이트만으로는 비슷한 소리("자비서" 등)에 잘못 깨어날 수 있다.
+        인식기가 없으면 거절하고, 인식 중 오류가 나도 이번 소리는 거절하며 인식기를 쉬게 한다
+        (다음 번엔 검증기를 쓸 수 없으므로 run()이 예전 방식으로 듣는다)."""
+        if spotter is None:
+            return False
+        try:
+            heard = spotter.recognize(audio)
+        except Exception as e:
+            self._spotter_failed(f"인식 실패: {e}", retry_after=60)
+            return False
+        if split_wake_word(heard) is not None:
+            return True
+        return wake_detector.strip_wake(heard, only=wake_detector.WAKE_WORD) is not None
+
     def run(self):
         try:
             import numpy as np
@@ -536,6 +647,8 @@ class VoiceListener(QThread):
 
         if self._wake_enabled:
             self._spotter_or_none()
+            if self._gate_or_none() is not None:     # 게이트 만들기는 수 초 걸린다 — 마이크를 열기 전에 (그동안은 마이크를 못 읽는다)
+                self._spotter_or_none(for_gate=True)  # 검증기도 마찬가지 (wake_stream 설정과 무관)
         try:
             device_rate = int(sd.query_devices(kind="input")["default_samplerate"]) or SAMPLE_RATE
             block = max(1, int(device_rate * BLOCK_SEC))
@@ -555,6 +668,23 @@ class VoiceListener(QThread):
 
                 awaiting = self._awaiting_command
                 self.state_changed.emit("listening")
+
+                if self._wake_enabled and not awaiting:
+                    gate = self._gate_or_none()
+                    verifier = self._spotter_or_none(for_gate=True) if gate is not None else None
+                    if gate is not None and verifier is not None:     # 둘 다 있어야 키워드 경로 — 아니면 예전 방식
+                        audio = self._listen_for_keyword(stream, block, device_rate, np, gate)
+                        if self._stop:
+                            break
+                        if audio is not _KWS_FALLBACK:       # 취소(None)거나 게이트가 울린 소리
+                            if audio is not None and self._wake_enabled and not self._paused:
+                                # 호출어에는 바로 응답만 한다 (Whisper 없음) — 명령은 앱이 따로 받는다
+                                if self._accept_wake_hit(verifier, audio):
+                                    self._paused = True
+                                    self.wake_heard.emit("")
+                            continue
+                        # 게이트가 이번엔 실패 → 아래 예전 방식으로 이어서 듣는다
+
                 audio = self._capture_utterance(stream, block, device_rate, np,
                                                 self._command_timeout if awaiting else None)
                 if self._stop:
@@ -597,6 +727,89 @@ class VoiceListener(QThread):
             except Exception:
                 pass
             self.state_changed.emit("idle")
+
+    def _listen_for_keyword(self, stream, block, rate, np, gate):
+        """호출어만 기다리는 동안 마이크 소리를 게이트에 흘려 넣는다 (글자는 만들지 않는다).
+        게이트가 울리면 기다리지 않고 바로, 울린 말이 시작된 곳부터 울린 순간까지의 소리(최대 KWS_VERIFY_MAX_SEC초)를
+        16kHz float32로 반환한다 (울린 뒤의 소리는 모으지 않는다).
+        소리는 기기 샘플레이트 그대로 모아 두었다가 마지막에 한 번만 16kHz로 바꾼다.
+        취소(중단/일시정지/명령 대기로 바뀜/호출어 꺼짐)는 None, 게이트 오류는 _KWS_FALLBACK."""
+        try:
+            gate.reset()                         # 낡은 상태가 나중에 울리지 않게
+        except Exception as e:
+            self._gate_failed(f"초기화 실패: {e}", retry_after=60)
+            return _KWS_FALLBACK
+
+        def blocks_of(sec):
+            return max(1, int(round(sec * rate / block)))
+
+        feed_len = max(block, int(rate * KWS_FEED_SEC))
+        ring = deque(maxlen=blocks_of(KWS_RING_SEC))     # (기기 샘플레이트 블록, rms) — 직전 KWS_RING_SEC초만 유지
+        noise_hist = deque(maxlen=blocks_of(KWS_NOISE_SEC))
+        pend, pend_len = [], 0                   # 아직 게이트에 안 넣은 소리
+        fired = kws_off = False
+        polls = 0
+        hit_audio = None
+
+        def cancelled():
+            nonlocal kws_off, polls
+            if self._stop or self._paused or self._awaiting_command or not self._wake_enabled:
+                return True
+            polls += 1
+            if not fired and polls % KWS_RECHECK_BLOCKS == 0:
+                try:
+                    still = wake_detector.kws_enabled()
+                except Exception:
+                    still = True
+                if not still:
+                    kws_off = True
+                    return True
+            return False
+
+        try:
+            while not cancelled():
+                data, _ = stream.read(block)
+                chunk = data[:, 0].copy()
+                rms = float(np.sqrt(np.mean(chunk * chunk)) + 1e-9)
+
+                noise_hist.append(rms)
+                ring.append((chunk, rms))
+                pend.append(chunk)
+                pend_len += len(chunk)
+                if pend_len < feed_len:
+                    continue
+                piece = np.concatenate(pend)
+                pend, pend_len = [], 0
+                try:
+                    hit = bool(gate.feed(piece, rate))
+                except Exception as e:
+                    self._gate_failed(f"감지 실패: {e}", retry_after=60)
+                    return _KWS_FALLBACK
+                if hit:
+                    fired = True
+                    # 문턱은 최근 몇 초의 하위 백분위(바닥 소음)로 — 처음 블록이 무음이었다고 영영 낮게 남지 않게
+                    floor = float(np.percentile(list(noise_hist), KWS_NOISE_PERCENTILE))
+                    threshold = max(MIN_THRESHOLD, 3.0 * floor)
+                    items = list(ring)
+                    start = onset_start([r for _, r in items], threshold,
+                                        blocks_of(KWS_ONSET_GAP_SEC), blocks_of(KWS_ONSET_PREROLL_SEC))
+                    items = items[start:][-blocks_of(KWS_VERIFY_MAX_SEC):]
+                    hit_audio = [c for c, _ in items]
+                    break
+        finally:
+            try:
+                gate.reset()
+            except Exception:
+                pass
+            if kws_off:
+                self._drop_gate(gate)
+
+        if hit_audio is None or self._stop:      # 울리기 전에 취소됨
+            return None
+        native = np.concatenate(hit_audio)
+        if rate != SAMPLE_RATE:
+            native = resample_to_16k(native, rate, np)       # 16kHz 변환은 여기서 한 번만
+        return native.astype(np.float32)
 
     def _capture_utterance(self, stream, block, rate, np, timeout):
         """말소리 한 덩어리를 16kHz float32 배열로 반환. 시간 초과/중단 시 None."""
