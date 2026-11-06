@@ -348,10 +348,13 @@ def _open_room_windows(to: str, tab_key: int) -> bool:
         _win.press(search, _Win.VK_DOWN)   # 맨 위 결과가 선택돼 있지 않을 때
         time.sleep(0.2)
         _win.press(search, _Win.VK_RETURN)
-    if _wait(room_opened, 3):
+    opened = _wait(room_opened, 3)
+    in_search = _win.search_box() == search
+    _win.clear(search)
+    if opened:
         return True
-    if _win.search_box() == search:
-        _win.clear(search)
+    if not in_search:   # 다른 사람의 대화창이 열렸다. 그 창에서 더 찾으면 안 된다
+        raise KakaoSendError(f"'{to}' 말고 다른 대화창이 열려서 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 말씀해 주세요.")
     return False
 
 
