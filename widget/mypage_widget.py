@@ -631,7 +631,7 @@ class MyPageWidget(QWidget):
 
         confirm = lumi_dialog.warning(
             self, "회원 탈퇴",
-            "정말 탈퇴하시겠어요? 이 계정으로는 다시 로그인할 수 없게 됩니다.\n"
+            "정말 탈퇴하시겠어요? 서버의 계정 정보와 로그인 기록이 삭제되며 복구할 수 없어요.\n"
             "이 컴퓨터에 저장된 대화기록, 설정, 기억도 함께 삭제돼요.\n"
             "계속하려면 비밀번호를 입력해주세요.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -665,7 +665,7 @@ class MyPageWidget(QWidget):
         """구글·카카오로 가입한 계정은 비밀번호가 없어서, 안내를 읽고 "탈퇴"를 직접 입력하면 처리한다."""
         text, ok = lumi_dialog.getText(
             self, "회원 탈퇴",
-            "정말 탈퇴하시겠어요? 이 계정으로는 다시 로그인할 수 없게 되고,\n"
+            "정말 탈퇴하시겠어요? 서버의 계정 정보와 로그인 기록이 삭제되며 복구할 수 없어요.\n"
             "이 컴퓨터에 저장된 대화기록, 설정, 기억도 함께 삭제돼요.\n\n"
             "계속하려면 '탈퇴'라고 입력해주세요.",
         )
