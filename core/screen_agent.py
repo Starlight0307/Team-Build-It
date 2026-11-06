@@ -1009,6 +1009,7 @@ class ScreenAgentWorker(QThread):
                     if a["action"] == "click" and a.get("target") in _EQUALS and last_target in _EQUALS:
                         # 등호를 또 누르면 답에 같은 계산을 한 번 더 한다 (실측: 1250 ÷ 5 → 250 → 50)
                         self._notes.append("주의: 이미 계산했습니다. 등호를 다시 누르지 말고 표시된 값을 읽어 done 하세요.")
+                        self.max_steps = max(self.max_steps, step + 1)   # 값을 읽어 보고할 단계는 남긴다
                         break
                     last_target = a.get("target")
                     if closes_app_unasked(a, self.task):   # 실측: 설정 화면을 고른 뒤 Cmd+Q를 눌러 작업이 끝났다

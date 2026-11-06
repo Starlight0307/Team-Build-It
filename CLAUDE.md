@@ -32,6 +32,10 @@ PyQt6 데스크톱 AI 비서. 맥에서 개발 중이고 Claude 메모리는 기
 
 **맥과 다를 수 있는 곳:** 상단 칸 안쪽 여백은 맥 글꼴 기준으로 보정했다(`app_main.py`의 `padding: 9px 12px 7px 8px`). 윈도우에서 1px 정도 어긋날 수 있다.
 
+## 컴퓨터 제어
+
+클라우드 모델을 제안하지 않는다(로컬 전용). 2026-11-06 맥 8개 과제 비교(16GB): `qwen3-vl:8b-instruct` 7/8, `gemma4:12b` 6/8, `gemma4:e4b` 3/8, `qwen3.5:9b` 3/8. 앱은 Cmd+Space/시작 키로 켜고, 안 되면 명령 실행으로 넘어간다. 모델이 쓴 글을 명령으로 실행하지 않는다. 윈도우에서 AI 조작은 실측하지 못했다.
+
 ## 아직 확인 못 한 것
 
 - 진짜 증권사 서버로 조회·주문한 적이 없다(가짜 서버만 통과). 실계좌 시험은 사용자가 정하기 전에는 하지 않는다.
@@ -46,5 +50,6 @@ GitHub 윈도우 시험에서 이번 작업 전부터 있던 실패다: 보안 �
 - 단위 테스트: `python -m pytest tests/unit -q` (창 없이 돌리려면 `QT_QPA_PLATFORM=offscreen`)
 - 윈도우 화면 점검: `python scripts/windows_selftest.py` (캡처는 `selftest_out/`)
 - GitHub 윈도우 시험: `gh workflow run windows-test.yml --ref <브랜치>`, 자동 Release는 `main` 푸시 때만 돈다
+- 화면 작업 실측(맥): `python scripts/screen_bench.py` 진짜 앱 8개 과제를 조작하고 합격을 판정한다. 마우스·키보드가 움직이고 Esc로 멈춘다. 모델 비교는 `LUMI_SCREEN_MODEL`, `LUMI_SCREEN_TEXT_MODEL`
 - 시험 코드에서 앱 창을 띄울 때는 `_start_screen_task`, `_start_route_worker`를 막는다. 안 막으면 실제 화면을 조작한다.
 - 애니메이션을 시험할 때는 `processEvents`만 돌리면 `deleteLater`가 실행되지 않으므로 `QEventLoop`를 쓴다.
