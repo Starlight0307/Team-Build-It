@@ -793,12 +793,19 @@ def _settings_clip():
     return ("PASS" if ok else "FAIL"), " · ".join(results)
 
 
-def _start_search_diagnosis():
-    """시작 키 검색창에서 결과가 언제, 어떤 이름으로 읽히는지 남긴다 (캡처는 selftest_out/)."""
+def _raw_rows() -> str:
+    from core import ui_snapshot
+    try:
+        return str([(str(r.get("role")).replace("ControlType.", ""), str(r.get("name"))[:24], r.get("w"), r.get("h"))
+                    for r in ui_snapshot._read_windows()][:16])
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"[:200]
+
+
+def _start_search_diagnosis() -> str:
+    """시작 키 검색창에서 결과가 언제, 어떤 이름으로 읽히는지 남긴다."""
     import ctypes
-    import mss
-    import mss.tools
-    from core import input_source, ui_snapshot
+    from core import input_source
 
     def tap(key):
         ctypes.windll.user32.keybd_event(key, 0, 0, 0)
@@ -806,20 +813,14 @@ def _start_search_diagnosis():
     tap(0x5B)
     time.sleep(1.5)
     input_source.type_unicode("Character Map", windows=True)
-    for wait in (0.5, 1.5, 3):
+    lines = []
+    for wait in (0.3, 1.5, 3):
         time.sleep(wait)
-        try:
-            raw = ui_snapshot._read_windows()
-            print(f"[진단] 검색창 +{wait}초:", [(str(r.get("role")).replace("ControlType.", ""), str(r.get("name"))[:30]) for r in raw
-                                             if r.get("name")][:14], flush=True)
-        except Exception as e:
-            print(f"[진단] 검색창 읽기 실패: {type(e).__name__}: {e}"[:200], flush=True)
-    os.makedirs("selftest_out", exist_ok=True)
-    with mss.mss() as shot:
-        image = shot.grab(shot.monitors[1])
-        mss.tools.to_png(image.rgb, image.size, output="selftest_out/start_search.png")
+        started = time.time()
+        lines.append(f"+{wait}초({round(time.time() - started, 1)}): {_raw_rows()}")
     tap(0x1B)
     time.sleep(1)
+    return " / ".join(lines)
 
 
 @check("앱 실행과 화면 구조 읽기 (시작 메뉴, UI Automation)")
@@ -839,18 +840,20 @@ def _app_launch_and_snapshot():
         except Exception as e:
             raw, raw_error = [], f"{type(e).__name__}: {e}"[:160]
         elements = ui_snapshot.clean(raw)
-        print("[진단] 메모장 원본:", [(r.get("role"), str(r.get("name"))[:20], r.get("w"), r.get("h")) for r in raw][:12], raw_error)
+        notepad_rows = _raw_rows()
         front = app_launcher._win_foreground_exe()
     finally:
         subprocess.run(["taskkill", "/IM", "notepad.exe", "/F"], capture_output=True)
-    _start_search_diagnosis()
+    search_rows = _start_search_diagnosis()
     # 러너에 시작 메뉴 화면이 없을 수 있어 합격 조건에 넣지 않고 결과만 남긴다
     shown, target = next(((n, t) for n, t in apps.values() if n in ("Windows PowerShell ISE", "Character Map", "문자표")), ("", ""))
     by_keys = shown and app_launcher._launch_by_keys(shown, target)
     time.sleep(1)
     after = app_launcher._win_foreground_exe()
+    charmap_rows = _raw_rows()
     detail = (f"시작 메뉴 {len(apps)}개 · 앞 창 {front} · 원본 {len(raw)}개 → 요소 {len(elements)}개 {raw_error} "
-              f"{ui_snapshot.describe(elements[:4])[:120]} · 시작 키로 '{shown}' 실행={by_keys} (앞 창 {after})")
+              f"{ui_snapshot.describe(elements[:4])[:120]} · 시작 키로 '{shown}' 실행={by_keys} (앞 창 {after})"
+              f" ## 메모장 {notepad_rows} ## 문자표 {charmap_rows} ## 검색창 {search_rows}")
     subprocess.run(["taskkill", "/IM", "charmap.exe", "/F"], capture_output=True)
     subprocess.run(["taskkill", "/IM", "powershell_ise.exe", "/F"], capture_output=True)
     return ("PASS" if elements else "FAIL"), detail
