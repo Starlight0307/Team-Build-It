@@ -341,3 +341,25 @@ def test_model_cannot_open_an_app_the_user_did_not_name(qapp, monkeypatch):
     w._opened_app = "TextEdit"
     w.run()
     assert done == [] and results[0][0] is False
+
+
+def test_ignored_selection_is_tried_again(qapp, monkeypatch):
+    titles = iter([""] * 8 + ["사운드"])
+    w = _screen_worker(monkeypatch, "사운드 화면으로 가줘", "")
+    presses = []
+    monkeypatch.setattr(sa.ui_snapshot, "press_named", lambda name: presses.append(name) or True)
+    monkeypatch.setattr(sa.ui_snapshot, "window_title", lambda: next(titles))
+    assert w._click_named_screen([], MON) == "사운드" and len(presses) == 2
+
+
+@pytest.mark.parametrize("front, opens", [("/A/Other.app", 1), ("/A/Text.app", 0)])
+def test_opened_app_comes_back_when_pushed_behind(qapp, monkeypatch, front, opens):
+    from core import app_launcher
+    w = sa.ScreenAgentWorker("x", controller=object())
+    w._opened_path = "/A/Text.app"
+    monkeypatch.setattr(sa, "IS_MAC", True)
+    monkeypatch.setattr(app_launcher, "_mac_front_path", lambda: front)
+    calls = []
+    monkeypatch.setattr(sa.subprocess, "run", lambda cmd, **k: calls.append(cmd))
+    w._bring_opened_app_front()
+    assert calls == [["open", "/A/Text.app"]] * opens

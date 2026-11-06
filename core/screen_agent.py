@@ -955,6 +955,7 @@ class ScreenAgentWorker(QThread):
         self._confirm_answer = False
         self._controller = controller   # 메인 스레드에서 만든 InputController (act 모드)
         self._opened_app = None
+        self._opened_path = None
         self._finished = threading.Event()
         self._input_done = threading.Event()
         self._input_error = None
@@ -1011,6 +1012,7 @@ class ScreenAgentWorker(QThread):
                     return self.finished_task.emit(False, "사용자 요청으로 작업을 멈췄어요.", history)
 
                 self.step_started.emit(step, "👀 화면을 보는 중")
+                self._bring_opened_app_front()
                 image, mon = self._capture()
                 if self._stop.is_set():
                     return self.finished_task.emit(False, "사용자 요청으로 작업을 멈췄어요.", history)
@@ -1180,29 +1182,34 @@ class ScreenAgentWorker(QThread):
             return None
         before = self._signature(mon)
         self.step_started.emit(1, f"🖱️ 바로 누르기: {name}")
-        pressed = False
-        for _ in range(3):   # 켜진 직후에는 메뉴가 아직 없다
-            pressed = ui_snapshot.press_named(name)
-            if pressed or self._stop.wait(0.7):
-                break
-        if not pressed:
-            element = named_screen_element(self.task, ui_snapshot.snapshot(limit=_ALL_ELEMENTS))
-            point = ui_snapshot.center_as_normalized(element, mon) if element else None
-            if not point:
-                return None
-            self._perform({"action": "click", "x": point[0], "y": point[1], "target": name}, mon)
-        self._wait_for_screen("click", before, mon)
-        for _ in range(12):   # 창 제목은 화면보다 늦게 바뀐다. 확인이 안 되면 모델이 이어받는다
-            if name.casefold() in ui_snapshot.window_title().casefold() or any(
-                    e["name"] == name and e["value"] in ("1", "True") for e in ui_snapshot.snapshot(limit=_ALL_ELEMENTS)):
-                return name
-            if self._stop.wait(0.2):
-                return None
+        for _ in range(3):   # 켜진 직후에는 메뉴가 없거나 선택이 무시된다 (실측)
+            if not ui_snapshot.press_named(name):
+                element = named_screen_element(self.task, ui_snapshot.snapshot(limit=_ALL_ELEMENTS))
+                point = ui_snapshot.center_as_normalized(element, mon) if element else None
+                if point:
+                    self._perform({"action": "click", "x": point[0], "y": point[1], "target": name}, mon)
+            self._wait_for_screen("click", before, mon)
+            for _ in range(8):   # 창 제목은 화면보다 늦게 바뀐다. 끝내 확인이 안 되면 모델이 이어받는다
+                if name.casefold() in ui_snapshot.window_title().casefold() or any(
+                        e["name"] == name and e["value"] in ("1", "True") for e in ui_snapshot.snapshot(limit=_ALL_ELEMENTS)):
+                    return name
+                if self._stop.wait(0.2):
+                    return None
         return None
+
+    def _bring_opened_app_front(self):
+        """연 앱이 뒤로 밀렸으면 다시 앞으로 — 이어서 입력하면 글자가 다른 앱으로 간다 (실측: 입력 중 크롬이 앞으로 나옴)."""
+        path = self._opened_path
+        if not (IS_MAC and path):
+            return
+        from core import app_launcher
+        if app_launcher._mac_front_path() != path:
+            subprocess.run(["open", path], capture_output=True, timeout=10)
+            self._stop.wait(SETTLE_MIN)
 
     def _open_named_app(self):
         """요청 앞머리의 앱은 화면을 읽기 전에 바로 켠다 — 첫 화면 읽기(15~30초)를 앱 켜는 데 쓰지 않게."""
-        from core.app_launcher import AppNotFound, launch, leading_app
+        from core.app_launcher import AppNotFound, launch, leading_app, resolve
         name = leading_app(self.task)
         if not name:
             return
@@ -1214,6 +1221,7 @@ class ScreenAgentWorker(QThread):
         finally:
             self._controller.injecting = False
         self._opened_app = shown
+        self._opened_path = resolve(name, exact=True)[1]
         self.step_started.emit(0, f"🚀 앱 실행: {shown}")
         self._stop.wait(SETTLE_MAX)
         self._clear_calculator(name, shown)
