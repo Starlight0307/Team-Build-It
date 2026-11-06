@@ -799,15 +799,30 @@ def _app_launch_and_snapshot():
         return "SKIP", "Windows 전용"
     from core import app_launcher, ui_snapshot
     apps = app_launcher.installed_apps(refresh=True)
-    app_launcher.launch("메모장")
-    try:
-        time.sleep(3)
-        elements = ui_snapshot.snapshot()
-    finally:
-        subprocess.run(["taskkill", "/IM", "notepad.exe", "/F"], capture_output=True)
     if not apps:
         return "FAIL", "시작 메뉴 목록이 비어 있음"
-    return ("PASS" if elements else "FAIL"), f"시작 메뉴 {len(apps)}개 · 메모장 요소 {len(elements)}개 " + ui_snapshot.describe(elements[:5])[:120]
+    app_launcher.launch("메모장")
+    raw_error = ""
+    try:
+        time.sleep(3)
+        try:
+            raw = ui_snapshot._read_windows()
+        except Exception as e:
+            raw, raw_error = [], f"{type(e).__name__}: {e}"[:160]
+        elements = ui_snapshot.clean(raw)
+        front = app_launcher._win_foreground_exe()
+    finally:
+        subprocess.run(["taskkill", "/IM", "notepad.exe", "/F"], capture_output=True)
+    # 러너에 시작 메뉴 화면이 없을 수 있어 합격 조건에 넣지 않고 결과만 남긴다
+    shown, target = next(((n, t) for n, t in apps.values() if n in ("Windows PowerShell ISE", "Character Map", "문자표")), ("", ""))
+    by_keys = shown and app_launcher._launch_by_keys(shown, target)
+    time.sleep(1)
+    after = app_launcher._win_foreground_exe()
+    detail = (f"시작 메뉴 {len(apps)}개 · 앞 창 {front} · 원본 {len(raw)}개 → 요소 {len(elements)}개 {raw_error} "
+              f"{ui_snapshot.describe(elements[:4])[:120]} · 시작 키로 '{shown}' 실행={by_keys} (앞 창 {after})")
+    subprocess.run(["taskkill", "/IM", "charmap.exe", "/F"], capture_output=True)
+    subprocess.run(["taskkill", "/IM", "powershell_ise.exe", "/F"], capture_output=True)
+    return ("PASS" if elements else "FAIL"), detail
 
 
 @check("창 제목·아이콘 (실제 Windows 창 — pythonw 대신 Lumi)")

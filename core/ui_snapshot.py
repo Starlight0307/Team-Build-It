@@ -29,9 +29,7 @@ _WINDOWS_SCRIPT = r"""
 [Console]::OutputEncoding=[Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
 $A=[Windows.Automation.AutomationElement]; $W=[Windows.Automation.TreeWalker]::ControlViewWalker
-$e=$A::FocusedElement; if(-not $e){'[]';exit}
-$root=$A::RootElement
-while($true){$p=$W.GetParent($e); if(-not $p -or $p -eq $root){break}; $e=$p}
+$e=$A::FromHandle([IntPtr]HWND)
 $out=New-Object Collections.ArrayList; $stack=New-Object Collections.Stack; $stack.Push($e); $n=0
 $end=(Get-Date).AddSeconds(2)
 while($stack.Count -gt 0 -and $out.Count -lt 500 -and (Get-Date) -lt $end){
@@ -90,12 +88,20 @@ def _read_mac() -> list:
 
 
 def _read_windows() -> list:
+    import ctypes
+    user32 = ctypes.windll.user32
+    # 포커스 요소가 아니라 맨 앞 창에서 시작한다 — 포커스가 없는 창에서도 읽히게
+    hwnd, pid = user32.GetForegroundWindow(), ctypes.c_ulong()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if not hwnd or pid.value == os.getpid():
+        return []
     root = os.environ.get("SystemRoot", r"C:\Windows")
     shell = os.path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
     done = subprocess.run([shell if os.path.isfile(shell) else "powershell", "-NoProfile", "-NonInteractive", "-Command",
-                           _WINDOWS_SCRIPT], capture_output=True, timeout=6,
+                           _WINDOWS_SCRIPT.replace("HWND", str(int(hwnd)))], capture_output=True, timeout=6,
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    rows = json.loads(done.stdout.decode("utf-8", "replace") or "[]")
+    # utf-8-sig: PowerShell 5.1은 UTF-8 출력 맨 앞에 BOM을 붙일 수 있고, 그러면 json.loads가 실패한다
+    rows = json.loads(done.stdout.decode("utf-8-sig", "replace").strip() or "[]")
     return [rows] if isinstance(rows, dict) else rows
 
 
