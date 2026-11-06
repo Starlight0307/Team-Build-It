@@ -30,7 +30,8 @@ TOOL_STYLE = "margin: 0; padding: 0 10px; min-width: 0; min-height: 26px; max-he
 SMALL_STYLE = "margin: 0; padding: 0 12px; min-width: 0; min-height: 28px; max-height: 28px; font-size: 12px; border-radius: 10px;"
 TILE_WIDTH = 118        # 이보다 좁으면 수치 칸을 다음 줄로 내린다
 BARS_MIN_WIDTH = 780    # 이보다 좁으면 손익 막대를 접고 그래프에 폭을 준다
-PERIODS = (("1개월", 22), ("3개월", 66), ("전체", None))   # 거래일 수
+MINUTE = "1m"
+PERIODS = (("1분봉", MINUTE), ("1개월", 22), ("3개월", 66), ("전체", None))   # 거래일 수
 
 
 def _reveal(widget, attr: str, duration: int = 650):
@@ -365,7 +366,7 @@ class PriceChart(QWidget):
                 painter.setPen(QPen(grid, 1))
                 painter.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
                 painter.setPen(muted)
-                painter.drawText(QRectF(x - label_w / 2, date_y, label_w, 18), Qt.AlignmentFlag.AlignCenter, self.bars[i]["date"])
+                painter.drawText(QRectF(x - label_w / 2, date_y, label_w, 18), Qt.AlignmentFlag.AlignCenter, self.bars[i]["date"].split(" ")[-1])
 
     def _candle_color(self, index: int) -> QColor:
         bar = self.bars[index]
@@ -704,6 +705,7 @@ class StockDetailDialog(_StockDialog):
         periods.addWidget(self.btn_favorite)
         right.addLayout(periods)
         self.period_days = None
+        self.minutes = {}
         self.chart = PriceChart(self.p)
         self.chart.hovered.connect(self._on_chart_hover)
         self.chart.drawings_changed.connect(self._save_drawings)
@@ -876,6 +878,9 @@ class StockDetailDialog(_StockDialog):
         self._spawn(lambda: _stock().get_price(code), done)
 
     def _apply_price(self, code: str, price: int):
+        self._apply_minute(code, price)
+        if self.period_days == MINUTE and code == self.current_code and self.minutes.get(code):
+            self._draw_chart(refresh=True)
         bars = self.history.get(code)
         if not bars:
             return
@@ -935,6 +940,8 @@ class StockDetailDialog(_StockDialog):
             self._filtering = False
 
     def _refresh_chart(self):
+        if self.period_days == MINUTE:
+            self._load_minutes(refresh=True)
         code, seq = self.current_code, self._chart_seq
 
         def done(result):   # 실패하면 이전 그래프를 그대로 둔다 — 날짜가 함께 보여 오래된 값을 알 수 있다
@@ -1042,6 +1049,8 @@ class StockDetailDialog(_StockDialog):
             button.style().polish(button)
 
     def _save_drawings(self, items: list):
+        if self.period_days == MINUTE:
+            return
         try:
             _stock().save_chart_drawings(self.current_code, items)
         except _stock().StockError as e:
@@ -1284,22 +1293,65 @@ class StockDetailDialog(_StockDialog):
             button.setObjectName("LinkPrimary" if key == days else "LinkGhost")
             button.style().unpolish(button)
             button.style().polish(button)
-        if self.history.get(self.current_code):
+        for button in self.tool_buttons.values():   # 그린 점·선은 날짜 기준이라 분봉에는 놓을 수 없다
+            button.setEnabled(days != MINUTE)
+        if days == MINUTE:
+            self.chart.set_tool(None)
+            self._show_tool(None)
+            self._load_minutes()
+        elif self.history.get(self.current_code):
             self._draw_chart()
 
+    def _load_minutes(self, refresh: bool = False):
+        code, seq = self.current_code, self._chart_seq
+        if not code:
+            return
+
+        def done(result):
+            if seq != self._chart_seq or code != self.current_code or self.period_days != MINUTE:
+                return
+            if isinstance(result, Exception):
+                if not refresh:
+                    self.chart.set_message(str(result))
+                return
+            self.minutes[code] = result
+            if result:
+                self._draw_chart(refresh=refresh)
+            else:
+                self.chart.set_message(f"{self.current_name}의 1분봉 기록이 없어요.")
+        self._spawn(lambda: _stock().minute_bars(code), done)
+
     def _visible_bars(self) -> list:
+        if self.period_days == MINUTE:
+            return self.minutes.get(self.current_code) or []
         bars = self.history.get(self.current_code) or []
         return bars[-self.period_days:] if self.period_days else bars
+
+    def _apply_minute(self, code: str, price: int):
+        """체결·현재가를 지금 분의 봉에 반영한다. 분이 바뀌면 새 봉을 연다."""
+        bars = self.minutes.get(code)
+        if not bars:
+            return
+        now, last = datetime.now().strftime("%Y-%m-%d %H:%M"), bars[-1]
+        if last["date"] == now:
+            bars[-1] = dict(last, close=price, high=max(last["high"], price), low=min(last["low"], price))
+        elif last["date"] < now:
+            bars.append({"date": now, "open": price, "high": price, "low": price, "close": price, "volume": 0})
 
     def _holding(self):
         return next((h for h in self.holdings if h["code"] == self.current_code and "qty" in h), None)
 
     def _draw_chart(self, refresh: bool = False):
+        minute = self.period_days == MINUTE
+        if minute and self.current_code not in self.minutes:
+            self._load_minutes()
+            return
         bars, held = self._visible_bars(), self._holding()
-        self.chart.set_data(f"{self.current_name} 일봉 (최근 {len(bars)}거래일)", [(b["date"], b["close"]) for b in bars],
+        title = f"{self.current_name} 1분봉 (최근 {len(bars)}개)" if minute else f"{self.current_name} 일봉 (최근 {len(bars)}거래일)"
+        self.chart.set_data(title, [(b["date"], b["close"]) for b in bars],
                             held.get("avg_price") if held else None, [b.get("volume", 0) for b in bars],
-                            bars, self.history.get(self.current_code), refresh)
-        self.chart.set_drawings(_stock().chart_drawings(self.current_code))
+                            bars, bars if minute else self.history.get(self.current_code), refresh)
+        self.chart.set_drawings([] if minute else _stock().chart_drawings(self.current_code))
         self._show_stats(len(bars) - 1, animate=not refresh)
         self._show_live_state()
         self._sync_stream()

@@ -1667,3 +1667,20 @@ def test_stream_stops_quietly_when_stock_is_rejected(monkeypatch):
     time.sleep(0.2)
     assert len(connects) == 1 and sock.closed
 
+
+def test_toss_minute_bars_are_sorted_in_korean_time(broker_env):
+    fake = broker_env("toss", _toss_routes(**{"/api/v1/candles": {"result": {"candles": [
+        {"timestamp": "2026-11-06T00:02:00Z", "openPrice": "3", "highPrice": "4", "lowPrice": "2", "closePrice": "3", "volume": "5"},
+        {"timestamp": "2026-11-06T09:01:00+09:00", "openPrice": "1", "highPrice": "2", "lowPrice": "1", "closePrice": "2", "volume": "9"},
+        {"timestamp": "2026-11-06T09:00:00+09:00", "openPrice": "0", "highPrice": "0", "lowPrice": "0", "closePrice": "0", "volume": "0"},
+    ]}}}))
+    bars = sp.minute_bars("005930")
+    assert [b["date"] for b in bars] == ["2026-11-06 09:01", "2026-11-06 09:02"] and bars[0]["volume"] == 9
+    assert any((c[2].get("params") or {}).get("interval") == "1m" for c in fake.calls)
+
+
+def test_minute_bars_explain_unsupported_broker(broker_env, monkeypatch):
+    broker_env("toss", _toss_routes())
+    monkeypatch.setattr(sp, "_broker", lambda data: object())
+    with pytest.raises(sp.StockError, match="토스증권"):
+        sp.minute_bars("005930")

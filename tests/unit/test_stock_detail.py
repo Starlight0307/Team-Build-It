@@ -1201,3 +1201,42 @@ def test_broker_without_stream_keeps_polling(qapp, stock, monkeypatch):
     assert _wait(qapp, lambda: polled)
     dlg.close()
 
+
+MINUTE_BARS = [{"date": f"2026-11-06 09:{m:02d}", "open": 100 + m, "high": 105 + m, "low": 95 + m, "close": 100 + m, "volume": 10}
+               for m in range(30)]
+
+
+def test_minute_button_loads_minute_chart_and_daily_comes_back(qapp, stock, monkeypatch):
+    monkeypatch.setattr(sp, "minute_bars", lambda code: [dict(b) for b in MINUTE_BARS])
+    dlg = _dialog(qapp)
+    daily = len(dlg.chart.points)
+    dlg.period_buttons[sd.MINUTE].click()
+    assert _wait(qapp, lambda: "1분봉" in dlg.chart.title)
+    assert len(dlg.chart.points) == 30 and dlg.chart.history == dlg.chart.bars
+    assert not next(iter(dlg.tool_buttons.values())).isEnabled() and dlg.chart.drawings == []
+    assert not dlg.chart.grab().isNull()
+    dlg.period_buttons[None].click()
+    assert len(dlg.chart.points) == daily and "일봉" in dlg.chart.title and next(iter(dlg.tool_buttons.values())).isEnabled()
+
+
+def test_minute_failure_shows_message_not_old_chart(qapp, stock, monkeypatch):
+    def fail(code):
+        raise sp.StockError("1분봉은 토스증권을 연결했을 때 볼 수 있어요.")
+    monkeypatch.setattr(sp, "minute_bars", fail)
+    dlg = _dialog(qapp)
+    dlg.period_buttons[sd.MINUTE].click()
+    assert _wait(qapp, lambda: "토스증권" in dlg.chart.message)
+    dlg.period_buttons[None].click()
+    assert dlg.chart.points
+
+
+def test_live_price_updates_this_minute_and_opens_next(qapp, stock, monkeypatch):
+    dlg = _dialog(qapp)
+    code = dlg.current_code
+    now = sd.datetime.now().strftime("%Y-%m-%d %H:%M")
+    dlg.minutes[code] = [{"date": now, "open": 100, "high": 100, "low": 100, "close": 100, "volume": 1}]
+    dlg._apply_minute(code, 120)
+    assert dlg.minutes[code][-1]["close"] == 120 and dlg.minutes[code][-1]["high"] == 120 and len(dlg.minutes[code]) == 1
+    dlg.minutes[code] = [{"date": "2020-01-01 09:00", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]
+    dlg._apply_minute(code, 120)
+    assert len(dlg.minutes[code]) == 2 and dlg.minutes[code][-1]["date"] == now and dlg.minutes[code][-1]["open"] == 120

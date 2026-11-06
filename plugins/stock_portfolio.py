@@ -411,6 +411,17 @@ class _Toss(_Broker):
         rows = [dict(r, dt=str(r.get("timestamp"))[:10].replace("-", "")) for r in rows.get("candles") or []]
         return _bars(rows, start, "dt", "openPrice", "highPrice", "lowPrice", "closePrice", "volume")
 
+    def minute_bars(self, code: str) -> list:
+        rows = self.query("GET", "/api/v1/candles", params={"symbol": code, "interval": "1m", "count": 200, "adjusted": "true"})
+        bars = {}
+        for row in rows.get("candles") or []:
+            close = _abs_int(row.get("closePrice"))
+            if close > 0 and row.get("timestamp"):
+                date = datetime.fromisoformat(str(row["timestamp"]).replace("Z", "+00:00")).astimezone(KST).strftime("%Y-%m-%d %H:%M")
+                bars[date] = dict(_bar("", _abs_int(row.get("openPrice")), _abs_int(row.get("highPrice")), _abs_int(row.get("lowPrice")),
+                                       close, _abs_int(row.get("volume"))), date=date)   # _bar는 일봉 날짜 형식만 안다
+        return [bars[d] for d in sorted(bars)]
+
     def order(self, side: str, code: str, quantity: int, price: int) -> str:
         result = self.send("POST", "/api/v1/orders", body={"clientOrderId": uuid.uuid4().hex, "symbol": code, "side": side.upper(),
                                                            "orderType": "LIMIT", "quantity": str(quantity), "price": str(price)})
@@ -1024,6 +1035,20 @@ def _bar(date: str, open_price, high, low, close, volume) -> dict:
 
 def get_price_history(code: str, days: int = 150) -> list:
     return [(b["date"], b["close"]) for b in get_price_bars(code, days)]
+
+
+def minute_bars(code: str) -> list:
+    """1분봉 오래된 순, date는 "2026-11-06 09:31". 공개 명세에서 확인한 토스증권만 지원한다."""
+    if not re.fullmatch(r"[0-9A-Z]{6}", code or ""):
+        raise StockError("종목코드가 올바르지 않아요.")
+    with _lock:
+        data = _require_account()
+    broker = _broker(data)
+    if not hasattr(broker, "minute_bars"):
+        raise StockError("1분봉은 토스증권을 연결했을 때 볼 수 있어요. 지금 연결한 증권사는 아직 지원하지 않아요.")
+    bars = broker.minute_bars(code)
+    _store_token(data)
+    return bars
 
 
 def price_bars(code: str) -> list:
