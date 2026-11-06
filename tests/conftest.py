@@ -34,6 +34,9 @@ os.environ["LOCALAPPDATA"] = _TEST_HOME
 os.environ["XDG_DATA_HOME"] = _TEST_HOME
 os.environ["HOME"] = _TEST_HOME
 os.environ["USERPROFILE"] = _TEST_HOME
+# 테스트가 진짜 창(AssistantApp)을 여러 번 만드는데, 시작 몇 초 뒤 켜지는 "호출어 자동 듣기"가 다른 테스트가 도는 중에
+# 실제 마이크·음성 인식 모델 스레드를 띄우고 pip 설치까지 하면 안 된다 → 자동 듣기/자동 설치를 끈다.
+os.environ["LUMI_NO_AUTO_LISTEN"] = "1"
 # 자동 로그인 파일(data/.session.json)도 처음부터 임시 경로로 — 모듈/세션 범위 fixture가 테스트 함수보다
 # 먼저 메인 창(AssistantApp)을 만들면 함수 단위 fixture(_isolate_login_state)가 적용되기 전이라
 # 실제 로그인 파일로 자동 로그인을 시도했고, 테스트용 암호 키로는 못 풀어서 실제 파일을 지워버렸다(2026-10-11).

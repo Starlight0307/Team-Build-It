@@ -29,6 +29,8 @@ def _press_later(label, remember=False):
 class _Tray:
     def showMessage(self, *a): pass
     def hide(self): pass
+    def setIcon(self, *a): pass       # 마이크 상태에 따라 앱이 아이콘·툴팁을 바꾼다
+    def setToolTip(self, *a): pass
 
 
 @pytest.fixture
