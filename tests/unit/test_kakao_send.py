@@ -109,6 +109,7 @@ class FakeWin:
         self.needs_down, self.selected = False, False
         self.room_gone = False
         self.drop_first_char = False
+        self.global_enter_works, self.posted_enter_works, self.box_lost_focus = True, False, False
         self.tab, self.found_in, self.tab_stuck = "friends", ("friends", "chats"), False
 
     def tap(self, key, ctrl=False):
@@ -118,13 +119,16 @@ class FakeWin:
         if key == self.VK_RETURN:
             if self.front == 1:
                 self.front = self.opens
-            elif self.front in self.boxes:
+            elif self.front in self.boxes and self.global_enter_works:
                 self.boxes[self.front] = ""
+
+    def send_enter_to(self, hwnd):
+        self.keys.append("posted-enter")
+        if self.posted_enter_works:
+            self.boxes[hwnd] = ""
 
     def press(self, hwnd, key):
         self.keys.append(key)
-        if key == self.VK_RETURN and hwnd == 2:
-            self.boxes[2] = ""
         if key == self.VK_DOWN:
             self.selected = True
         if key == self.VK_RETURN and self.front == 1 and (self.selected or not self.needs_down) and self.tab in self.found_in:
@@ -161,7 +165,7 @@ class FakeWin:
         return self.kakao
 
     def focus_child_class(self):
-        return self.focus_class
+        return "RICHEDIT50W" if self.front == 2 and not self.box_lost_focus else self.focus_class
 
     def search_box(self):
         return 9 if self.focus_class == "Edit" and self.front == 1 else 0
@@ -201,11 +205,36 @@ def win(monkeypatch):
 
 def test_windows_sends_after_checks(win):
     assert "보냈어요" in ks.send("민수", "내일 봐")
-    assert win.typed == ["민수", "내일 봐"] and win.keys.count(ks._Win.VK_RETURN) == 2
+    assert win.typed == ["민수", "내일 봐"] and win.keys.count(ks._Win.VK_RETURN) == 2 and win.boxes[2] == ""
 
 
 def _message_enter_count(win):
     return win.keys.count(ks._Win.VK_RETURN)
+
+
+def test_windows_uses_real_enter_first(win):
+    assert "보냈어요" in ks.send("민수", "내일 봐")
+    assert "posted-enter" not in win.keys
+
+
+def test_windows_tries_posted_enter_only_when_text_is_still_there(win):
+    win.global_enter_works, win.posted_enter_works = False, True
+    assert "보냈어요" in ks.send("민수", "내일 봐")
+    assert win.keys.count("posted-enter") == 1
+
+
+def test_windows_unsent_text_is_cleared_and_reported_as_not_sent(win):
+    win.global_enter_works = False
+    with pytest.raises(ks.KakaoSendError, match="보내지 못했어요"):
+        ks.send("민수", "내일 봐")
+    assert win.boxes[2] == ""
+
+
+def test_windows_no_enter_without_focus_in_message_box(win):
+    win.box_lost_focus = True
+    with pytest.raises(ks.KakaoSendError, match="포커스"):
+        ks.send("민수", "내일 봐")
+    assert win.keys.count(ks._Win.VK_RETURN) == 1 and win.boxes[2] == ""
 
 
 def test_windows_lost_character_is_cleared_and_not_sent(win):

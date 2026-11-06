@@ -180,6 +180,7 @@ class _Win:
     """윈도우 카카오톡을 다루는 부분. 시험에서 통째로 가짜로 바꾼다."""
     WM_SETTEXT, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP = 0x000C, 0x000D, 0x000E, 0x0100, 0x0101
     VK_DOWN = 0x28
+    WM_CHAR = 0x0102
     VK_TAB = 0x09   # Ctrl+Tab으로 탭을 돈다. Ctrl+1, Ctrl+2는 먹히지 않았다 (실측)
     VK_CONTROL, VK_RETURN, VK_F = 0x11, 0x0D, 0x46
 
@@ -329,6 +330,14 @@ class _Win:
     def clear(self, hwnd: int):
         self.set_text(hwnd, "")
 
+    def send_enter_to(self, hwnd: int):
+        """스캔코드와 문자 메시지까지 갖춘 Enter."""
+        lparam = 1 | (0x1C << 16)
+        user32 = self._user32()
+        user32.PostMessageW(hwnd, self.WM_KEYDOWN, self.VK_RETURN, lparam)
+        user32.PostMessageW(hwnd, self.WM_CHAR, self.VK_RETURN, lparam)
+        user32.PostMessageW(hwnd, self.WM_KEYUP, self.VK_RETURN, lparam | (3 << 30))
+
     def press(self, hwnd: int, key: int):
         """그 칸에 바로 키를 전달한다. 전역 키 입력으로는 검색 결과가 열리지 않았다 (실측)."""
         self._user32().PostMessageW(hwnd, self.WM_KEYDOWN, key, 0)
@@ -437,10 +446,18 @@ def _deliver_windows(to: str, text: str, press_enter: bool) -> str:
     if not press_enter:
         _win.clear(box)
         return f"{to} 대화창 확인 완료 (보내지 않음)"
-    _win.press(box, _Win.VK_RETURN)
-    if not _wait(lambda: _box_text(box) == "", 2):
-        raise KakaoSendError(f"{to}에게 보내졌는지 확인하지 못했어요. 카카오톡을 직접 확인해 주세요. 다시 보내면 중복될 수 있어요.")
-    return f"✅ {to}에게 보냈어요."
+    if "richedit" not in _win.focus_child_class().casefold():
+        _win.clear(box)
+        raise KakaoSendError("입력칸에 포커스가 없어서 보내지 않았어요.")
+    _win.tap(_Win.VK_RETURN)   # 칸에 직접 전달한 Enter로는 전송되지 않았다 (실측)
+    if not _wait(lambda: _box_text(box) == "", 1.5) and _win.get_text(box) == text:
+        _win.send_enter_to(box)   # 글이 그대로면 앞선 Enter가 안 먹힌 것이라 다시 눌러도 중복되지 않는다
+    if _wait(lambda: _box_text(box) == "", 1.5):
+        return f"✅ {to}에게 보냈어요."
+    if _win.get_text(box) == text:
+        _win.clear(box)   # 사용자가 무심코 Enter를 눌러 보내지 않게
+        raise KakaoSendError(f"{to}에게 보내지 못했어요. 글은 입력칸에서 지웠어요.")
+    raise KakaoSendError(f"{to}에게 보내졌는지 확인하지 못했어요. 카카오톡을 직접 확인해 주세요. 다시 보내면 중복될 수 있어요.")
 
 
 def _open_mac(to: str):
