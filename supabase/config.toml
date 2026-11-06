@@ -2,8 +2,9 @@
 [functions.kakao-unlink]
 verify_jwt = false
 
+# 옛 방식 검사는 새 키(ES256)로 서명한 사용자 토큰을 막는다. 아래 두 함수는 토큰을 직접 확인한다.
 [functions.kakao-token]
-verify_jwt = true
+verify_jwt = false
 
 [functions.delete-account]
-verify_jwt = true
+verify_jwt = false
