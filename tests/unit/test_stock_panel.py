@@ -352,3 +352,35 @@ def test_current_price_stays_visible_while_typing(qapp, stock):
 def test_combo_arrow_image_exists(qapp, dark):
     assert os.path.isfile(stock_panel._arrow_path(dark))
 
+
+def test_start_updates_refreshes_master_now_and_keeps_checking_until_stopped(qapp, stock, monkeypatch):
+    calls = []
+    monkeypatch.setattr(sp, "refresh_master", lambda force=True: calls.append(force))
+    panel = stock_panel.StockPanel()
+    assert not panel._master_timer.isActive()
+    panel.start_updates()
+    assert _wait(qapp, lambda: calls == [True])
+    assert panel._master_timer.isActive()
+    panel._master_timer.timeout.emit()
+    assert _wait(qapp, lambda: calls == [True, False])
+    panel.stop_updates()
+    assert not panel._master_timer.isActive()
+    panel.deleteLater()
+
+
+def test_widget_refreshes_during_market_and_once_after_close(qapp, stock, monkeypatch):
+    panel = stock_panel.StockPanel()
+    panel.show()
+    reads = []
+    monkeypatch.setattr(panel, "refresh", lambda: reads.append(1))
+    monkeypatch.setattr(sp, "market_open", lambda now=None: True)
+    panel._refresh_if_market_open()
+    assert len(reads) == 1
+    monkeypatch.setattr(sp, "market_open", lambda now=None: False)
+    panel._refresh_if_market_open()
+    assert len(reads) == 2
+    panel._refresh_if_market_open()
+    assert len(reads) == 2
+    panel.close()
+    panel.deleteLater()
+

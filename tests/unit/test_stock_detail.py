@@ -989,3 +989,96 @@ def test_wheel_zooms_chart_with_or_without_ctrl(qapp, stock, monkeypatch, modifi
     assert dlg.chart.view_count > zoomed
     dlg.close()
 
+
+LONG = [(f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}", 70000 + i) for i in range(100)]
+
+
+def _live(qapp, monkeypatch, is_open=True):
+    monkeypatch.setattr(sp, "get_price_bars", lambda code: _bars(LONG))
+    monkeypatch.setattr(sp, "market_open", lambda now=None: is_open)
+    dlg = _dialog(qapp)
+    dlg.make_independent()
+    dlg.show()
+    assert _wait(qapp, lambda: dlg.chart.view_count == 100)
+    return dlg
+
+
+def test_open_window_refreshes_chart_during_market_and_keeps_zoom_and_stock(qapp, stock, monkeypatch):
+    dlg = _live(qapp, monkeypatch)
+    code = dlg.current_code
+    dlg.chart.zoom(0.5)
+    count = dlg.chart.view_count
+    newer = LONG + [("2026-12-01", 99000)]
+    monkeypatch.setattr(sp, "get_price_bars", lambda c: _bars(newer))
+    _wait(qapp, lambda: dlg.chart.progress == 1.0, 3)
+    dlg._refresh_live()
+    assert _wait(qapp, lambda: len(dlg.chart.bars) == 101)
+    assert dlg.current_code == code and dlg.chart.view_count == count
+    assert dlg.chart.view_start + dlg.chart.view_count == 101   # 최근 봉을 보던 중이면 새 봉을 따라간다
+    assert dlg.chart.progress == 1.0   # 갱신 때마다 그래프가 다시 그려지며 깜빡이지 않는다
+    assert dlg.tiles["종가"].value.text() == "99,000원" or "99,000" in dlg.tiles["종가"].value.text()
+    dlg.close()
+
+
+def test_chart_refresh_failure_keeps_old_chart(qapp, stock, monkeypatch):
+    dlg = _live(qapp, monkeypatch)
+
+    def fail(code):
+        raise sp.StockError("시세 오류")
+    monkeypatch.setattr(sp, "get_price_bars", fail)
+    done = []
+    dlg._refresh_chart()
+    dlg._spawn(lambda: None, lambda r: done.append(1))
+    assert _wait(qapp, lambda: done)
+    _wait(qapp, lambda: False, 0.1)
+    assert len(dlg.chart.bars) == 100 and not dlg.chart.message
+    dlg.close()
+
+
+def test_late_refresh_does_not_overwrite_newly_picked_stock(qapp, stock, monkeypatch):
+    dlg = _live(qapp, monkeypatch)
+    dlg._refresh_chart()
+    monkeypatch.setattr(sp, "get_price_bars", lambda c: _bars(POINTS))
+    dlg.show_stock("035720")
+    assert _wait(qapp, lambda: dlg.current_code == "035720" and len(dlg.chart.bars) == 3)
+    _wait(qapp, lambda: False, 0.2)
+    assert len(dlg.chart.bars) == 3
+    dlg.close()
+
+
+def test_connected_window_stops_after_one_last_read_when_market_closes(qapp, stock, monkeypatch):
+    dlg = _live(qapp, monkeypatch)
+    dlg._was_open = True
+    monkeypatch.setattr(sp, "market_open", lambda now=None: False)
+    reads = []
+    monkeypatch.setattr(sp, "get_price_bars", lambda c: reads.append(c) or _bars(LONG))
+    monkeypatch.setattr(dlg, "reload", lambda: reads.append("reload"))
+    dlg._refresh_live()
+    assert _wait(qapp, lambda: len(reads) == 2)   # 장 마감 직후 종가를 한 번 더 읽는다
+    reads.clear()
+    dlg._refresh_live()
+    _wait(qapp, lambda: False, 0.2)
+    assert reads == []
+    dlg.close()
+
+
+def test_new_stock_appears_in_open_window_list_without_moving_selection(qapp, stock, monkeypatch):
+    dlg = _live(qapp, monkeypatch)
+    assert _wait(qapp, lambda: dlg.stock_model.rowCount() == 3)
+    code = dlg.current_code
+    monkeypatch.setattr(sp, "load_master", lambda: {"005930": "삼성전자", "000660": "SK하이닉스", "035720": "카카오", "111111": "새종목"})
+    dlg._refresh_live()
+    assert _wait(qapp, lambda: dlg.stock_model.rowCount() == 4)
+    assert dlg.current_code == code
+    dlg.close()
+
+
+def test_market_key_window_refreshes_table_without_jumping_to_first_stock(qapp, stock, monkeypatch):
+    dlg = _live(qapp, monkeypatch)
+    dlg.show_stock("035720")
+    assert _wait(qapp, lambda: dlg.current_code == "035720")
+    dlg._on_market([{"code": "005930", "name": "삼성전자", "date": "2026-11-05", "close": 1, "change": 0, "rate": 0.0, "volume": 1}])
+    _wait(qapp, lambda: False, 0.1)
+    assert dlg.current_code == "035720"
+    dlg.close()
+

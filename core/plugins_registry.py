@@ -300,7 +300,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["get_stock_briefing", "open_stock_order", "stop_stock_auto_trading"],
         "module_name": "stock_portfolio",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/stock_portfolio.py",
-        "sha256": "7f0c323daf6af2078085ca92ddbeb09555e9a6409201a448c8c0ac38d45e6923",
+        "sha256": "b3204a8d7cf724d0908bf63c58181c3e8037f11129e54c3e5e734abb74442309",
         "dependencies": []
     },
     {

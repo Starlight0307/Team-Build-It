@@ -18,6 +18,7 @@ SEARCH_ROLE = Qt.ItemDataRole.UserRole + 1
 DEFAULT_WIDTH, MIN_WIDTH, MIN_HEIGHT = 1240, 900, 560
 CHROME_HEIGHT = 190     # 제목·버튼·그림자 자리
 LIVE_REFRESH_MS = 60_000
+MARKET_REFRESH_TICKS = 30   # 계좌 없이 보는 표는 30분마다 (시세 키 시세의 캐시 주기)
 CARD_RADIUS = 20        # lumi_dialog의 LumiCard 모서리와 같다
 GLASS_INPUT = {False: "rgba(255,255,255,120)", True: "rgba(255,255,255,20)"}
 TOOL_STYLE = "margin: 0; padding: 0 10px; min-width: 0; min-height: 26px; max-height: 26px; font-size: 12px; border-radius: 9px;"
@@ -100,8 +101,10 @@ class PriceChart(QWidget):
         self.setAccessibleDescription(text)
         self.update()
 
-    def set_data(self, title: str, points: list, reference: float = None, volumes: list = None, bars: list = None, history: list = None):
-        """bars가 없으면 종가만으로 납작한 캔들을 그린다. history는 이동평균과 기간 밖 그림 위치 계산용 전체 기록."""
+    def set_data(self, title: str, points: list, reference: float = None, volumes: list = None, bars: list = None, history: list = None, refresh: bool = False):
+        """bars가 없으면 종가만으로 납작한 캔들을 그린다. history는 이동평균과 기간 밖 그림 위치 계산용 전체 기록.
+        refresh면 같은 종목의 새 값이다 — 보던 범위와 그리던 선을 그대로 두고 등장 애니메이션도 다시 하지 않는다."""
+        old_start, old_count, old_len, old_hover = self.view_start, self.view_count, len(self.bars), self.hover
         self.title, self.points, self.reference, self.hover, self.message = title, points, reference, None, ""
         self.volumes = volumes or []
         self.bars = bars or [{"date": d, "open": v, "high": v, "low": v, "close": v} for d, v in points]
@@ -109,8 +112,14 @@ class PriceChart(QWidget):
         self.offset = len(self.history) - len(self.bars)
         closes = [b["close"] for b in self.history]
         self.averages = [(length, color, moving_average(closes, length)[self.offset:]) for length, color in self.AVERAGES]
-        self.view_start, self.view_count, self.pending = 0, len(self.bars), None
-        _reveal(self, "progress")
+        if refresh and old_len:
+            self.view_count = min(old_count, len(self.bars))
+            at_end = old_start + old_count == old_len   # 최근 봉을 보고 있었으면 새 봉도 따라간다
+            self.view_start = len(self.bars) - self.view_count if at_end else min(old_start, len(self.bars) - self.view_count)
+            self.hover = old_hover if old_hover is not None and old_hover < len(self.bars) else None
+        else:
+            self.view_start, self.view_count, self.pending = 0, len(self.bars), None
+            _reveal(self, "progress")
         if points:
             self.setAccessibleDescription(f"{title}: {points[0][0]} {points[0][1]:,}원에서 {points[-1][0]} {points[-1][1]:,}원")
         self.update()
@@ -775,14 +784,46 @@ class StockDetailDialog(_StockDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self._was_open, self._live_ticks = False, 0
         self._live_timer = QTimer(self)
         self._live_timer.setInterval(LIVE_REFRESH_MS)
         self._live_timer.timeout.connect(self._refresh_live)
         self._live_timer.start()
 
     def _refresh_live(self):
-        if self.isVisible() and self.status_info["connected"] and _stock().market_open():
+        """종목 목록·잔고·보고 있는 그래프를 다시 읽는다. 사용자가 보던 종목과 확대 상태는 그대로 둔다."""
+        if not self.isVisible():
+            return
+        self._spawn(_stock().stock_list, self._on_list_refreshed)
+        is_open = _stock().market_open()
+        connected = self.status_info["connected"]
+        if connected and (is_open or self._was_open):   # 장이 끝난 뒤 한 번 더 — 마지막 값이 종가가 되게
             self.reload()
+        self._live_ticks += 1
+        if not connected and self._live_ticks % MARKET_REFRESH_TICKS == 0:
+            if self.status_info["has_manual"]:
+                self.reload()
+            elif self.status_info["has_market_key"]:   # 실패하면 보던 표를 지우지 않는다
+                self._spawn(_stock().market_overview, lambda r: None if isinstance(r, Exception) else self._on_market(r))
+        if self.current_code and (is_open or self._was_open or not connected):   # 시세 키 시세는 30분 캐시라 부담이 없다
+            self._refresh_chart()
+        self._was_open = is_open
+
+    def _on_list_refreshed(self, result):
+        if not isinstance(result, Exception) and result and result != self.stock_rows:
+            self.stock_rows = result
+            self._filtering = True   # 목록을 다시 채워도 보던 종목은 그대로
+            self._fill_stock_list()
+            self._filtering = False
+
+    def _refresh_chart(self):
+        code, seq = self.current_code, self._chart_seq
+
+        def done(result):   # 실패하면 이전 그래프를 그대로 둔다 — 날짜가 함께 보여 오래된 값을 알 수 있다
+            if seq == self._chart_seq and code == self.current_code and not isinstance(result, Exception) and result != self.history.get(code):
+                self.history[code] = result
+                self._draw_chart(refresh=True)
+        self._spawn(lambda: _stock().price_bars(code), done)
 
     def _build_stock_list(self) -> QWidget:
         """왼쪽 전체 종목 목록. 4천 개가 넘어 모델과 필터를 쓴다."""
@@ -1017,7 +1058,8 @@ class StockDetailDialog(_StockDialog):
                                       | (Qt.AlignmentFlag.AlignLeft if col == 0 else Qt.AlignmentFlag.AlignRight))
                 self.table.setItem(row, col, item)
         self.table.blockSignals(False)
-        self.show_stock(result[0]["code"])
+        if not self.current_code:   # 주기적으로 다시 읽을 때 보던 종목을 바꾸지 않는다
+            self.show_stock(result[0]["code"])
 
     def _connect_account(self):
         self.accept()
@@ -1134,13 +1176,13 @@ class StockDetailDialog(_StockDialog):
     def _holding(self):
         return next((h for h in self.holdings if h["code"] == self.current_code and "qty" in h), None)
 
-    def _draw_chart(self):
+    def _draw_chart(self, refresh: bool = False):
         bars, held = self._visible_bars(), self._holding()
         self.chart.set_data(f"{self.current_name} 일봉 (최근 {len(bars)}거래일)", [(b["date"], b["close"]) for b in bars],
                             held.get("avg_price") if held else None, [b.get("volume", 0) for b in bars],
-                            bars, self.history.get(self.current_code))
+                            bars, self.history.get(self.current_code), refresh)
         self.chart.set_drawings(_stock().chart_drawings(self.current_code))
-        self._show_stats(len(bars) - 1, animate=True)
+        self._show_stats(len(bars) - 1, animate=not refresh)
         for tile in self.holding_tiles.values():
             tile.setVisible(bool(held))
         self.fit_to_content()

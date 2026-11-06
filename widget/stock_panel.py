@@ -628,14 +628,27 @@ class StockPanel(Panel):
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_if_market_open)
         self._refresh_timer.start(self.REFRESH_MS)
+        self._was_open = False
+        self._master_timer = QTimer(self)
+        self._master_timer.timeout.connect(lambda: _in_background(lambda: _stock().refresh_master(force=False)))
         self._auto_timer = QTimer(self)
         self._auto_timer.timeout.connect(self.tick_auto)
         self._auto_timer.start(self.AUTO_MS)
         self._sync_auto()
 
+    def start_updates(self):
+        """주식 플러그인이 설치돼 있을 때만 부른다 — 앱을 켤 때 종목 목록을 새로 받고, 날짜가 바뀌면 또 받는다."""
+        self._master_timer.start(self.REFRESH_MS)
+        _in_background(_stock().refresh_master)
+
+    def stop_updates(self):
+        self._master_timer.stop()
+
     def _refresh_if_market_open(self):
-        if self.isVisible() and _stock().market_open():
+        is_open = _stock().market_open()
+        if self.isVisible() and (is_open or self._was_open):   # 장이 끝난 뒤 한 번 더 — 마지막 값이 종가가 되게
             self.refresh()
+        self._was_open = is_open
 
     def before_plugin_removed(self):
         if _stock().auto_state()["enabled"]:

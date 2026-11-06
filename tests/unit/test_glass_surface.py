@@ -365,3 +365,23 @@ def test_stock_button_behaves_like_other_menus(qapp, stock_env):
     assert _until(qapp, lambda: not w.btn_stock.isChecked() and w.btn_stock.text() == "")
     w.close()
 
+
+@pytest.mark.parametrize("installed, expected", [(True, 1), (False, 0)])
+def test_stock_list_updates_start_with_app_only_when_plugin_is_installed(qapp, stock_env, monkeypatch, installed, expected):
+    import app_main
+    from widget import stock_panel
+    calls = []
+    monkeypatch.setattr(stock_panel.StockPanel, "start_updates", lambda self: calls.append(1))
+    real = app_main.load_existing_plugins
+
+    def load(tools, names):
+        real(tools, names)
+        if "stock_portfolio" in names:
+            names.remove("stock_portfolio")
+        if installed:
+            names.append("stock_portfolio")
+    monkeypatch.setattr(app_main, "load_existing_plugins", load)
+    w = app_main.AssistantApp()
+    assert len(calls) == expected
+    w.close()
+

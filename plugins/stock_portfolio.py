@@ -71,6 +71,8 @@ _last_request = 0.0
 _order_ui_hook = None
 _market_cache = {}   # 코드 → (받은 시각, 일별 시세)
 _master_memo = (None, {})   # (날짜, {코드: 이름}) — 입력할 때마다 파일을 읽거나 내려받지 않게
+_master_stale = False
+_master_lock = threading.Lock()
 
 
 class StockError(Exception):
@@ -1147,22 +1149,9 @@ def _parse_master(raw: bytes, market: str) -> dict:
     return names
 
 
-def load_master() -> dict:
-    """{코드: 이름}. 하루에 한 번 새로 받고, 못 받으면 저장해 둔 것을 쓴다."""
-    global _master_memo
-    path = os.path.join(_data_dir(), "master.json")
-    today = datetime.now(KST).strftime("%Y-%m-%d")
-    if _master_memo[0] == today:
-        return _master_memo[1]
-    cached = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            cached = json.load(f)
-    except (OSError, ValueError):
-        pass
-    if cached.get("date") == today:
-        _master_memo = (today, cached.get("names", {}))
-        return _master_memo[1]
+def _download_master(path: str, today: str, cached: dict) -> dict:
+    """새 목록을 받아 저장한다. 못 받으면 저장본을 쓰고 _master_stale로 표시해 다음 주기에 다시 받는다."""
+    global _master_memo, _master_stale
     names = {}
     try:
         for market in MASTER_TAIL:
@@ -1170,12 +1159,51 @@ def load_master() -> dict:
             resp.raise_for_status()
             names.update(_parse_master(resp.content, market))
     except (requests.RequestException, zipfile.BadZipFile, KeyError, IndexError):
+        _master_stale = True
         _master_memo = (today, cached.get("names", {}))   # 오늘은 저장본으로 — 입력할 때마다 다시 받지 않는다
         return _master_memo[1]
-    with open(path, "w", encoding="utf-8") as f:
+    temp = f"{path}.{uuid.uuid4().hex}.tmp"   # 받는 중에 앱이 꺼져도 저장본이 깨지지 않게
+    with open(temp, "w", encoding="utf-8") as f:
         json.dump({"date": today, "names": names}, f, ensure_ascii=False)
+    os.replace(temp, path)
+    _master_stale = False
     _master_memo = (today, names)
     return names
+
+
+def _saved_master(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def load_master() -> dict:
+    """{코드: 이름}. 하루에 한 번 새로 받고, 못 받으면 저장해 둔 것을 쓴다."""
+    global _master_memo
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+    if _master_memo[0] == today:
+        return _master_memo[1]
+    path = os.path.join(_data_dir(), "master.json")
+    with _master_lock:
+        if _master_memo[0] == today:   # 기다리는 사이 다른 스레드가 받았다
+            return _master_memo[1]
+        cached = _saved_master(path)
+        if cached.get("date") == today:
+            _master_memo = (today, cached.get("names", {}))
+            return _master_memo[1]
+        return _download_master(path, today, cached)
+
+
+def refresh_master(force: bool = True) -> dict:
+    """force면 오늘 받았어도 다시 받는다(앱을 켤 때). 아니면 날짜가 바뀌었거나 지난번에 실패했을 때만 받는다."""
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+    if not force and _master_memo[0] == today and not _master_stale:
+        return _master_memo[1]
+    path = os.path.join(_data_dir(), "master.json")
+    with _master_lock:
+        return _download_master(path, today, _saved_master(path))
 
 
 def favorite_codes() -> list:

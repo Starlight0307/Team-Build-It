@@ -478,6 +478,63 @@ def test_master_falls_back_to_saved_file_and_downloads_once_a_day(tmp_path, monk
     assert len(calls) == 1
 
 
+@pytest.fixture
+def master_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp.storage_location, "user_data_dir", lambda name: str(tmp_path))
+    monkeypatch.setattr(sp, "_master_memo", (None, {}))
+    monkeypatch.setattr(sp, "_master_stale", False)
+    state = {"calls": 0, "fail": False, "names": {"005930": "삼성전자"}}
+
+    def get(*a, **k):
+        state["calls"] += 1
+        if state["fail"]:
+            raise requests.ConnectionError()
+        return type("R", (), {"content": b"", "raise_for_status": lambda self: None})()
+    monkeypatch.setattr(sp.requests, "get", get)
+    monkeypatch.setattr(sp, "_parse_master", lambda content, market: state["names"])
+    return tmp_path, state
+
+
+def test_refresh_master_downloads_again_even_if_already_fetched_today(master_env):
+    tmp_path, state = master_env
+    assert sp.load_master() == {"005930": "삼성전자"}
+    state["names"] = {"005930": "삼성전자", "111111": "새종목"}
+    state["calls"] = 0
+    assert "111111" in sp.refresh_master()
+    assert state["calls"] == len(sp.MASTER_TAIL)
+    assert "111111" in sp.load_master()
+    assert "111111" in json.loads((tmp_path / "master.json").read_text(encoding="utf-8"))["names"]
+    assert [f.name for f in tmp_path.iterdir()] == ["master.json"]   # 임시 파일이 남지 않는다
+
+
+def test_periodic_refresh_only_downloads_when_needed_and_retries_after_failure(master_env):
+    tmp_path, state = master_env
+    sp.load_master()
+    state["calls"] = 0
+    sp.refresh_master(force=False)
+    assert state["calls"] == 0
+
+    state["fail"] = True
+    assert sp.refresh_master() == {"005930": "삼성전자"}   # 못 받아도 저장본을 그대로 쓴다
+    state["names"] = {"222222": "또다른종목"}
+    state["fail"] = False
+    state["calls"] = 0
+    assert sp.refresh_master(force=False) == {"222222": "또다른종목"}   # 실패했으면 다음 주기에 다시 받는다
+    assert state["calls"] == len(sp.MASTER_TAIL)
+    state["calls"] = 0
+    sp.refresh_master(force=False)
+    assert state["calls"] == 0
+
+
+def test_periodic_refresh_downloads_when_the_day_changes(master_env):
+    tmp_path, state = master_env
+    sp.load_master()
+    sp._master_memo = ("2000-01-01", sp._master_memo[1])
+    state["calls"] = 0
+    sp.refresh_master(force=False)
+    assert state["calls"] == len(sp.MASTER_TAIL)
+
+
 def test_resolve_stock_needs_exact_match(kis):
     assert sp.resolve_stock("삼성 전자") == ("005930", "삼성전자")
     assert sp.resolve_stock("005930") == ("005930", "삼성전자")

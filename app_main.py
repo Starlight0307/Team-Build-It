@@ -338,6 +338,8 @@ class AssistantApp(QWidget):
         QTimer.singleShot(50, self.apply_theme)
         QTimer.singleShot(800, self._run_startup_update_check)
         QTimer.singleShot(1000, self.stock_panel.refresh)
+        if "stock_portfolio" in self.installed_module_names:
+            self.stock_panel.start_updates()
         # 신규 기능 6(앱 사용 통계) — 사용자가 이전에 기록을 켜둔 경우에만 이어서 기록한다.
         QTimer.singleShot(1500, self._resume_usage_tracking)
         if "iot_control" in self.installed_module_names:
@@ -2546,6 +2548,7 @@ class AssistantApp(QWidget):
         if m_name == "stock_portfolio":
             self.stock_panel.close_detail()
             self.stock_panel.before_plugin_removed()
+            self.stock_panel.stop_updates()
         try:
             uninstall_plugin(m_name, self.installed_tools, self.installed_module_names)
         except OSError as e:
@@ -2568,6 +2571,7 @@ class AssistantApp(QWidget):
             self.iot_panel.refresh()
         if m_name == "stock_portfolio" and m_name in self.installed_module_names:
             self.stock_panel.refresh()
+            self.stock_panel.start_updates()
 
         # 설치가 방금 막 완료된 경우에만(재실행 시 X) 안내 메시지 표시
         newly_installed = (not already_installed) and (m_name in self.installed_module_names)
