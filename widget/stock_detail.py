@@ -17,7 +17,7 @@ MAX_BARS = 8
 TABLE_HEADERS = ("종목", "수량", "평균 단가", "현재가", "평가금액", "평가손익", "수익률")
 MARKET_HEADERS = ("종목", "기준일", "종가", "전일 대비", "등락률")
 SEARCH_ROLE = Qt.ItemDataRole.UserRole + 1
-DEFAULT_WIDTH, MIN_WIDTH, MIN_HEIGHT = 1240, 900, 560
+DEFAULT_WIDTH, MIN_WIDTH, MIN_HEIGHT = 1240, 920, 560
 CHROME_HEIGHT = 190     # 제목·버튼·그림자 자리
 LIVE_REFRESH_MS = 60_000
 LIVE_PRICE_MS = 3_000   # 실시간 연결이 없는 증권사는 보고 있는 한 종목의 현재가만 자주 다시 읽는다
@@ -676,7 +676,7 @@ class StockDetailDialog(_StockDialog):
             button.setObjectName("LinkPrimary" if days is None else "LinkGhost")
             button.setAutoDefault(False)
             # setFixedSize는 공통 스타일의 최소 크기에 밀려서 스타일로 크기를 정한다
-            button.setStyleSheet("margin: 0; padding: 0; min-width: 64px; max-width: 64px; min-height: 28px; max-height: 28px;"
+            button.setStyleSheet("margin: 0; padding: 0; min-width: 56px; max-width: 56px; min-height: 28px; max-height: 28px;"
                                  "font-size: 12px; border-radius: 10px;")
             button.clicked.connect(lambda _=False, d=days: self.set_period(d))
             self.period_buttons[days] = button
@@ -697,7 +697,7 @@ class StockDetailDialog(_StockDialog):
         self.btn_favorite = QPushButton("☆ 즐겨찾기")
         self.btn_favorite.setObjectName("LinkGhost")
         self.btn_favorite.setAutoDefault(False)
-        self.btn_favorite.setStyleSheet("margin: 0; padding: 0 12px; min-width: 96px; min-height: 28px; max-height: 28px;"
+        self.btn_favorite.setStyleSheet("margin: 0; padding: 0 12px; min-width: 0; min-height: 28px; max-height: 28px;"
                                         "font-size: 12px; border-radius: 10px;")
         self.btn_favorite.clicked.connect(self._toggle_favorite)
         self.btn_favorite.setEnabled(False)

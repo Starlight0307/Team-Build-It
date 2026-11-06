@@ -954,7 +954,7 @@ def test_zoom_buttons_change_visible_range_within_limits(qapp, stock, monkeypatc
 
 
 def test_narrowest_window_shows_every_control_without_sideways_overflow(qapp, stock):
-    from PyQt6.QtWidgets import QPushButton, QScrollArea
+    from PyQt6.QtWidgets import QPushButton, QScrollArea, QWidget
     dlg = _dialog(qapp, open_order=lambda r, p: None, open_auto=lambda r, p: None)
     dlg.show()
     assert _wait(qapp, lambda: dlg.current_code)
@@ -964,8 +964,12 @@ def test_narrowest_window_shows_every_control_without_sideways_overflow(qapp, st
         return all(a.widget().width() <= a.viewport().width() for a in dlg.findChildren(QScrollArea)
                    if a.widget() and a.widget().isAncestorOf(dlg.chart))
     dlg.live_label.setText("현재가를 받지 못했어요 · 이전 값을 표시 중 · 아주 긴 안내 문구가 와도 폭을 밀면 안 된다")
-    widths = lambda: [(a.widget().width(), a.viewport().width()) for a in dlg.findChildren(QScrollArea)
-                      if a.widget() and a.widget().isAncestorOf(dlg.chart)]
+    def widths():   # 실패하면 어느 칸이 폭을 미는지 보이게
+        shown = [(a.widget().width(), a.viewport().width()) for a in dlg.findChildren(QScrollArea)
+                 if a.widget() and a.widget().isAncestorOf(dlg.chart)]
+        wide = sorted(((c.minimumSizeHint().width(), type(c).__name__, str(getattr(c, "text", lambda: "")())[:20])
+                       for c in dlg.findChildren(QWidget) if c.isVisible()), reverse=True)[:12]
+        return shown, wide
     assert _wait(qapp, fits, 15), widths()   # 느린 시험 서버에서는 배치가 늦게 끝난다
     assert len([b for b in dlg.findChildren(QPushButton) if b.toolTip().startswith("그래프")]) == 3
     dlg.close()
