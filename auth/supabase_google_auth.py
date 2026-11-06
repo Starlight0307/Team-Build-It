@@ -121,7 +121,8 @@ def _wait_for_redirect(port: int, timeout: int = GOOGLE_LOGIN_TIMEOUT, cancel_ev
     return result["code"]
 
 
-def _exchange_session(code: str, verifier: str) -> dict:
+def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
+    """PKCE 인증 코드를 Supabase 세션으로 바꾼다 → (access_token, refresh_token, google_token)."""
     token_resp = requests.post(
         f"{SUPABASE_URL}/auth/v1/token",
         params={"grant_type": "pkce"},
@@ -132,15 +133,11 @@ def _exchange_session(code: str, verifier: str) -> dict:
     if not token_resp.ok:
         raise RuntimeError(f"토큰 교환 실패 ({token_resp.status_code}): {token_resp.text[:200]}")
     session = token_resp.json()
-    if not session.get("access_token"):
+
+    access_token = session.get("access_token")
+    if not access_token:
         raise RuntimeError("로그인 세션을 받지 못했습니다.")
-    return session
-
-
-def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
-    """PKCE 인증 코드를 Supabase 세션으로 바꾼다 → (access_token, refresh_token, google_token)."""
-    session = _exchange_session(code, verifier)
-    return session["access_token"], session.get("refresh_token"), session.get("provider_token")
+    return access_token, session.get("refresh_token"), session.get("provider_token")
 
 
 def sign_in_with_google(cancel_event=None) -> tuple[str, str, str]:
@@ -162,17 +159,6 @@ def sign_in_with_google(cancel_event=None) -> tuple[str, str, str]:
 def sign_in_with_kakao(cancel_event=None) -> tuple[str, str]:
     """Supabase Auth(카카오 프로바이더)로 로그인시키고 (access_token, refresh_token)을 반환한다."""
     return _sign_in_with_provider("kakao", None, cancel_event)[:2]
-
-
-def kakao_calendar_tokens(cancel_event=None) -> tuple[str, str]:
-    """톡캘린더 권한을 받아 카카오 토큰을 돌려준다 → (access_token, refresh_token). 루미 세션은 바꾸지 않는다."""
-    port = _free_port()
-    verifier, challenge = _make_pkce_pair()
-    webbrowser.open(f"{SUPABASE_URL}/auth/v1/authorize?" + urlencode({
-        "provider": "kakao", "redirect_to": f"http://localhost:{port}", "code_challenge": challenge,
-        "code_challenge_method": "S256", "apikey": SUPABASE_ANON_KEY, "scopes": "talk_calendar"}))
-    session = _exchange_session(_wait_for_redirect(port, cancel_event=cancel_event), verifier)
-    return session.get("provider_token"), session.get("provider_refresh_token")
 
 
 def provider_enabled(provider: str) -> bool:

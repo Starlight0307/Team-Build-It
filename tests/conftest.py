@@ -64,6 +64,7 @@ def _no_real_app_launch(request, monkeypatch):
     monkeypatch.setattr(app_launcher, "_launch_by_keys", lambda shown, target: False)
     from core import screen_agent
     monkeypatch.setattr(screen_agent.ScreenAgentWorker, "_open_requested_page", lambda self: False)
+    monkeypatch.setattr(screen_agent, "_front_path", lambda: "")
     if request.module.__name__.endswith("test_app_launcher"):
         return
     monkeypatch.setattr(app_launcher, "installed_apps", lambda refresh=False: {})

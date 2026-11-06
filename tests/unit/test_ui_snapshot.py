@@ -1,4 +1,6 @@
 """맨 앞 창의 요소 읽기와 번호 클릭 (core/ui_snapshot.py, core/screen_agent.py)."""
+import itertools
+
 import pytest
 
 from core import screen_agent as sa, ui_snapshot as ui
@@ -363,3 +365,24 @@ def test_opened_app_comes_back_when_pushed_behind(qapp, monkeypatch, front, open
     monkeypatch.setattr(sa.subprocess, "run", lambda cmd, **k: calls.append(cmd))
     w._bring_opened_app_front()
     assert calls == [["open", "/A/Text.app"]] * opens
+
+
+def test_nothing_is_typed_when_front_window_changed_after_the_model_looked(qapp, monkeypatch):
+    fronts = itertools.cycle(["/A/Chrome.app", "/A/VSCode.app"])   # 볼 때와 칠 때 앞 창이 매번 다르다
+    monkeypatch.setattr(sa, "_front_path", lambda: next(fronts))
+    typing = '{"thought": "", "actions": [{"action": "type", "text": "wikipedia.org"}]}'
+    w, done, results = _looping_worker(monkeypatch, "주소 입력해줘", typing)
+    w.run()
+    assert done == [] and results[0][0] is False
+
+
+def test_page_request_remembers_the_browser_so_it_comes_back_to_front(qapp, monkeypatch):
+    from core import web_launcher
+    monkeypatch.undo()
+    monkeypatch.setattr(web_launcher, "parse_open_request", lambda task: {"site": "x", "url": "https://x.example", "browser": None})
+    monkeypatch.setattr(web_launcher, "open_request", lambda request: None)
+    monkeypatch.setattr(web_launcher, "_default_browser_app", lambda: "/A/Chrome.app")
+    w = sa.ScreenAgentWorker("x", controller=object())
+    monkeypatch.setattr(w._stop, "wait", lambda seconds=None: False)
+    w._notes = []
+    assert w._open_requested_page() is True and w._opened_path == "/A/Chrome.app"

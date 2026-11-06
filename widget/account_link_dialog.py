@@ -139,16 +139,6 @@ class _KakaoWorker(_GoogleWorker):
             self.result_ready.emit(False, "카카오 계정 연결에 실패했어요. 잠시 후 다시 시도해 주세요.")
 
 
-class _KakaoCalendarWorker(_GoogleWorker):
-    def __init__(self, owner):
-        super().__init__()
-        self._owner = owner
-
-    def run(self):
-        from calendar_feature import kakao_calendar
-        self.result_ready.emit(*kakao_calendar.connect(self._owner, self.cancel_event))
-
-
 class _AppleWorker(QThread):
     result_ready = pyqtSignal(bool, str)
 
@@ -256,50 +246,26 @@ class GoogleLinkDialog(LinkDialog):
 # ─────────────────────────────────────────────
 
 class KakaoLinkDialog(LinkDialog):
-    """구글처럼 브라우저에서 로그인한다. 로그인 수단을 연결한 뒤 톡캘린더도 따로 연결할 수 있다."""
+    """구글처럼 브라우저에서 로그인한다. 카카오는 로그인 수단으로만 쓴다(캘린더 없음)."""
 
-    def __init__(self, parent, is_dark: bool, linked: bool, owner: str = None):
-        from calendar_feature import kakao_calendar
-        self._owner = owner
-        self._calendar_on = bool(self._owner) and kakao_calendar.is_connected(self._owner)
-        desc = (("카카오 계정과 톡캘린더가 연동돼 있어요." if self._calendar_on else
-                 "카카오 계정이 연동돼 있어요. 톡캘린더도 연결하면 캘린더 화면에서 일정을 볼 수 있어요.") if linked else
+    def __init__(self, parent, is_dark: bool, linked: bool):
+        desc = ("카카오 계정이 연동돼 있어요. 카카오 로그인으로도 이 계정에 들어올 수 있어요." if linked else
                 "카카오 계정을 연동하면 카카오 로그인으로도 루미에 들어올 수 있어요. 브라우저가 열리면 카카오 계정으로 로그인해 주세요.")
         super().__init__(parent, is_dark, "kakao", "카카오 연동", desc)
         self._worker = None
         self.connected = False
         if linked:
+            self.btn_primary.hide()
             self.btn_secondary.setText("닫기")
-            if not self._owner:
-                self.btn_primary.hide()
-                return
-            self.btn_primary.setText("톡캘린더 연결 끊기" if self._calendar_on else "톡캘린더 연결")
-            self.btn_primary.clicked.connect(self._toggle_calendar)
             return
         self.btn_primary.setText("브라우저에서 로그인")
         self.btn_primary.clicked.connect(self._start)
-
-    def _toggle_calendar(self):
-        from calendar_feature import kakao_calendar
-        if self.connected:
-            self.accept()
-            return
-        if self._calendar_on:
-            kakao_calendar.disconnect(self._owner)
-            self._calendar_on = False
-            self.btn_primary.setText("톡캘린더 연결")
-            self.set_status("톡캘린더 연결을 끊었어요. 이 컴퓨터의 토큰을 지웠어요.", "ok")
-            return
-        self._run_worker(_KakaoCalendarWorker(self._owner))
 
     def _start(self):
         if self.connected:
             self.accept()
             return
-        self._run_worker(_KakaoWorker())
-
-    def _run_worker(self, worker):
-        self._worker = worker
+        self._worker = _KakaoWorker()
         self._worker.result_ready.connect(self._done)
         self._worker.finished.connect(self._thread_finished)
         self.btn_primary.setEnabled(False)

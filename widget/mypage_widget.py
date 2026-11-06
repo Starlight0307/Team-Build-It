@@ -470,7 +470,7 @@ class MyPageWidget(QWidget):
 
     def _open_kakao_dialog(self):
         from widget.account_link_dialog import KakaoLinkDialog
-        dlg = KakaoLinkDialog(self, self._is_dark, self._kakao_linked, _current_user_id)
+        dlg = KakaoLinkDialog(self, self._is_dark, self._kakao_linked)
         dlg.exec()
         if dlg.connected and self._username:
             self.refresh(self._username)   # 배지·버튼 글자 갱신

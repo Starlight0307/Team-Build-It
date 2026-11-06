@@ -695,6 +695,28 @@ def _names_app(task: str, name) -> bool:
     return bool(name) and re.search(rf"(?:^|\s){re.escape(str(name))}(?:$|\s|을|를|에|로|으로|열|켜|앱)", task or "") is not None
 
 
+def _front_path() -> str:
+    """맨 앞 앱 경로. 맥에서만 안다, 모르면 ""."""
+    if not IS_MAC:
+        return ""
+    from core import app_launcher
+    try:
+        return app_launcher._mac_front_path()
+    except Exception:
+        return ""
+
+
+def _browser_path(request: dict):
+    """요청에서 말한 브라우저, 없으면 기본 브라우저의 앱 경로. 모르면 None."""
+    from core import app_launcher, web_launcher
+    if request.get("browser"):
+        try:
+            return app_launcher.resolve(web_launcher.BROWSERS[request["browser"]][1], exact=True)[1]
+        except app_launcher.AppNotFound:
+            return None
+    return web_launcher._default_browser_app()
+
+
 def uses_system_search(act: dict) -> bool:
     """모델이 시스템 검색창을 직접 쓰는가. 맞는 앱인지 확인 없이 Enter가 나가 Siri에게 질문이 갈 수 있다 — open_app을 쓴다."""
     keys = set(normalize_keys(act.get("keys"))) if act.get("action") == "key" else set()
@@ -1013,6 +1035,7 @@ class ScreenAgentWorker(QThread):
 
                 self.step_started.emit(step, "👀 화면을 보는 중")
                 self._bring_opened_app_front()
+                front_at_view = _front_path()
                 image, mon = self._capture()
                 if self._stop.is_set():
                     return self.finished_task.emit(False, "사용자 요청으로 작업을 멈췄어요.", history)
@@ -1072,6 +1095,10 @@ class ScreenAgentWorker(QThread):
                         if oversteps_seen >= 2:   # 결과가 보이는데 모델이 계속 열려고 한다 (실측: App Store) — 여기까지가 요청이다
                             return self.finished_task.emit(True, "찾은 결과를 화면에 띄워 뒀어요. 더 진행할지는 직접 골라 주세요.", history)
                         self._notes.append(f"주의: 보거나 찾기만 하는 요청이라 '{a.get('target')}'을(를) 누르지 않았습니다. 목표가 보이면 done 하세요.")
+                        break
+                    if a["action"] in ("type", "key") and front_at_view and _front_path() != front_at_view:
+                        # 모델이 본 창과 지금 입력을 받을 창이 다르면 절대 치지 않는다
+                        self._notes.append("주의: 맨 앞 창이 바뀌어 입력하지 않았습니다. 지금 화면을 다시 보고 판단하세요.")
                         break
                     if uses_system_search(a):
                         self._notes.append("주의: 시스템 검색창은 쓰지 않습니다. 앱은 open_app에 이름을 넣어 여세요.")
@@ -1168,6 +1195,8 @@ class ScreenAgentWorker(QThread):
         if not request.get("url"):
             return False
         web_launcher.open_request(request)
+        self._opened_path = _browser_path(request)   # 입력이 뒤에 있던 앱으로 가지 않게 (실측: 주소가 VS Code의 소스 파일에 들어갔다)
+        self._opened_app = "브라우저"
         self.step_started.emit(0, f"🌐 페이지 열기: {request['url'][:50]}")
         self._stop.wait(SETTLE_MAX_APP)
         self._notes.append("참고: 요청한 페이지를 이미 새 탭에 열었습니다. 주소를 다시 입력하지 말고 그다음 할 일을 하세요.")
