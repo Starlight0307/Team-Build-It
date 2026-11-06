@@ -238,8 +238,8 @@ class _Win:
         self.tap(0x12)   # Alt를 한 번 누르면 앞으로 올리는 것이 허용된다
         return bool(user32.SetForegroundWindow(windows[0]))
 
-    def focus_child_class(self) -> str:
-        """포커스가 있는 입력칸의 클래스 이름."""
+    def _focus_info(self):
+        """(포커스 칸, 커서 칸)."""
         import ctypes
         from ctypes import wintypes
 
@@ -248,11 +248,31 @@ class _Win:
                         ("hwndFocus", wintypes.HWND), ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
                         ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
         info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
-        if not self._user32().GetGUIThreadInfo(0, ctypes.byref(info)) or not info.hwndFocus:
-            return ""
+        if not self._user32().GetGUIThreadInfo(0, ctypes.byref(info)):
+            return 0, 0
+        return info.hwndFocus or 0, info.hwndCaret or 0
+
+    def _class_of(self, hwnd: int) -> str:
+        import ctypes
         buf = ctypes.create_unicode_buffer(128)
-        self._user32().GetClassNameW(info.hwndFocus, buf, 128)
+        self._user32().GetClassNameW(hwnd, buf, 128)
         return buf.value
+
+    def focus_child_class(self) -> str:
+        """포커스가 있는 칸의 클래스 이름."""
+        focus = self._focus_info()[0]
+        return self._class_of(focus) if focus else ""
+
+    def search_box(self) -> int:
+        """열려 있는 검색칸. 숨은 Edit이 여럿 있어(실측) 보이고, 크기가 있고, 커서가 있는 칸만 인정한다."""
+        import ctypes
+        from ctypes import wintypes
+        focus, caret = self._focus_info()
+        if not focus or caret != focus or self._class_of(focus).casefold() != "edit" or not self._user32().IsWindowVisible(focus):
+            return 0
+        rect = wintypes.RECT()
+        self._user32().GetClientRect(focus, ctypes.byref(rect))
+        return focus if rect.right > 0 and rect.bottom > 0 else 0
 
     def find_input(self, hwnd: int) -> int:
         """대화창의 메시지 입력칸."""
@@ -300,14 +320,23 @@ def _send_windows(to: str, text: str, press_enter: bool) -> str:
         raise KakaoSendError("카카오톡이 설치돼 있지 않아요.") from e
     if not _wait(lambda: _win.raise_main() and _win.is_kakao(_win.foreground()), 4):
         raise KakaoSendError("카카오톡을 앞으로 가져오지 못해서 보내지 않았어요.")
-    _win.tap(_Win.VK_F, ctrl=True)   # 검색창
-    time.sleep(0.5)
-    # 포커스가 대화 입력칸(RichEdit)이면 이름이 대화에 들어간다 — 검색창(Edit)일 때만 친다
-    if _win.focus_child_class().casefold() != "edit" or not _win.is_kakao(_win.foreground()) or not _win.type(to):
+    time.sleep(0.5)   # 앞으로 올린 직후의 Ctrl+F는 먹히지 않았다 (실측)
+    search = 0
+    for _ in range(2):
+        _win.tap(_Win.VK_F, ctrl=True)
+        search = _wait(_win.search_box, 1.5)
+        if search:
+            break
+    # 대화 입력칸에 이름이 들어가면 안 된다 — 진짜 검색칸일 때만 치고, 글자가 정확히 들어갔는지 본다
+    if not search or not _win.is_kakao(_win.foreground()) or not _win.type(to) or not _wait(lambda: _win.get_text(search) == to, 1.5):
+        if search:
+            _win.clear(search)
         raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 주세요.")
     time.sleep(1.0)
     _win.tap(_Win.VK_RETURN)
     if not _wait(lambda: _win.is_kakao(_win.foreground()) and _win.title(_win.foreground()) == to, 3):
+        if _win.search_box() == search:
+            _win.clear(search)
         raise KakaoSendError(f"'{to}' 대화창이 열렸는지 확인하지 못해서 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 말씀해 주세요.")
     room = _win.foreground()
     box = _win.find_input(room)

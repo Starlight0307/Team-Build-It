@@ -99,9 +99,10 @@ class FakeWin:
 
     def __init__(self):
         self.keys, self.typed, self.front, self.titles = [], [], 1, {1: "카카오톡", 2: "민수"}
-        self.kakao, self.focus_class, self.boxes, self.opens = True, "Edit", {2: ""}, 2
+        self.kakao, self.focus_class, self.boxes, self.opens = True, "Edit", {2: "", 9: ""}, 2
         self.foreign_change = False
         self.main_found = True
+        self.lose_search_text = False
 
     def tap(self, key, ctrl=False):
         self.keys.append(key)
@@ -126,6 +127,9 @@ class FakeWin:
     def focus_child_class(self):
         return self.focus_class
 
+    def search_box(self):
+        return 9 if self.focus_class == "Edit" and self.front == 1 else 0
+
     def find_input(self, hwnd):
         return hwnd if hwnd in self.boxes else 0
 
@@ -140,6 +144,8 @@ class FakeWin:
 
     def type(self, text):
         self.typed.append(text)
+        if self.front == 1 and not self.lose_search_text:
+            self.boxes[9] = text
         if self.front in self.boxes:
             self.boxes[self.front] = text
             if self.foreign_change:
@@ -180,6 +186,20 @@ def test_windows_name_is_not_typed_unless_in_search_box(win):
     with pytest.raises(ks.KakaoSendError, match="검색창"):
         ks.send("민수", "내일 봐")
     assert win.typed == [] and _message_enter_count(win) == 0
+
+
+def test_windows_search_text_must_arrive_in_the_search_box(win):
+    win.lose_search_text = True
+    with pytest.raises(ks.KakaoSendError, match="검색창"):
+        ks.send("민수", "내일 봐")
+    assert _message_enter_count(win) == 0 and "내일 봐" not in win.typed
+
+
+def test_windows_presses_search_again_when_first_press_is_ignored(win, monkeypatch):
+    calls = iter([0, 9, 9, 9, 9, 9])
+    monkeypatch.setattr(win, "search_box", lambda: next(calls))
+    assert "보냈어요" in ks.send("민수", "내일 봐")
+    assert win.keys.count(ks._Win.VK_F) == 2
 
 
 def test_windows_wrong_room_is_not_sent(win):
