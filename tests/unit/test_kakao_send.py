@@ -104,9 +104,12 @@ class FakeWin:
         self.main_found = True
         self.lose_search_text = False
         self.needs_down, self.selected = False, False
+        self.tab, self.found_in = None, (ks._Win.VK_FRIENDS_TAB, ks._Win.VK_CHATS_TAB)
 
     def tap(self, key, ctrl=False):
         self.keys.append(key)
+        if ctrl and key in (ks._Win.VK_FRIENDS_TAB, ks._Win.VK_CHATS_TAB):
+            self.tab = key
         if key == self.VK_RETURN:
             if self.front == 1:
                 self.front = self.opens
@@ -117,7 +120,7 @@ class FakeWin:
         self.keys.append(key)
         if key == self.VK_DOWN:
             self.selected = True
-        if key == self.VK_RETURN and self.front == 1 and (self.selected or not self.needs_down):
+        if key == self.VK_RETURN and self.front == 1 and (self.selected or not self.needs_down) and self.tab in self.found_in:
             self.front = self.opens
 
     def set_text(self, hwnd, text):
@@ -197,6 +200,25 @@ def test_windows_name_is_not_typed_unless_in_search_box(win):
     with pytest.raises(ks.KakaoSendError, match="검색창"):
         ks.send("민수", "내일 봐")
     assert win.typed == [] and _message_enter_count(win) == 0
+
+
+def test_windows_friend_is_found_in_friends_tab_without_searching_chats(win):
+    assert "보냈어요" in ks.send("민수", "내일 봐")
+    assert ks._Win.VK_FRIENDS_TAB in win.keys and ks._Win.VK_CHATS_TAB not in win.keys
+
+
+def test_windows_self_chat_is_found_in_chats_tab(win):
+    win.found_in = (ks._Win.VK_CHATS_TAB,)
+    assert "보냈어요" in ks.send("민수", "내일 봐")
+    assert win.keys.index(ks._Win.VK_FRIENDS_TAB) < win.keys.index(ks._Win.VK_CHATS_TAB)
+    assert win.boxes[9] == "" and win.typed.count("민수") == 2
+
+
+def test_windows_not_found_anywhere_is_not_sent(win):
+    win.found_in = ()
+    with pytest.raises(ks.KakaoSendError, match="대화창"):
+        ks.send("민수", "내일 봐")
+    assert "내일 봐" not in win.typed
 
 
 def test_windows_selects_top_result_when_enter_alone_does_not_open(win):

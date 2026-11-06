@@ -176,6 +176,7 @@ class _Win:
     """윈도우 카카오톡을 다루는 부분. 시험에서 통째로 가짜로 바꾼다."""
     WM_SETTEXT, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP = 0x000C, 0x000D, 0x000E, 0x0100, 0x0101
     VK_DOWN = 0x28
+    VK_FRIENDS_TAB, VK_CHATS_TAB = 0x31, 0x32   # Ctrl+1 친구, Ctrl+2 채팅
     VK_CONTROL, VK_RETURN, VK_F = 0x11, 0x0D, 0x46
 
     @staticmethod
@@ -321,25 +322,20 @@ class _Win:
 _win = _Win()
 
 
-def _send_windows(to: str, text: str, press_enter: bool) -> str:
-    from core import app_launcher
-    try:
-        app_launcher.launch(_APP, exact=True)
-    except app_launcher.AppNotFound as e:
-        raise KakaoSendError("카카오톡이 설치돼 있지 않아요.") from e
-    if not _wait(lambda: _win.raise_main() and _win.is_kakao(_win.foreground()), 4):
-        raise KakaoSendError("카카오톡을 앞으로 가져오지 못해서 보내지 않았어요.")
-    time.sleep(0.5)   # 앞으로 올린 직후의 Ctrl+F는 먹히지 않았다 (실측)
+def _open_room_windows(to: str, tab_key: int) -> bool:
+    """이 탭에서 검색해 맨 위 결과를 연다. 창 제목이 이름과 정확히 같으면 True."""
+    _win.tap(tab_key, ctrl=True)
+    time.sleep(0.3)
     search = 0
     for _ in range(2):
         _win.tap(_Win.VK_F, ctrl=True)
         search = _wait(_win.search_box, 1.5)
         if search:
             break
-    # 대화 입력칸에 이름이 들어가면 안 된다 — 진짜 검색칸일 때만 치고, 글자가 정확히 들어갔는지 본다
     if not search or not _win.is_kakao(_win.foreground()):
         raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 주세요.")
-    _win.set_text(search, to)   # 키보드식 입력은 늦게 들어올 때가 있었다 (실측)
+    # 대화 입력칸에 이름이 들어가면 안 된다 — 진짜 검색칸에만 넣는다. 키보드식 입력은 늦게 들어올 때가 있었다 (실측)
+    _win.set_text(search, to)
     if not _wait(lambda: _win.get_text(search) == to, 1.5):
         _win.clear(search)
         raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 주세요.")
@@ -352,9 +348,24 @@ def _send_windows(to: str, text: str, press_enter: bool) -> str:
         _win.press(search, _Win.VK_DOWN)   # 맨 위 결과가 선택돼 있지 않을 때
         time.sleep(0.2)
         _win.press(search, _Win.VK_RETURN)
-    if not _wait(room_opened, 3):
-        if _win.search_box() == search:
-            _win.clear(search)
+    if _wait(room_opened, 3):
+        return True
+    if _win.search_box() == search:
+        _win.clear(search)
+    return False
+
+
+def _send_windows(to: str, text: str, press_enter: bool) -> str:
+    from core import app_launcher
+    try:
+        app_launcher.launch(_APP, exact=True)
+    except app_launcher.AppNotFound as e:
+        raise KakaoSendError("카카오톡이 설치돼 있지 않아요.") from e
+    if not _wait(lambda: _win.raise_main() and _win.is_kakao(_win.foreground()), 4):
+        raise KakaoSendError("카카오톡을 앞으로 가져오지 못해서 보내지 않았어요.")
+    time.sleep(0.5)   # 앞으로 올린 직후의 Ctrl+F는 먹히지 않았다 (실측)
+    # 나와의 채팅과 단톡방은 친구 검색에 나오지 않는다 — 친구에서 먼저 찾고, 없으면 채팅에서 찾는다
+    if not _open_room_windows(to, _Win.VK_FRIENDS_TAB) and not _open_room_windows(to, _Win.VK_CHATS_TAB):
         raise KakaoSendError(f"'{to}' 대화창이 열렸는지 확인하지 못해서 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 말씀해 주세요.")
     room = _win.foreground()
     box = _win.find_input(room)
