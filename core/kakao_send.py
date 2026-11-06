@@ -176,7 +176,7 @@ class _Win:
     """윈도우 카카오톡을 다루는 부분. 시험에서 통째로 가짜로 바꾼다."""
     WM_SETTEXT, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP = 0x000C, 0x000D, 0x000E, 0x0100, 0x0101
     VK_DOWN = 0x28
-    VK_FRIENDS_TAB, VK_CHATS_TAB = 0x31, 0x32   # Ctrl+1 친구, Ctrl+2 채팅
+    VK_TAB = 0x09   # Ctrl+Tab으로 탭을 돈다. Ctrl+1, Ctrl+2는 먹히지 않았다 (실측)
     VK_CONTROL, VK_RETURN, VK_F = 0x11, 0x0D, 0x46
 
     @staticmethod
@@ -276,6 +276,25 @@ class _Win:
         self._user32().GetClientRect(focus, ctypes.byref(rect))
         return focus if rect.right > 0 and rect.bottom > 0 else 0
 
+    def current_tab(self) -> str:
+        """메인 창의 탭 (실측한 창 구조): 채팅 탭에만 40 높이의 EVA_Window_Dblclk이, 친구 탭에는 보이는 목록이 있다."""
+        import ctypes
+        from ctypes import wintypes
+        user32 = self._user32()
+        visible = []
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def visit(child, _):
+            if user32.IsWindowVisible(child):
+                rect = wintypes.RECT()
+                user32.GetWindowRect(child, ctypes.byref(rect))
+                visible.append((self._class_of(child), rect.bottom - rect.top))
+            return True
+        user32.EnumChildWindows(self.foreground(), callback_type(visit), None)
+        if any(name == "EVA_Window_Dblclk" and height == 40 for name, height in visible):
+            return "chats"
+        return "friends" if any(name == "EVA_VH_ListControl_Dblclk" for name, _ in visible) else "other"
+
     def find_input(self, hwnd: int) -> int:
         """대화창의 메시지 입력칸."""
         import ctypes
@@ -322,10 +341,21 @@ class _Win:
 _win = _Win()
 
 
-def _open_room_windows(to: str, tab_key: int) -> bool:
+def _box_text(box: int) -> str:
+    """입력칸의 글. 비어 있으면 안내 문구가 읽힌다 (실측)."""
+    text = _win.get_text(box)
+    return "" if text == _MESSAGE_BOX else text
+
+
+def _open_room_windows(to: str, tab: str) -> bool:
     """이 탭에서 검색해 맨 위 결과를 연다. 창 제목이 이름과 정확히 같으면 True."""
-    _win.tap(tab_key, ctrl=True)
-    time.sleep(0.3)
+    for _ in range(4):
+        if _win.current_tab() == tab:
+            break
+        _win.tap(_Win.VK_TAB, ctrl=True)
+        time.sleep(0.3)
+    else:
+        raise KakaoSendError("카카오톡 탭을 옮기지 못해서 보내지 않았어요.")
     search = 0
     for _ in range(2):
         _win.tap(_Win.VK_F, ctrl=True)
@@ -368,14 +398,14 @@ def _send_windows(to: str, text: str, press_enter: bool) -> str:
         raise KakaoSendError("카카오톡을 앞으로 가져오지 못해서 보내지 않았어요.")
     time.sleep(0.5)   # 앞으로 올린 직후의 Ctrl+F는 먹히지 않았다 (실측)
     # 나와의 채팅과 단톡방은 친구 검색에 나오지 않는다 — 친구에서 먼저 찾고, 없으면 채팅에서 찾는다
-    if not _open_room_windows(to, _Win.VK_FRIENDS_TAB) and not _open_room_windows(to, _Win.VK_CHATS_TAB):
+    if not _open_room_windows(to, "friends") and not _open_room_windows(to, "chats"):
         raise KakaoSendError(f"'{to}' 대화창이 열렸는지 확인하지 못해서 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 말씀해 주세요.")
     room = _win.foreground()
     box = _win.find_input(room)
     if not box:
         raise KakaoSendError("메시지 입력칸을 찾지 못해서 보내지 않았어요.")
     _win.focus(box)
-    if _win.get_text(box):   # 쓰던 글이 있으면 섞어 보내지 않는다
+    if _box_text(box):   # 쓰던 글이 있으면 섞어 보내지 않는다
         raise KakaoSendError(f"{to} 대화창에 쓰던 글이 있어서 보내지 않았어요.")
     if not _win.type(text) or not _wait(lambda: _win.get_text(box) == text, 1.5):
         _win.clear(box)
@@ -387,7 +417,7 @@ def _send_windows(to: str, text: str, press_enter: bool) -> str:
         _win.clear(box)
         return f"{to} 대화창 확인 완료 (보내지 않음)"
     _win.tap(_Win.VK_RETURN)
-    if not _wait(lambda: _win.get_text(box) == "", 2):
+    if not _wait(lambda: _box_text(box) == "", 2):
         raise KakaoSendError(f"{to}에게 보내졌는지 확인하지 못했어요. 카카오톡을 직접 확인해 주세요. 다시 보내면 중복될 수 있어요.")
     return f"✅ {to}에게 보냈어요."
 

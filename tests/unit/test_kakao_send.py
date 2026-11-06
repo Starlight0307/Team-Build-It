@@ -104,12 +104,12 @@ class FakeWin:
         self.main_found = True
         self.lose_search_text = False
         self.needs_down, self.selected = False, False
-        self.tab, self.found_in = None, (ks._Win.VK_FRIENDS_TAB, ks._Win.VK_CHATS_TAB)
+        self.tab, self.found_in, self.tab_stuck = "friends", ("friends", "chats"), False
 
     def tap(self, key, ctrl=False):
         self.keys.append(key)
-        if ctrl and key in (ks._Win.VK_FRIENDS_TAB, ks._Win.VK_CHATS_TAB):
-            self.tab = key
+        if ctrl and key == ks._Win.VK_TAB and not self.tab_stuck:
+            self.tab = {"friends": "chats", "chats": "other", "other": "friends"}[self.tab]
         if key == self.VK_RETURN:
             if self.front == 1:
                 self.front = self.opens
@@ -136,6 +136,9 @@ class FakeWin:
 
     def raise_main(self):
         return self.main_found
+
+    def current_tab(self):
+        return self.tab
 
     def is_kakao(self, hwnd):
         return self.kakao
@@ -204,14 +207,32 @@ def test_windows_name_is_not_typed_unless_in_search_box(win):
 
 def test_windows_friend_is_found_in_friends_tab_without_searching_chats(win):
     assert "보냈어요" in ks.send("민수", "내일 봐")
-    assert ks._Win.VK_FRIENDS_TAB in win.keys and ks._Win.VK_CHATS_TAB not in win.keys
+    assert ks._Win.VK_TAB not in win.keys
 
 
 def test_windows_self_chat_is_found_in_chats_tab(win):
-    win.found_in = (ks._Win.VK_CHATS_TAB,)
+    win.found_in = ("chats",)
     assert "보냈어요" in ks.send("민수", "내일 봐")
-    assert win.keys.index(ks._Win.VK_FRIENDS_TAB) < win.keys.index(ks._Win.VK_CHATS_TAB)
+    assert win.keys.count(ks._Win.VK_TAB) == 1
     assert win.boxes[9] == "" and win.typed.count("민수") == 2
+
+
+def test_windows_stops_when_tab_cannot_be_changed(win):
+    win.found_in, win.tab_stuck = ("chats",), True
+    with pytest.raises(ks.KakaoSendError, match="탭"):
+        ks.send("민수", "내일 봐")
+    assert "내일 봐" not in win.typed
+
+
+def test_windows_starts_from_any_tab(win):
+    win.tab = "chats"
+    assert "보냈어요" in ks.send("민수", "내일 봐")
+    assert win.keys.count(ks._Win.VK_TAB) == 2
+
+
+def test_windows_placeholder_counts_as_empty_box(win):
+    win.boxes[2] = ks._MESSAGE_BOX
+    assert "보내지 않음" in ks.send("민수", "내일 봐", press_enter=False)
 
 
 def test_windows_not_found_anywhere_is_not_sent(win):
