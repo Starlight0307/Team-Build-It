@@ -132,7 +132,8 @@ def start_meeting_recording(title: str = "") -> str:
     with _lock:
         if _recording is not None:
             return f"🎙️ 이미 '{_recording.title}' 녹음 중이에요. 끝나면 '회의 녹음 끝내줘'라고 말해 주세요."
-        title = (title or "").strip()[:60] or datetime.now().strftime("%m월 %d일 회의")
+        now = datetime.now()
+        title = (title or "").strip()[:60] or f"{now.month}월 {now.day}일 회의"   # strftime에 한글을 넣으면 윈도우 Python 3.11에서 오류가 난다
         try:
             _recording = _Recorder(_audio_file(), title)
         except ImportError:

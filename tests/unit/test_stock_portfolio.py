@@ -472,7 +472,8 @@ def _finish_background_work(seconds=10):
     for thread in threading.enumerate():
         # 더미 스레드(Qt가 만든 스레드)는 join할 수 없다
         if thread is not threading.current_thread() and not isinstance(thread, threading._DummyThread):
-            thread.join(max(0, end - time.monotonic()))
+            if thread.is_alive():   # 막 만들어져 아직 시작 전인 스레드는 join하면 오류가 난다 (윈도우 CI)
+                thread.join(max(0, end - time.monotonic()))
 
 
 def test_master_falls_back_to_saved_file_and_downloads_once_a_day(tmp_path, monkeypatch):

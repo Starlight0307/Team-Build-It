@@ -387,7 +387,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["start_meeting_recording", "stop_meeting_recording", "list_meetings", "show_meeting", "delete_meeting"],
         "module_name": "meeting_notes",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/meeting_notes.py",
-        "sha256": "5a15f4aba7e8db3c067fc56c57126660b09c3265cc76cefe884c22effc1746fb",
+        "sha256": "1f853c699621a68452eaf8768d547dd91f1c6960018bbdd5c7c3cbf0dd54baa8",
         "dependencies": []
     },
     {

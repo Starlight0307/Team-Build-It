@@ -4,3 +4,6 @@ verify_jwt = false
 
 [functions.kakao-token]
 verify_jwt = true
+
+[functions.delete-account]
+verify_jwt = true

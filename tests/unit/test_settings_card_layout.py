@@ -1,5 +1,6 @@
 """환경설정 카드: 긴 설명 글이 잘리지 않는지, 시작할 때 호출어 설정을 적용하는지."""
 import os
+import time
 
 import pytest
 
@@ -26,8 +27,11 @@ def test_long_settings_descriptions_are_not_clipped(qapp, width):
     w.resize(width, 900)
     w.show()
     w._go_to_page(3)
-    for _ in range(5):
+    # 위치 찾기가 끝나면 글이 뒤늦게 바뀌고, 높이는 다음 이벤트에서 맞춰진다 (2026-11-06 윈도우 CI)
+    end = time.time() + 3
+    while time.time() < end and _clipped(w):
         qapp.processEvents()
+        time.sleep(0.02)
     assert _clipped(w) == []
     w.close()
 

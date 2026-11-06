@@ -925,16 +925,22 @@ def change_password(username: str, current_password: str, new_password: str) -> 
         return False
 
 
-def delete_account(username: str, password: str) -> bool:
-    """회원 탈퇴 — 비밀번호로 본인 확인 후 이 계정으로 다시는 로그인할 수
-    없게 만든다 (비밀번호를 아무도 모르는 무작위 값으로 바꿈).
+def _delete_on_server(access_token: str) -> bool:
+    """서버의 계정 정보와 로그인 기록을 지운다 (supabase/functions/delete-account).
+    지우는 권한은 앱에 넣을 수 없어 서버 함수가 맡고, 대상은 로그인 토큰으로 정한다."""
+    try:
+        resp = requests.post(f"{SUPABASE_URL}/functions/v1/delete-account",
+                             headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {access_token}"}, timeout=15)
+        return resp.status_code == 200
+    except Exception as e:
+        print(f"[회원 탈퇴] 서버 삭제 실패: {type(e).__name__}")
+        return False
 
-    [참고] Supabase의 공개 API(anon key)로는 계정을 완전히 지울 수 없다 —
-    계정 삭제는 관리자 권한(service_role) API가 필요한데, 그 키는 배포되는
-    앱에 절대 넣으면 안 되는 값이라 클라이언트에서 직접 지울 수 없다.
-    그래서 "이 계정으로는 다시 로그인 못 하게" 만드는 방식으로 탈퇴를
-    구현했다 — 데이터까지 완전히 지워야 하면 팀 관리자가 Supabase
-    대시보드(Authentication → Users)에서 직접 삭제해야 한다."""
+
+def delete_account(username: str, password: str) -> bool:
+    """회원 탈퇴 — 비밀번호로 본인 확인 후 서버에서 계정을 지운다.
+    서버 삭제가 실패하면 다시 로그인하지 못하게 막아 두고(비밀번호를 무작위 값으로 바꿈),
+    처리방침대로 관리자가 30일 안에 지운다 (withdrawn 표시로 찾을 수 있다)."""
     try:
         email = _login_email(username, password)
         if not email:
@@ -950,6 +956,9 @@ def delete_account(username: str, password: str) -> bool:
         if check.status_code != 200:
             return False
         session_token = check.json().get("access_token")
+        if _delete_on_server(session_token):
+            clear_session()
+            return True
 
         import secrets
         resp = requests.put(
@@ -1000,8 +1009,11 @@ def delete_google_account() -> bool:
     """구글로 가입한 계정의 탈퇴 — 비밀번호가 없으므로 지금 로그인된 세션으로 처리한다
     (화면에서 "탈퇴"를 직접 입력해 확인받음). 계정에 withdrawn 표시를 남기고, 이후
     구글 로그인/자동 로그인 때 이 표시를 확인해 들어오지 못하게 막는다
-    (Supabase 공개 키로는 계정 자체를 지울 수 없어서 delete_account와 같은 방식의 '비활성화')."""
+    (서버 삭제가 실패했을 때만. delete_account와 같은 방식의 '비활성화')."""
     try:
+        if _delete_on_server(_session.get("access_token")):
+            clear_session()
+            return True
         resp = requests.put(
             f"{SUPABASE_URL}/auth/v1/user",
             headers=_session_headers(),
