@@ -379,7 +379,7 @@ def launch(name: str, exact: bool = False) -> str:
 
 _OPEN_ONLY = re.compile(r"^(?:직접\s*|대신\s*|지금\s*)?(?P<name>.+?)\s*(?P<kind>앱|어플|프로그램)?\s*(?:을|를)?\s*(?:좀\s*)?"
                         r"(?:열어|켜|실행해|실행|띄워)\s*(?:줘|줘요|주세요|줄래|봐|줄래요)?[\s.!?~]*$")
-_LEADING_APP = re.compile(r"^(?:직접\s*|대신\s*)?(?P<name>[^\s,]+?(?:\s[^\s,]+?){0,2})\s*(?P<kind>앱|프로그램)?\s*"
+_LEADING_APP = re.compile(r"^(?:직접\s*|대신\s*)?(?P<name>[^\s,]+?(?:\s[^\s,]+?){0,2}?)\s*(?P<kind>앱|프로그램)?\s*"
                           r"(?:을|를)?\s*(?:열고|열어서|열어|켜고|켜서|실행하고|실행해서|에서|에|으로|로)\s+\S")
 
 

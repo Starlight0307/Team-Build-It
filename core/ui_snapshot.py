@@ -82,6 +82,24 @@ def _walk_mac(root, out: list, end: float):
         queue.extend(_attr(element, "AXChildren") or [])
 
 
+def window_title() -> str:
+    """맨 앞 창 제목. 알 수 없으면 ""."""
+    try:
+        if IS_MAC:
+            import ApplicationServices as AS
+            app = _attr(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication")
+            window = _attr(app, "AXFocusedWindow") if app is not None else None
+            return str(_attr(window, "AXTitle") or "") if window is not None else ""
+        if IS_WIN:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(256)
+            ctypes.windll.user32.GetWindowTextW(ctypes.windll.user32.GetForegroundWindow(), buf, 256)
+            return buf.value
+    except Exception:
+        pass
+    return ""
+
+
 def press_named(name: str) -> bool:
     """이름이 정확히 같은 버튼을 운영체제에 직접 누르게 한다 — 스크롤로 가려진 메뉴 항목은 좌표가 없어 클릭할 수 없다 (실측: 시스템 설정 사운드).
     shortcut: 맥만, 윈도우는 좌표 클릭으로 넘어간다. 실기 시험 때 UI Automation Invoke를 붙인다."""
@@ -97,6 +115,10 @@ def press_named(name: str) -> bool:
             element = queue.popleft()
             seen += 1
             if str(_attr(element, "AXRole")) in _PRESS_ROLES and name in (_attr(element, "AXTitle"), _attr(element, "AXDescription")):
+                # 왼쪽 메뉴 항목은 누르기가 아니라 행 선택으로 넘어간다 (실측: 가려진 사운드는 눌러도 그대로)
+                row = _attr(_attr(element, "AXParent"), "AXParent")
+                if row is not None and _attr(row, "AXRole") == "AXRow":
+                    return AS.AXUIElementSetAttributeValue(row, "AXSelected", True) == 0
                 return AS.AXUIElementPerformAction(element, "AXPress") == 0
             queue.extend(_attr(element, "AXChildren") or [])
     except Exception as e:

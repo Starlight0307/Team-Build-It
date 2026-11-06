@@ -288,15 +288,15 @@ def _screen_worker(monkeypatch, task, title, pressed=True):
     w = sa.ScreenAgentWorker(task, controller=object())
     monkeypatch.setattr(sa.ui_snapshot, "press_named", lambda name: pressed)
     monkeypatch.setattr(sa.ui_snapshot, "snapshot", lambda limit=60: [])
-    monkeypatch.setattr(sa, "active_window", lambda: (title, False))
+    monkeypatch.setattr(sa.ui_snapshot, "window_title", lambda: title)
     monkeypatch.setattr(w, "_signature", lambda mon: None)
     monkeypatch.setattr(w, "_wait_for_screen", lambda *a: True)
     return w
 
 
 def test_named_screen_counts_only_after_title_confirms_it(qapp, monkeypatch):
-    assert _screen_worker(monkeypatch, "사운드 화면으로 가줘", "시스템 설정 — 창 제목 \"사운드\"")._click_named_screen([], MON) == "사운드"
-    assert _screen_worker(monkeypatch, "사운드 화면으로 가줘", "시스템 설정 — 창 제목 \"일반\"")._click_named_screen([], MON) is None
+    assert _screen_worker(monkeypatch, "사운드 화면으로 가줘", "사운드")._click_named_screen([], MON) == "사운드"
+    assert _screen_worker(monkeypatch, "사운드 화면으로 가줘", "일반")._click_named_screen([], MON) is None
 
 
 def test_dangerous_or_unmatched_names_are_left_to_the_model(qapp, monkeypatch):

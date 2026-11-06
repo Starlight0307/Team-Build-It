@@ -1172,9 +1172,13 @@ class ScreenAgentWorker(QThread):
                 return None
             self._perform({"action": "click", "x": point[0], "y": point[1], "target": name}, mon)
         self._wait_for_screen("click", before, mon)
-        title = active_window()[0] or ""
-        selected = any(e["name"] == name and e["value"] in ("1", "True") for e in ui_snapshot.snapshot(limit=_ALL_ELEMENTS))
-        return name if name.casefold() in title.casefold() or selected else None   # 확인이 안 되면 모델이 이어받는다
+        for _ in range(12):   # 창 제목은 화면보다 늦게 바뀐다. 확인이 안 되면 모델이 이어받는다
+            if name.casefold() in ui_snapshot.window_title().casefold() or any(
+                    e["name"] == name and e["value"] in ("1", "True") for e in ui_snapshot.snapshot(limit=_ALL_ELEMENTS)):
+                return name
+            if self._stop.wait(0.2):
+                return None
+        return None
 
     def _open_named_app(self):
         """요청 앞머리의 앱은 화면을 읽기 전에 바로 켠다 — 첫 화면 읽기(15~30초)를 앱 켜는 데 쓰지 않게."""
