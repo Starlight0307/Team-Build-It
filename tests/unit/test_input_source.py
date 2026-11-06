@@ -85,3 +85,23 @@ def test_type_text_picks_method_by_text(monkeypatch):
     monkeypatch.setattr(c, "_paste", lambda t: calls.append(("paste", t)) or True, raising=False)
     c.type_text("아이유")
     assert calls[-1] == ("paste", "아이유")
+
+
+def test_tis_runs_on_main_thread_from_a_worker(monkeypatch):
+    posted = []
+    monkeypatch.setattr(ins, "_is_main_thread", lambda: False)
+    monkeypatch.setattr(ins, "_post_to_main", lambda run: (posted.append(True), run()))
+    assert ins._on_main(lambda: "abc") == "abc" and posted == [True]
+
+
+def test_tis_gives_up_when_main_thread_does_not_answer(monkeypatch):
+    called = []
+    monkeypatch.setattr(ins, "_is_main_thread", lambda: False)
+    monkeypatch.setattr(ins, "_post_to_main", lambda run: None)
+    assert ins._on_main(lambda: called.append(1), timeout=0.01) is None and not called
+
+
+def test_tis_runs_directly_on_main_thread(monkeypatch):
+    monkeypatch.setattr(ins, "_post_to_main", lambda run: pytest.fail("메인 스레드에서는 바로 부른다"))
+    monkeypatch.setattr(ins, "_is_main_thread", lambda: True)
+    assert ins._on_main(lambda: 1) == 1

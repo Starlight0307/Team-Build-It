@@ -15,6 +15,7 @@ input_source.py  ─  입력기(한/영) 확인 · 전환
 import ctypes
 import re
 import sys
+import threading
 from contextlib import contextmanager
 
 IS_MAC = sys.platform == "darwin"
@@ -80,6 +81,33 @@ def _mac_str(cf, ref) -> str:
 def _mac_bool(cf, carbon, src, prop) -> bool:
     ref = carbon.TISGetInputSourceProperty(src, prop)
     return bool(ref) and cf.CFBooleanGetValue(ref)
+
+
+def _is_main_thread() -> bool:
+    return threading.current_thread() is threading.main_thread()
+
+
+def _post_to_main(run):
+    from Foundation import NSOperationQueue
+    NSOperationQueue.mainQueue().addOperationWithBlock_(run)
+
+
+def _on_main(fn, timeout=2.0):
+    """TIS는 메인 스레드 밖에서 부르면 macOS가 앱을 강제 종료한다 (2026-11-07 실측).
+    메인 스레드가 답하지 않으면 None — 호출하는 쪽은 입력기를 모를 때처럼 처리한다."""
+    if _is_main_thread():
+        return fn()
+    box, done = [], threading.Event()
+
+    def run():
+        try:
+            box.append(fn())
+        except Exception:
+            pass
+        finally:
+            done.set()
+    _post_to_main(run)
+    return box[0] if done.wait(timeout) and box else None
 
 
 def _mac_current() -> str:
@@ -227,7 +255,7 @@ def current():
     """지금 입력기 — macOS: 입력기 ID 문자열, Windows: IME 변환 모드 숫자. 모르면 None."""
     try:
         if IS_MAC:
-            return _mac_current() or None
+            return _on_main(_mac_current) or None
         if IS_WIN:
             return _win_mode()
     except Exception:
@@ -248,7 +276,7 @@ def is_english(state) -> bool:
 def switch_to_english() -> bool:
     try:
         if IS_MAC:
-            return _mac_select(_mac_english_ids_ok) and is_english(current())
+            return bool(_on_main(lambda: _mac_select(_mac_english_ids_ok))) and is_english(current())
         if IS_WIN:
             mode = _win_mode()
             if mode is None:
@@ -265,7 +293,7 @@ def restore(state) -> bool:
         return False
     try:
         if IS_MAC:
-            return _mac_select(lambda sid, src: sid == state)
+            return bool(_on_main(lambda: _mac_select(lambda sid, src: sid == state)))
         if IS_WIN:
             return _win_set_mode(int(state))
     except Exception:
