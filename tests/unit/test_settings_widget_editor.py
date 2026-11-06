@@ -111,10 +111,15 @@ def test_settings_page_has_no_clipped_labels_at_common_widths(qapp, monkeypatch,
     try:
         for width in (1320, 1100, 900):
             w.resize(width, 860)
-            for _ in range(15):
+            # 현재 위치 글자는 네트워크로 늦게 도착한다 — 도착 직후 배치가 끝나기 전 순간은 잘린 게 아니다
+            end = time.monotonic() + 5
+            while True:
                 qapp.processEvents()
+                bad = selftest.clipped_labels(w.settings_scroll.widget())
+                if not bad or time.monotonic() > end:
+                    break
                 time.sleep(0.01)
-            assert selftest.clipped_labels(w.settings_scroll.widget()) == [], width
+            assert bad == [], width
     finally:
         w.close()
 

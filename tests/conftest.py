@@ -54,6 +54,15 @@ import webbrowser as _webbrowser
 _webbrowser.open = _webbrowser.open_new = _webbrowser.open_new_tab = lambda *a, **k: False
 
 
+@pytest.fixture(autouse=True)
+def _no_real_stock_list_download(request, monkeypatch):
+    """플러그인이 켜진 메인 창이 시험 중에 진짜 종목 목록을 받으면, 늦게 끝난 스레드가 다른 시험의 값을 덮어쓴다."""
+    if "start_updates" in request.node.name:
+        return
+    from widget import stock_panel
+    monkeypatch.setattr(stock_panel.StockPanel, "start_updates", lambda self: None)
+
+
 @pytest.fixture
 def isolated_chat_logs(tmp_path, monkeypatch):
     """data/db.py의 대화기록 저장 위치를 테스트용 임시 폴더로 바꿔치기한다.

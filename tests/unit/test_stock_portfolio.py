@@ -470,7 +470,8 @@ def _finish_background_work(seconds=10):
     import time
     end = time.monotonic() + seconds
     for thread in threading.enumerate():
-        if thread is not threading.current_thread():
+        # 더미 스레드(Qt가 만든 스레드)는 join할 수 없다
+        if thread is not threading.current_thread() and not isinstance(thread, threading._DummyThread):
             thread.join(max(0, end - time.monotonic()))
 
 
