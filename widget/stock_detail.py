@@ -20,7 +20,8 @@ CHROME_HEIGHT = 190     # 제목·버튼·그림자 자리
 LIVE_REFRESH_MS = 60_000
 CARD_RADIUS = 20        # lumi_dialog의 LumiCard 모서리와 같다
 GLASS_INPUT = {False: "rgba(255,255,255,120)", True: "rgba(255,255,255,20)"}
-TOOL_STYLE = "margin: 0; padding: 0 10px; min-height: 26px; max-height: 26px; font-size: 12px; border-radius: 9px;"
+TOOL_STYLE = "margin: 0; padding: 0 10px; min-width: 0; min-height: 26px; max-height: 26px; font-size: 12px; border-radius: 9px;"
+SMALL_STYLE = "margin: 0; padding: 0 12px; min-width: 0; min-height: 28px; max-height: 28px; font-size: 12px; border-radius: 10px;"
 TILE_WIDTH = 118        # 이보다 좁으면 수치 칸을 다음 줄로 내린다
 BARS_MIN_WIDTH = 780    # 이보다 좁으면 손익 막대를 접고 그래프에 폭을 준다
 PERIODS = (("1개월", 22), ("3개월", 66), ("전체", None))   # 거래일 수
@@ -62,6 +63,9 @@ def moving_average(closes: list, length: int) -> list:
             total -= closes[i - length]
         out.append(total / length if i >= length - 1 else None)
     return out
+
+
+ZOOM_STEP = 0.7
 
 
 class PriceChart(QWidget):
@@ -185,12 +189,23 @@ class PriceChart(QWidget):
         step = event.angleDelta().y()
         if not step:
             return
-        count = self.view_count * (0.85 if step > 0 else 1 / 0.85)
+        self.zoom(0.85 if step > 0 else 1 / 0.85, self._index_at(event.position().x()))
+
+    def zoom(self, factor: float, center: int = None):
+        """보이는 봉 수에 factor를 곱한다. center 봉이 제자리에 남고, 없으면 화면 가운데 기준."""
+        if not self.bars:
+            return
+        if center is None:
+            center = self.view_start + self.view_count // 2
+        count = self.view_count * factor
         count = max(min(self.MIN_BARS, len(self.bars)), min(len(self.bars), round(count)))
-        center = self._index_at(event.position().x())
-        share = (center - self.view_start) / max(1, self.view_count)   # 마우스 아래 봉이 제자리에 남게
+        share = (center - self.view_start) / max(1, self.view_count)
         self.view_count = count
         self.view_start = max(0, min(len(self.bars) - count, round(center - share * count)))
+        self.update()
+
+    def reset_zoom(self):
+        self.view_start, self.view_count = 0, len(self.bars)
         self.update()
 
     def mousePressEvent(self, event):
@@ -227,8 +242,7 @@ class PriceChart(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         if not self.tool and self.bars:   # 전체 보기로 돌아간다
-            self.view_start, self.view_count = 0, len(self.bars)
-            self.update()
+            self.reset_zoom()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape and self.pending:   # 창이 닫히지 않고 그리던 선만 취소
@@ -563,8 +577,9 @@ class StatTile(QFrame):
 class StockDetailDialog(_StockDialog):
     """요약 · 손익 막대 · 가격 그래프 · 보유 종목 표. 조회만 하고 주문은 내지 않는다."""
 
-    def __init__(self, parent=None, open_settings=None):
+    def __init__(self, parent=None, open_settings=None, open_order=None, open_auto=None):
         super().__init__(parent, "주식 상세")
+        self.open_order, self.open_auto = open_order, open_auto
         self.setMinimumWidth(MIN_WIDTH)
         self.resize(DEFAULT_WIDTH, self.height())
         self.enable_resize()
@@ -613,6 +628,25 @@ class StockDetailDialog(_StockDialog):
         left.addStretch(1)
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
+        trades = QHBoxLayout()
+        trades.setSpacing(6)
+        self.trade_buttons = []
+        for name, kind, side, tip in (("매수", "order", "buy", "이 종목 매수 창 열기 — 확인하고 직접 눌러야 주문이 나가요"),
+                                      ("매도", "order", "sell", "이 종목 매도 창 열기 — 확인하고 직접 눌러야 주문이 나가요"),
+                                      ("자동 매수", "auto", "buy", "가격이 기준가 이하가 되면 매수하는 규칙 만들기"),
+                                      ("자동 매도", "auto", "sell", "가격이 기준가 이상이 되면 매도하는 규칙 만들기")):
+            button = QPushButton(name)
+            button.setObjectName("LinkPrimary" if kind == "order" else "LinkGhost")
+            button.setAutoDefault(False)
+            button.setToolTip(tip)
+            button.setStyleSheet(SMALL_STYLE)
+            button.setEnabled(False)
+            button.clicked.connect(lambda _=False, k=kind, d=side: self._trade(k, d))
+            button.setVisible(bool(open_order and open_auto))
+            self.trade_buttons.append(button)
+            trades.addWidget(button)
+        trades.addStretch(1)
+        right.addLayout(trades)
         periods = QHBoxLayout()
         periods.setSpacing(6)
         self.period_buttons = {}
@@ -625,6 +659,18 @@ class StockDetailDialog(_StockDialog):
                                  "font-size: 12px; border-radius: 10px;")
             button.clicked.connect(lambda _=False, d=days: self.set_period(d))
             self.period_buttons[days] = button
+            periods.addWidget(button)
+        periods.addSpacing(10)
+        for name, tip, action in (("－", "그래프 축소", lambda: self.chart.zoom(1 / ZOOM_STEP)),
+                                  ("＋", "그래프 확대", lambda: self.chart.zoom(ZOOM_STEP)),
+                                  ("전체", "그래프 전체 보기", lambda: self.chart.reset_zoom())):
+            button = QPushButton(name)
+            button.setObjectName("LinkGhost")
+            button.setAutoDefault(False)
+            button.setToolTip(tip)
+            button.setAccessibleName(tip)
+            button.setStyleSheet(SMALL_STYLE)
+            button.clicked.connect(lambda _=False, a=action: a())
             periods.addWidget(button)
         periods.addStretch(1)
         self.btn_favorite = QPushButton("☆ 즐겨찾기")
@@ -854,7 +900,17 @@ class StockDetailDialog(_StockDialog):
         self._fill_stock_list()
         self._filtering = False
 
+    def _trade(self, kind: str, side: str):
+        request = {"side": side, "stock": self.current_code}
+        bars = self.history.get(self.current_code)
+        if bars:
+            request["price"] = int(bars[-1]["close"])
+        (self.open_order if kind == "order" else self.open_auto)(request, self)
+        self.reload()
+
     def _show_favorite_state(self):
+        for button in self.trade_buttons:
+            button.setEnabled(bool(self.current_code))
         on = self.current_code in self.favorites
         self.btn_favorite.setEnabled(bool(self.current_code))
         self.btn_favorite.setText("★ 즐겨찾기 해제" if on else "☆ 즐겨찾기")

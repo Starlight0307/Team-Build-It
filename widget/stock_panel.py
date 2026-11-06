@@ -384,6 +384,7 @@ class StockOrderDialog(_StockDialog):
         self.quantity_input = QLineEdit(str(request.get("quantity") or ""))
         self.price_input = QLineEdit(str(request.get("price") or ""))
         self.stock_label, self.amount_label = QLabel(), QLabel()
+        self.stock_label.setWordWrap(True)   # 현재가 조회 실패 안내가 길면 잘렸다
         self.field("매수/매도", self.side_input)
         self.field("종목 (정확한 이름 또는 6자리 코드)", self.stock_input)
         self.body.addWidget(self.stock_label)
@@ -473,7 +474,8 @@ class StockOrderDialog(_StockDialog):
 class StockAutoDialog(_StockDialog):
     """자동매매 규칙·한도·켜고 끄기. 켜는 것은 이 창에서 사람이 직접 눌러야만 된다."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, request: dict = None):
+        request = request or {}
         super().__init__(parent, "자동매매",
                          f"{_stock().account_status()['account']} · '삼성전자가 7만 원이 되면 10주 매도'처럼 직접 정한 규칙을 조건이 되면 지정가로 한 번 주문해요.\n"
                          "루미가 켜져 있고 PC가 깨어 있을 때 정규장에서만 동작하며, 수익을 보장하지 않아요. 앱을 다시 켜면 꺼진 상태로 시작해요.")
@@ -481,8 +483,11 @@ class StockAutoDialog(_StockDialog):
         self.side_input.addItem("도달하면 매도 (현재가 ≥ 기준가)", "sell")
         self.side_input.addItem("도달하면 매수 (현재가 ≤ 기준가)", "buy")
         self.stock_input, self.target_input, self.qty_input = QLineEdit(), QLineEdit(), QLineEdit()
+        self.side_input.setCurrentIndex(max(0, self.side_input.findData(request.get("side"))))
         self.stock_input.setPlaceholderText("삼성전자")
-        self.target_input.setPlaceholderText("70000")
+        self.stock_input.setText(str(request.get("stock") or ""))
+        # 기준가를 현재가로 채워 두면 규칙을 넣자마자 주문될 수 있어 힌트로만 보여 준다
+        self.target_input.setPlaceholderText(f"현재 {request['price']:,}" if request.get("price") else "70000")
         self.qty_input.setPlaceholderText("10")
         form = QHBoxLayout()
         for label, widget in (("종목", self.stock_input), ("기준가(원)", self.target_input), ("수량(주)", self.qty_input)):
@@ -765,7 +770,7 @@ class StockPanel(Panel):
             self._detail.activateWindow()
             return
         from widget.stock_detail import StockDetailDialog   # stock_detail이 이 파일을 불러와 순환을 피한다
-        dlg = StockDetailDialog(None, open_settings=self.open_settings)
+        dlg = StockDetailDialog(None, open_settings=self.open_settings, open_order=self.open_order, open_auto=self.open_auto)
         dlg.make_independent()
         dlg.finished.connect(self._on_detail_closed)
         self._detail = dlg
@@ -802,15 +807,26 @@ class StockPanel(Panel):
         StockAccountDialog(self.window()).exec()
         self._after_dialog()
 
-    def open_order(self, request: dict = None):
-        StockOrderDialog(request, self.window()).exec()
+    def open_order(self, request: dict = None, parent=None):
+        parent = parent or self.window()
+        status = _stock().account_status()
+        if not status["connected"] or not status["order_enabled"]:   # 주문 창을 열어 봐야 막히니 설정부터
+            StockAccountDialog(parent).exec()
+            status = _stock().account_status()
+            if not status["connected"] or not status["order_enabled"]:
+                self._after_dialog()
+                return
+        StockOrderDialog(request, parent).exec()
         self._after_dialog()
 
-    def open_auto(self):
+    def open_auto(self, request: dict = None, parent=None):
+        parent = parent or self.window()
         if not _stock().account_status()["connected"]:
-            self.open_settings()
-            return
-        StockAutoDialog(self.window()).exec()
+            StockAccountDialog(parent).exec()
+            self._after_dialog()
+            if not _stock().account_status()["connected"]:
+                return
+        StockAutoDialog(parent, request).exec()
         self._sync_auto()
 
     def apply_theme(self, p: dict):

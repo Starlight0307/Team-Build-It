@@ -877,3 +877,93 @@ def test_guest_cannot_pick_drawing_tool(qapp, stock):
     dlg.close()
     sp.set_current_user("tester")
 
+
+def test_trade_buttons_open_windows_for_current_stock_without_ordering(qapp, stock, monkeypatch):
+    monkeypatch.setattr(sp, "place_order", lambda *a, **k: pytest.fail("창을 여는 것만으로 주문이 나가면 안 된다"))
+    calls = []
+    dlg = _dialog(qapp, open_order=lambda r, parent: calls.append(("order", r, parent)),
+                  open_auto=lambda r, parent: calls.append(("auto", r, parent)))
+    assert _wait(qapp, lambda: dlg.current_code)
+    assert [b.text() for b in dlg.trade_buttons] == ["매수", "매도", "자동 매수", "자동 매도"]
+    assert all(b.isEnabled() for b in dlg.trade_buttons)
+    for button in dlg.trade_buttons:
+        button.click()
+    expected = {"stock": dlg.current_code, "price": 71000}
+    assert calls == [("order", {"side": "buy", **expected}, dlg), ("order", {"side": "sell", **expected}, dlg),
+                     ("auto", {"side": "buy", **expected}, dlg), ("auto", {"side": "sell", **expected}, dlg)]
+    dlg.close()
+
+
+def test_trade_buttons_stay_hidden_without_handlers_and_off_until_a_stock_loads(qapp, stock):
+    dlg = sd.StockDetailDialog()
+    assert all(b.isHidden() and not b.isEnabled() for b in dlg.trade_buttons)
+    dlg.close()
+
+
+def test_auto_dialog_fills_stock_and_side_but_never_target_price(qapp, stock):
+    dlg = stock_panel.StockAutoDialog(None, {"side": "buy", "stock": "005930", "price": 71000})
+    assert dlg.side_input.currentData() == "buy" and dlg.stock_input.text() == "005930"
+    assert dlg.target_input.text() == "" and "71,000" in dlg.target_input.placeholderText()
+    dlg.close()
+
+
+@pytest.mark.parametrize("enabled, turned_on, opened", [(False, False, ["account"]), (False, True, ["account", "order"]), (True, False, ["order"])])
+def test_panel_order_goes_through_settings_when_orders_are_off(qapp, stock, monkeypatch, enabled, turned_on, opened):
+    sp.set_order_settings(enabled, 1000000)
+    seen = []
+
+    class Fake:
+        def __init__(self, name, then=None):
+            self.name, self.then = name, then
+
+        def __call__(self, *a):
+            seen.append(self.name)
+            if self.then:
+                self.then()
+            return self
+
+        def exec(self):
+            return 0
+    monkeypatch.setattr(stock_panel, "StockAccountDialog", Fake("account", (lambda: sp.set_order_settings(True, 1000000)) if turned_on else None))
+    monkeypatch.setattr(stock_panel, "StockOrderDialog", Fake("order"))
+    panel = stock_panel.StockPanel()
+    panel.open_order({"side": "buy", "stock": "005930"})
+    assert seen == opened
+    panel.deleteLater()
+
+
+def test_zoom_buttons_change_visible_range_within_limits(qapp, stock, monkeypatch):
+    many = [(f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}", 70000 + i) for i in range(200)]
+    monkeypatch.setattr(sp, "get_price_bars", lambda code: _bars(many))
+    dlg = _dialog(qapp)
+    assert _wait(qapp, lambda: dlg.chart.view_count == 200)
+    chart = dlg.chart
+    chart.zoom(sd.ZOOM_STEP)
+    assert chart.view_count == 140 and 0 <= chart.view_start <= 60
+    for _ in range(30):
+        chart.zoom(sd.ZOOM_STEP)
+    assert chart.view_count == chart.MIN_BARS
+    assert 0 <= chart.view_start <= 200 - chart.MIN_BARS
+    for _ in range(30):
+        chart.zoom(1 / sd.ZOOM_STEP)
+    assert (chart.view_start, chart.view_count) == (0, 200)
+    chart.zoom(sd.ZOOM_STEP)
+    chart.reset_zoom()
+    assert (chart.view_start, chart.view_count) == (0, 200)
+    dlg.close()
+
+
+def test_narrowest_window_shows_every_control_without_sideways_overflow(qapp, stock):
+    from PyQt6.QtWidgets import QPushButton, QScrollArea
+    dlg = _dialog(qapp, open_order=lambda r, p: None, open_auto=lambda r, p: None)
+    dlg.show()
+    assert _wait(qapp, lambda: dlg.current_code)
+    dlg.resize(sd.MIN_WIDTH, 700)
+
+    def fits():
+        return all(a.widget().width() <= a.viewport().width() for a in dlg.findChildren(QScrollArea)
+                   if a.widget() and a.widget().isAncestorOf(dlg.chart))
+    assert _wait(qapp, fits, 5)
+    assert len([b for b in dlg.findChildren(QPushButton) if b.toolTip().startswith("그래프")]) == 3
+    dlg.close()
+
