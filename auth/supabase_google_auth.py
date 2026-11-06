@@ -136,7 +136,7 @@ def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
 
     access_token = session.get("access_token")
     if not access_token:
-        raise RuntimeError("구글 로그인 세션을 받지 못했습니다.")
+        raise RuntimeError("로그인 세션을 받지 못했습니다.")
     return access_token, session.get("refresh_token"), session.get("provider_token")
 
 
@@ -153,19 +153,39 @@ def sign_in_with_google(cancel_event=None) -> tuple[str, str, str]:
     실패 시 예외를 던진다 (호출부에서 사용자에게 실패 사유를 보여줘야
     하므로 여기서 조용히 삼키지 않는다).
     """
+    return _sign_in_with_provider("google", " ".join(CALENDAR_SCOPES), cancel_event)
+
+
+def sign_in_with_kakao(cancel_event=None) -> tuple[str, str]:
+    """Supabase Auth(카카오 프로바이더)로 로그인시키고 (access_token, refresh_token)을 반환한다."""
+    return _sign_in_with_provider("kakao", None, cancel_event)[:2]
+
+
+def provider_enabled(provider: str) -> bool:
+    """서버에서 이 로그인 방식이 켜져 있는지. 못 물어보면 False — 눌러도 안 되는 버튼을 보이지 않으려고."""
+    try:
+        resp = requests.get(f"{SUPABASE_URL}/auth/v1/settings", headers={"apikey": SUPABASE_ANON_KEY}, timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("external", {}).get(provider) is True
+    except (requests.RequestException, ValueError, AttributeError):
+        return False
+
+
+def _sign_in_with_provider(provider: str, scopes: str, cancel_event=None) -> tuple[str, str, str]:
     port = _free_port()
     redirect_to = f"http://localhost:{port}"
     verifier, challenge = _make_pkce_pair()
 
-    authorize_url = f"{SUPABASE_URL}/auth/v1/authorize?" + urlencode({
-        "provider": "google",
+    params = {
+        "provider": provider,
         "redirect_to": redirect_to,
-        "scopes": " ".join(CALENDAR_SCOPES),
         "code_challenge": challenge,
         "code_challenge_method": "S256",
         "apikey": SUPABASE_ANON_KEY,
-    })
-    webbrowser.open(authorize_url)
+    }
+    if scopes:
+        params["scopes"] = scopes
+    webbrowser.open(f"{SUPABASE_URL}/auth/v1/authorize?" + urlencode(params))
 
     code = _wait_for_redirect(port, cancel_event=cancel_event)
     return _exchange_code(code, verifier)

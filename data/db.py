@@ -1017,8 +1017,8 @@ def delete_google_account() -> bool:
         return False
 
 
-def complete_google_login(access_token: str, refresh_token: str = None, remember: bool = True) -> str:
-    """구글 로그인 후 세션을 등록하고, 내 아이디(username)를 반환한다."""
+def complete_google_login(access_token: str, refresh_token: str = None, remember: bool = True, method: str = "Google") -> str:
+    """구글·카카오 로그인 후 세션을 등록하고, 내 아이디(username)를 반환한다."""
     resp = requests.get(
         f"{SUPABASE_URL}/rest/v1/profiles",
         params={"select": "username"},
@@ -1035,7 +1035,7 @@ def complete_google_login(access_token: str, refresh_token: str = None, remember
     username = rows[0]["username"]
     if _is_withdrawn(access_token):
         raise RuntimeError("탈퇴한 계정이에요.")
-    set_session(access_token, username, refresh_token, remember=remember, method="Google")
+    set_session(access_token, username, refresh_token, remember=remember, method=method)
     return username
 
 
