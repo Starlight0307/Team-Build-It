@@ -1148,3 +1148,49 @@ def test_market_key_screen_says_it_is_not_real_time(qapp, stock, monkeypatch):
     assert "실시간 아님" in dlg.live_label.text()
     dlg.close()
 
+
+def test_trade_stream_updates_chart_and_pauses_polling_then_stops_on_close(qapp, stock, monkeypatch):
+    opened, stopped, polled = [], [], []
+    monkeypatch.setattr(sp, "open_trade_stream", lambda code, on_price: opened.append((code, on_price)) or (lambda: stopped.append(code)))
+    monkeypatch.setattr(sp, "get_price", lambda code: polled.append(code) or 1)
+    dlg = _live(qapp, monkeypatch)
+    assert _wait(qapp, lambda: opened)
+    code, on_price = opened[0]
+    on_price(91000)
+    on_price(92000)
+    assert _wait(qapp, lambda: dlg.chart.bars[-1]["close"] == 92000)
+    assert "실시간 체결 92,000원" in dlg.live_label.text()
+    polled.clear()
+    dlg._refresh_price()
+    _wait(qapp, lambda: False, 0.1)
+    assert polled == []   # 체결이 오는 동안은 조회하지 않는다
+    dlg.close()
+    assert _wait(qapp, lambda: stopped == [code])
+
+
+def test_switching_stock_restarts_stream_and_ignores_old_ticks(qapp, stock, monkeypatch):
+    opened, stopped = [], []
+    monkeypatch.setattr(sp, "open_trade_stream", lambda code, on_price: opened.append((code, on_price)) or (lambda: stopped.append(code)))
+    dlg = _live(qapp, monkeypatch)
+    assert _wait(qapp, lambda: opened)
+    first, old_tick = opened[0]
+    other = "035720" if first != "035720" else "000660"
+    dlg.show_stock(other)
+    assert _wait(qapp, lambda: dlg.current_code == other and len(opened) == 2)
+    assert stopped == [first]
+    closes = [b["close"] for b in dlg.chart.bars]
+    old_tick(11111)
+    _wait(qapp, lambda: False, 0.5)
+    assert [b["close"] for b in dlg.chart.bars] == closes
+    dlg.close()
+
+
+def test_broker_without_stream_keeps_polling(qapp, stock, monkeypatch):
+    monkeypatch.setattr(sp, "open_trade_stream", lambda code, on_price: None)
+    polled = []
+    monkeypatch.setattr(sp, "get_price", lambda code: polled.append(code) or 70099)
+    dlg = _live(qapp, monkeypatch)
+    dlg._refresh_price()
+    assert _wait(qapp, lambda: polled)
+    dlg.close()
+

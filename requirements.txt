@@ -6,6 +6,7 @@
 #   build code runs at install time.
 PyQt6==6.11.0
 requests==2.34.2
+websocket-client==1.8.0
 ollama==0.6.2
 python-dotenv==1.2.3
 google-auth==2.58.0

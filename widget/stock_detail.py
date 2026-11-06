@@ -1,4 +1,5 @@
 """주식 위젯을 누르면 뜨는 상세 창 — 종목별 손익 막대, 가격 그래프, 보유 종목 표."""
+import time
 from bisect import bisect_left
 from datetime import datetime
 
@@ -19,7 +20,9 @@ SEARCH_ROLE = Qt.ItemDataRole.UserRole + 1
 DEFAULT_WIDTH, MIN_WIDTH, MIN_HEIGHT = 1240, 900, 560
 CHROME_HEIGHT = 190     # 제목·버튼·그림자 자리
 LIVE_REFRESH_MS = 60_000
-LIVE_PRICE_MS = 3_000   # 증권사 API에 실시간 연결이 없어 보고 있는 한 종목의 현재가만 자주 다시 읽는다
+LIVE_PRICE_MS = 3_000   # 실시간 연결이 없는 증권사는 보고 있는 한 종목의 현재가만 자주 다시 읽는다
+TICK_DRAW_MS = 300
+STREAM_FRESH_SECONDS = 10   # 이만큼 체결이 없으면 현재가 조회로 확인한다 (거래가 뜸한 종목)
 MARKET_REFRESH_TICKS = 30   # 계좌 없이 보는 표는 30분마다 (시세 키 시세의 캐시 주기)
 CARD_RADIUS = 20        # lumi_dialog의 LumiCard 모서리와 같다
 GLASS_INPUT = {False: "rgba(255,255,255,120)", True: "rgba(255,255,255,20)"}
@@ -588,6 +591,8 @@ class StatTile(QFrame):
 class StockDetailDialog(_StockDialog):
     """요약 · 손익 막대 · 가격 그래프 · 보유 종목 표. 조회만 하고 주문은 내지 않는다."""
     _live_time, _price_busy = None, False
+    _stream_stop, _stream_code, _stream_tick, _stream_seen = None, "", None, 0.0
+    _trade_tick = pyqtSignal(str, int)   # 웹소켓 스레드 → 화면
 
     def __init__(self, parent=None, open_settings=None, open_order=None, open_auto=None):
         super().__init__(parent, "주식 상세")
@@ -799,11 +804,60 @@ class StockDetailDialog(_StockDialog):
         self._price_timer.setInterval(LIVE_PRICE_MS)
         self._price_timer.timeout.connect(self._refresh_price)
         self._price_timer.start()
+        self._trade_tick.connect(self._on_trade_tick)
+        self._tick_timer = QTimer(self)
+        self._tick_timer.setInterval(TICK_DRAW_MS)
+        self._tick_timer.timeout.connect(self._draw_trade_tick)
+        self._tick_timer.start()
+        self.finished.connect(lambda _=0: self._stop_stream())
+        if self.current_code:   # 잔고가 먼저 와서 그래프가 이미 그려졌을 때
+            self._sync_stream()
+
+    def _stop_stream(self):
+        if self._stream_stop:
+            self._stream_stop()
+        self._stream_stop, self._stream_code, self._stream_tick = None, "", None
+
+    def _sync_stream(self):
+        """보고 있는 종목의 실시간 체결을 받는다. 웹소켓이 없는 증권사는 3초 조회만 쓴다."""
+        code = self.current_code
+        if not hasattr(self, "_tick_timer") or code == self._stream_code or not self.status_info["connected"]:
+            return
+        self._stop_stream()
+        self._stream_code = code
+
+        def on_price(price):
+            try:
+                self._trade_tick.emit(code, price)
+            except RuntimeError:   # 창이 먼저 닫혔다
+                pass
+        try:
+            self._stream_stop = _stock().open_trade_stream(code, on_price)
+        except _stock().StockError:
+            self._stream_stop = None
+
+    def _on_trade_tick(self, code: str, price: int):
+        if code == self.current_code:
+            self._stream_tick, self._stream_seen = (code, price), time.monotonic()
+
+    def _draw_trade_tick(self):
+        """체결은 초당 여러 번 올 수 있어 마지막 값만 끊어서 그린다."""
+        if not self._stream_tick:
+            return
+        code, price = self._stream_tick
+        self._stream_tick = None
+        if code == self.current_code:
+            self._live_time = datetime.now().strftime("%H:%M:%S")
+            self._apply_price(code, price)
+            self._show_live_state()
+
+    def _stream_alive(self) -> bool:
+        return time.monotonic() - self._stream_seen < STREAM_FRESH_SECONDS
 
     def _refresh_price(self):
         """보고 있는 종목의 현재가를 읽어 마지막 봉과 수치를 바꾼다. 앞선 요청이 안 끝났으면 쌓지 않는다."""
         code = self.current_code
-        if self._price_busy or not code or not self.isVisible() or not self.status_info["connected"] or not _stock().market_open():
+        if self._stream_alive() or self._price_busy or not code or not self.isVisible() or not self.status_info["connected"] or not _stock().market_open():
             return
         self._price_busy = True
 
@@ -843,6 +897,8 @@ class StockDetailDialog(_StockDialog):
         bars = self.history.get(self.current_code) or []
         if not self.status_info["connected"]:
             text = f"지난 영업일 종가 기준 · 실시간 아님 ({bars[-1]['date']})" if bars else "실시간 아님"
+        elif self._stream_alive() and bars:
+            text = f"실시간 체결 {bars[-1]['close']:,}원 · {self._live_time}"
         elif not _stock().market_open():
             text = "장 마감 · 마지막 시세"
         elif self._live_time:
@@ -1245,6 +1301,7 @@ class StockDetailDialog(_StockDialog):
         self.chart.set_drawings(_stock().chart_drawings(self.current_code))
         self._show_stats(len(bars) - 1, animate=not refresh)
         self._show_live_state()
+        self._sync_stream()
         for tile in self.holding_tiles.values():
             tile.setVisible(bool(held))
         self.fit_to_content()

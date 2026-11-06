@@ -1584,3 +1584,73 @@ def test_limits_guest_bad_code_and_broken_saved_data(tmp_path, monkeypatch):
     finally:
         sp.set_current_user("guest")
 
+
+class _FakeSocket:
+    def __init__(self, frames, stop_after):
+        self.frames, self.sent, self.closed, self.stop_after = list(frames), [], False, stop_after
+
+    def send(self, text):
+        self.sent.append(text)
+
+    def settimeout(self, seconds):
+        pass
+
+    def recv(self):
+        import time
+        if self.frames:
+            return json.dumps(self.frames.pop(0))
+        self.stop_after()
+        time.sleep(0.01)
+        raise __import__("websocket").WebSocketTimeoutException()
+
+    def close(self):
+        self.closed = True
+
+
+def _toss_stream(monkeypatch, frames):
+    import threading
+    import websocket
+    monkeypatch.setattr(sp, "_require_account", lambda: {"account": {"broker": "toss"}})
+    monkeypatch.setattr(sp, "_broker", lambda data: type("B", (), {"_bearer": lambda self: "Bearer T"})())
+    monkeypatch.setattr(sp, "_store_token", lambda data: None)
+    done = threading.Event()
+    sock = _FakeSocket(frames, done.set)
+    calls = []
+    monkeypatch.setattr(websocket, "create_connection", lambda url, **k: calls.append((url, k)) or sock)
+    prices = []
+    stop = sp.open_trade_stream("005930", prices.append)
+    assert done.wait(3)
+    stop()
+    return sock, calls, prices
+
+
+def test_toss_stream_subscribes_with_token_and_reports_trades(monkeypatch):
+    sock, calls, prices = _toss_stream(monkeypatch, [
+        {"type": "subscriptions", "subscribed": ["trade:kr:005930"], "rejected": []},
+        {"type": "message", "topic": "trade:kr:005930", "data": {"price": "72000", "volume": "3", "timestamp": "t", "currency": "KRW"}},
+        {"type": "message", "topic": "trade:kr:005930", "data": {"price": "72100.00", "volume": "1", "timestamp": "t", "currency": "KRW"}}])
+    url, kw = calls[0]
+    assert url == "wss://openapi-ws.tossinvest.com/ws/v1" and kw["header"] == ["Authorization: Bearer T"]
+    assert json.loads(sock.sent[0]) == [{"type": "trade:kr", "codes": ["005930"]}]
+    assert prices == [72000, 72100]
+
+
+def test_other_brokers_have_no_stream(monkeypatch):
+    monkeypatch.setattr(sp, "_require_account", lambda: {"account": {"broker": "kiwoom"}})
+    assert sp.open_trade_stream("005930", print) is None
+
+
+def test_stream_stops_quietly_when_stock_is_rejected(monkeypatch):
+    import threading
+    import websocket
+    monkeypatch.setattr(sp, "_require_account", lambda: {"account": {"broker": "toss"}})
+    monkeypatch.setattr(sp, "_broker", lambda data: type("B", (), {"_bearer": lambda self: "Bearer T"})())
+    monkeypatch.setattr(sp, "_store_token", lambda data: None)
+    connects = []
+    sock = _FakeSocket([{"type": "subscriptions", "subscribed": [], "rejected": [{"code": "stock-not-found"}]}], lambda: None)
+    monkeypatch.setattr(websocket, "create_connection", lambda url, **k: connects.append(url) or sock)
+    sp.open_trade_stream("Q00001", print)
+    import time
+    time.sleep(0.2)
+    assert len(connects) == 1 and sock.closed
+

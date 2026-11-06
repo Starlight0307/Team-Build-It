@@ -53,6 +53,8 @@ MARKET_ETF_URL = "https://apis.data.go.kr/1160100/GetSecuritiesProductInfoServic
 MARKET_KEY_GUIDE_URL = "https://www.data.go.kr/data/15094808/openapi.do"
 MARKET_SOURCE = "출처: 금융위원회(공공데이터포털)"
 MARKET_CACHE_SECONDS = 1800
+TOSS_WS_URL = "wss://openapi-ws.tossinvest.com/ws/v1"
+TOSS_WS_PING_SECONDS = 60
 WATCHLIST = ("005930", "000660", "035420", "035720")   # 삼성전자, SK하이닉스, NAVER, 카카오
 MAX_DRAWINGS = 200
 MAX_OVERVIEW = 8   # 시세 표에 한 번에 받는 수 — 공공데이터 서버가 자주 느려진다
@@ -929,6 +931,66 @@ def get_price(code: str) -> int:
     if price <= 0:
         raise StockError("현재가를 확인하지 못했어요.")
     return price
+
+
+def open_trade_stream(code: str, on_price):
+    """토스증권 실시간 체결 웹소켓. 체결마다 on_price(가격)를 작업 스레드에서 부른다 → 멈추는 함수.
+    웹소켓이 없는 증권사나 라이브러리가 없으면 None — 부르는 쪽은 현재가를 주기적으로 읽는다."""
+    with _lock:
+        data = _require_account()
+    if (data["account"] or {}).get("broker") != "toss":
+        return None
+    try:
+        import websocket
+    except ImportError:
+        return None
+    stop = threading.Event()
+
+    def run():
+        wait = 2
+        while not stop.is_set():
+            ws = None
+            try:
+                with _lock:
+                    latest = _require_account()
+                bearer = _broker(latest)._bearer()
+                _store_token(latest)   # 토큰은 클라이언트당 1개만 유효해 새로 받지 않게 남겨 둔다
+                ws = websocket.create_connection(TOSS_WS_URL, header=[f"Authorization: {bearer}"], timeout=15)
+                ws.send(json.dumps([{"type": "trade:kr", "codes": [code]}]))
+                ws.settimeout(5)
+                last_ping, wait = time.monotonic(), 2
+                while not stop.is_set():
+                    if time.monotonic() - last_ping >= TOSS_WS_PING_SECONDS:
+                        ws.send("PING")   # 서버는 보내는 쪽이 180초 조용하면 끊는다
+                        last_ping = time.monotonic()
+                    try:
+                        frame = json.loads(ws.recv())
+                    except websocket.WebSocketTimeoutException:
+                        continue
+                    kind = frame.get("type")
+                    if kind == "message":
+                        price = _abs_int((frame.get("data") or {}).get("price"))
+                        if price > 0:
+                            on_price(price)
+                    elif kind == "subscriptions" and frame.get("rejected"):
+                        return   # 이 종목은 스트림이 없다 — 주기적 조회로 충분하다
+                    elif kind == "error":
+                        print(f"[토스 실시간] {(frame.get('error') or {}).get('code')}")
+                        break
+            except StockError:
+                return
+            except Exception as e:   # 키가 담길 수 있어 예외 내용은 남기지 않는다
+                print(f"[토스 실시간] 연결 끊김: {type(e).__name__}")
+            finally:
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+            stop.wait(wait)
+            wait = min(wait * 2, 30)
+    threading.Thread(target=run, daemon=True).start()
+    return stop.set
 
 
 def get_price_bars(code: str, days: int = 150) -> list:
