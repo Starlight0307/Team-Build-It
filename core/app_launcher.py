@@ -211,6 +211,17 @@ def _ax(element, name):
     return value if err == 0 else None
 
 
+def focused_app_element():
+    """맨 앞 앱의 손쉬운 사용 요소. 시스템 조회가 가끔 빈 값을 줘서(실측) 그때는 활성 앱에서 찾는다."""
+    import ApplicationServices as AS
+    from AppKit import NSWorkspace
+    app = _ax(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication")
+    if app is not None:
+        return app
+    active = next((a for a in NSWorkspace.sharedWorkspace().runningApplications() if a.isActive()), None)
+    return AS.AXUIElementCreateApplication(active.processIdentifier()) if active is not None else None
+
+
 def _mac_search_field():
     """포커스가 시스템 검색창에 있으면 그 입력칸, 아니면 None."""
     import ApplicationServices as AS
@@ -253,7 +264,7 @@ def _mac_front_path() -> str:
     # NSWorkspace.frontmostApplication은 런루프가 없는 스레드에서 옛 값을 돌려준다 (실측)
     import ApplicationServices as AS
     from AppKit import NSRunningApplication
-    app = _ax(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication")
+    app = focused_app_element()
     if app is None:
         return ""
     _, pid = AS.AXUIElementGetPid(app, None)

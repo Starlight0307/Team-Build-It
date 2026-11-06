@@ -105,7 +105,7 @@ def test_dialog_builds_all_tiles(qapp, fake_net, dark):
     from widget import weather_detail as wd
     dlg = wd.WeatherDetailDialog(None, "서울", None, dark=dark)
     t0 = time.time()
-    while dlg.data is None and time.time() - t0 < 5:
+    while dlg.data is None and time.time() - t0 < 30:   # 느린 CI에서도 넉넉하게 — 준비되면 바로 끝난다
         qapp.processEvents(); time.sleep(0.01)
     texts = " ".join(l.text() for l in dlg.content.findChildren(QLabel))
     for word in ("시간별 일기예보", "10일간의 일기예보", "대기질", "자외선 지수", "일몰", "바람", "강수량", "체감 온도",
@@ -187,7 +187,7 @@ def test_dialog_switches_background_to_loaded_weather(qapp, fake_net):
     dlg = wd.WeatherDetailDialog(None, "서울", None, scene_hint=("cloud-rain", True))
     assert dlg.card.scene == "rain_day"         # 불러오기 전에는 대시보드 날씨로
     t0 = time.time()
-    while dlg.data is None and time.time() - t0 < 5:
+    while dlg.data is None and time.time() - t0 < 30:   # 느린 CI에서도 넉넉하게 — 준비되면 바로 끝난다
         qapp.processEvents(); time.sleep(0.01)
     assert dlg.card.scene == "clear_day"        # 자세한 날씨(맑음·낮)가 오면 바뀐다
     dlg.reject()

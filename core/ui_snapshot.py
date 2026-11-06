@@ -48,6 +48,11 @@ $out | ConvertTo-Json -Compress
 """
 
 
+def _focused_app():
+    from core import app_launcher
+    return app_launcher.focused_app_element()
+
+
 def _attr(element, name):
     import ApplicationServices as AS
     err, value = AS.AXUIElementCopyAttributeValue(element, name, None)
@@ -87,7 +92,7 @@ def window_title() -> str:
     try:
         if IS_MAC:
             import ApplicationServices as AS
-            app = _attr(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication")
+            app = _focused_app()
             window = _attr(app, "AXFocusedWindow") if app is not None else None
             return str(_attr(window, "AXTitle") or "") if window is not None else ""
         if IS_WIN:
@@ -107,7 +112,7 @@ def press_named(name: str) -> bool:
         return False
     try:
         import ApplicationServices as AS
-        app = _attr(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication")
+        app = _focused_app()
         window = _attr(app, "AXFocusedWindow") if app is not None else None
         queue = deque([window] if window is not None else [])
         end, seen = time.monotonic() + 3.0, 0   # 켜진 직후에는 앱이 느리게 답한다 (실측)
@@ -126,17 +131,17 @@ def press_named(name: str) -> bool:
     return False
 
 
-def _read_mac() -> list:
+def _read_mac(deadline: float = _DEADLINE) -> list:
     import ApplicationServices as AS
     # NSWorkspace.frontmostApplication은 런루프가 없는 스레드에서 옛 값을 돌려준다 (실측: 설정을 켜도 텍스트 편집기 목록)
-    app = _attr(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication")
+    app = _focused_app()
     if app is None or AS.AXUIElementGetPid(app, None)[1] == os.getpid():
         return []
     AS.AXUIElementSetAttributeValue(app, "AXManualAccessibility", True)   # 크롬·일렉트론 앱은 이래야 페이지 내용을 알려 준다
     window = _attr(app, "AXFocusedWindow") or next(iter(_attr(app, "AXWindows") or []), None)
     out = []
     if window is not None:
-        _walk_mac(window, out, time.monotonic() + _DEADLINE)
+        _walk_mac(window, out, time.monotonic() + deadline)
     return out
 
 

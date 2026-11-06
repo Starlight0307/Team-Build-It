@@ -1,0 +1,160 @@
+"""카톡 보내기 — 확인받기와, 어긋나면 보내지 않기. 진짜 카카오톡은 건드리지 않는다."""
+import pytest
+
+from core import app_launcher, kakao_send as ks, ui_snapshot
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("카톡으로 민수한테 내일 봐 보내줘", ("민수", "내일 봐")),
+    ("카카오톡 민수에게 회의 3시로 옮겼어 라고 보내줘", ("민수", "회의 3시로 옮겼어")),
+    ("카톡 김민수한테 '점심 먹자'고 전해줘", ("김민수", "점심 먹자")),
+    ("민수한테 카톡으로 도착했어 보내줘", ("민수", "도착했어")),
+    ("카톡 열어줘", None), ("민수한테 메일 보내줘", None), ("오늘 날씨 어때", None),
+])
+def test_parse_request(text, expected):
+    assert ks.parse_request(text) == expected
+
+
+@pytest.mark.parametrize("text, yes", [("어 보내줘", True), ("응", True), ("네", True), ("보내줘", True), ("그래 보내", True),
+                                       ("아니", False), ("아니 보내지마", False), ("잠깐만", False), ("어 근데 내용 바꿔줘", False), ("", False)])
+def test_only_clear_yes_counts(text, yes):
+    assert ks.is_yes(text) is yes
+
+
+def test_question_shows_receiver_and_text():
+    q = ks.confirm_question("민수", "내일 봐")
+    assert "민수" in q and "내일 봐" in q and "보낼까요" in q
+
+
+@pytest.fixture
+def kakao(monkeypatch):
+    """가짜 카카오톡 — 무슨 키를 눌렀는지 기록한다."""
+    state = {"keys": [], "typed": [], "field": "", "rooms": [{"x": 1, "y": 1, "w": 2, "h": 2}], "title": "민수", "front": True, "clicks": 0}
+    monkeypatch.setattr(ks, "IS_MAC", True)
+    monkeypatch.setattr(app_launcher, "launch", lambda name, exact=False: "KakaoTalk")
+    monkeypatch.setattr(ks.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ks, "_wait", lambda check, seconds: check())
+    monkeypatch.setattr(ks, "_front_is_kakao", lambda: state["front"])
+    monkeypatch.setattr(ui_snapshot, "press_named", lambda name: True)
+    monkeypatch.setattr(ui_snapshot, "window_title", lambda: state["title"])
+    monkeypatch.setattr(ks, "_exact_rooms", lambda name: state["rooms"])
+    monkeypatch.setattr(ks, "_double_click", lambda x, y: state.update(clicks=state["clicks"] + 1))
+
+    def set_focused(text):
+        state["field"] = text
+        state["typed"].append(text)
+        return True
+
+    def key(code):
+        state["keys"].append(code)
+        if code == ks._KEY_ENTER:
+            state["field"] = ""
+    monkeypatch.setattr(ks, "_set_focused", set_focused)
+    monkeypatch.setattr(ks, "_focused_value", lambda: state["field"])
+    monkeypatch.setattr(ks, "_key", key)
+    monkeypatch.setattr(ks, "_open_search", lambda: True)
+    monkeypatch.setattr(ks, "_in_search_field", lambda: True)
+    return state
+
+
+def test_sends_only_after_all_checks(kakao):
+    assert "보냈어요" in ks.send("민수", "내일 봐")
+    assert kakao["typed"] == ["민수", "내일 봐"] and kakao["keys"] == [ks._KEY_ENTER]
+
+
+@pytest.mark.parametrize("change, word", [
+    ({"rooms": []}, "없어서"),
+    ({"rooms": [{"x": 1, "y": 1, "w": 2, "h": 2}] * 2}, "2개"),
+    ({"title": "민수 엄마"}, "확인하지 못해서"),
+    ({"front": False}, "앞으로"),
+])
+def test_never_presses_enter_when_a_check_fails(kakao, change, word):
+    kakao.update(change)
+    with pytest.raises(ks.KakaoSendError, match=word):
+        ks.send("민수", "내일 봐")
+    assert ks._KEY_ENTER not in kakao["keys"] and "내일 봐" not in kakao["typed"]
+
+
+def test_text_mismatch_is_cleared_and_not_sent(kakao, monkeypatch):
+    monkeypatch.setattr(ks, "_focused_value", lambda: "민수" if not kakao["clicks"] else "다른 글")
+    with pytest.raises(ks.KakaoSendError, match="글을 넣지"):
+        ks.send("민수", "내일 봐")
+    assert ks._KEY_ENTER not in kakao["keys"] and kakao["typed"][-1] == ""
+
+
+def test_dry_run_checks_everything_but_does_not_send(kakao):
+    assert "보내지 않음" in ks.send("민수", "내일 봐", press_enter=False)
+    assert ks._KEY_ENTER not in kakao["keys"] and kakao["field"] == ""
+
+
+def test_windows_explains_it_is_not_supported_yet(monkeypatch):
+    monkeypatch.setattr(ks, "IS_MAC", False)
+    with pytest.raises(ks.KakaoSendError, match="맥에서만"):
+        ks.send("민수", "내일 봐")
+
+
+def _host():
+    import app_main
+    replies = []
+    host = type("H", (), {"chat_history": [], "display_ai_response": lambda self, t: replies.append(t)})()
+    return host, replies, lambda t: app_main.AssistantApp._maybe_handle_kakao_send(host, t)
+
+
+class FakeWorker:
+    made = []
+
+    def __init__(self, to, text):
+        FakeWorker.made.append((to, text))
+        self.done = type("S", (), {"connect": lambda self, f: None})()
+
+    def start(self):
+        pass
+
+
+@pytest.fixture
+def workers(monkeypatch):
+    import app_main
+    FakeWorker.made = []
+    monkeypatch.setattr(app_main, "KakaoSendWorker", FakeWorker)
+    return FakeWorker.made
+
+
+def test_chat_asks_first_and_sends_only_after_yes(workers):
+    host, replies, handle = _host()
+    assert handle("카톡으로 민수한테 내일 봐 보내줘") is True and "보낼까요" in replies[0] and workers == []
+    assert handle("어 보내줘") is True and workers == [("민수", "내일 봐")]
+    assert handle("어 보내줘") is False and len(workers) == 1   # 한 번 승낙으로 두 번 보내지 않는다
+
+
+def test_other_answer_cancels(workers):
+    host, replies, handle = _host()
+    handle("카톡으로 민수한테 내일 봐 보내줘")
+    assert handle("오늘 날씨 어때") is False
+    assert handle("어 보내줘") is False and workers == []
+
+
+def test_yes_without_question_does_nothing(workers):
+    host, replies, handle = _host()
+    assert handle("어 보내줘") is False and workers == []
+
+
+def test_old_question_expires(workers, monkeypatch):
+    import app_main
+    host, replies, handle = _host()
+    handle("카톡으로 민수한테 내일 봐 보내줘")
+    now = app_main.time.time()
+    monkeypatch.setattr(app_main.time, "time", lambda: now + ks.CONFIRM_SECONDS + 1)
+    assert handle("어 보내줘") is False and workers == []
+
+
+def test_nothing_is_set_when_another_app_is_in_front(monkeypatch):
+    monkeypatch.setattr(ks, "_front_is_kakao", lambda: False)
+    monkeypatch.setattr(ks, "_focused", lambda: pytest.fail("다른 앱의 입력칸을 건드리면 안 된다"))
+    assert ks._set_focused("글") is False
+
+
+def test_name_never_goes_into_a_chat_input_box(kakao, monkeypatch):
+    monkeypatch.setattr(ks, "_open_search", lambda: False)
+    with pytest.raises(ks.KakaoSendError, match="검색창"):
+        ks.send("민수", "내일 봐")
+    assert kakao["typed"] == [] and kakao["keys"] == []

@@ -1,4 +1,5 @@
 import os
+import time
 import random
 import re
 import sys
@@ -73,6 +74,23 @@ from widget.history_widget import HistoryWidget
 from widget.mypage_widget import MyPageWidget
 
 
+class KakaoSendWorker(QThread):
+    done = pyqtSignal(str)
+
+    def __init__(self, to: str, text: str):
+        super().__init__()
+        self.to, self.text = to, text
+
+    def run(self):
+        try:
+            self.done.emit(kakao_send.send(self.to, self.text))
+        except kakao_send.KakaoSendError as e:
+            self.done.emit(f"❌ {e}")
+        except Exception as e:
+            print(f"[카톡 보내기] 오류: {type(e).__name__}")
+            self.done.emit("❌ 카카오톡으로 보내지 못했어요. 보내졌는지 카카오톡에서 확인해 주세요.")
+
+
 class AppOpenWorker(QThread):
     done = pyqtSignal(str)
 
@@ -102,7 +120,7 @@ from core import voice as voice_module
 from core.voice import (VoiceListener, Speaker, VoiceInstallWorker, OptionalInstallWorker, missing_optional_packages,
                         retry_optional_packages,
                         missing_voice_packages, is_stop_phrase, VOICE_MODELS, current_voice_model)
-from core import app_launcher, screen_agent, web_launcher, skills
+from core import app_launcher, kakao_send, screen_agent, web_launcher, skills
 from core.skill_agent import SkillAgentWorker
 from widget.skills_widget import SkillsPage
 from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
@@ -3060,6 +3078,9 @@ class AssistantApp(QWidget):
         # 화면 조작 모드여도 먼저 확인한다: 화면을 보고 주소창을 찾아 클릭하는 것보다
         # 바로 여는 게 빠르고 틀리지 않는다. 연 뒤 클릭/입력이 더 필요하면
         # _maybe_handle_web_open이 화면 조작 에이전트에 넘긴다.
+        if self._maybe_handle_kakao_send(txt):
+            QTimer.singleShot(50, self.auto_scroll_to_bottom)
+            return
         if self._maybe_handle_web_open(txt):
             QTimer.singleShot(50, self.auto_scroll_to_bottom)
             return
@@ -3936,6 +3957,23 @@ class AssistantApp(QWidget):
     # act: 루미 창을 숨기고 안내 창만 띄운 채 마우스/키보드로 작업 → 끝나면 창을
     #      다시 띄우고 결과를 대화창에 보고. describe: 루미 창을 잠깐 숨기고 화면을
     #      찍어서 질문에 답만 한다 (조작 없음).
+    def _maybe_handle_kakao_send(self, txt: str) -> bool:
+        """카톡 보내기: 받는 사람과 내용을 보여 주고, 바로 다음 말이 승낙일 때만 보낸다 (core/kakao_send.py)."""
+        pending, self._kakao_pending = getattr(self, "_kakao_pending", None), None
+        if pending and time.time() - pending[2] < kakao_send.CONFIRM_SECONDS and kakao_send.is_yes(txt):
+            self.chat_history.append({'role': 'user', 'content': txt})
+            self._kakao_worker = KakaoSendWorker(pending[0], pending[1])
+            self._kakao_worker.done.connect(self.display_ai_response)
+            self._kakao_worker.start()
+            return True
+        request = kakao_send.parse_request(txt)
+        if not request:
+            return False
+        self.chat_history.append({'role': 'user', 'content': txt})
+        self._kakao_pending = (request[0], request[1], time.time())
+        self.display_ai_response(kakao_send.confirm_question(*request))
+        return True
+
     def _maybe_handle_app_open(self, txt: str) -> bool:
         name = app_launcher.parse_open_only(txt)
         if not name:
