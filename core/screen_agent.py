@@ -130,6 +130,7 @@ actions 배열 (1~4개):
 
 계산기·입력칸처럼 키보드를 받는 곳은 버튼을 하나씩 누르지 말고 type으로 한 번에 넣으세요.
   예) 계산기에서 12 곱하기 3: type "12*3=", 1250 나누기 5: type "1250/5=" — 표시된 식과 값을 읽어 done.
+웹페이지의 검색창에 넣으라는 요청이면 주소창이 아니라 목록의 입력칸(SearchField, TextField, ComboBox)을 쓰세요. 입력하라고만 했으면 Enter는 누르지 마세요.
 입력 뒤 표시된 식이 목표와 다르면(앞에 다른 값이 붙음 등) 보고하지 말고 지운 뒤 다시 입력하세요.
 
 화면 요소 목록이 함께 오면:
@@ -685,6 +686,15 @@ _NAMED_SCREEN = re.compile(r"([^\s,]+)\s*(?:화면|페이지|탭|메뉴)\s*(?:�
                            r"(?:가줘|가 줘|이동해줘|열어줘|보여줘|들어가줘|띄워줘)[\s.!?]*$")
 
 
+_ALL_ELEMENTS = 800   # 메뉴 항목이 토글들에 밀려 60개 목록에서 빠져도 찾게 (실측: 사운드)
+
+
+def uses_system_search(act: dict) -> bool:
+    """모델이 시스템 검색창을 직접 쓰는가. 맞는 앱인지 확인 없이 Enter가 나가 Siri에게 질문이 갈 수 있다 — open_app을 쓴다."""
+    keys = set(normalize_keys(act.get("keys"))) if act.get("action") == "key" else set()
+    return {"cmd", "space"} <= keys or keys == {"win"} or keys == {"cmd"}
+
+
 def oversteps(act: dict, task: str) -> bool:
     """보거나 찾기만 하는 요청에서 결과를 실행하거나 값을 바꾸는 클릭인가.
     실측: "카카오톡 찾아줘"에 앱을 열었고, "사운드 화면으로 가줘"에 Siri 목소리 항목을 눌렀다.
@@ -1047,6 +1057,9 @@ class ScreenAgentWorker(QThread):
                     if oversteps(a, self.task):
                         self._notes.append(f"주의: 보거나 찾기만 하는 요청이라 '{a.get('target')}'을(를) 누르지 않았습니다. 목표가 보이면 done 하세요.")
                         break
+                    if uses_system_search(a):
+                        self._notes.append("주의: 시스템 검색창은 쓰지 않습니다. 앱은 open_app에 이름을 넣어 여세요.")
+                        break
                     if closes_app_unasked(a, self.task):   # 실측: 설정 화면을 고른 뒤 Cmd+Q를 눌러 작업이 끝났다
                         self._notes.append("주의: 요청에 없는 앱 종료는 하지 않았습니다. 앱을 끄지 말고 목표를 이뤘으면 done 하세요.")
                         break
@@ -1144,7 +1157,7 @@ class ScreenAgentWorker(QThread):
         return True
 
     def _click_named_screen(self, elements: list, mon: dict):
-        element = named_screen_element(self.task, elements)
+        element = named_screen_element(self.task, ui_snapshot.snapshot(limit=_ALL_ELEMENTS) if _NAMED_SCREEN.search(self.task) else [])
         point = ui_snapshot.center_as_normalized(element, mon) if element else None
         if not point:
             return None

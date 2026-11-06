@@ -85,6 +85,7 @@ def _read_mac() -> list:
     app = _attr(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication")
     if app is None or AS.AXUIElementGetPid(app, None)[1] == os.getpid():
         return []
+    AS.AXUIElementSetAttributeValue(app, "AXManualAccessibility", True)   # 크롬·일렉트론 앱은 이래야 페이지 내용을 알려 준다
     window = _attr(app, "AXFocusedWindow") or next(iter(_attr(app, "AXWindows") or []), None)
     out = []
     if window is not None:
@@ -113,16 +114,23 @@ def _read_windows() -> list:
 def _rank(role: str) -> int:
     """앞쪽을 차지하기 쉬운 아이콘보다 누르거나 입력할 수 있는 것을 먼저 고른다."""
     low = role.casefold()
-    if low in _INPUT_ROLES or low in _ACTION_ROLES:
+    if low in _INPUT_ROLES:     # 웹페이지는 링크만으로 목록이 찬다 — 입력칸이 먼저
         return 0
-    return 2 if low == "image" else 1
+    if low in _ACTION_ROLES:
+        return 1
+    return 3 if low == "image" else 2
 
 
-def clean(rows: list) -> list:
+def clean(rows: list, limit: int = MAX_ELEMENTS) -> list:
     """눈에 보이고 쓸모 있는 요소만 — 이름이나 값이 없는 칸(입력칸은 빈 것도 남긴다), 비밀번호 값은 뺀다.
     2026-11-06 실측: 파일 열기 창의 사이드바 아이콘이 목록을 채워 정작 [새로운 문서] 버튼이 빠졌다."""
     picked = []
+    # 첫 줄이 창이면 창 밖 요소는 뺀다 — 스크롤로 가려진 항목을 누르면 그 자리의 다른 것이 눌린다
+    window = rows[0] if rows and str(rows[0].get("role") or "").replace("ControlType.", "").casefold() == "window" else None
     for order, row in enumerate(rows or []):
+        if window and not (window["x"] <= row.get("x", 0) + row.get("w", 0) / 2 <= window["x"] + window["w"]
+                           and window["y"] <= row.get("y", 0) + row.get("h", 0) / 2 <= window["y"] + window["h"]):
+            continue
         role = str(row.get("role") or "").replace("ControlType.", "").strip()
         name = " ".join(str(row.get("name") or "").split())
         value = "" if row.get("password") else " ".join(str(row.get("value") if row.get("value") is not None else "").split())
@@ -131,14 +139,14 @@ def clean(rows: list) -> list:
             continue
         picked.append((_rank(role), order, {"role": role, "name": name[:40], "value": value[:80], "x": row["x"], "y": row["y"],
                                             "w": row["w"], "h": row["h"]}))
-    chosen = sorted(sorted(picked, key=lambda p: p[:2])[:MAX_ELEMENTS], key=lambda p: p[1])
+    chosen = sorted(sorted(picked, key=lambda p: p[:2])[:limit], key=lambda p: p[1])
     return [p[2] for p in chosen]
 
 
-def snapshot() -> list:
+def snapshot(limit: int = MAX_ELEMENTS) -> list:
     """맨 앞 창의 요소 목록. 읽지 못하면 [] — 스크린샷 방식으로 넘어간다 (화면 작업을 막지 않는다)."""
     try:
-        return clean(_read_mac() if IS_MAC else _read_windows() if IS_WIN else [])
+        return clean(_read_mac() if IS_MAC else _read_windows() if IS_WIN else [], limit)
     except Exception as e:
         print(f"[화면 구조] 읽기 실패: {type(e).__name__}")
         return []

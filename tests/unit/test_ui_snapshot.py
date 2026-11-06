@@ -269,3 +269,16 @@ def test_repeating_old_action_is_not_progress(qapp, monkeypatch):
     w.run()
     assert results[0][0] is False and "멈췄어요" in results[0][1]
     assert len(list(replies)) >= 14    # 20단계까지 헤매지 않았다
+
+
+def test_elements_outside_the_window_are_dropped_and_inputs_come_first():
+    window = {**ROW, "role": "ControlType.Window", "name": "창", "x": 0, "y": 0, "w": 300, "h": 300}
+    rows = [window, {**ROW, "name": "안"}, {**ROW, "name": "밖", "y": 900}]
+    assert [e["name"] for e in ui.clean(rows)] == ["안"]
+    links = [{**ROW, "role": "Link", "name": f"링크{i}"} for i in range(5)]
+    assert [e["role"] for e in ui.clean(links + [{**ROW, "role": "SearchField", "name": ""}], limit=2)][-1] == "SearchField"
+
+
+@pytest.mark.parametrize("keys, used", [(["cmd", "space"], True), (["win"], True), (["cmd", "f"], False)])
+def test_model_cannot_use_system_search(keys, used):
+    assert sa.uses_system_search({"action": "key", "keys": keys}) is used

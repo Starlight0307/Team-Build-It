@@ -215,3 +215,9 @@ def test_open_failure_is_fine_when_app_is_already_starting(mac, monkeypatch):
     monkeypatch.setattr(al.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout=""))
     monkeypatch.setattr(al, "_mac_running", lambda path: True)
     assert al.launch("계산기") == "계산기"
+
+
+def test_leading_app_with_three_word_name(mac, monkeypatch):
+    apps = {al._norm("활성 상태 보기"): ("활성 상태 보기", "/A/AM.app")}
+    monkeypatch.setattr(al, "installed_apps", lambda refresh=False: apps)
+    assert al.leading_app("활성 상태 보기 열고 CPU 탭 보여줘") == "활성 상태 보기"
