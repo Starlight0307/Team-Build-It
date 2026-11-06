@@ -174,7 +174,8 @@ def _wait(check, seconds: float):
 
 class _Win:
     """윈도우 카카오톡을 다루는 부분. 시험에서 통째로 가짜로 바꾼다."""
-    WM_SETTEXT, WM_GETTEXT, WM_GETTEXTLENGTH = 0x000C, 0x000D, 0x000E
+    WM_SETTEXT, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP = 0x000C, 0x000D, 0x000E, 0x0100, 0x0101
+    VK_DOWN = 0x28
     VK_CONTROL, VK_RETURN, VK_F = 0x11, 0x0D, 0x46
 
     @staticmethod
@@ -297,9 +298,17 @@ class _Win:
         user32.SendMessageW(hwnd, self.WM_GETTEXT, size + 1, ctypes.byref(buf))
         return buf.value
 
-    def clear(self, hwnd: int):
+    def set_text(self, hwnd: int, text: str):
         import ctypes
-        self._user32().SendMessageW(hwnd, self.WM_SETTEXT, 0, ctypes.c_wchar_p(""))
+        self._user32().SendMessageW(hwnd, self.WM_SETTEXT, 0, ctypes.c_wchar_p(text))
+
+    def clear(self, hwnd: int):
+        self.set_text(hwnd, "")
+
+    def press(self, hwnd: int, key: int):
+        """그 칸에 바로 키를 전달한다. 전역 키 입력으로는 검색 결과가 열리지 않았다 (실측)."""
+        self._user32().PostMessageW(hwnd, self.WM_KEYDOWN, key, 0)
+        self._user32().PostMessageW(hwnd, self.WM_KEYUP, key, 0)
 
     def focus(self, hwnd: int) -> bool:
         return bool(self._user32().SetFocus(hwnd))
@@ -328,13 +337,22 @@ def _send_windows(to: str, text: str, press_enter: bool) -> str:
         if search:
             break
     # 대화 입력칸에 이름이 들어가면 안 된다 — 진짜 검색칸일 때만 치고, 글자가 정확히 들어갔는지 본다
-    if not search or not _win.is_kakao(_win.foreground()) or not _win.type(to) or not _wait(lambda: _win.get_text(search) == to, 1.5):
-        if search:
-            _win.clear(search)
+    if not search or not _win.is_kakao(_win.foreground()):
+        raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 주세요.")
+    _win.set_text(search, to)   # 키보드식 입력은 늦게 들어올 때가 있었다 (실측)
+    if not _wait(lambda: _win.get_text(search) == to, 1.5):
+        _win.clear(search)
         raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 주세요.")
     time.sleep(1.0)
-    _win.tap(_Win.VK_RETURN)
-    if not _wait(lambda: _win.is_kakao(_win.foreground()) and _win.title(_win.foreground()) == to, 3):
+
+    def room_opened():
+        return _win.is_kakao(_win.foreground()) and _win.title(_win.foreground()) == to
+    _win.press(search, _Win.VK_RETURN)
+    if not _wait(room_opened, 2):
+        _win.press(search, _Win.VK_DOWN)   # 맨 위 결과가 선택돼 있지 않을 때
+        time.sleep(0.2)
+        _win.press(search, _Win.VK_RETURN)
+    if not _wait(room_opened, 3):
         if _win.search_box() == search:
             _win.clear(search)
         raise KakaoSendError(f"'{to}' 대화창이 열렸는지 확인하지 못해서 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 말씀해 주세요.")

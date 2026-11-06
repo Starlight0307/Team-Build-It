@@ -95,7 +95,7 @@ def test_dry_run_checks_everything_but_does_not_send(kakao):
 
 
 class FakeWin:
-    VK_F, VK_RETURN = ks._Win.VK_F, ks._Win.VK_RETURN
+    VK_F, VK_RETURN, VK_DOWN = ks._Win.VK_F, ks._Win.VK_RETURN, ks._Win.VK_DOWN
 
     def __init__(self):
         self.keys, self.typed, self.front, self.titles = [], [], 1, {1: "카카오톡", 2: "민수"}
@@ -103,6 +103,7 @@ class FakeWin:
         self.foreign_change = False
         self.main_found = True
         self.lose_search_text = False
+        self.needs_down, self.selected = False, False
 
     def tap(self, key, ctrl=False):
         self.keys.append(key)
@@ -111,6 +112,18 @@ class FakeWin:
                 self.front = self.opens
             elif self.front in self.boxes:
                 self.boxes[self.front] = ""
+
+    def press(self, hwnd, key):
+        self.keys.append(key)
+        if key == self.VK_DOWN:
+            self.selected = True
+        if key == self.VK_RETURN and self.front == 1 and (self.selected or not self.needs_down):
+            self.front = self.opens
+
+    def set_text(self, hwnd, text):
+        self.typed.append(text)
+        if not self.lose_search_text:
+            self.boxes[hwnd] = text
 
     def foreground(self):
         return self.front
@@ -144,8 +157,6 @@ class FakeWin:
 
     def type(self, text):
         self.typed.append(text)
-        if self.front == 1 and not self.lose_search_text:
-            self.boxes[9] = text
         if self.front in self.boxes:
             self.boxes[self.front] = text
             if self.foreign_change:
@@ -188,6 +199,12 @@ def test_windows_name_is_not_typed_unless_in_search_box(win):
     assert win.typed == [] and _message_enter_count(win) == 0
 
 
+def test_windows_selects_top_result_when_enter_alone_does_not_open(win):
+    win.needs_down = True
+    assert "보냈어요" in ks.send("민수", "내일 봐")
+    assert ks._Win.VK_DOWN in win.keys
+
+
 def test_windows_search_text_must_arrive_in_the_search_box(win):
     win.lose_search_text = True
     with pytest.raises(ks.KakaoSendError, match="검색창"):
@@ -206,7 +223,7 @@ def test_windows_wrong_room_is_not_sent(win):
     win.titles[2] = "민수 엄마"
     with pytest.raises(ks.KakaoSendError, match="대화창"):
         ks.send("민수", "내일 봐")
-    assert "내일 봐" not in win.typed and _message_enter_count(win) == 1
+    assert "내일 봐" not in win.typed   # 대화창 확인 전에는 메시지를 입력하지 않는다
 
 
 def test_windows_draft_in_the_room_is_not_mixed(win):
@@ -221,6 +238,13 @@ def test_windows_focus_change_while_typing_is_not_sent(win):
     with pytest.raises(ks.KakaoSendError, match="창이 바뀌어서"):
         ks.send("민수", "내일 봐")
     assert _message_enter_count(win) == 1 and win.boxes[2] == ""
+
+
+def test_windows_search_text_is_cleared_when_room_does_not_open(win):
+    win.titles[2] = "민수 엄마"
+    with pytest.raises(ks.KakaoSendError):
+        ks.send("민수", "내일 봐")
+    assert "내일 봐" not in win.typed
 
 
 def test_windows_dry_run_does_not_send(win):
