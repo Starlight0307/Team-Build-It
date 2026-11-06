@@ -1157,20 +1157,23 @@ class ScreenAgentWorker(QThread):
         return True
 
     def _click_named_screen(self, elements: list, mon: dict):
-        element = named_screen_element(self.task, ui_snapshot.snapshot(limit=_ALL_ELEMENTS) if _NAMED_SCREEN.search(self.task) else [])
-        point = ui_snapshot.center_as_normalized(element, mon) if element else None
-        if not point:
+        match = _NAMED_SCREEN.search(self.task)
+        if not match:
             return None
-        name = element["name"] or element["value"]
-        act = {"action": "click", "x": point[0], "y": point[1], "target": name}
-        if is_dangerous(act, self.task):
+        name = match.group(1)
+        if is_dangerous({"action": "click", "target": name}, self.task):
             return None
-        self.step_started.emit(1, describe_action(act))
         before = self._signature(mon)
-        self._perform(act, mon)
+        self.step_started.emit(1, f"🖱️ 바로 누르기: {name}")
+        if not ui_snapshot.press_named(name):
+            element = named_screen_element(self.task, ui_snapshot.snapshot(limit=_ALL_ELEMENTS))
+            point = ui_snapshot.center_as_normalized(element, mon) if element else None
+            if not point:
+                return None
+            self._perform({"action": "click", "x": point[0], "y": point[1], "target": name}, mon)
         self._wait_for_screen("click", before, mon)
         title = active_window()[0] or ""
-        selected = any(e["name"] == name and e["value"] in ("1", "True") for e in ui_snapshot.snapshot())
+        selected = any(e["name"] == name and e["value"] in ("1", "True") for e in ui_snapshot.snapshot(limit=_ALL_ELEMENTS))
         return name if name.casefold() in title.casefold() or selected else None   # 확인이 안 되면 모델이 이어받는다
 
     def _open_named_app(self):

@@ -221,3 +221,10 @@ def test_leading_app_with_three_word_name(mac, monkeypatch):
     apps = {al._norm("활성 상태 보기"): ("활성 상태 보기", "/A/AM.app")}
     monkeypatch.setattr(al, "installed_apps", lambda refresh=False: apps)
     assert al.leading_app("활성 상태 보기 열고 CPU 탭 보여줘") == "활성 상태 보기"
+
+
+def test_lumi_feature_word_counts_as_app_only_when_user_says_app(mac, monkeypatch):
+    apps = {al._norm("캘린더"): ("캘린더", "/A/Cal.app")}
+    monkeypatch.setattr(al, "installed_apps", lambda refresh=False: apps)
+    assert al.leading_app("캘린더 앱에서 내일 일정 찾아줘") == "캘린더"
+    assert al.leading_app("캘린더에서 내일 일정 찾아줘") is None

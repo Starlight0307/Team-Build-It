@@ -282,3 +282,26 @@ def test_elements_outside_the_window_are_dropped_and_inputs_come_first():
 @pytest.mark.parametrize("keys, used", [(["cmd", "space"], True), (["win"], True), (["cmd", "f"], False)])
 def test_model_cannot_use_system_search(keys, used):
     assert sa.uses_system_search({"action": "key", "keys": keys}) is used
+
+
+def _screen_worker(monkeypatch, task, title, pressed=True):
+    w = sa.ScreenAgentWorker(task, controller=object())
+    monkeypatch.setattr(sa.ui_snapshot, "press_named", lambda name: pressed)
+    monkeypatch.setattr(sa.ui_snapshot, "snapshot", lambda limit=60: [])
+    monkeypatch.setattr(sa, "active_window", lambda: (title, False))
+    monkeypatch.setattr(w, "_signature", lambda mon: None)
+    monkeypatch.setattr(w, "_wait_for_screen", lambda *a: True)
+    return w
+
+
+def test_named_screen_counts_only_after_title_confirms_it(qapp, monkeypatch):
+    assert _screen_worker(monkeypatch, "사운드 화면으로 가줘", "시스템 설정 — 창 제목 \"사운드\"")._click_named_screen([], MON) == "사운드"
+    assert _screen_worker(monkeypatch, "사운드 화면으로 가줘", "시스템 설정 — 창 제목 \"일반\"")._click_named_screen([], MON) is None
+
+
+def test_dangerous_or_unmatched_names_are_left_to_the_model(qapp, monkeypatch):
+    calls = []
+    w = _screen_worker(monkeypatch, "삭제 화면으로 가줘", "x")
+    monkeypatch.setattr(sa.ui_snapshot, "press_named", lambda name: calls.append(name) or True)
+    assert w._click_named_screen([], MON) is None and calls == []
+    assert _screen_worker(monkeypatch, "계산기 켜줘", "x")._click_named_screen([], MON) is None

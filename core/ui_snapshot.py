@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+from collections import deque
 
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
@@ -26,6 +27,7 @@ _INPUT_ROLES = {"textfield", "textarea", "edit", "document", "combobox", "search
 _ACTION_ROLES = {"button", "menubutton", "popupbutton", "checkbox", "radiobutton", "link", "hyperlink", "tab", "tabitem",
                  "menuitem", "listitem", "row", "cell", "disclosuretriangle", "splitbutton"}
 _MAX_RAW = 800
+_PRESS_ROLES = ("AXButton", "AXRadioButton", "AXTab", "AXMenuButton")
 
 _WINDOWS_SCRIPT = r"""
 [Console]::OutputEncoding=[Text.Encoding]::UTF8
@@ -64,19 +66,42 @@ def _ax_rect(element):
     return round(point.x), round(point.y), round(extent.width), round(extent.height)
 
 
-def _walk_mac(element, out: list, end: float, depth: int = 0):
-    if len(out) >= _MAX_RAW or depth > 14 or time.monotonic() > end:
-        return
-    role = str(_attr(element, "AXRole") or "").removeprefix("AX")
-    secure = _attr(element, "AXSubrole") == "AXSecureTextField" or role == "SecureTextField"
-    name = _attr(element, "AXTitle") or _attr(element, "AXDescription") or ""
-    value = None if secure else _attr(element, "AXValue")
-    rect = _ax_rect(element)
-    if rect:
-        out.append({"role": role, "name": str(name), "value": value if isinstance(value, (str, int, float)) else "",
-                    "password": secure, "x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3]})
-    for child in _attr(element, "AXChildren") or []:
-        _walk_mac(child, out, end, depth + 1)
+def _walk_mac(root, out: list, end: float):
+    # 위쪽 단계부터 넓게: 깊게 먼저 읽으면 활성 상태 보기의 표 칸 수백 개에 밀려 위쪽 탭까지 못 갔다 (실측)
+    queue = deque([root])
+    while queue and len(out) < _MAX_RAW and time.monotonic() <= end:
+        element = queue.popleft()
+        role = str(_attr(element, "AXRole") or "").removeprefix("AX")
+        secure = _attr(element, "AXSubrole") == "AXSecureTextField" or role == "SecureTextField"
+        name = _attr(element, "AXTitle") or _attr(element, "AXDescription") or ""
+        value = None if secure else _attr(element, "AXValue")
+        rect = _ax_rect(element)
+        if rect:
+            out.append({"role": role, "name": str(name), "value": value if isinstance(value, (str, int, float)) else "",
+                        "password": secure, "x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3]})
+        queue.extend(_attr(element, "AXChildren") or [])
+
+
+def press_named(name: str) -> bool:
+    """이름이 정확히 같은 버튼을 운영체제에 직접 누르게 한다 — 스크롤로 가려진 메뉴 항목은 좌표가 없어 클릭할 수 없다 (실측: 시스템 설정 사운드).
+    shortcut: 맥만, 윈도우는 좌표 클릭으로 넘어간다. 실기 시험 때 UI Automation Invoke를 붙인다."""
+    if not IS_MAC:
+        return False
+    try:
+        import ApplicationServices as AS
+        app = _attr(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication")
+        window = _attr(app, "AXFocusedWindow") if app is not None else None
+        queue = deque([window] if window is not None else [])
+        end, seen = time.monotonic() + _DEADLINE, 0
+        while queue and seen < _MAX_RAW and time.monotonic() <= end:
+            element = queue.popleft()
+            seen += 1
+            if str(_attr(element, "AXRole")) in _PRESS_ROLES and name in (_attr(element, "AXTitle"), _attr(element, "AXDescription")):
+                return AS.AXUIElementPerformAction(element, "AXPress") == 0
+            queue.extend(_attr(element, "AXChildren") or [])
+    except Exception as e:
+        print(f"[화면 구조] 누르기 실패: {type(e).__name__}")
+    return False
 
 
 def _read_mac() -> list:
