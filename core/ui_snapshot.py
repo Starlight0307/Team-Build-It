@@ -93,7 +93,7 @@ def window_title() -> str:
         if IS_MAC:
             import ApplicationServices as AS
             app = _focused_app()
-            window = _attr(app, "AXFocusedWindow") if app is not None else None
+            window = (_attr(app, "AXFocusedWindow") or _attr(app, "AXMainWindow")) if app is not None else None   # 포커스 창이 빌 때가 있다 (실측)
             return str(_attr(window, "AXTitle") or "") if window is not None else ""
         if IS_WIN:
             import ctypes

@@ -37,7 +37,6 @@ def kakao(monkeypatch):
     monkeypatch.setattr(ks, "_wait", lambda check, seconds: check())
     monkeypatch.setattr(ks, "_front_is_kakao", lambda: state["front"])
     monkeypatch.setattr(ui_snapshot, "press_named", lambda name: True)
-    monkeypatch.setattr(ui_snapshot, "window_title", lambda: state["title"])
     monkeypatch.setattr(ks, "_exact_rooms", lambda name: state["rooms"])
     monkeypatch.setattr(ks, "_double_click", lambda x, y: state.update(clicks=state["clicks"] + 1))
 
@@ -56,6 +55,9 @@ def kakao(monkeypatch):
     monkeypatch.setattr(ks, "_key", key)
     monkeypatch.setattr(ks, "_open_search", lambda: True)
     monkeypatch.setattr(ks, "_raise_room_mac", lambda to: state.get("room_alive", True))
+    monkeypatch.setattr(ks, "_raise_main_mac", lambda: state["front"])
+    titles = iter(["카카오톡"] + ["__room__"] * 50)
+    monkeypatch.setattr(ui_snapshot, "window_title", lambda: (lambda t: state["title"] if t == "__room__" else t)(next(titles)))
     def focus_box():
         state["field"] = ""
         return state.get("box", True)

@@ -15,6 +15,7 @@ API는 같은 서비스를 쓰는 친구에게만 보낼 수 있어서 앱 화�
 shortcut: 창 클래스 이름(RichEdit)은 널리 쓰이는 값이다, 카카오톡이 바꾸면 "입력칸을 찾지 못해" 보내지 않고 멈춘다.
 """
 import re
+import subprocess
 import sys
 import time
 
@@ -24,6 +25,8 @@ CONFIRM_SECONDS = 300
 _APP = "카톡"
 _KEY_ENTER = 36
 _MESSAGE_BOX = "메시지 입력"
+_MAC_BUNDLE = "com.kakao.KakaoTalkMac"
+_MAIN_TITLES = ("카카오톡", "KakaoTalk")
 _ASK = re.compile(r"^(?:카카오톡|카톡)\s*(?:으로|에서|로)?\s*(?P<to>[^\s,]+?)\s*(?:에게|한테|께)\s*(?P<text>.+?)\s*"
                   r"(?:이?라고|고)?\s*(?:보내|전송해|전해)\s*(?:줘|줘요|주세요|줄래|줄래요|봐)?[\s.!?~]*$", re.S)
 _ASK_AFTER = re.compile(r"^(?P<to>[^\s,]+?)\s*(?:에게|한테|께)\s*(?:카카오톡|카톡)\s*(?:으로|로)?\s*(?P<text>.+?)\s*"
@@ -452,8 +455,9 @@ def _open_mac(to: str):
         app_launcher.launch(_APP, exact=True)
     except app_launcher.AppNotFound as e:
         raise KakaoSendError("카카오톡이 설치돼 있지 않아요.") from e
-    if not _wait(lambda: _front_is_kakao() and ui_snapshot.window_title(), 4):   # 창을 닫아 둔 상태에서는 다시 뜨는 데 시간이 걸린다
+    if not _wait(lambda: _raise_main_mac() and _front_is_kakao() and ui_snapshot.window_title() in _MAIN_TITLES, 4):
         raise KakaoSendError("카카오톡을 앞으로 가져오지 못해서 보내지 않았어요.")
+    time.sleep(0.3)
     if not _open_search() or not _set_focused(to) or not _wait(lambda: _focused_value() == to, 2):
         raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 주세요.")
     time.sleep(1.0)
@@ -469,12 +473,31 @@ def _open_mac(to: str):
         raise KakaoSendError(f"'{to}' 대화창이 열렸는지 확인하지 못해서 보내지 않았어요.")
 
 
+def _raise_main_mac() -> bool:
+    """메인 창을 앞으로. 대화창만 떠 있으면 검색할 수 없어서(실측) 메인 창을 다시 연다."""
+    import ApplicationServices as AS
+    from AppKit import NSApplicationActivateIgnoringOtherApps, NSRunningApplication
+    from core import app_launcher
+    apps = NSRunningApplication.runningApplicationsWithBundleIdentifier_(_MAC_BUNDLE)
+    if not apps:
+        return False
+    element = AS.AXUIElementCreateApplication(apps[0].processIdentifier())
+    windows = [w for w in app_launcher._ax(element, "AXWindows") or [] if app_launcher._ax(w, "AXTitle") in _MAIN_TITLES]
+    if not windows:
+        _, path = app_launcher.resolve(_APP, exact=True)
+        subprocess.run(["open", path], capture_output=True, timeout=10)   # 앱을 다시 열면 메인 창이 뜬다
+        return False
+    AS.AXUIElementPerformAction(windows[0], "AXRaise")
+    AS.AXUIElementSetAttributeValue(windows[0], "AXMain", True)
+    return bool(apps[0].activateWithOptions_(NSApplicationActivateIgnoringOtherApps))
+
+
 def _raise_room_mac(to: str) -> bool:
     """제목이 정확히 같은 카카오톡 창이 하나일 때만 앞으로 올린다."""
     import ApplicationServices as AS
     from AppKit import NSApplicationActivateIgnoringOtherApps, NSRunningApplication
     from core import app_launcher
-    apps = NSRunningApplication.runningApplicationsWithBundleIdentifier_("com.kakao.KakaoTalkMac")
+    apps = NSRunningApplication.runningApplicationsWithBundleIdentifier_(_MAC_BUNDLE)
     if not apps:
         return False
     element = AS.AXUIElementCreateApplication(apps[0].processIdentifier())
