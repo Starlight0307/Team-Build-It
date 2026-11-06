@@ -109,7 +109,7 @@ class FakeWin:
         self.needs_down, self.selected = False, False
         self.room_gone = False
         self.drop_first_char = False
-        self.global_enter_works, self.posted_enter_works, self.box_lost_focus = True, False, False
+        self.global_enter_works, self.box_lost_focus = True, False
         self.tab, self.found_in, self.tab_stuck = "friends", ("friends", "chats"), False
 
     def tap(self, key, ctrl=False):
@@ -122,11 +122,6 @@ class FakeWin:
             elif self.front in self.boxes and self.global_enter_works:
                 self.boxes[self.front] = ""
 
-    def send_enter_to(self, hwnd):
-        self.keys.append("posted-enter")
-        if self.posted_enter_works:
-            self.boxes[hwnd] = ""
-
     def press(self, hwnd, key):
         self.keys.append(key)
         if key == self.VK_DOWN:
@@ -136,10 +131,6 @@ class FakeWin:
 
     def set_text(self, hwnd, text):
         self.typed.append(text)
-        if self.foreign_change and hwnd == 2:
-            self.front = 3
-        if self.drop_first_char and hwnd == 2:
-            text = text[1:]
         if not self.lose_search_text:
             self.boxes[hwnd] = text
 
@@ -185,7 +176,7 @@ class FakeWin:
     def type(self, text):
         self.typed.append(text)
         if self.front in self.boxes:
-            self.boxes[self.front] = text
+            self.boxes[self.front] = text[1:] if self.drop_first_char else text
             if self.foreign_change:
                 self.front = 3
         return True
@@ -214,13 +205,14 @@ def _message_enter_count(win):
 
 def test_windows_uses_real_enter_first(win):
     assert "보냈어요" in ks.send("민수", "내일 봐")
-    assert "posted-enter" not in win.keys
+    assert win.boxes[2] == ""
 
 
-def test_windows_tries_posted_enter_only_when_text_is_still_there(win):
-    win.global_enter_works, win.posted_enter_works = False, True
-    assert "보냈어요" in ks.send("민수", "내일 봐")
-    assert win.keys.count("posted-enter") == 1
+def test_windows_never_presses_enter_twice(win):
+    win.global_enter_works = False
+    with pytest.raises(ks.KakaoSendError):
+        ks.send("민수", "내일 봐")
+    assert win.keys.count(ks._Win.VK_RETURN) == 2   # 대화창 열기 1번 + 전송 1번
 
 
 def test_windows_unsent_text_is_cleared_and_reported_as_not_sent(win):
