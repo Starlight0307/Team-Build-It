@@ -305,3 +305,39 @@ def test_dangerous_or_unmatched_names_are_left_to_the_model(qapp, monkeypatch):
     monkeypatch.setattr(sa.ui_snapshot, "press_named", lambda name: calls.append(name) or True)
     assert w._click_named_screen([], MON) is None and calls == []
     assert _screen_worker(monkeypatch, "계산기 켜줘", "x")._click_named_screen([], MON) is None
+
+
+@pytest.mark.parametrize("task, name, named", [("메모장에 오늘 할 일 써줘", "메모", False), ("메모 열고 써줘", "메모", True),
+                                               ("활성 상태 보기 열고 CPU 탭 보여줘", "Activity Monitor", False), ("크롬으로 열어", "크롬", True)])
+def test_names_app_needs_whole_word(task, name, named):
+    assert sa._names_app(task, name) is named
+
+
+def _looping_worker(monkeypatch, task, reply):
+    w = sa.ScreenAgentWorker(task, controller=object())
+    monkeypatch.setattr(sa.ui_snapshot, "snapshot", lambda limit=60: [])
+    monkeypatch.setattr(w, "_capture", lambda: ("IMG", MON))
+    monkeypatch.setattr(w, "_start_esc_watch", lambda: None)
+    monkeypatch.setattr(w, "_signature", lambda mon: None)
+    monkeypatch.setattr(w, "_open_named_app", lambda: None)
+    done = []
+    monkeypatch.setattr(w, "_perform", lambda act, mon: done.append(act))
+    monkeypatch.setattr(w, "_ask_next_action", lambda *a: sa.parse_action(reply))
+    results = []
+    w.finished_task.connect(lambda ok, msg, h: results.append((ok, msg)))
+    return w, done, results
+
+
+def test_view_only_task_ends_after_model_keeps_opening_the_result(qapp, monkeypatch):
+    click = '{"thought": "", "actions": [{"action": "click", "x": 1, "y": 1, "target": "열기"}]}'
+    w, done, results = _looping_worker(monkeypatch, "카카오톡 찾아줘", click)
+    w.run()
+    assert done == [] and results[0][0] is True and "띄워 뒀어요" in results[0][1]
+
+
+def test_model_cannot_open_an_app_the_user_did_not_name(qapp, monkeypatch):
+    opener = '{"thought": "", "actions": [{"action": "open_app", "text": "메모"}]}'
+    w, done, results = _looping_worker(monkeypatch, "메모장에 오늘 할 일 써줘", opener)
+    w._opened_app = "TextEdit"
+    w.run()
+    assert done == [] and results[0][0] is False

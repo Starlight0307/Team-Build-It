@@ -110,7 +110,7 @@ def press_named(name: str) -> bool:
         app = _attr(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication")
         window = _attr(app, "AXFocusedWindow") if app is not None else None
         queue = deque([window] if window is not None else [])
-        end, seen = time.monotonic() + _DEADLINE, 0
+        end, seen = time.monotonic() + 3.0, 0   # 켜진 직후에는 앱이 느리게 답한다 (실측)
         while queue and seen < _MAX_RAW and time.monotonic() <= end:
             element = queue.popleft()
             seen += 1

@@ -131,6 +131,7 @@ actions 배열 (1~4개):
 계산기·입력칸처럼 키보드를 받는 곳은 버튼을 하나씩 누르지 말고 type으로 한 번에 넣으세요.
   예) 계산기에서 12 곱하기 3: type "12*3=", 1250 나누기 5: type "1250/5=" — 표시된 식과 값을 읽어 done.
 웹페이지의 검색창에 넣으라는 요청이면 주소창이 아니라 목록의 입력칸(SearchField, TextField, ComboBox)을 쓰세요. 입력하라고만 했으면 Enter는 누르지 마세요.
+쓰라고 한 글은 그대로 쓰고 내용을 지어내지 마세요. 예) "오늘 할 일 써줘" → type "오늘 할 일"
 입력 뒤 표시된 식이 목표와 다르면(앞에 다른 값이 붙음 등) 보고하지 말고 지운 뒤 다시 입력하세요.
 
 화면 요소 목록이 함께 오면:
@@ -689,6 +690,11 @@ _NAMED_SCREEN = re.compile(r"([^\s,]+)\s*(?:화면|페이지|탭|메뉴)\s*(?:�
 _ALL_ELEMENTS = 800   # 메뉴 항목이 토글들에 밀려 60개 목록에서 빠져도 찾게 (실측: 사운드)
 
 
+def _names_app(task: str, name) -> bool:
+    """요청에 그 앱 이름이 낱말로 있는가. "메모장에"의 "메모"는 아니다."""
+    return bool(name) and re.search(rf"(?:^|\s){re.escape(str(name))}(?:$|\s|을|를|에|로|으로|열|켜|앱)", task or "") is not None
+
+
 def uses_system_search(act: dict) -> bool:
     """모델이 시스템 검색창을 직접 쓰는가. 맞는 앱인지 확인 없이 Enter가 나가 Siri에게 질문이 갈 수 있다 — open_app을 쓴다."""
     keys = set(normalize_keys(act.get("keys"))) if act.get("action") == "key" else set()
@@ -948,6 +954,7 @@ class ScreenAgentWorker(QThread):
         self._confirm_event = threading.Event()
         self._confirm_answer = False
         self._controller = controller   # 메인 스레드에서 만든 InputController (act 모드)
+        self._opened_app = None
         self._finished = threading.Event()
         self._input_done = threading.Event()
         self._input_error = None
@@ -997,6 +1004,7 @@ class ScreenAgentWorker(QThread):
             checked_summary = False
             last_target = None
             seen_plans = set()
+            oversteps_seen = 0
             while step < self.max_steps:
                 step += 1
                 if self._stopped_by_user():
@@ -1047,7 +1055,10 @@ class ScreenAgentWorker(QThread):
                 plan = plan_actions(act)
                 for i, a in enumerate(plan):
                     desc = describe_action(a)
-                    self.step_started.emit(step, desc)
+                    if a["action"] == "open_app" and self._opened_app and not _names_app(self.task, a.get("text")):
+                        # 실측: "메모장에 써줘"를 쓴 뒤 메모 앱을 또 열었고, 이미 켠 활성 상태 보기를 3번 다시 열었다
+                        self._notes.append(f"주의: '{self._opened_app}'을(를) 이미 열었습니다. 요청에 없는 앱을 열지 말고 이어서 하거나 done 하세요.")
+                        break
                     if a["action"] == "click" and a.get("target") in _EQUALS and last_target in _EQUALS:
                         # 등호를 또 누르면 답에 같은 계산을 한 번 더 한다 (실측: 1250 ÷ 5 → 250 → 50)
                         self._notes.append("주의: 이미 계산했습니다. 등호를 다시 누르지 말고 표시된 값을 읽어 done 하세요.")
@@ -1055,6 +1066,9 @@ class ScreenAgentWorker(QThread):
                         break
                     last_target = a.get("target")
                     if oversteps(a, self.task):
+                        oversteps_seen += 1
+                        if oversteps_seen >= 2:   # 결과가 보이는데 모델이 계속 열려고 한다 (실측: App Store) — 여기까지가 요청이다
+                            return self.finished_task.emit(True, "찾은 결과를 화면에 띄워 뒀어요. 더 진행할지는 직접 골라 주세요.", history)
                         self._notes.append(f"주의: 보거나 찾기만 하는 요청이라 '{a.get('target')}'을(를) 누르지 않았습니다. 목표가 보이면 done 하세요.")
                         break
                     if uses_system_search(a):
@@ -1063,6 +1077,7 @@ class ScreenAgentWorker(QThread):
                     if closes_app_unasked(a, self.task):   # 실측: 설정 화면을 고른 뒤 Cmd+Q를 눌러 작업이 끝났다
                         self._notes.append("주의: 요청에 없는 앱 종료는 하지 않았습니다. 앱을 끄지 말고 목표를 이뤘으면 done 하세요.")
                         break
+                    self.step_started.emit(step, desc)
                     # 위험한 동작은 묶음 안에 있어도 하나씩 확인받는다
                     if is_dangerous(a, self.task) and not self._confirm(a, desc):
                         return self.finished_task.emit(False, f"'{desc}' 동작을 취소해서 작업을 멈췄어요.", history)
@@ -1165,7 +1180,12 @@ class ScreenAgentWorker(QThread):
             return None
         before = self._signature(mon)
         self.step_started.emit(1, f"🖱️ 바로 누르기: {name}")
-        if not ui_snapshot.press_named(name):
+        pressed = False
+        for _ in range(3):   # 켜진 직후에는 메뉴가 아직 없다
+            pressed = ui_snapshot.press_named(name)
+            if pressed or self._stop.wait(0.7):
+                break
+        if not pressed:
             element = named_screen_element(self.task, ui_snapshot.snapshot(limit=_ALL_ELEMENTS))
             point = ui_snapshot.center_as_normalized(element, mon) if element else None
             if not point:
@@ -1193,6 +1213,7 @@ class ScreenAgentWorker(QThread):
             return
         finally:
             self._controller.injecting = False
+        self._opened_app = shown
         self.step_started.emit(0, f"🚀 앱 실행: {shown}")
         self._stop.wait(SETTLE_MAX)
         self._clear_calculator(name, shown)
