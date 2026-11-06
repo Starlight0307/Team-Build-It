@@ -153,3 +153,43 @@ def test_result_question_gets_displayed_value_when_answer_has_none():
     assert sa.with_displayed_value("썼어요", CALC, "메모에 써줘") == "썼어요"
     two = ui.clean([{**ROW, "value": "1"}, {**ROW, "value": "2"}])
     assert sa.with_displayed_value("완료", two, "결과 알려줘") == "완료"
+
+
+def test_lists_are_not_click_targets_and_nameless_text_shows_its_content():
+    out = ui.clean([{**ROW, "role": "Outline", "name": "사이드바"}, {**ROW, "role": "StaticText", "name": "", "value": "사운드"}])
+    assert ui.describe(out) == '[1] StaticText "사운드"'
+
+
+@pytest.mark.parametrize("keys, task, closes", [(["cmd", "q"], "사운드 화면으로 가줘", True), (["alt", "f4"], "메모 써줘", True),
+                                                (["cmd", "q"], "계산기 꺼줘", False), (["cmd", "c"], "복사해줘", False)])
+def test_closing_app_needs_to_be_requested(keys, task, closes):
+    assert sa.closes_app_unasked({"action": "key", "keys": keys}, task) is closes
+
+
+def _asking_worker(monkeypatch, replies):
+    w = sa.ScreenAgentWorker("x", controller=object())
+    monkeypatch.setattr(sa.ui_snapshot, "snapshot", lambda: [])
+    monkeypatch.setattr(w, "_capture", lambda: ("IMG", MON))
+    monkeypatch.setattr(w, "_start_esc_watch", lambda: None)
+    monkeypatch.setattr(w, "_signature", lambda mon: None)
+    it = iter(replies)
+
+    def ask(image, history, step, repeat, els=()):
+        reply = next(it)
+        if isinstance(reply, Exception):
+            raise reply
+        return sa.parse_action(reply)
+    monkeypatch.setattr(w, "_ask_next_action", ask)
+    results = []
+    w.finished_task.connect(lambda ok, msg, h: results.append((ok, msg)))
+    w.run()
+    return results
+
+
+def test_one_bad_reply_does_not_end_the_task(qapp, monkeypatch):
+    assert _asking_worker(monkeypatch, [sa.BadModelReply("좌표 없음"), _done("끝")]) == [(True, "끝")]
+
+
+def test_repeated_bad_replies_stop_with_an_error(qapp, monkeypatch):
+    results = _asking_worker(monkeypatch, [sa.BadModelReply("좌표 없음")] * sa.STALL_LIMIT)
+    assert results[0][0] is False and "좌표 없음" in results[0][1]

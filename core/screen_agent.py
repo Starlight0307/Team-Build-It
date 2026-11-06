@@ -131,7 +131,7 @@ actions 배열 (1~4개):
 답은 짧게: 필요한 필드만 쓰세요. element를 쓸 때는 target을 쓰지 마세요.
 
 계산기·입력칸처럼 키보드를 받는 곳은 버튼을 하나씩 누르지 말고 type으로 한 번에 넣으세요.
-  예) 계산기에서 12 곱하기 3: 이전 값이 보이면 먼저 [모두 지우기]를 누르고, 그다음 type "12*3=" — 표시된 식과 값을 읽어 done.
+  예) 계산기에서 12 곱하기 3: type "12*3=" — 표시된 식과 값을 읽어 done.
 입력 뒤 표시된 식이 목표와 다르면(앞에 다른 값이 붙음 등) 보고하지 말고 지운 뒤 다시 입력하세요.
 
 화면 요소 목록이 함께 오면:
@@ -677,6 +677,17 @@ _RISKY_TASK = re.compile(r"보내|전송|답장|제출|결제|구매|주문|송�
                          re.IGNORECASE)
 
 
+class BadModelReply(RuntimeError):
+    pass
+
+
+def closes_app_unasked(act: dict, task: str) -> bool:
+    if act.get("action") != "key" or re.search(r"닫|꺼|끄|종료|quit|close", task or "", re.I):
+        return False
+    keys = set(normalize_keys(act.get("keys")))
+    return {"cmd", "q"} <= keys or {"alt", "f4"} <= keys
+
+
 def is_dangerous(act: dict, task: str = "") -> bool:
     if act.get("dangerous"):
         return True
@@ -960,12 +971,15 @@ class ScreenAgentWorker(QThread):
                 elements = ui_snapshot.snapshot()
                 # 목록이 충분하면 글자만 읽힌다 (사진 읽기가 10초 이상). 진행이 막히면 사진도 함께 본다
                 text_only = len(elements) >= ui_snapshot.ENOUGH_ELEMENTS and stalls == 0 and repeat == 0
-                act = self._ask_next_action(None if text_only else image, history, step, repeat, elements)
+                # 답 하나가 틀렸다고 작업을 끝내지 않는다. 사진을 함께 주고 다시 묻고, 계속 틀리면 멈춘다
                 try:
+                    act = self._ask_next_action(None if text_only else image, history, step, repeat, elements)
                     act = apply_element(act, elements, mon)
-                except ValueError as e:
-                    self._notes.append(f"주의: {e}. 목록에 있는 번호를 쓰세요.")
+                except (BadModelReply, ValueError) as e:
+                    self._notes.append(f"주의: 직전 답을 쓸 수 없었습니다({str(e)[:60]}). click에는 element 번호나 x, y를 꼭 넣으세요.")
                     stalls += 1
+                    if stalls >= STALL_LIMIT:
+                        raise
                     continue
                 step_before = self._signature(mon)
                 if act["action"] == "done":
@@ -990,6 +1004,9 @@ class ScreenAgentWorker(QThread):
                 for i, a in enumerate(plan):
                     desc = describe_action(a)
                     self.step_started.emit(step, desc)
+                    if closes_app_unasked(a, self.task):   # 실측: 설정 화면을 고른 뒤 Cmd+Q를 눌러 작업이 끝났다
+                        self._notes.append("주의: 요청에 없는 앱 종료는 하지 않았습니다. 앱을 끄지 말고 목표를 이뤘으면 done 하세요.")
+                        break
                     # 위험한 동작은 묶음 안에 있어도 하나씩 확인받는다
                     if is_dangerous(a, self.task) and not self._confirm(a, desc):
                         return self.finished_task.emit(False, f"'{desc}' 동작을 취소해서 작업을 멈췄어요.", history)
@@ -1214,7 +1231,7 @@ class ScreenAgentWorker(QThread):
                 return parse_action(resp["message"]["content"])
             except (ValueError, json.JSONDecodeError) as e:
                 last_err = e
-        raise RuntimeError(f"모델 응답을 이해하지 못했어요 ({last_err})")
+        raise BadModelReply(f"모델 응답을 이해하지 못했어요 ({last_err})")
 
     def _describe(self, image: str) -> str:
         import ollama

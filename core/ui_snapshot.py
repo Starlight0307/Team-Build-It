@@ -19,7 +19,8 @@ IS_WIN = sys.platform == "win32"
 MAX_ELEMENTS = 60
 ENOUGH_ELEMENTS = 4     # 이만큼 있으면 사진 없이 글자만으로 판단해 본다
 _DEADLINE = 1.0         # 큰 창(웹페이지 등)에서 오래 걸리지 않게
-_SKIP_ROLES = {"splitter", "window", "group", "scrollbar", "scroll area", "scrollarea", "toolbar", "menubar", "valueindicator"}
+_SKIP_ROLES = {"splitter", "window", "group", "scrollbar", "scroll area", "scrollarea", "toolbar", "menubar", "valueindicator",
+               "outline", "list", "table", "tree"}   # 목록 전체는 누를 대상이 아니다 (실측: "사이드바"만 반복 클릭)
 _INPUT_ROLES = {"textfield", "textarea", "edit", "document", "combobox", "searchfield"}
 _ACTION_ROLES = {"button", "menubutton", "popupbutton", "checkbox", "radiobutton", "link", "hyperlink", "tab", "tabitem",
                  "menuitem", "listitem", "row", "cell", "disclosuretriangle", "splitbutton"}
@@ -144,8 +145,8 @@ def describe(elements: list) -> str:
     """모델에게 줄 글. [번호]로 가리키게 한다."""
     lines = []
     for i, e in enumerate(elements, 1):
-        text = f'[{i}] {e["role"]} "{e["name"]}"'
-        if e["value"]:
+        text = f'[{i}] {e["role"]} "{e["name"] or e["value"]}"'   # 이름 없는 글자는 내용이 곧 이름
+        if e["value"] and e["name"]:
             text += f' 값="{e["value"]}"'
         lines.append(text)
     return "\n".join(lines)
