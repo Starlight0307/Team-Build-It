@@ -308,11 +308,17 @@ def _win_foreground_exe() -> str:
         kernel32.CloseHandle(handle)
 
 
+def win_search_finished(rows: list) -> bool:
+    """검색 중에는 진행 표시줄이 있고, 끝나면 사라지며 결과 칸(Pane)이 생긴다."""
+    roles = [str(row.get("role")) for row in rows]
+    return "ControlType.Pane" in roles and "ControlType.ProgressBar" not in roles
+
+
 def _win_keys(shown: str) -> bool:
     """시작 키로 앱을 켠다. 시작 메뉴가 앞에 온 것을 확인한 뒤에만 글자를 넣는다.
-    shortcut: 맨 위 결과를 읽지 않고 이름이 시작 메뉴 목록에 있는 것만 믿는다, 윈도우 실기 시험 때 UI Automation으로 확인을 추가."""
+    shortcut: 결과 목록은 UI Automation으로 읽히지 않아(실측) 이름이 시작 메뉴 목록에 있는 것만 믿는다, 읽을 방법이 생기면 맥처럼 확인."""
     import ctypes
-    from core import input_source
+    from core import input_source, ui_snapshot
     user32 = ctypes.windll.user32
 
     def tap(key):
@@ -324,7 +330,10 @@ def _win_keys(shown: str) -> bool:
     if not input_source.type_unicode(shown, windows=True):
         tap(0x1B)
         return False
-    time.sleep(0.9)
+    # 처음 여는 검색창은 결과가 늦게 떠서, 고정 대기 뒤 Enter를 누르면 아무 일도 일어나지 않았다 (실측)
+    if not _wait(lambda: win_search_finished(ui_snapshot._read_windows()), 6):
+        tap(0x1B)
+        return False
     if _win_foreground_exe() not in _WIN_SEARCH_APPS:
         return False
     tap(0x0D)

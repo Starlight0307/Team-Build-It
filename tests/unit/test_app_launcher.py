@@ -187,3 +187,9 @@ def test_launch_falls_back_to_command_only_when_keys_fail(mac, monkeypatch):
     assert al.launch("계산기") and mac == []
     monkeypatch.setattr(al, "_launch_by_keys", lambda shown, target: False)
     assert al.launch("계산기") and mac == [["open", "/A/Calculator.app"]]
+
+
+def test_windows_search_finished_only_after_progress_bar_is_gone():
+    busy = [{"role": "ControlType.Edit"}, {"role": "ControlType.ProgressBar"}]
+    done = [{"role": "ControlType.Edit"}, {"role": "ControlType.Pane"}]
+    assert not al.win_search_finished(busy) and not al.win_search_finished([]) and al.win_search_finished(done)

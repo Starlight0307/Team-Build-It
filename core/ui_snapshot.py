@@ -27,7 +27,8 @@ _MAX_RAW = 800
 
 _WINDOWS_SCRIPT = r"""
 [Console]::OutputEncoding=[Text.Encoding]::UTF8
-Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
+Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,UIAutomationClientsideProviders
+try{[Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly([UIAutomationClientsideProviders.UIAutomationClientSideProviders].Assembly.GetName())}catch{}
 $A=[Windows.Automation.AutomationElement]; $W=[Windows.Automation.TreeWalker]::ControlViewWalker
 $e=$A::FromHandle([IntPtr]HWND)
 $out=New-Object Collections.ArrayList; $stack=New-Object Collections.Stack; $stack.Push($e); $n=0
