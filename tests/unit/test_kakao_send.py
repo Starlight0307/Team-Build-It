@@ -31,6 +31,7 @@ def kakao(monkeypatch):
     """가짜 카카오톡 — 무슨 키를 눌렀는지 기록한다."""
     state = {"keys": [], "typed": [], "field": "", "rooms": [{"x": 1, "y": 1, "w": 2, "h": 2}], "title": "민수", "front": True, "clicks": 0}
     monkeypatch.setattr(ks, "IS_MAC", True)
+    monkeypatch.setattr(ks, "IS_WIN", False)
     monkeypatch.setattr(app_launcher, "launch", lambda name, exact=False: "KakaoTalk")
     monkeypatch.setattr(ks.time, "sleep", lambda s: None)
     monkeypatch.setattr(ks, "_wait", lambda check, seconds: check())
