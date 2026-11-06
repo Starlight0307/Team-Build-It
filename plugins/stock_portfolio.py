@@ -909,6 +909,8 @@ def fetch_portfolio() -> dict:
 def _store_token(data: dict):
     with _lock:
         latest = _load()
+        if latest.get("token") == data.get("token"):   # 현재가를 몇 초마다 읽으므로 그때마다 파일을 쓰지 않는다
+            return
         latest.update(token=data.get("token"), token_expires=data.get("token_expires", ""))
         _save(latest)
 

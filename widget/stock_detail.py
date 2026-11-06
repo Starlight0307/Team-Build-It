@@ -1,5 +1,6 @@
 """주식 위젯을 누르면 뜨는 상세 창 — 종목별 손익 막대, 가격 그래프, 보유 종목 표."""
 from bisect import bisect_left
+from datetime import datetime
 
 from PyQt6.QtCore import QLineF, QModelIndex, QPointF, QRectF, QSortFilterProxyModel, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QStandardItem, QStandardItemModel
@@ -18,6 +19,7 @@ SEARCH_ROLE = Qt.ItemDataRole.UserRole + 1
 DEFAULT_WIDTH, MIN_WIDTH, MIN_HEIGHT = 1240, 900, 560
 CHROME_HEIGHT = 190     # 제목·버튼·그림자 자리
 LIVE_REFRESH_MS = 60_000
+LIVE_PRICE_MS = 3_000   # 증권사 API에 실시간 연결이 없어 보고 있는 한 종목의 현재가만 자주 다시 읽는다
 MARKET_REFRESH_TICKS = 30   # 계좌 없이 보는 표는 30분마다 (시세 키 시세의 캐시 주기)
 CARD_RADIUS = 20        # lumi_dialog의 LumiCard 모서리와 같다
 GLASS_INPUT = {False: "rgba(255,255,255,120)", True: "rgba(255,255,255,20)"}
@@ -585,6 +587,7 @@ class StatTile(QFrame):
 
 class StockDetailDialog(_StockDialog):
     """요약 · 손익 막대 · 가격 그래프 · 보유 종목 표. 조회만 하고 주문은 내지 않는다."""
+    _live_time, _price_busy = None, False
 
     def __init__(self, parent=None, open_settings=None, open_order=None, open_auto=None):
         super().__init__(parent, "주식 상세")
@@ -655,6 +658,9 @@ class StockDetailDialog(_StockDialog):
             self.trade_buttons.append(button)
             trades.addWidget(button)
         trades.addStretch(1)
+        self.live_label = QLabel()
+        self.live_label.setStyleSheet(f"color: {self.p['sub']}; font-size: 12px; font-weight: 700;")
+        trades.addWidget(self.live_label)
         right.addLayout(trades)
         periods = QHBoxLayout()
         periods.setSpacing(6)
@@ -789,6 +795,61 @@ class StockDetailDialog(_StockDialog):
         self._live_timer.setInterval(LIVE_REFRESH_MS)
         self._live_timer.timeout.connect(self._refresh_live)
         self._live_timer.start()
+        self._price_timer = QTimer(self)
+        self._price_timer.setInterval(LIVE_PRICE_MS)
+        self._price_timer.timeout.connect(self._refresh_price)
+        self._price_timer.start()
+
+    def _refresh_price(self):
+        """보고 있는 종목의 현재가를 읽어 마지막 봉과 수치를 바꾼다. 앞선 요청이 안 끝났으면 쌓지 않는다."""
+        code = self.current_code
+        if self._price_busy or not code or not self.isVisible() or not self.status_info["connected"] or not _stock().market_open():
+            return
+        self._price_busy = True
+
+        def done(result):
+            self._price_busy = False
+            if code != self.current_code:
+                return
+            if isinstance(result, Exception):
+                self._live_time = None
+                self._show_live_state()
+                return
+            self._live_time = datetime.now().strftime("%H:%M:%S")
+            self._apply_price(code, result)
+            self._show_live_state()
+        self._spawn(lambda: _stock().get_price(code), done)
+
+    def _apply_price(self, code: str, price: int):
+        bars = self.history.get(code)
+        if not bars:
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        last = bars[-1]
+        if last["date"].replace("-", "") == today.replace("-", ""):
+            if last["close"] == price:
+                return
+            newest = dict(last, close=price, high=max(last["high"], price), low=min(last["low"], price))
+            self.history[code] = bars[:-1] + [newest]
+        else:   # 오늘 일봉이 아직 없으면 오늘 칸을 새로 연다
+            self.history[code] = bars + [{"date": today if "-" in last["date"] else today.replace("-", ""), "open": price, "high": price, "low": price, "close": price, "volume": 0}]
+        self._draw_chart(refresh=True)
+
+    def _show_live_state(self):
+        """지금 보이는 값이 언제 기준인지 알린다. 지난 영업일 시세를 현재가로 착각하지 않게."""
+        if not self.current_code:
+            self.live_label.setText("")
+            return
+        bars = self.history.get(self.current_code) or []
+        if not self.status_info["connected"]:
+            text = f"지난 영업일 종가 기준 · 실시간 아님 ({bars[-1]['date']})" if bars else "실시간 아님"
+        elif not _stock().market_open():
+            text = "장 마감 · 마지막 시세"
+        elif self._live_time:
+            text = f"현재가 {bars[-1]['close']:,}원 · {self._live_time} 기준 · 3초마다 갱신" if bars else ""
+        else:
+            text = "현재가를 받지 못했어요 · 이전 값을 표시 중"
+        self.live_label.setText(text)
 
     def _refresh_live(self):
         """종목 목록·잔고·보고 있는 그래프를 다시 읽는다. 사용자가 보던 종목과 확대 상태는 그대로 둔다."""
@@ -1183,6 +1244,7 @@ class StockDetailDialog(_StockDialog):
                             bars, self.history.get(self.current_code), refresh)
         self.chart.set_drawings(_stock().chart_drawings(self.current_code))
         self._show_stats(len(bars) - 1, animate=not refresh)
+        self._show_live_state()
         for tile in self.holding_tiles.values():
             tile.setVisible(bool(held))
         self.fit_to_content()

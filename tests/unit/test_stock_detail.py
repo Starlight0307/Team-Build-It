@@ -1082,3 +1082,69 @@ def test_market_key_window_refreshes_table_without_jumping_to_first_stock(qapp, 
     assert dlg.current_code == "035720"
     dlg.close()
 
+
+def _today():
+    from datetime import datetime
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def test_live_price_updates_todays_candle_every_tick_without_moving_view(qapp, stock, monkeypatch):
+    today = [("2026-01-02", 70000), (_today(), 71000)]
+    monkeypatch.setattr(sp, "get_price_bars", lambda code: _bars(today))
+    monkeypatch.setattr(sp, "market_open", lambda now=None: True)
+    monkeypatch.setattr(sp, "get_price", lambda code: 72000)
+    dlg = _dialog(qapp)
+    dlg.make_independent()
+    dlg.show()
+    assert _wait(qapp, lambda: len(dlg.chart.bars) == 2)
+    dlg._refresh_price()
+    assert _wait(qapp, lambda: dlg.chart.bars[-1]["close"] == 72000)
+    assert dlg.chart.bars[-1]["high"] == 72000 and len(dlg.chart.bars) == 2
+    assert "72,000원" in dlg.live_label.text() and "기준" in dlg.live_label.text()
+    dlg.close()
+
+
+def test_live_price_opens_todays_candle_when_missing(qapp, stock, monkeypatch):
+    dlg = _live(qapp, monkeypatch)
+    monkeypatch.setattr(sp, "get_price", lambda code: 88000)
+    dlg._refresh_price()
+    assert _wait(qapp, lambda: len(dlg.chart.bars) == 101)
+    last = dlg.chart.bars[-1]
+    assert (last["open"], last["close"], last["volume"]) == (88000, 88000, 0) and last["date"] == _today()
+    dlg.close()
+
+
+def test_live_price_failure_says_so_and_keeps_old_value(qapp, stock, monkeypatch):
+    dlg = _live(qapp, monkeypatch)
+
+    def fail(code):
+        raise sp.StockError("거절")
+    monkeypatch.setattr(sp, "get_price", fail)
+    dlg._refresh_price()
+    assert _wait(qapp, lambda: "받지 못했어요" in dlg.live_label.text())
+    assert len(dlg.chart.bars) == 100
+    dlg.close()
+
+
+def test_live_price_does_not_stack_requests_or_run_when_closed(qapp, stock, monkeypatch):
+    dlg = _live(qapp, monkeypatch)
+    calls = []
+    monkeypatch.setattr(sp, "get_price", lambda code: calls.append(code) or time.sleep(0.2) or 70000)
+    dlg._refresh_price()
+    dlg._refresh_price()
+    assert _wait(qapp, lambda: not dlg._price_busy)
+    assert len(calls) == 1
+    monkeypatch.setattr(sp, "market_open", lambda now=None: False)
+    dlg._refresh_price()
+    _wait(qapp, lambda: False, 0.1)
+    assert len(calls) == 1
+    dlg.close()
+
+
+def test_market_key_screen_says_it_is_not_real_time(qapp, stock, monkeypatch):
+    dlg = _live(qapp, monkeypatch)
+    dlg.status_info = dict(dlg.status_info, connected=False)
+    dlg._show_live_state()
+    assert "실시간 아님" in dlg.live_label.text()
+    dlg.close()
+
