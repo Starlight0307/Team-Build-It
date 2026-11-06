@@ -62,3 +62,95 @@ def test_widget_editor_titles_are_plain_text_beside_icon(qapp, monkeypatch, tmp_
     finally:
         w.shutdown_background_work()
         w.close()
+
+
+def test_fit_page_keeps_wrapped_text_from_being_squeezed_at_any_width(qapp):
+    import time
+    from PyQt6.QtWidgets import QScrollArea, QVBoxLayout
+    from widget.widgets import FitHeightPage
+    page = FitHeightPage()
+    lay = QVBoxLayout(page)
+    labels = []
+    for i in range(12):
+        label = QLabel("줄바꿈이 되는 긴 설명 글자입니다. " * 6)
+        label.setWordWrap(True)
+        lay.addWidget(label)
+        labels.append(label)
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setWidget(page)
+    area.show()
+    try:
+        for width in (900, 500, 300, 700):
+            area.resize(width, 200)
+            for _ in range(10):
+                qapp.processEvents()
+                time.sleep(0.005)
+            assert page.height() >= lay.totalHeightForWidth(page.width()) - 1
+            assert all(l.height() + 1 >= l.heightForWidth(l.width()) for l in labels), width
+    finally:
+        area.close()
+
+
+def test_settings_page_has_no_clipped_labels_at_common_widths(qapp, monkeypatch, tmp_path):
+    import importlib.util
+    import time
+    from pathlib import Path
+    from settings import app_settings
+    monkeypatch.setattr(app_settings, "_PATH", str(tmp_path / "s.json"))
+    monkeypatch.setattr(app_settings, "_cache", None)
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("lumi_selftest_for_clip", root / "scripts" / "windows_selftest.py")
+    selftest = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(selftest)
+    monkeypatch.chdir(root)
+    import app_main
+    w = app_main.AssistantApp()
+    w.show()
+    w.btn_settings.click()
+    try:
+        for width in (1320, 1100, 900):
+            w.resize(width, 860)
+            # 현재 위치 글자는 네트워크로 늦게 도착한다 — 도착 직후 배치가 끝나기 전 순간은 잘린 게 아니다
+            end = time.monotonic() + 5
+            while True:
+                qapp.processEvents()
+                bad = selftest.clipped_labels(w.settings_scroll.widget())
+                if not bad or time.monotonic() > end:
+                    break
+                time.sleep(0.01)
+            assert bad == [], width
+    finally:
+        w.close()
+
+
+def test_fit_page_measures_capped_card_at_its_own_width(qapp):
+    """페이지가 카드 최대 폭보다 넓어도 카드는 자기 폭 기준 높이를 가져야 한다."""
+    import time
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QFrame, QScrollArea, QVBoxLayout
+    from widget.widgets import FitHeightPage
+    page = FitHeightPage()
+    outer = QVBoxLayout(page)
+    outer.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+    card = QFrame()
+    card.setMaximumWidth(300)
+    inner = QVBoxLayout(card)
+    label = QLabel("카드 폭에서는 여러 줄이 되는 긴 글자입니다. " * 5)
+    label.setWordWrap(True)
+    inner.addWidget(label)
+    outer.addWidget(card)
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setWidget(page)
+    area.resize(1200, 300)
+    area.show()
+    try:
+        for _ in range(10):
+            qapp.processEvents()
+            time.sleep(0.005)
+        assert card.width() <= 300
+        assert label.height() + 1 >= label.heightForWidth(label.width())
+    finally:
+        area.close()
+

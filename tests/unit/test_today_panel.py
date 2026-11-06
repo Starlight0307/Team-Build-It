@@ -37,7 +37,7 @@ def _texts(panel):
 
 def _wait(qapp, panel, seq):
     t0 = time.time()
-    while time.time() - t0 < 3:
+    while time.time() - t0 < 20:   # 느린 CI에서 3초로는 모자랐다
         qapp.processEvents()
         if panel._rows and panel._last_seq == seq:
             return

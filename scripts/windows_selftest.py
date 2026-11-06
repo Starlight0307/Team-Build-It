@@ -32,6 +32,14 @@ RESULTS = []   # (이름, "PASS"/"FAIL"/"SKIP"/"INFO", 설명)
 _KEEP_ALIVE = []
 
 
+def _qapp():
+    """앱 변수만 믿으면 점검 함수가 끝나는 순간 QApplication이 지워져 access violation으로 죽는다."""
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication(sys.argv)
+    _KEEP_ALIVE.append(app)
+    return app
+
+
 def check(name):
     def deco(fn):
         def run():
@@ -86,7 +94,7 @@ def _app():
     from settings import app_settings
     app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _qapp()
     import app_main
     w = app_main.AssistantApp()
     w.resize(1400, 850)
@@ -133,7 +141,7 @@ def _tts():
 @check("음성 출력 (Speaker 준비)")
 def _speaker():
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)   # 변수에 담아야 바로 사라지지 않는다
+    app = _qapp()   # 변수에 담아야 바로 사라지지 않는다
     from core.voice import Speaker
     sp = Speaker()
     return ("PASS" if sp.available else "FAIL"), f"명령: {sp._command[0] if sp._command else None}"
@@ -151,7 +159,11 @@ def _location():
 def _weather():
     from core import weather
     try:
-        d = weather.fetch_weather("서울")
+        try:
+            d = weather.fetch_weather("서울")
+        except weather.WeatherError:   # 날씨 서버가 한 번 늦는 일이 시험 서버에서 잦다 — 연달아 실패할 때만 문제로 본다
+            time.sleep(3)
+            d = weather.fetch_weather("서울")
     except weather.WeatherError as e:
         # 앱은 안내 문구만 보여주니, 점검에서는 실제 원인(예외·서버 응답)을 같이 남긴다
         cause = e.__cause__
@@ -164,7 +176,8 @@ def _weather():
             body = " ".join(r.text.split())[:300]
             detail += f" · 직접 요청: HTTP {r.status_code} {body}"
         except Exception as e2:
-            detail += f" · 직접 요청도 실패: {type(e2).__name__}: {e2}"
+            # 앱을 거치지 않은 요청까지 끊기면 앱 문제가 아니라 시험 서버와 날씨 서버 사이의 연결 문제다
+            return "INFO", detail + f" · 직접 요청도 실패: {type(e2).__name__}: {e2}"
         return "FAIL", detail
     return "PASS", f"{d['city']} {d['temp']}°C {d['desc']}"
 
@@ -172,7 +185,7 @@ def _weather():
 @check("화면 캡처 (mss)")
 def _capture():
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)   # 변수에 담아야 바로 사라지지 않는다
+    app = _qapp()   # 변수에 담아야 바로 사라지지 않는다
     from core import screen_agent
     b64, mon = screen_agent.capture_screen()
     return "PASS", f"모니터 {mon['width']}x{mon['height']} · 이미지 {len(b64) // 1024}KB"
@@ -192,7 +205,7 @@ def _affinity():
     import ctypes
     from PyQt6.QtWidgets import QApplication
     from widget.widgets import AgentOverlay
-    app = QApplication.instance() or QApplication(sys.argv)   # 변수에 담아야 바로 사라지지 않는다
+    app = _qapp()   # 변수에 담아야 바로 사라지지 않는다
     o = AgentOverlay()
     o.show()
     QApplication.processEvents()
@@ -307,7 +320,7 @@ def _ime_typing():
     import ctypes
     import tempfile
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)   # 한글 섞인 글은 클립보드로 붙여넣는다
+    app = _qapp()   # 한글 섞인 글은 클립보드로 붙여넣는다
     from core import input_source as ins
     from core.screen_agent import InputController
     user32 = ctypes.windll.user32
@@ -372,7 +385,7 @@ def _tooltip_shot(dark: bool):
     from PyQt6.QtCore import QEvent, QPoint, Qt
     from PyQt6.QtGui import QColor, QHelpEvent
     from PyQt6.QtWidgets import QApplication, QPushButton, QWidget
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _qapp()
     from widget import lumi_dialog, lumi_tooltip
     filt = lumi_tooltip.install(app)
     lumi_dialog.set_dark(dark)
@@ -445,7 +458,7 @@ def _tooltip_hover():
     from settings import app_settings
     app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _qapp()
     app.setQuitOnLastWindowClosed(False)
     from widget import lumi_tooltip
     filt = lumi_tooltip.install(app)   # app_main.__main__과 같은 순서
@@ -526,6 +539,192 @@ def clipped_labels(root) -> list:
     return out
 
 
+def _real_screen_app():
+    """offscreen이 아닌 진짜 화면 — 창 투명도와 클릭은 운영체제가 처리하는 부분이라 여기서만 확인된다."""
+    os.environ.pop("QT_QPA_PLATFORM", None)
+    from PyQt6.QtWidgets import QApplication
+    app = _qapp()
+    out_dir = os.path.join(ROOT, "selftest_out"); os.makedirs(out_dir, exist_ok=True)
+    return app, out_dir
+
+
+def _pump(app, seconds):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        app.processEvents(); time.sleep(0.004)
+
+
+def _shot(app, widget, path=None):
+    g = widget.frameGeometry()
+    image = app.primaryScreen().grabWindow(0, g.x(), g.y(), g.width(), g.height()).toImage()
+    if path:
+        image.save(path)
+    return image
+
+
+@check("애니메이션 — 팝업 창 열림 (실제 화면 캡처)")
+def _motion_window():
+    app, out_dir = _real_screen_app()
+    motion_shots = os.path.join(out_dir, "motion_window_mid.png")
+    if os.path.exists(motion_shots):
+        os.remove(motion_shots)
+    from PyQt6.QtGui import QColor
+    from widget import lumi_dialog, motion
+    motion.set_enabled(True)
+    filt = motion._AppMotion()
+    app.installEventFilter(filt)
+    try:
+        dlg = lumi_dialog.LumiDialog(None, "창 열림 점검", "창이 서서히 나타나며 살짝 올라와요.")
+        dlg.show()
+        levels, ys = [], []
+        end = time.monotonic() + 0.5
+        while time.monotonic() < end:
+            app.processEvents()
+            levels.append(dlg.windowOpacity()); ys.append(dlg.y())
+            if 0.2 < levels[-1] < 0.8 and not os.path.exists(os.path.join(out_dir, "motion_window_mid.png")):
+                _shot(app, dlg, os.path.join(out_dir, "motion_window_mid.png"))
+            time.sleep(0.004)
+        final = _shot(app, dlg, os.path.join(out_dir, "motion_window_end.png"))
+        center = QColor(final.pixel(final.width() - 60, final.height() // 3))
+        pal = lumi_dialog.palette(dlg.dark)
+        bg = QColor(pal["bg"])
+        problems = []
+        if dlg.windowOpacity() != 1.0:
+            problems.append(f"끝 불투명도 {dlg.windowOpacity()}")
+        if not any(0.0 < v < 1.0 for v in levels):
+            problems.append("중간 단계 없음")
+        if len(set(ys)) < 3:
+            problems.append(f"올라오는 움직임 없음 {sorted(set(ys))[:3]}")
+        if abs(center.red() - bg.red()) + abs(center.green() - bg.green()) + abs(center.blue() - bg.blue()) > 40:
+            problems.append(f"카드 색 {center.name()} (기대 {pal['bg']})")
+        others = app.topLevelWidgets()
+        dlg.close()
+        ghosts = [w for w in app.topLevelWidgets() if w not in others]
+        if not ghosts or dlg.isVisible():
+            problems.append("닫힐 때 움직임 없음")
+        _pump(app, 0.05)
+        if ghosts:
+            _shot(app, ghosts[0], os.path.join(out_dir, "motion_window_closing.png"))
+        _pump(app, 0.4)
+        if [w for w in app.topLevelWidgets() if w not in others and w.isVisible()]:
+            problems.append("닫힘 잔상이 남음")
+        info = f"단계 {len(set(round(v, 2) for v in levels))}개 · 이동 {len(set(ys))}칸 · 카드 {center.name()}"
+        return ("FAIL", "; ".join(problems) + " · " + info) if problems else ("PASS", info)
+    finally:
+        app.removeEventFilter(filt)
+
+
+@check("애니메이션 — 화면 전환·말풍선·카드 (실제 화면 캡처)")
+def _motion_page():
+    app, out_dir = _real_screen_app()
+    from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+    from widget import motion
+    from widget.widgets import AutoSizeStackedWidget, MessageBubble
+    motion.set_enabled(True)
+    stack = AutoSizeStackedWidget()
+    stack.setStyleSheet("background-color: #F1EAFF;")
+    first, second = QLabel("첫 화면"), QWidget()
+    lay = QVBoxLayout(second)
+    cards = [QLabel(f"카드 {i}") for i in range(4)]
+    for card in cards:
+        card.setProperty("motionCard", True)
+        card.setStyleSheet("background-color: #FFFFFF; border-radius: 12px; font-size: 22px;")
+        lay.addWidget(card)
+    mine, lumi = MessageBubble("나: 안녕", True, max_width=560), MessageBubble("안녕하세요, 루미예요.", False, max_width=560)
+    lay.addWidget(mine); lay.addWidget(lumi)
+    stack.addWidget(first); stack.addWidget(second)
+    stack.setGeometry(160, 160, 640, 520)
+    stack.show()
+    _pump(app, 0.5)
+    stack.setCurrentIndex(1)
+    covered = any(type(w) is QLabel and w not in (first, *cards) and w.parent() is stack for w in stack.findChildren(QLabel))
+    _pump(app, 0.09)
+    _shot(app, stack, os.path.join(out_dir, "motion_page_mid.png"))
+    mine2 = MessageBubble("나: 두 번째 말", True, max_width=560)
+    lay.addWidget(mine2)
+    _pump(app, 0.1)
+    moving = mine2.graphicsEffect() is not None
+    _pump(app, 1.2)
+    _shot(app, stack, os.path.join(out_dir, "motion_page_end.png"))
+    left_cover = [w for w in stack.findChildren(QLabel) if w.parent() is stack and w is not first]
+    left_effect = [w for w in (*cards, mine, lumi, mine2) if w.graphicsEffect() is not None]
+    problems = []
+    if not covered:
+        problems.append("전환 덮개가 안 생김")
+    if left_cover:
+        problems.append(f"덮개 {len(left_cover)}개 남음")
+    if left_effect:
+        problems.append(f"효과 {len(left_effect)}개 남음")
+    if not moving:
+        problems.append("말풍선 효과 없음")
+    stack.close()
+    return ("FAIL", "; ".join(problems)) if problems else ("PASS", "전환 덮개 사라짐 · 카드·말풍선 효과 정리됨")
+
+
+def _real_drag(app, start, end):
+    """진짜 마우스 입력 — 투명 창에서 클릭이 뒤로 빠지지 않는지는 이렇게만 알 수 있다."""
+    import ctypes
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QCursor
+    down, up = 0x0002, 0x0004
+    QCursor.setPos(start); _pump(app, 0.15)
+    ctypes.windll.user32.mouse_event(down, 0, 0, 0, 0); _pump(app, 0.1)
+    for i in range(1, 9):
+        QCursor.setPos(start + QPoint((end - start).x() * i // 8, (end - start).y() * i // 8)); _pump(app, 0.03)
+    ctypes.windll.user32.mouse_event(up, 0, 0, 0, 0); _pump(app, 0.15)
+
+
+@check("주식 창 — 실제 마우스로 크기 조절과 버튼 물결")
+def _stock_resize():
+    if not IS_WIN:
+        return "SKIP", "진짜 마우스 입력은 Windows에서만"
+    app, out_dir = _real_screen_app()
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QCursor
+    from plugins import stock_portfolio as sp
+    sp.load_master = lambda: {"005930": "삼성전자", "000660": "SK하이닉스"}
+    from widget import motion, stock_detail
+    motion.set_enabled(True)
+    filt = motion._AppMotion()
+    app.installEventFilter(filt)
+    try:
+        dlg = stock_detail.StockDetailDialog()
+        dlg.setGeometry(10, 20, 920, 640)   # 점검 서버 화면은 1024×768 — 끌 자리가 화면 안에 있어야 한다
+        dlg.show()
+        _KEEP_ALIVE.append(dlg)
+        _pump(app, 0.8)
+        before = dlg.geometry()
+        problems = []
+        edge = next(e for e in dlg._resize_edges if e.right and e.bottom)
+        grip = edge.mapToGlobal(edge.rect().center())
+        _real_drag(app, grip, grip + QPoint(60, 50))
+        _pump(app, 0.2)
+        grown = dlg.geometry()
+        if (grown.width() - before.width(), grown.height() - before.height()) != (60, 50):
+            problems.append(f"모서리 끌기 {before.width()}x{before.height()} → {grown.width()}x{grown.height()} (기대 +60, +50)")
+        edge = next(e for e in dlg._resize_edges if e.left and not (e.top or e.bottom))
+        grip = edge.mapToGlobal(edge.rect().center())
+        _real_drag(app, grip, grip + QPoint(40, 0))
+        _pump(app, 0.2)
+        if dlg.width() != grown.width() - 40 or dlg.geometry().right() != grown.right():
+            problems.append(f"왼쪽 끌기 후 폭 {dlg.width()} (기대 {grown.width() - 40})")
+        _shot(app, dlg, os.path.join(out_dir, "stock_resized.png"))
+        button = dlg.btn_secondary
+        QCursor.setPos(button.mapToGlobal(button.rect().center())); _pump(app, 0.25)
+        glow = button.findChild(motion._Glow) is not None
+        if not glow:
+            problems.append("마우스를 올려도 버튼 반응 없음")
+        dlg.user_sized, width = True, dlg.width()
+        dlg.fit_to_content()
+        if dlg.width() != width:
+            problems.append("내용 맞춤이 크기를 되돌림")
+        dlg.close()
+        info = f"{before.width()}x{before.height()} → {grown.width()}x{grown.height()} → 폭 {width}"
+        return ("FAIL", "; ".join(problems) + " · " + info) if problems else ("PASS", info)
+    finally:
+        app.removeEventFilter(filt)
+
+
 @check("환경설정 글자 잘림 (실제 Windows 글꼴)")
 def _settings_clip():
     os.environ.pop("QT_QPA_PLATFORM", None)
@@ -533,7 +732,7 @@ def _settings_clip():
     from settings import app_settings
     app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _qapp()
     from widget import lumi_tooltip
     lumi_tooltip.install(app)
     import app_main
@@ -594,6 +793,31 @@ def _settings_clip():
     return ("PASS" if ok else "FAIL"), " · ".join(results)
 
 
+@check("앱 실행과 화면 구조 읽기 (시작 메뉴, UI Automation)")
+def _app_launch_and_snapshot():
+    if not IS_WIN:
+        return "SKIP", "Windows 전용"
+    from core import app_launcher, ui_snapshot
+    apps = app_launcher.installed_apps(refresh=True)
+    shown, target = next(((n, t) for n, t in apps.values() if n in ("Character Map", "문자표")), ("", ""))
+    if not shown:
+        return "FAIL", f"시작 메뉴 {len(apps)}개에 문자표가 없음"
+    try:
+        # 처음 여는 검색창은 러너에서 10초 넘게 걸릴 수 있다(그때는 명령 실행으로 넘어간다) — 기록만 하고, 다시 열 때로 판정한다
+        cold = app_launcher._launch_by_keys(shown, target)
+        subprocess.run(["taskkill", "/IM", "charmap.exe", "/F"], capture_output=True)
+        time.sleep(1)
+        by_keys = app_launcher._launch_by_keys(shown, target)
+        time.sleep(1.5)
+        front = app_launcher._win_foreground_exe()
+        elements = ui_snapshot.snapshot()
+    finally:
+        subprocess.run(["taskkill", "/IM", "charmap.exe", "/F"], capture_output=True)
+    ok = by_keys and front == "charmap.exe" and bool(elements)
+    return ("PASS" if ok else "FAIL"), (f"시작 메뉴 {len(apps)}개 · 시작 키 실행 처음={cold} 다시={by_keys} · 앞 창 {front} · 요소 {len(elements)}개 "
+                                        f"{ui_snapshot.describe(elements[:6])[:240]}")
+
+
 @check("창 제목·아이콘 (실제 Windows 창 — pythonw 대신 Lumi)")
 def _title_icon():
     if not IS_WIN:
@@ -606,7 +830,7 @@ def _title_icon():
     from settings import app_settings
     app_settings._PATH = os.path.join(ROOT, ".selftest_settings.json")
     from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _qapp()
     app.setApplicationName(lumi_icon.APP_NAME)
     app.setWindowIcon(lumi_icon.app_icon())
     import app_main
@@ -629,7 +853,7 @@ def _title_icon():
     out_dir = os.path.join(ROOT, "selftest_out"); os.makedirs(out_dir, exist_ok=True)
     app.primaryScreen().grabWindow(0, fg.x(), fg.y(), fg.width(), 120).save(
         os.path.join(out_dir, "window_titlebar.png"))
-    w.shutdown_background_work(); w.close()
+    w.shutdown_background_work(); w.hide()   # close()는 닫기 확인 창을 띄워 점검이 끝나지 않는다
     _KEEP_ALIVE.append(w)
     try:
         os.remove(app_settings._PATH)

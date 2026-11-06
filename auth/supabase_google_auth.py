@@ -136,7 +136,7 @@ def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
 
     access_token = session.get("access_token")
     if not access_token:
-        raise RuntimeError("구글 로그인 세션을 받지 못했습니다.")
+        raise RuntimeError("로그인 세션을 받지 못했습니다.")
     return access_token, session.get("refresh_token"), session.get("provider_token")
 
 
@@ -153,26 +153,46 @@ def sign_in_with_google(cancel_event=None) -> tuple[str, str, str]:
     실패 시 예외를 던진다 (호출부에서 사용자에게 실패 사유를 보여줘야
     하므로 여기서 조용히 삼키지 않는다).
     """
+    return _sign_in_with_provider("google", " ".join(CALENDAR_SCOPES), cancel_event)
+
+
+def sign_in_with_kakao(cancel_event=None) -> tuple[str, str]:
+    """Supabase Auth(카카오 프로바이더)로 로그인시키고 (access_token, refresh_token)을 반환한다."""
+    return _sign_in_with_provider("kakao", None, cancel_event)[:2]
+
+
+def provider_enabled(provider: str) -> bool:
+    """서버에서 이 로그인 방식이 켜져 있는지. 못 물어보면 False — 눌러도 안 되는 버튼을 보이지 않으려고."""
+    try:
+        resp = requests.get(f"{SUPABASE_URL}/auth/v1/settings", headers={"apikey": SUPABASE_ANON_KEY}, timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("external", {}).get(provider) is True
+    except (requests.RequestException, ValueError, AttributeError):
+        return False
+
+
+def _sign_in_with_provider(provider: str, scopes: str, cancel_event=None) -> tuple[str, str, str]:
     port = _free_port()
     redirect_to = f"http://localhost:{port}"
     verifier, challenge = _make_pkce_pair()
 
-    authorize_url = f"{SUPABASE_URL}/auth/v1/authorize?" + urlencode({
-        "provider": "google",
+    params = {
+        "provider": provider,
         "redirect_to": redirect_to,
-        "scopes": " ".join(CALENDAR_SCOPES),
         "code_challenge": challenge,
         "code_challenge_method": "S256",
         "apikey": SUPABASE_ANON_KEY,
-    })
-    webbrowser.open(authorize_url)
+    }
+    if scopes:
+        params["scopes"] = scopes
+    webbrowser.open(f"{SUPABASE_URL}/auth/v1/authorize?" + urlencode(params))
 
     code = _wait_for_redirect(port, cancel_event=cancel_event)
     return _exchange_code(code, verifier)
 
 
 class GoogleAlreadyLinkedElsewhere(RuntimeError):
-    """고른 구글 계정이 이미 다른 Lumi 계정에 연결(또는 그 구글로 따로 가입)돼 있을 때."""
+    """고른 구글·카카오 계정이 이미 다른 Lumi 계정에 연결(또는 그 계정으로 따로 가입)돼 있을 때."""
 
 
 def link_google_to_current_account(user_access_token: str, cancel_event=None) -> tuple[str, str, str]:
@@ -182,28 +202,39 @@ def link_google_to_current_account(user_access_token: str, cancel_event=None) ->
 
     Returns: sign_in_with_google과 같은 (access_token, refresh_token, google_token) — 같은 계정의 새 세션.
     """
+    return _link_provider("google", "구글", " ".join(CALENDAR_SCOPES), user_access_token, cancel_event)
+
+
+def link_kakao_to_current_account(user_access_token: str, cancel_event=None) -> tuple[str, str, str]:
+    """지금 로그인한 Lumi 계정에 카카오 계정을 연결한다. 다음부터 카카오 로그인으로도 같은 계정에 들어온다."""
+    return _link_provider("kakao", "카카오", None, user_access_token, cancel_event)
+
+
+def _link_provider(provider: str, label: str, scopes: str, user_access_token: str, cancel_event=None) -> tuple[str, str, str]:
     port = _free_port()
     verifier, challenge = _make_pkce_pair()
+    params = {
+        "provider": provider,
+        "redirect_to": f"http://localhost:{port}",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "skip_http_redirect": "true",
+    }
+    if scopes:
+        params["scopes"] = scopes
     resp = requests.get(
         f"{SUPABASE_URL}/auth/v1/user/identities/authorize",
-        params={
-            "provider": "google",
-            "redirect_to": f"http://localhost:{port}",
-            "scopes": " ".join(CALENDAR_SCOPES),
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "skip_http_redirect": "true",
-        },
+        params=params,
         headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {user_access_token}"},
         timeout=10,
     )
     if not resp.ok:
         if resp.status_code == 404 or "manual linking" in resp.text.lower():
-            raise RuntimeError("서버에서 구글 연동이 꺼져 있어요. 관리자에게 문의해주세요.")
-        raise RuntimeError(f"구글 연동을 시작하지 못했어요 ({resp.status_code}).")
+            raise RuntimeError(f"서버에서 {label} 연동이 꺼져 있어요. 관리자에게 문의해주세요.")
+        raise RuntimeError(f"{label} 연동을 시작하지 못했어요 ({resp.status_code}).")
     url = resp.json().get("url")
     if not url:
-        raise RuntimeError("구글 연동 주소를 받지 못했어요.")
+        raise RuntimeError(f"{label} 연동 주소를 받지 못했어요.")
     webbrowser.open(url)
 
     try:
@@ -211,7 +242,7 @@ def link_google_to_current_account(user_access_token: str, cancel_event=None) ->
     except RuntimeError as e:
         if "another user" in str(e).lower():   # "Identity is already linked to another user"
             raise GoogleAlreadyLinkedElsewhere(
-                "이 구글 계정은 이미 다른 Lumi 계정에 연결돼 있어요(그 구글 계정으로 따로 가입한 경우 포함).\n"
-                "다른 구글 계정을 고르거나, 그 계정으로 로그인해주세요.") from e
+                f"이 {label} 계정은 이미 다른 Lumi 계정에 연결돼 있어요(그 {label} 계정으로 따로 가입한 경우 포함).\n"
+                f"다른 {label} 계정을 고르거나, 그 계정으로 로그인해주세요.") from e
         raise
     return _exchange_code(code, verifier)

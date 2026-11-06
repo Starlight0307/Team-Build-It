@@ -16,6 +16,13 @@ pytestmark = pytest.mark.security_history   # conftest가 이 표시가 있으�
 
 
 @pytest.fixture(autouse=True)
+def _no_real_security_settings():
+    """윈도우에서는 리포트가 실제 PC의 UAC·BitLocker를 읽어 점수가 PC마다 달라진다."""
+    with patch("plugins.system_security.check_security_settings", return_value=ss.CheckResult("✅ 정상")):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _user():
     sr.set_current_user("tester")
     yield

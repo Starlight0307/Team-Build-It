@@ -4,6 +4,7 @@
 (.github/workflows/installer.yml)."""
 import importlib.util
 import os
+import sys
 import zipfile
 
 import pytest
@@ -366,6 +367,7 @@ def test_mac_install_dir_stays_out_of_personal_records():
     assert os.path.abspath(li.default_install_dir()) != os.path.abspath(storage_location.app_data_dir())
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="셸 스크립트를 직접 실행하는 맥 전용 시험")
 def test_write_mac_app_makes_runnable_bundle(tmp_path):
     import plistlib
     import stat

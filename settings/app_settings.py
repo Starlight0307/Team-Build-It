@@ -16,6 +16,7 @@ _USER_DIR = None   # 계정별 설정 폴더 — 처음 필요할 때 앱 폴더
 
 DEFAULTS = {
     "dark_mode":   False,  # 화면 테마 (파스텔 테마는 밝은 모드가 기본)
+    "ui_glass":    True,   # 화면 표면: True 투명(유리, 성능을 더 쓴다) / False 불투명
     "weather_city": None,   # 홈 화면 날씨 지역 — None이면 처음 실행 때 현재 위치를 자동으로 찾는다
     "weather_coords": None, # [위도, 경도] — 자동으로 찾았을 때만 (직접 입력하면 None)
     "weather_source": None, # "os"(Windows/macOS 위치 서비스) / "ip"(대략적) / "manual"(직접 입력)

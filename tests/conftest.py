@@ -57,6 +57,26 @@ import webbrowser as _webbrowser
 _webbrowser.open = _webbrowser.open_new = _webbrowser.open_new_tab = lambda *a, **k: False
 
 
+@pytest.fixture(autouse=True)
+def _no_real_app_launch(request, monkeypatch):
+    """시험의 요청 문장이 진짜 앱을 켜지 않게, 설치된 앱이 없는 것으로 둔다. 진짜 Cmd+Space도 누르지 않는다."""
+    from core import app_launcher
+    monkeypatch.setattr(app_launcher, "_launch_by_keys", lambda shown, target: False)
+    if request.module.__name__.endswith("test_app_launcher"):
+        return
+    monkeypatch.setattr(app_launcher, "installed_apps", lambda refresh=False: {})
+    monkeypatch.setattr(app_launcher, "_WINDOWS_COMMANDS", set())
+
+
+@pytest.fixture(autouse=True)
+def _no_real_stock_list_download(request, monkeypatch):
+    """플러그인이 켜진 메인 창이 시험 중에 진짜 종목 목록을 받으면, 늦게 끝난 스레드가 다른 시험의 값을 덮어쓴다."""
+    if "start_updates" in request.node.name:
+        return
+    from widget import stock_panel
+    monkeypatch.setattr(stock_panel.StockPanel, "start_updates", lambda self: None)
+
+
 @pytest.fixture
 def isolated_chat_logs(tmp_path, monkeypatch):
     """data/db.py의 대화기록 저장 위치를 테스트용 임시 폴더로 바꿔치기한다.
@@ -198,6 +218,15 @@ def isolated_calendar_tool_tokens(tmp_path, monkeypatch):
     monkeypatch.setattr(calendar_tool, "TOKEN_DIR", str(fake_dir))
     monkeypatch.setattr(calendar_tool, "_current_user_id", "guest")
     return fake_dir
+
+
+def _report_uncaught_error(error_type, error, trace):
+    """PyQt는 슬롯의 예외로 프로세스를 강제 종료한다 — 원인 없이 테스트 전체가 죽지 않게 문장을 남긴다(앱과 같은 동작)."""
+    import traceback
+    sys.__stderr__.write("\n@@UNCAUGHT " + "".join(traceback.format_exception(error_type, error, trace))[-1500:] + "\n")
+
+
+sys.excepthook = _report_uncaught_error
 
 
 @pytest.fixture(scope="session")

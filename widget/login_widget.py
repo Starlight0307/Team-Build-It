@@ -1,12 +1,17 @@
 import sys
+import threading
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
-                             QLineEdit, QPushButton, QLabel, QCheckBox,
+                             QLineEdit, QPushButton, QLabel, QCheckBox, QScrollArea, QStyle, QStyleOptionButton,
                              QSizePolicy, QGraphicsDropShadowEffect)
-from PyQt6.QtCore import pyqtSignal, Qt, QThread, pyqtSlot, QTimer
-from PyQt6.QtGui import QColor, QPainter, QPen, QPainterPath
+from PyQt6.QtCore import pyqtSignal, Qt, QEvent, QObject, QThread, pyqtSlot, QTimer, QPointF, QRectF, QSize
+from PyQt6.QtGui import QColor, QPainter, QPen, QPainterPath, QPixmap, QRadialGradient
 
 from data.db import verify_login
+from settings.theme import glass_enabled
+from widget import icons
+from widget.account_link_dialog import kakao_symbol
+from widget.lumi_icon import logo_pixmap
 
 
 def _force_window_to_front(win):
@@ -59,17 +64,65 @@ class CheckBox(QCheckBox):
         super().paintEvent(event)
         if not self.isChecked():
             return
-        size = 16
-        x, y = 0, (self.height() - size) // 2
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        box = QRectF(self.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, option, self))   # 스타일이 정한 실제 칸
+        c = box.center()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#1A1731"), 2.2)
+        pen = QPen(QColor(self.property("checkColor") or "#1A1731"), 2.2)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap); pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setPen(pen)
         path = QPainterPath()
-        path.moveTo(x + 4, y + 8.5); path.lineTo(x + 7, y + 11.5); path.lineTo(x + 12, y + 5)
+        path.moveTo(c.x() - 4, c.y() + 0.25); path.lineTo(c.x() - 1, c.y() + 3.25); path.lineTo(c.x() + 4, c.y() - 3.25)
         p.drawPath(path)
         p.end()
+
+
+class _Orbs(QWidget):
+    """카드 뒤의 유리 구슬. 한 번만 그려 두는 그림이라 성능을 쓰지 않고, 불투명 모드에서도 화면이 밋밋하지 않게 한다."""
+    SPOTS = ((0.22, 0.34, 0.15, (139, 120, 238)), (0.80, 0.70, 0.11, (70, 160, 240)), (0.72, 0.16, 0.07, (240, 130, 205)),
+             (0.14, 0.82, 0.06, (70, 210, 200)))
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.dark = True
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        scale = max(self.width(), self.height())
+        for x, y, r, rgb in self.SPOTS:
+            center, radius = QPointF(x * self.width(), y * self.height()), r * scale
+            fill = QRadialGradient(center - QPointF(radius * 0.3, radius * 0.35), radius * 1.3)
+            fill.setColorAt(0, QColor(*rgb, 120 if self.dark else 150))
+            fill.setColorAt(1, QColor(*rgb, 18 if self.dark else 30))
+            p.setBrush(fill)
+            p.setPen(QPen(QColor(255, 255, 255, 60 if self.dark else 150), 1.2))
+            p.drawEllipse(center, radius, radius)
+        p.end()
+
+
+def _glowing_logo(size: int, glow: int) -> QPixmap:
+    """빛이 번지는 루미 로고. 그림자 효과는 카드의 효과와 겹치면 깨져서 그림에 직접 그린다."""
+    ratio = 3
+    full = (size + 2 * glow) * ratio
+    pm = QPixmap(full, full)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    halo = QRadialGradient(full / 2, full / 2, full / 2)
+    halo.setColorAt(0, QColor(167, 147, 255, 170))
+    halo.setColorAt(0.55, QColor(167, 147, 255, 70))
+    halo.setColorAt(1, QColor(167, 147, 255, 0))
+    p.setBrush(halo)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawEllipse(0, 0, full, full)
+    p.drawPixmap(glow * ratio, glow * ratio, logo_pixmap(size * ratio))
+    p.end()
+    pm.setDevicePixelRatio(ratio)
+    return pm
 
 
 class GoogleLoginWorker(QThread):
@@ -100,6 +153,33 @@ class GoogleLoginWorker(QThread):
             self.result_ready.emit(False, "", str(e))
 
 
+class KakaoLoginWorker(GoogleLoginWorker):
+    def run(self):
+        try:
+            from auth.supabase_google_auth import sign_in_with_kakao
+            from data.db import complete_google_login
+            access_token, refresh_token = sign_in_with_kakao(self._cancel)
+            self.result_ready.emit(True, complete_google_login(access_token, refresh_token, remember=self._remember, method="Kakao"), "")
+        except Exception as e:
+            self.result_ready.emit(False, "", str(e))
+
+
+class _KakaoSignal(QObject):
+    available = pyqtSignal(bool)
+
+
+def _check_kakao(signal: _KakaoSignal):
+    """서버에서 카카오 로그인을 켰을 때만 버튼을 보인다. 응답 전에 창을 닫아도 앱 종료를 막지 않게 데몬 스레드로 묻는다."""
+    def work():
+        from auth.supabase_google_auth import provider_enabled
+        enabled = provider_enabled("kakao")
+        try:
+            signal.available.emit(enabled)
+        except RuntimeError:   # 그 사이 창이 사라졌다
+            pass
+    threading.Thread(target=work, daemon=True).start()
+
+
 class PasswordLoginWorker(QThread):
     """아이디/비밀번호 확인은 네트워크를 쓰므로 화면이 멈추지 않게 별도 스레드에서 실행."""
     result_ready = pyqtSignal(bool, str)  # success, error_message
@@ -117,28 +197,25 @@ class PasswordLoginWorker(QThread):
 
 
 def get_stylesheet(is_dark: bool) -> str:
-    if is_dark:
-        bg = "#1B1736"; card = "#272148"; text = "#EEF0F6"
-        sub = "#9AA0B4"; inp = "#2F2959"; brd = "#3E3770"
-        acc = "#B7A6FF"; acc2 = "#8B78EE"; hv = "#C6B9FF"; btx = "#1A1731"
-        b2hv = "#352E63"; logo_tx = "#1A1731"
-    else:
-        bg = "#F3EEFF"; card = "#FFFFFF"; text = "#221D40"
-        sub = "#6B7280"; inp = "#F6F4FD"; brd = "#E3DEF5"
-        acc = "#8B78EE"; acc2 = "#A793FF"; hv = "#7A66E0"; btx = "#FFFFFF"
-        b2hv = "#F1EDFF"; logo_tx = "#FFFFFF"
-
+    from widget.auth_style import colors
+    c = colors(is_dark)
+    bg, card, text, sub, inp, brd, acc, acc2, hv, btx, b2hv = (c[k] for k in ("bg", "card", "text", "sub", "inp", "brd", "acc", "acc2", "hv", "btx", "b2hv"))
+    b2, inp_focus = c["b2"], c["inp_focus"]
+    brand_a, brand_b = ("#C6B9FF", "#7FC4FF") if is_dark else ("#8B78EE", "#4FA3F0")
     return f"""
         QWidget   {{ background: transparent; }}
         QFrame#Root {{ background-color: {bg}; border: none; border-radius: 0px; }}
         QFrame#Card {{ background-color: {card}; border-radius: 24px; border: 1px solid {brd}; }}
         QFrame#Sep  {{ background-color: {brd}; max-height: 1px; border: none; }}
         QLabel      {{ background: transparent; border: none; color: {text}; }}
-        QLabel#Logo {{
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {acc2}, stop:1 {acc});
-            color: {logo_tx}; border-radius: 26px; font-size: 24px; font-weight: 800;
-        }}
-        QLabel#Brand {{ font-size: 20px; font-weight: 800; color: {text}; letter-spacing: 1px; }}
+        QLabel#Brand {{ font-size: 30px; font-weight: 900; letter-spacing: 3px;
+                        color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {brand_a}, stop:1 {brand_b}); }}
+        QScrollArea {{ border: none; }}
+        QScrollBar:vertical {{ background: transparent; width: 8px; margin: 4px 2px; }}
+        QScrollBar::handle:vertical {{ background: {brd}; border-radius: 3px; min-height: 30px; }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; width: 0px; }}
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+        QLabel#Hello {{ font-size: 16px; font-weight: 800; color: {text}; }}
         QLabel#Sub  {{ font-size: 12px; color: {sub}; }}
         QLabel#Lbl  {{ font-size: 11px; font-weight: 700; color: {sub}; }}
         QLabel#Or   {{ font-size: 11px; color: {sub}; }}
@@ -148,7 +225,7 @@ def get_stylesheet(is_dark: bool) -> str:
             border: 1.5px solid {brd}; border-radius: 14px;
             padding: 0 14px; font-size: 13px; min-height: 42px;
         }}
-        QLineEdit:focus {{ border: 1.5px solid {acc}; background-color: {card}; }}
+        QLineEdit:focus {{ border: 1.5px solid {acc}; background-color: {inp_focus}; }}
         QPushButton#P {{
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {acc2}, stop:1 {acc});
             color: {btx}; border: none; border-radius: 14px;
@@ -156,8 +233,14 @@ def get_stylesheet(is_dark: bool) -> str:
         }}
         QPushButton#P:hover {{ background-color: {hv}; }}
         QPushButton#P:disabled {{ background-color: {brd}; color: {sub}; }}
+        QPushButton#K {{
+            background-color: #FEE500; color: rgba(0, 0, 0, 217); border: none; border-radius: 14px;
+            font-size: 13px; font-weight: 700; min-height: 42px;
+        }}
+        QPushButton#K:hover {{ background-color: #F4DC00; }}
+        QPushButton#K:disabled {{ background-color: {brd}; color: {sub}; }}
         QPushButton#G {{
-            background-color: {card}; color: {text};
+            background-color: {b2}; color: {text};
             border: 1.5px solid {brd}; border-radius: 14px;
             font-size: 13px; font-weight: 700; min-height: 42px;
         }}
@@ -192,6 +275,7 @@ class LoginWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._google_worker = None
+        self._kakao_worker = None
         self._login_worker = None
         self._fail_count = 0
         self._lock_left = 0
@@ -209,7 +293,15 @@ class LoginWidget(QWidget):
         self.root.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         rl.addWidget(self.root)
 
-        cl = QVBoxLayout(self.root)
+        # 카드가 창보다 길면 잘리지 않고 스크롤한다 (작은 화면, 카카오 버튼이 함께 보일 때)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.viewport().setAutoFillBackground(False)
+        page = QWidget()
+        scroll.setWidget(page)
+        QVBoxLayout(self.root).addWidget(scroll)
+        self.root.layout().setContentsMargins(0, 0, 0, 0)
+        cl = QVBoxLayout(page)
         cl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cl.setContentsMargins(20, 20, 20, 20)
 
@@ -221,19 +313,23 @@ class LoginWidget(QWidget):
         self.card.setGraphicsEffect(sh)
 
         L = QVBoxLayout(self.card)
-        L.setContentsMargins(34, 34, 34, 28); L.setSpacing(0)
+        L.setContentsMargins(34, 18, 34, 24); L.setSpacing(0)
 
-        logo = QLabel("L"); logo.setObjectName("Logo")
-        logo.setFixedSize(52, 52); logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        L.addWidget(logo, alignment=Qt.AlignmentFlag.AlignHCenter); L.addSpacing(12)
+        self.logo = QLabel(); self.logo.setObjectName("LumiLogo")
+        self.logo.setPixmap(_glowing_logo(56, 16)); self.logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.logo.setAccessibleName("루미 로고")
+        L.addWidget(self.logo, alignment=Qt.AlignmentFlag.AlignHCenter)
         brand = QLabel("LUMI"); brand.setObjectName("Brand")
-        brand.setAlignment(Qt.AlignmentFlag.AlignCenter); L.addWidget(brand); L.addSpacing(6)
+        brand.setAlignment(Qt.AlignmentFlag.AlignCenter); L.addWidget(brand); L.addSpacing(8)
+        hello = QLabel("다시 만나서 반가워요"); hello.setObjectName("Hello")
+        hello.setAlignment(Qt.AlignmentFlag.AlignCenter); L.addWidget(hello); L.addSpacing(4)
         s = QLabel("내 계정으로 로그인하면 설정과 기억이 내 것으로 이어져요")
         s.setObjectName("Sub"); s.setAlignment(Qt.AlignmentFlag.AlignCenter); s.setWordWrap(True)
-        L.addWidget(s); L.addSpacing(24)
+        L.addWidget(s); L.addSpacing(20)
 
         self._add_label(L, "아이디"); L.addSpacing(6)
         self.input_id = QLineEdit(); self.input_id.setPlaceholderText("아이디 입력")
+        self.input_id.addAction(icons.icon("user"), QLineEdit.ActionPosition.LeadingPosition)
         self.input_id.returnPressed.connect(lambda: self.input_pw.setFocus())
         self.input_id.textChanged.connect(self._clear_error)
         L.addWidget(self.input_id); L.addSpacing(14)
@@ -241,6 +337,7 @@ class LoginWidget(QWidget):
         self._add_label(L, "비밀번호"); L.addSpacing(6)
         self.input_pw = QLineEdit(); self.input_pw.setPlaceholderText("비밀번호 입력")
         self.input_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self.input_pw.addAction(icons.icon("lock"), QLineEdit.ActionPosition.LeadingPosition)
         self.input_pw.returnPressed.connect(self._handle_login)
         self.input_pw.textChanged.connect(self._clear_error)
         self.btn_eye = QPushButton("보기"); self.btn_eye.setObjectName("Eye")
@@ -278,13 +375,21 @@ class LoginWidget(QWidget):
         self.btn_google = QPushButton("G   Google로 계속하기"); self.btn_google.setObjectName("G")
         self.btn_google.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_google.clicked.connect(self._handle_google_login)
-        L.addWidget(self.btn_google); L.addSpacing(12)
+        L.addWidget(self.btn_google); L.addSpacing(8)
+
+        self.btn_kakao = QPushButton(kakao_symbol(18), "  카카오 로그인"); self.btn_kakao.setObjectName("K")
+        self.btn_kakao.setIconSize(QSize(18, 18))
+        self.btn_kakao.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_kakao.clicked.connect(self._handle_kakao_login)
+        self.btn_kakao.hide()
+        L.addWidget(self.btn_kakao); L.addSpacing(6)
 
         self.chk_auto = CheckBox("자동 로그인")
         self.chk_auto.setChecked(True)
         self.chk_auto.setCursor(Qt.CursorShape.PointingHandCursor)
         self.chk_auto.setToolTip("켜 두면 다음에 앱을 열 때 로그인 없이 바로 들어가요. 공용 PC에서는 꺼 두세요.")
-        L.addWidget(self.chk_auto, alignment=Qt.AlignmentFlag.AlignHCenter); L.addSpacing(16)
+        self.chk_auto.setAttribute(Qt.WidgetAttribute.WA_LayoutUsesWidgetRect)   # 맥 스타일의 숨은 여백 때문에 오른쪽으로 4px 치우쳤다
+        L.addWidget(self.chk_auto, alignment=Qt.AlignmentFlag.AlignHCenter); L.addSpacing(14)
 
         r2 = QHBoxLayout(); r2.setSpacing(4); r2.addStretch()
         lno = QLabel("계정이 없으신가요?"); lno.setObjectName("Sub"); r2.addWidget(lno)
@@ -294,6 +399,17 @@ class LoginWidget(QWidget):
         L.addLayout(r2)
 
         cl.addWidget(self.card)
+        self.orbs = _Orbs(self.root)
+        self.orbs.lower()
+        self.root.installEventFilter(self)
+        self._kakao_signal = _KakaoSignal(self)
+        self._kakao_signal.available.connect(self.btn_kakao.setVisible)
+        _check_kakao(self._kakao_signal)
+
+    def eventFilter(self, obj, event):
+        if obj is self.root and event.type() == QEvent.Type.Resize:
+            self.orbs.setGeometry(self.root.rect())
+        return super().eventFilter(obj, event)
 
     def _add_label(self, layout, text):
         l = QLabel(text); l.setObjectName("Lbl"); layout.addWidget(l)
@@ -315,7 +431,7 @@ class LoginWidget(QWidget):
             self.lbl_err.setText("")
 
     def _set_busy(self, busy: bool):
-        for w in (self.btn_login, self.btn_google, self.input_id, self.input_pw, self.chk_auto):
+        for w in (self.btn_login, self.btn_google, self.btn_kakao, self.input_id, self.input_pw, self.chk_auto):
             w.setEnabled(not busy)
         self.btn_login.setText("로그인 중..." if busy else "로그인")
 
@@ -395,6 +511,32 @@ class LoginWidget(QWidget):
             self._show_error("구글 로그인에 실패했어요. 다시 시도해주세요.")
             print(f"[구글 로그인 실패] {err}")
 
+    def _handle_kakao_login(self):
+        if self._kakao_worker is not None and self._kakao_worker.isRunning():   # 같은 버튼이 "취소" 역할
+            self._kakao_worker.cancel()
+            self.btn_kakao.setEnabled(False)
+            self.btn_kakao.setText("  취소하는 중...")
+            return
+        self._set_busy(True)
+        self.btn_kakao.setEnabled(True)
+        self.btn_kakao.setText("  브라우저에서 인증 중... (누르면 취소)")
+        self._kakao_worker = KakaoLoginWorker(self.chk_auto.isChecked())
+        self._kakao_worker.result_ready.connect(self._on_kakao_login_done)
+        self._kakao_worker.start()
+
+    @pyqtSlot(bool, str, str)
+    def _on_kakao_login_done(self, ok, username, err):
+        self._set_busy(False)
+        self.btn_kakao.setText("  카카오 로그인")
+        if ok:
+            _force_window_to_front(self.window())
+            self.login_success.emit(username)
+        elif "취소" in err:
+            self._show_error("카카오 로그인을 취소했어요.")
+        else:
+            self._show_error("카카오 로그인에 실패했어요. 다시 시도해주세요.")
+            print(f"[카카오 로그인 실패] {err}")
+
     def clear_fields(self):
         self.input_id.clear(); self.input_pw.clear(); self._clear_error()
         self.btn_eye.setChecked(False)
@@ -403,3 +545,7 @@ class LoginWidget(QWidget):
         self.setStyleSheet("")   # 처음 표시 전에 다른 QSS가 남아 있으면 갱신이 안 되는 Qt 현상 방지
         from widget.auth_style import DIALOG_QSS
         self.setStyleSheet(get_stylesheet(is_dark) + DIALOG_QSS)
+        self.orbs.dark = is_dark
+        self.orbs.update()
+        self.card.graphicsEffect().setEnabled(not glass_enabled())   # 반투명 카드는 그림자가 안쪽에 비쳐 탁해진다
+        self.chk_auto.setProperty("checkColor", "#1A1731" if is_dark else "#FFFFFF")

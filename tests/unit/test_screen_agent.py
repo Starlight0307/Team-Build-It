@@ -239,7 +239,7 @@ def _run_worker(monkeypatch, answers, frames):
     asked = []
     seq = iter(answers)
 
-    def ask(self, image, history, step, repeat):
+    def ask(self, image, history, step, repeat, elements=()):
         asked.append(list(getattr(self, "_notes", [])))
         return parse_action(next(seq))
     monkeypatch.setattr(screen_agent.ScreenAgentWorker, "_ask_next_action", ask)

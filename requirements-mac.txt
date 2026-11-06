@@ -1,3 +1,5 @@
 # 맥에서만 설치하는 패키지 — core/bootstrap.py가 macOS일 때만 이 파일도 읽는다.
 # 애플 캘린더 "이 Mac의 캘린더로 연결"(macOS 캘린더 권한, calendar_feature/apple_backend.py의 MacSource)
 pyobjc-framework-EventKit==12.2.2
+# 화면 작업이 맨 앞 창의 버튼·글자를 직접 읽는다(core/ui_snapshot.py)
+pyobjc-framework-ApplicationServices==12.2.2

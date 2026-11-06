@@ -93,5 +93,37 @@ DARK = {
 }
 
 
+def _sheen(top: str, bottom: str) -> str:
+    return f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {top}, stop:1 {bottom})"
+
+
+# 투명: 뒤의 빛 덩어리가 비치는 유리, 불투명: 뒤가 비치지 않아 움직임이 필요 없고 가볍다
+_SURFACES = {
+    # 라이트는 카드를 흰색으로 덮으면 유리가 안 보이고 서로 구분도 안 된다 — 카드는 더 비치게, 경계와 말풍선은 또렷하게
+    # 테두리는 불투명 색이어야 한다: 반투명이면 둥근 모서리에서 겹쳐 점선처럼 끊겨 보인다
+    (False, True): {"card": _sheen("rgba(255,255,255,105)", "rgba(255,255,255,45)"), "card_brd": "#C4B9F0",
+                    "card_hover": "rgba(255,255,255,170)", "sb": "rgba(255,255,255,80)", "sbrd": "#CFC6F2",
+                    "pb": "rgba(255,255,255,100)", "pbrd": "#C4B9F0", "tc2": "#55517A",
+                    "bubble_ai": "rgba(255,255,255,235)", "bubble_ai_brd": "#B3A5EE",
+                    "bubble_user": linear("#C9B6FF", "#ADD4FF", diagonal=True), "bubble_user_brd": "#9D87F0"},
+    (True, True): {"card": _sheen("rgba(255,255,255,34)", "rgba(255,255,255,14)"), "card_brd": "rgba(255,255,255,44)",
+                   "sb": "rgba(255,255,255,18)", "sbrd": "rgba(255,255,255,34)", "pb": "rgba(255,255,255,22)",
+                   "pbrd": "rgba(255,255,255,44)", "bubble_ai": "rgba(255,255,255,26)", "bubble_ai_brd": "rgba(255,255,255,44)"},
+    (False, False): {"card": "#FFFFFF", "sb": "#FFFFFF"},
+    (True, False): {"card": "#28224A", "sb": "#231E42"},
+}
+_glass = True
+
+
+def set_glass(on: bool):
+    global _glass
+    _glass = bool(on)
+
+
+def glass_enabled() -> bool:
+    return _glass
+
+
 def get_palette(is_dark_mode: bool) -> dict:
-    return DARK if is_dark_mode else LIGHT
+    base = DARK if is_dark_mode else LIGHT
+    return {**base, **_SURFACES[(bool(is_dark_mode), _glass)]}

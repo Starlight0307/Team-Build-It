@@ -6,6 +6,8 @@
 버튼 모양만 통일된다.
 """
 
+from settings.theme import glass_enabled
+
 CARD_WIDTH = 390
 
 
@@ -46,15 +48,28 @@ DIALOG_QSS = """
 """
 
 
-def overrides(is_dark: bool) -> str:
+def colors(is_dark: bool) -> dict:
+    """로그인·회원가입·찾기 화면 공통 색. 투명 모드면 카드·입력칸이 앱 뒤의 빛을 비친다."""
     if is_dark:
-        bg = "#1B1736"; card = "#272148"; text = "#EEF0F6"
-        sub = "#9AA0B4"; inp = "#2F2959"; brd = "#3E3770"
-        acc = "#B7A6FF"; acc2 = "#8B78EE"; hv = "#C6B9FF"; btx = "#1A1731"; b2hv = "#352E63"
+        c = dict(bg="#1B1736", card="#272148", text="#EEF0F6", sub="#9AA0B4", inp="#2F2959", inp_focus="#272148", brd="#3E3770",
+                 acc="#B7A6FF", acc2="#8B78EE", hv="#C6B9FF", btx="#1A1731", b2hv="#352E63", b2="#272148")
+        if glass_enabled():
+            c.update(bg="transparent", card="rgba(255, 255, 255, 26)", sub="#B4B8CC", inp="rgba(12, 9, 34, 110)", inp_focus="rgba(12, 9, 34, 150)",
+                     brd="#5A5196", b2="rgba(255, 255, 255, 22)", b2hv="rgba(255, 255, 255, 44)")
     else:
-        bg = "#F3EEFF"; card = "#FFFFFF"; text = "#221D40"
-        sub = "#6B7280"; inp = "#F6F4FD"; brd = "#E3DEF5"
-        acc = "#8B78EE"; acc2 = "#A793FF"; hv = "#7A66E0"; btx = "#FFFFFF"; b2hv = "#F1EDFF"
+        c = dict(bg="#F3EEFF", card="#FFFFFF", text="#221D40", sub="#6B7280", inp="#F6F4FD", inp_focus="#FFFFFF", brd="#E3DEF5",
+                 acc="#8B78EE", acc2="#A793FF", hv="#7A66E0", btx="#FFFFFF", b2hv="#F1EDFF", b2="#FFFFFF")
+        if glass_enabled():
+            # 반투명 테두리는 뒤 빛과 섞여 끊겨 보여 불투명하게 둔다
+            c.update(bg="transparent", card="rgba(255, 255, 255, 120)", sub="#544F73", inp="rgba(255, 255, 255, 150)", inp_focus="rgba(255, 255, 255, 215)",
+                     brd="#C4B9F0", acc="#7A66E0", hv="#6A56D0", b2="rgba(255, 255, 255, 130)", b2hv="rgba(255, 255, 255, 200)")
+    return c
+
+
+def overrides(is_dark: bool) -> str:
+    c = colors(is_dark)
+    bg, card, text, sub, inp, brd, acc, acc2, hv, btx = (c[k] for k in ("bg", "card", "text", "sub", "inp", "brd", "acc", "acc2", "hv", "btx"))
+    inp_focus = c["inp_focus"]
     return f"""
         QFrame#Root {{ background-color: {bg}; }}
         QScrollArea {{ background: transparent; border: none; }}
@@ -74,7 +89,7 @@ def overrides(is_dark: bool) -> str:
             border: 1.5px solid {brd}; border-radius: 14px;
             padding: 0 14px; font-size: 13px; min-height: 40px;
         }}
-        QLineEdit:focus {{ border: 1.5px solid {acc}; background-color: {card}; }}
+        QLineEdit:focus {{ border: 1.5px solid {acc}; background-color: {inp_focus}; }}
         QPushButton#P {{
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {acc2}, stop:1 {acc});
             color: {btx}; border: none; border-radius: 14px;

@@ -51,25 +51,42 @@ from PyQt6.QtGui import QShortcut, QKeySequence, QIcon
 
 from settings.config import MOCK_USER
 from settings import app_settings
-from settings.theme import get_palette
+from settings.theme import get_palette, glass_enabled, set_glass
 from calendar_feature import calendar_preference
 from settings import ui_scale
 from core.ai_worker import (AIWorker, _build_condition_recommendation, is_large_file_followup,
                             build_overall_security_reply)
 from core.plugin_manager import load_existing_plugins, download_and_install_plugin, uninstall_plugin
 from widget.iot_panel import IotPanel
+from widget.stock_panel import StockPanel
 from core.plugins_registry import PLUGIN_PILLS, PLUGIN_CARDS
-from widget.widgets import (CommandCard, MessageBubble, TypingIndicator, FlowLayout,
+from widget.widgets import (CommandCard, FitHeightPage, MessageBubble, TypingIndicator, FlowLayout,
                             ResponsiveCardRow, GripSplitter, NotificationToast, RealtimeAlertsDialog,
                             AutoSizeStackedWidget, ToggleSwitch, AgentOverlay, ScrollTopFade)
 from widget.marketplace import PluginMarketplaceWidget
-from widget import icons
+from widget import icons, motion
 from widget.dashboard import (Panel, SystemStatsPanel, WeatherPanel, TodayPanel, TodoPanel,
                               SessionPanel, LumiOrb, NUM_FONT)
 
 from auth.auth_ui import AuthWidget
 from widget.history_widget import HistoryWidget
 from widget.mypage_widget import MyPageWidget
+
+
+class AppOpenWorker(QThread):
+    done = pyqtSignal(str)
+
+    def __init__(self, name: str):
+        super().__init__()
+        self.name = name
+
+    def run(self):
+        name = self.name
+        try:
+            self.done.emit(f"🚀 {app_launcher.launch(name, exact=True)} 앱을 열었어요.")
+        except Exception as e:
+            print(f"[앱 실행] 오류: {type(e).__name__}")
+            self.done.emit(f"❌ {e}" if isinstance(e, app_launcher.AppNotFound) else f"❌ '{name}' 앱을 열지 못했어요.")
 
 
 class AutoLoginWorker(QThread):
@@ -84,7 +101,7 @@ from data.db import save_chat_to_file
 from core.voice import (VoiceListener, Speaker, VoiceInstallWorker, OptionalInstallWorker, missing_optional_packages,
                         retry_optional_packages,
                         missing_voice_packages, is_stop_phrase, VOICE_MODELS, current_voice_model)
-from core import screen_agent, web_launcher, skills
+from core import app_launcher, screen_agent, web_launcher, skills
 from core.skill_agent import SkillAgentWorker
 from widget.skills_widget import SkillsPage
 from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
@@ -111,6 +128,12 @@ def _sync_calendar_user(user_id: str):
         # 로그인한 사용자만 쓸 수 있으므로, 로그인/로그아웃 시 같이 동기화한다.
         from plugins.expense_tracker import set_current_user as set_expense_user
         set_expense_user(user_id)
+    except ImportError:
+        pass
+    try:
+        # 계정이 바뀌면 자동매매가 이어서 돌지 않게 꺼지고, 다른 계정의 키를 쓰지 않는다
+        from plugins.stock_portfolio import set_current_user as set_stock_user
+        set_stock_user(user_id)
     except ImportError:
         pass
     try:
@@ -267,10 +290,13 @@ DASHBOARD_WIDGETS = {
     "todo":    ("list-todo", "할 일", "아직 끝내지 않은 할 일을 보여줘요. (로그인 필요)"),
     "session": ("timer", "세션", "루미 가동 시간, 명령 수, 시스템 부하를 보여줘요."),
     "iot":     ("lightbulb", "IoT 제어", "등록한 기기를 켜고 꺼요. (IoT 플러그인 설치 필요)"),
+    "stock":   ("chart-line", "주식", "보유 종목과 평가손익을 보여줘요. (주식 플러그인 설치 필요)"),
 }
 DEFAULT_WIDGET_ORDER = list(DASHBOARD_WIDGETS)
 
 # 창 닫기(X) 동작 — 환경설정 > 실행 (app_settings "close_action")
+TOP_CLOCK_SAMPLE = "오전 12:59  ·  12월 28일 (수)"
+TOP_WEATHER_SAMPLE = "-18.8°C  서울시"
 CLOSE_ACTIONS = [(None, "매번 묻기"), ("tray", "백그라운드"), ("quit", "종료")]
 
 
@@ -329,6 +355,10 @@ class AssistantApp(QWidget):
         self._setup_system_tray()
         QTimer.singleShot(50, self.apply_theme)
         QTimer.singleShot(800, self._run_startup_update_check)
+        QTimer.singleShot(1000, self.stock_panel.refresh)
+        app_launcher.prewarm()
+        if "stock_portfolio" in self.installed_module_names:
+            self.stock_panel.start_updates()
         # 신규 기능 6(앱 사용 통계) — 사용자가 이전에 기록을 켜둔 경우에만 이어서 기록한다.
         QTimer.singleShot(1500, self._resume_usage_tracking)
         if "iot_control" in self.installed_module_names:
@@ -460,6 +490,7 @@ class AssistantApp(QWidget):
         2026-09-30 사용자 PC에서 마이크(VoiceListener)가 켜진 채 Ctrl+C 등으로
         종료하자 "QThread: Destroyed while thread is still running"으로 앱이 강제
         종료된 충돌 보고서가 두 건 있었다."""
+        self.stock_panel.close_detail()
         if self._screen_worker is not None and self._screen_worker.isRunning():
             self._screen_worker.stop()
             self._screen_worker.wait(3000)
@@ -1047,6 +1078,8 @@ class AssistantApp(QWidget):
     # ─────────────────────────────────────────────
     def apply_theme(self):
         d = self.is_dark_mode
+        set_glass(app_settings.get("ui_glass"))
+        self.backdrop.set_mode(glass_enabled(), d)
         p = get_palette(d)
         lumi_dialog.set_dark(d)   # 앱 공통 팝업도 같은 테마로
         s = ui_scale.get_scale()   # 대화창(말풍선/카드/입력창/사이드바)에만 적용되는 배율
@@ -1091,20 +1124,22 @@ class AssistantApp(QWidget):
         self.brand_title.setStyleSheet(
             f"color: {p['grad']}; font-size: 24px; font-weight: 900; background: transparent;")
         pill = (f"color: {p['tc']}; background-color: {p['card']}; border: 1px solid {p['card_brd']}; "
-                f"border-radius: 18px; padding: 8px 18px; font-size: 13px; font-weight: bold;")
+                f"border-radius: 18px; padding: 9px 12px 7px 8px; font-size: 13px; font-weight: bold;")   # 보이는 내용 기준 가운데: 줄 상자가 위로 뜨고 아이콘 그림에 투명 여백이 있다
         self.clock_pill.setStyleSheet(pill)
         self.weather_pill.setStyleSheet(pill)
         self._update_status_pill()
+        self._fix_top_pill_slots()
         # 둥근 알약 버튼 — 선택된 메뉴는 그라데이션 + 이름이 펼쳐진다 (update_sidebar_ui)
         nav_style = (
             f"QPushButton {{ background-color: {p['card']}; border: 1px solid {p['card_brd']}; border-radius: 19px; "
-            f"font-size: 15px; min-width: 40px; min-height: 38px; padding: 0 10px; color: {p['tc']}; "
+            f"font-size: 15px; min-width: 34px; min-height: 38px; padding: 0 10px; color: {p['tc']}; "
             f"font-weight: bold; }}"
             f"QPushButton:hover {{ border-color: {p['accent']}; }}"
             f"QPushButton:checked {{ background-color: {p['grad']}; border: none; color: #2E2A4F; padding: 0 16px; }}"
         )
         for btn in self.nav_info:
             btn.setStyleSheet(nav_style)
+        self.btn_stock.setStyleSheet(nav_style)
         self.btn_quit.setStyleSheet(nav_style + f"QPushButton:hover {{ border-color: #E5484D; }}")
 
         for panel in self.info_panels:
@@ -1188,7 +1223,9 @@ class AssistantApp(QWidget):
         app_settings.set("dark_mode", self.is_dark_mode)
         if self.switch_dark.isChecked() != self.is_dark_mode:
             self.switch_dark.setChecked(self.is_dark_mode)
+        motion.cover_window(self)
         self.apply_theme()
+        self.stock_panel.reopen_detail()   # 떠 있는 주식 창도 새 테마로
 
     # ─────────────────────────────────────────────
     # 🔍 대화창 확대/축소 (브라우저 Ctrl+/Ctrl- 방식)
@@ -1219,6 +1256,7 @@ class AssistantApp(QWidget):
         QShortcut(QKeySequence("Ctrl+Shift+Space"), self).activated.connect(self.toggle_voice_conversation)
 
         self.setObjectName("appRoot")   # 앱 전체 배경(그라데이션)을 이 위젯에만 칠한다
+        self.backdrop = motion.GlassBackdrop(self)   # 먼저 만들어 다른 위젯보다 뒤에 놓인다
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -1257,18 +1295,16 @@ class AssistantApp(QWidget):
         self.brand_title = QLabel("LUMI")
         tb.addWidget(self.brand_title)
         tb.addSpacing(6)
-        self.status_pill = QLabel("● 연결 확인 중")
-        tb.addWidget(self.status_pill)
+        self.status_pill = QLabel("● 확인 중")
+        tb.addWidget(self._pill_slot(self.status_pill))
         tb.addStretch(1)
         self.clock_pill = QLabel()
-        center.addWidget(self.clock_pill)
-        self._clock_probe = QLabel()   # 화면에 띄우지 않고 시계 글자 폭만 재는 용도(_center_top_bar)
-        self._clock_probe.setMinimumHeight(36)
+        center.addWidget(self._pill_slot(self.clock_pill))
         self.weather_pill = QLabel(icons.label_html("cloud-sun", "--°C"))
         self.weather_pill.setToolTip("누르면 자세한 날씨를 볼 수 있어요 · 지역은 환경설정 > 날씨에서 바꿔요")
         self.weather_pill.setCursor(Qt.CursorShape.PointingHandCursor)
         self.weather_pill.mouseReleaseEvent = lambda e: self._open_weather_detail()
-        center.addWidget(self.weather_pill)
+        center.addWidget(self._pill_slot(self.weather_pill))
         for _pill in (self.clock_pill, self.weather_pill):
             # 모서리 반지름(18px)의 두 배보다 낮으면 Qt가 둥근 모서리를 못 그리고 네모로 그린다
             _pill.setMinimumHeight(36)
@@ -1307,6 +1343,16 @@ class AssistantApp(QWidget):
             btn.clicked.connect(self.navigate_pages)
             tb.addWidget(btn)
         self.btn_chat.setChecked(True)
+        # 화면을 바꾸지 않고 따로 창을 띄워서 nav_info에 넣지 않는다. 창이 떠 있는 동안 켜진 모양
+        self.btn_stock = QPushButton()
+        self.btn_stock.setCheckable(True)
+        self.btn_stock.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stock.setToolTip("주식 창 열기 — 띄워 둔 채로 루미를 쓸 수 있어요")
+        self.btn_stock.setIcon(icons.icon("chart-line"))
+        self.btn_stock.setIconSize(QSize(19, 19))
+        self.btn_stock.clicked.connect(self._open_stock_window)
+        self.btn_stock.hide()
+        tb.addWidget(self.btn_stock)
         tb.addSpacing(6)
 
         self.btn_profile = QPushButton()
@@ -1334,6 +1380,7 @@ class AssistantApp(QWidget):
         mal.setSpacing(0)
 
         self.stacked_widget = AutoSizeStackedWidget()
+        self.stacked_widget.currentChanged.connect(self.backdrop.shift)
         self.stacked_widget.setStyleSheet("background: transparent;")
         mal.addWidget(self.stacked_widget)
 
@@ -1442,11 +1489,15 @@ class AssistantApp(QWidget):
         self.todo_panel.clicked.connect(self._open_todo_dialog)
         self.session_panel = SessionPanel(self.stats_panel)
         self.iot_panel = IotPanel()
+        self.stock_panel = StockPanel()
+        self.stock_panel.detail_changed.connect(self._on_stock_window_changed)
+        self.stock_panel.notice.connect(self._show_toast)
+        self.stock_panel.briefing_ready.connect(self._on_stock_reply)
         self.info_panels = [self.stats_panel, self.weather_panel, self.today_panel,
-                            self.todo_panel, self.session_panel, self.iot_panel]
+                            self.todo_panel, self.session_panel, self.iot_panel, self.stock_panel]
         self.panel_by_id = {"stats": self.stats_panel, "weather": self.weather_panel,
                             "today": self.today_panel, "todo": self.todo_panel,
-                            "session": self.session_panel, "iot": self.iot_panel}
+                            "session": self.session_panel, "iot": self.iot_panel, "stock": self.stock_panel}
         for panel in self.info_panels:
             ll.addWidget(panel)
         ll.addStretch()
@@ -1553,6 +1604,7 @@ class AssistantApp(QWidget):
 
         # 입력창 — 대화 패널 맨 아래
         self.bottom_input_wrapper = QWidget()
+        self.bottom_input_wrapper.setProperty("motionCard", True)
         self.bottom_input_wrapper.setStyleSheet("background: transparent; border: none;")
         bwl = QVBoxLayout(self.bottom_input_wrapper)
         bwl.setContentsMargins(12, 10, 12, 12)
@@ -1597,68 +1649,83 @@ class AssistantApp(QWidget):
             w = self.width()
             self.left_column.setVisible(w >= 1180)
             self.center_column.setVisible(w >= 860)
+        if hasattr(self, 'nav_info') and hasattr(self, '_unread_alert_count'):
+            self._fit_menu_names()
         if hasattr(self, 'clock_pill'):
             self._tick_clock()   # 창 폭에 맞는 시계 형식으로 바로 바꾸고 가운데 위치도 다시 잡는다
 
-    _TOP_MENU_ROOM = 60
+    def _fit_menu_names(self):
+        """선택한 메뉴 이름은 자리가 있을 때만 펼친다. 최소 폭에 이름을 넣으면 긴 이름을 고를 때 창이 저절로 넓어졌다."""
+        badge = f"  🔴{self._unread_alert_count}" if self._unread_alert_count > 0 else ""   # 대화 메뉴의 미확인 알림 뱃지
+        for btn in self.nav_info:
+            btn.setMaximumWidth(16777215)   # 펼침 애니메이션의 폭 제한이 남아 있으면 필요한 폭을 작게 잰다
+            btn.setText(badge if btn is self.btn_chat else "")
+            btn.setMinimumWidth(btn.sizeHint().width())
+        self.btn_stock.setMaximumWidth(16777215)
+        self.btn_stock.setText("")
+        self.btn_stock.setMinimumWidth(self.btn_stock.sizeHint().width())
+        for btn in self.nav_info:
+            if btn.isChecked():
+                self._expand_if_room(btn, f" {self.nav_info[btn][1]}" + (badge if btn is self.btn_chat else ""), badge if btn is self.btn_chat else "")
+        if self.btn_stock.isChecked():   # 주식 창이 열려 있으면 선택된 메뉴처럼 이름을 펼친다
+            self._expand_if_room(self.btn_stock, " 주식", "")
+
+    def _expand_if_room(self, btn: QPushButton, name: str, folded: str):
+        btn.setText(name)
+        top, left, _, right = self._top_groups
+        right.layout().invalidate()   # 버튼은 오른쪽 묶음 안에 있다 — 안 하면 예전 폭으로 잰다
+        margins = top.contentsMargins()
+        need = (margins.left() + margins.right() + left.sizeHint().width() + self._top_center_gap.sizeHint().width()
+                + right.sizeHint().width() + 2 * top.spacing())   # top.sizeHint()는 묶음 폭을 캐시해 한 박자 늦는다
+        if need + 8 > self.width():   # 눌려서 이름이 잘리기 전에 접는다
+            btn.setText(folded)
 
     def _center_top_bar(self):
-        """상단 바 가운데 묶음(시계·날씨)을 정중앙에 둔다. 좌우 묶음과 겹치면 그 사이 빈 공간의 가운데로."""
-        top, left, center, right = getattr(self, "_top_groups", (None,) * 4)
+        """시계·날씨 칸을 왼쪽 묶음 바로 옆 같은 자리에 둔다. 창 폭이나 고른 메뉴가 달라도 움직이지 않는다."""
+        top, left, center, _right = getattr(self, "_top_groups", (None,) * 4)
         if top is None:
             return
-        # 남는 자리에 맞춰 시계 형식을 고른다(긴 형식 → 짧은 형식). 창 폭만 보고 고르던 때는 선택된 메뉴
-        # 이름("환경설정")이 길어 자리가 모자라면 레이아웃이 메뉴 버튼을 눌러 "환경·"처럼 잘렸다(Windows에서 실제로 발생).
-        # 짧은 형식도 안 들어가면 짧은 형식 그대로 둔다 — 비워둔 자리(_top_center_gap)와 버튼 최소 폭 때문에
-        # 창이 그보다 좁아지지 않는다.
-        m = top.contentsMargins()
-        # 메뉴 이름이 가장 긴 '마켓플레이스'를 골라도 들어갈 만큼 남겨서, 메뉴를 바꿔도 시계 형식이 달라지지 않게 한다
-        room = (self.top_bar.width() - m.left() - m.right() - left.sizeHint().width()
-                - right.sizeHint().width() - 4 * top.spacing() - self._TOP_MENU_ROOM)
-        # 후보 글자 폭은 화면에 없는 같은 모양의 라벨로 잰다 — 진짜 시계에 긴 글자 → 짧은 글자를 번갈아 넣으면
-        # 매초 상단 바가 다시 배치되어, 마우스를 올려둔 날씨 알약의 툴팁이 뜨기 전에 계속 취소됐다
-        center.layout().invalidate()   # 숨겨져 있던 동안 바뀐 글자 폭도 다시 잰다(안 하면 예전 폭으로 그려 메뉴와 겹친다)
+        center.layout().invalidate()
         hint = center.sizeHint()
-        texts = getattr(self, "_clock_texts", None)
-        if texts:
-            probe = self._clock_probe
-            if probe.styleSheet() != self.clock_pill.styleSheet():
-                probe.setStyleSheet(self.clock_pill.styleSheet())
-            # 재는 라벨은 창 밖이라 글꼴이 몇 px 다르게 잡힌다 → 지금 시계 글자로 차이를 재서 빼준다
-            probe.setText(self.clock_pill.text())
-            others = hint.width() - probe.sizeHint().width()
-            for html in (icons.label_html("clock", t) for t in texts):
-                probe.setText(html)
-                if others + probe.sizeHint().width() <= room:
-                    break
-            if self.clock_pill.text() != html:
-                self.clock_pill.setText(html)
-                center.layout().invalidate()
-                hint = center.sizeHint()
         gap_w = hint.width() + 2 * top.spacing()
-        if self._top_center_gap.sizeHint().width() != gap_w:   # 가운데 묶음 폭만큼 레이아웃에 자리를 비워둔다
+        if self._top_center_gap.sizeHint().width() != gap_w:   # 묶음 폭만큼 레이아웃에 자리를 비워둔다
             self._top_center_gap.changeSize(gap_w, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
             top.invalidate()
-        bar_w = self.top_bar.width()
-        x = (bar_w - hint.width()) // 2
-        lo = left.geometry().right() + top.spacing()
-        hi = right.geometry().left() - top.spacing() - hint.width()
-        if not lo <= x <= hi:   # 정중앙이면 메뉴와 겹친다 → 왼쪽 묶음 옆에 고정(메뉴를 바꿔도 움직이지 않게)
-            x = max(lo, min(lo + 16, hi))
+            self._fit_menu_names()
+        x = top.contentsMargins().left() + left.sizeHint().width() + 16   # 레이아웃이 다시 잡히는 중에도 같은 값이 나오도록 실제 위치 대신 권장 폭으로
         center.setGeometry(x, (self.top_bar.height() - hint.height()) // 2, hint.width(), hint.height())
         center.raise_()
+
+    @staticmethod
+    def _pill_slot(pill: QLabel) -> QWidget:
+        """칸의 시작 위치를 고정하는 자리. 알약은 왼쪽에 붙어 글자 폭만큼만 차지한다."""
+        slot = QWidget()
+        row = QHBoxLayout(slot)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(pill)
+        row.addStretch(1)
+        return slot
+
+    def _fix_top_pill_slots(self):
+        """자리 폭은 가장 긴 글자 기준 — 글자가 바뀌어도 다음 칸의 시작 위치가 움직이지 않는다."""
+        for pill, html in ((self.status_pill, "● 오프라인"),
+                           (self.clock_pill, icons.label_html("clock", TOP_CLOCK_SAMPLE)),
+                           (self.weather_pill, icons.label_html("cloud-sun", TOP_WEATHER_SAMPLE))):
+            current = pill.text()
+            pill.setText(html)
+            pill.parentWidget().setFixedWidth(pill.sizeHint().width())
+            pill.setText(current)
+        QTimer.singleShot(0, self._center_top_bar)   # 첫 시계 갱신(1초)까지 기다리면 그동안 연결 상태 칸과 겹친다
 
     def _tick_clock(self):
         now = datetime.now()
         ampm = "오전" if now.hour < 12 else "오후"
         hour = now.hour % 12 or 12
         weekday = "월화수목금토일"[now.weekday()]
-        # 넓으면 연도·초까지, 자리가 모자라면 짧게 — 어느 쪽을 쓸지는 _center_top_bar가 남는 자리를 보고 고른다
-        self._clock_texts = (
-            f"{ampm} {hour}:{now:%M:%S}   |   {now.year}년 {now.month}월 {now.day}일 ({weekday})",
-            f"{ampm} {hour}:{now:%M}  ·  {now.month}월 {now.day}일 ({weekday})",
-        )
-        self._center_top_bar()   # 프로필 이름·연결 상태 글자가 바뀌어 묶음 폭이 달라져도 가운데를 유지
+        html = icons.label_html("clock", f"{ampm} {hour}:{now:%M}  ·  {now.month}월 {now.day}일 ({weekday})")
+        if self.clock_pill.text() != html:
+            self.clock_pill.setText(html)
+        self._center_top_bar()   # 왼쪽 묶음이 늦게 자리 잡아도 바로 옆에 붙는다
 
     def _check_ollama(self):
         """Ollama가 켜져 있는지 백그라운드에서 확인 (화면 멈춤 없게 스레드로)."""
@@ -1679,7 +1746,7 @@ class AssistantApp(QWidget):
         p = get_palette(self.is_dark_mode)
         online = self._ollama_online
         color = p['tc2'] if online is None else (p['ok'] if online else p['danger'])
-        text = "● 연결 확인 중" if online is None else ("● 온라인" if online else "● 오프라인")
+        text = "● 확인 중" if online is None else ("● 온라인" if online else "● 오프라인")
         self.status_pill.setText(text)
         self.status_pill.setToolTip("" if online else "Ollama가 꺼져 있어요. Ollama를 실행하면 루미가 대답할 수 있어요.")
         self.status_pill.setStyleSheet(
@@ -1740,7 +1807,7 @@ class AssistantApp(QWidget):
             self._show_toast("암호화해서 저장했어요.")
 
     def init_settings_page(self):
-        page = QFrame()
+        page = FitHeightPage()
         page.setStyleSheet("QFrame#settingsPage { background: transparent; }")
         page.setObjectName("settingsPage")
         outer = QVBoxLayout(page)
@@ -1785,9 +1852,31 @@ class AssistantApp(QWidget):
         self.switch_wake_stream = ToggleSwitch()
         self.switch_wake_stream.setChecked(bool(app_settings.get("wake_stream")))
         self.switch_wake_stream.toggled.connect(self._on_wake_stream_toggled)
+        self.switch_motion = ToggleSwitch()
+        self.switch_motion.setChecked(not app_settings.get("ui_motion_off"))
+        self.switch_motion.toggled.connect(self._on_motion_toggled)
+
+        self.surface_selector = QWidget()
+        sel = QHBoxLayout(self.surface_selector)
+        sel.setContentsMargins(0, 0, 0, 0)
+        sel.setSpacing(0)
+        self._surface_buttons = {}
+        for i, (value, label) in enumerate(((True, "투명"), (False, "불투명"))):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(30)
+            btn.setMinimumWidth(64)
+            btn.setProperty("segment", "left" if i == 0 else "right")
+            btn.clicked.connect(lambda _c, v=value: self._on_surface_chosen(v))
+            sel.addWidget(btn)
+            self._surface_buttons[value] = btn
+        self._sync_surface_buttons()
 
         outer.addWidget(self._make_settings_card("화면", icon="palette", rows=[
             ("다크 모드", "어두운 배경으로 눈의 피로를 줄여요.", self.switch_dark),
+            ("화면 표면", "투명은 유리처럼 뒤의 빛이 비치지만 성능을 더 써요. 느리면 불투명으로 바꿔 주세요.", self.surface_selector),
+            ("움직임 효과", "창, 화면 전환, 말풍선, 버튼의 애니메이션을 보여 줘요.", self.switch_motion),
         ]))
         outer.addSpacing(18)
         # 창 닫기(X) 동작 — 매번 묻기 / 백그라운드 / 종료 (세그먼트 버튼)
@@ -2050,7 +2139,8 @@ class AssistantApp(QWidget):
         """저장된 순서 (모르는 id는 버리고, 새로 생긴 위젯은 뒤에 붙인다)."""
         saved = [w for w in (app_settings.get("dashboard_widgets") or []) if w in DASHBOARD_WIDGETS]
         order = saved + [w for w in DEFAULT_WIDGET_ORDER if w not in saved]
-        return order if "iot_control" in self.installed_module_names else [w for w in order if w != "iot"]
+        needs_plugin = {"iot": "iot_control", "stock": "stock_portfolio"}
+        return [w for w in order if needs_plugin.get(w, "") in self.installed_module_names or w not in needs_plugin]
 
     def _hidden_widgets(self) -> set:
         return set(app_settings.get("hidden_widgets") or [])
@@ -2060,7 +2150,10 @@ class AssistantApp(QWidget):
         if not hasattr(self, '_left_layout'):
             return
         hidden = self._hidden_widgets()
+        self.btn_stock.setVisible("stock_portfolio" in self.installed_module_names)
+        self._fit_menu_names()
         self.iot_panel.setVisible(False)   # IoT 플러그인이 있으면 아래에서 다시 켠다
+        self.stock_panel.setVisible(False)
         for i, wid in enumerate(self._widget_order()):
             panel = self.panel_by_id[wid]
             self._left_layout.removeWidget(panel)
@@ -2210,6 +2303,37 @@ class AssistantApp(QWidget):
         self.weather_panel.refresh()
         self._show_toast(f"🌤️ 날씨 지역을 '{city}'(으)로 바꿨어요.")
 
+    def _open_stock_window(self):
+        self.stock_panel.open_detail()
+        motion.shine(self.btn_stock)
+
+    def _on_stock_window_changed(self, is_open: bool):
+        old_width = self.btn_stock.width()
+        self.btn_stock.setChecked(is_open)
+        self.btn_stock.setIcon(icons.tinted("chart-line", "#2E2A4F") if is_open else icons.icon("chart-line"))
+        self._fit_menu_names()
+        motion.slide_width(self.btn_stock, old_width, self.btn_stock.sizeHint().width())
+
+    def _sync_surface_buttons(self):
+        current = bool(app_settings.get("ui_glass"))
+        for value, btn in self._surface_buttons.items():
+            btn.setChecked(value == current)
+
+    def _on_surface_chosen(self, glass: bool):
+        app_settings.set("ui_glass", glass)
+        self._sync_surface_buttons()
+        motion.cover_window(self)
+        self.apply_theme()
+        self.stock_panel.reopen_detail()   # 떠 있는 주식 창도 같은 표면으로
+
+    def _on_motion_toggled(self, on: bool):
+        app_settings.set("ui_motion_off", not on)
+        motion.set_enabled(on)
+        self.backdrop.set_mode(glass_enabled(), self.is_dark_mode)
+
+    def reveal_current_page(self):
+        motion.reveal_page(self.stacked_widget.currentWidget())
+
     def _go_to_page(self, idx: int):
         """상단 메뉴 버튼을 누른 것과 똑같이 화면을 바꾼다(메뉴 강조·화면별 새로 읽기 포함)."""
         btn = next((b for b, i in self._nav_stack_index.items() if i == idx), None)
@@ -2239,8 +2363,9 @@ class AssistantApp(QWidget):
 
     def _on_weather(self, data: dict):
         self._last_weather = data     # 날씨 자세히 창이 열리자마자 맞는 배경을 깔 수 있게
-        self.weather_pill.setText(icons.label_html(data.get("icon_name") or "cloud-sun",
-                                                   f"{data['temp']:.1f}°C  {data['city']}"))
+        metrics = self.weather_pill.fontMetrics()   # 칸 폭이 고정이라 긴 지역 이름은 줄인다. 전체 이름은 눌러서 본다
+        city = metrics.elidedText(data["city"], Qt.TextElideMode.ElideRight, metrics.horizontalAdvance(TOP_WEATHER_SAMPLE.split("  ")[1]))
+        self.weather_pill.setText(icons.label_html(data.get("icon_name") or "cloud-sun", f"{data['temp']:.1f}°C  {city}"))
         if hasattr(self, 'weather_locate_btn') and not self.weather_locate_btn.isEnabled():
             # 위치 찾기가 실패해도 버튼은 되살린다
             self.weather_locate_btn.setEnabled(True)
@@ -2268,6 +2393,7 @@ class AssistantApp(QWidget):
     def _make_settings_card(self, section: str, rows: list, icon: str = None) -> QFrame:
         """제목 + (설명, 스위치) 줄들로 이루어진 설정 카드."""
         card = QFrame()
+        card.setProperty("motionCard", True)
         card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         card.setMaximumWidth(760)
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)   # 가운데 정렬에서도 760px까지 넓게
@@ -2330,11 +2456,12 @@ class AssistantApp(QWidget):
             lbl.setStyleSheet(f"font-size: 13px; color: {p['tc2']}; background: transparent; border: none; "
                               f"padding: 2px 0px;")
         dark = self.is_dark_mode
+        self.settings_fade.setVisible(not glass_enabled())   # 같은 색을 덧칠하는 띠라 움직이는 빛을 가린다
         self.settings_fade.set_colors(*(("#1D1836", "#132640") if dark else ("#F1EAFF", "#E4F1FF")))   # theme.bg_grad
         for line in self._settings_dividers:
             line.setStyleSheet(f"background-color: {p['card_brd']}; border: none;")
         for sw in (self.switch_dark, self.switch_voice_reply, self.switch_voice_hq,
-                   self.switch_wake_listening, self.switch_wake_stream):
+                   self.switch_wake_listening, self.switch_wake_stream, self.switch_motion):
             sw.set_colors(p['accent'], p['switch_off'], p['accent2'])
         self.voice_words_input.setStyleSheet(
             f"QLineEdit {{ background-color: {p['ib']}; color: {p['tc']}; border: 1px solid {p['ibrd']}; "
@@ -2376,7 +2503,7 @@ class AssistantApp(QWidget):
             f"QPushButton {{ background-color: {p['grad']}; color: #2E2A4F; border: none; border-radius: 12px; "
             f"padding: 6px 16px; font-size: 13px; font-weight: bold; }}"
             f"QPushButton:hover {{ background-color: {p['grad_hover']}; }}")
-        for btn in (*self._voice_model_buttons.values(), *self._close_action_buttons.values()):
+        for btn in (*self._voice_model_buttons.values(), *self._close_action_buttons.values(), *self._surface_buttons.values()):
             radius = {"left": "border-top-left-radius: 15px; border-bottom-left-radius: 15px;",
                       "right": "border-top-right-radius: 15px; border-bottom-right-radius: 15px;"
                       }.get(btn.property("segment"), "border-radius: 0px;")
@@ -2531,12 +2658,18 @@ class AssistantApp(QWidget):
             stop = next((f for f in self.installed_tools if f.__name__ == "stop_realtime_monitor"), None)
             if stop:
                 stop()
+        if m_name == "stock_portfolio":
+            self.stock_panel.close_detail()
+            self.stock_panel.before_plugin_removed()
+            self.stock_panel.stop_updates()
         try:
             uninstall_plugin(m_name, self.installed_tools, self.installed_module_names)
         except OSError as e:
             lumi_dialog.critical(self, "오류", f"'{f_name}' 기능을 제거하지 못했어요.\n{e}")
             return
         self._sync_plugin_ui()
+        if m_name == "stock_portfolio":
+            self.stock_panel.after_plugin_removed()
         self._show_toast(f"'{f_name}' 기능을 제거했어요.")
 
     def _on_install_plugin(self, f_name, m_name, url, btn):
@@ -2549,6 +2682,9 @@ class AssistantApp(QWidget):
         self._sync_plugin_ui()
         if m_name == "iot_control" and m_name in self.installed_module_names:
             self.iot_panel.refresh()
+        if m_name == "stock_portfolio" and m_name in self.installed_module_names:
+            self.stock_panel.refresh()
+            self.stock_panel.start_updates()
 
         # 설치가 방금 막 완료된 경우에만(재실행 시 X) 안내 메시지 표시
         newly_installed = (not already_installed) and (m_name in self.installed_module_names)
@@ -2648,6 +2784,10 @@ class AssistantApp(QWidget):
         (테마 / 음성 답변 / 날씨 지역 / 홈 위젯 배치 / 스킬 목록 / 앱 사용 기록 이어가기).
         화면에 남은 이전 계정의 대화 내용도 함께 비운다(다른 계정에게 보이면 안 되므로)."""
         self._clear_conversation()
+        self.stock_panel.close_detail()   # 이전 계정의 보유 종목이 떠 있으면 안 된다
+        self._sync_surface_buttons()
+        if bool(app_settings.get("ui_glass")) != glass_enabled():
+            self.apply_theme()
         dark = bool(app_settings.get("dark_mode"))
         for sw, val in ((self.switch_dark, dark),
                         (self.switch_voice_reply, bool(app_settings.get("voice_reply"))),
@@ -2670,6 +2810,7 @@ class AssistantApp(QWidget):
         self._sync_close_action_buttons()
         self._apply_wake_setting()
         self.weather_panel.reload()   # 지역이 없으면 refresh가 알아서 현재 위치를 찾는다
+        self.stock_panel.refresh()
         self._restore_home_split()
         if hasattr(self, "skills_page"):
             self.skills_page.refresh()
@@ -2754,6 +2895,7 @@ class AssistantApp(QWidget):
         idx = self._nav_stack_index[btn]
         self.stacked_widget.setCurrentIndex(idx)
         self.update_sidebar_ui()   # 선택된 메뉴 이름 펼치기
+        motion.shine(btn)
         if idx == 0:
             self._refresh_info_panels()   # 다른 화면(캘린더 등)에서 바뀐 일정·할 일을 홈에 반영
             self.bottom_input_wrapper.show()
@@ -2786,18 +2928,14 @@ class AssistantApp(QWidget):
 
     def update_sidebar_ui(self):
         """상단 바 메뉴 아이콘/프로필 버튼 표시 갱신 (이름은 예전 사이드바 시절 그대로)."""
+        old_widths = {btn: btn.width() for btn in self.nav_info}
         for btn, (icon, tip) in self.nav_info.items():
             # 선택된 메뉴는 이름이 펼쳐지고, 나머지는 아이콘만 (이름은 마우스를 올리면 툴팁으로)
             # 선택된 버튼은 밝은 그라데이션 바탕이라 아이콘을 글자색(진한 남보라)으로 칠한다
             btn.setIcon(icons.tinted(icon, "#2E2A4F") if btn.isChecked() else icons.icon(icon))
-            btn.setText(f" {tip}" if btn.isChecked() else "")
-        # 대화 아이콘에 실시간 감시 미확인 알림 뱃지 표시
-        if self._unread_alert_count > 0:
-            self.btn_chat.setText(self.btn_chat.text() + f"  🔴{self._unread_alert_count}")
-        # 이름이 펼쳐진 버튼이 레이아웃에 눌려 잘리지 않게, 지금 글자가 다 들어가는 폭 아래로 줄지 않게 한다
+        self._fit_menu_names()
         for btn in self.nav_info:
-            btn.setMinimumWidth(0)
-            btn.setMinimumWidth(btn.sizeHint().width())
+            motion.slide_width(btn, old_widths[btn], btn.sizeHint().width())   # 메뉴 이름이 펼쳐지고 접힌다
 
         logged_in = MOCK_USER["logged_in"]
         p = get_palette(self.is_dark_mode)
@@ -2877,6 +3015,23 @@ class AssistantApp(QWidget):
             QTimer.singleShot(50, self.auto_scroll_to_bottom)
             return
 
+        # 주식 매수·매도 추천과 전망은 AI에게 넘기지 않고 고정 문장으로 답한다
+        stock_request = False
+        if "stock_portfolio" in self.installed_module_names:
+            import plugins.stock_portfolio as stock_plugin
+            if stock_plugin.is_recommendation_request(txt):
+                self.chat_history.append({'role': 'user', 'content': txt})
+                self.display_ai_response(stock_plugin.RECOMMENDATION_REPLY)
+                QTimer.singleShot(50, self.auto_scroll_to_bottom)
+                return
+            intent = stock_plugin.stock_intent(txt)
+            stock_request = intent is not None   # 주식 요청은 화면 조작으로 넘기지 않는다
+            if intent in ("stop", "turn_on", "briefing"):
+                self.chat_history.append({'role': 'user', 'content': txt})
+                self._handle_stock_intent(intent, stock_plugin)
+                QTimer.singleShot(50, self.auto_scroll_to_bottom)
+                return
+
         # ── 대용량 파일 목록 뒤의 "1번 폴더 열어줘"/"어디 있어?" → 화면 조작 판단 없이 루미가 바로 답한다 ──
         # (2026-10-19: "열어" 때문에 화면 조작으로 가서 이미 열린 탐색기 창을 클릭했다 — 루미는 탐색기 명령으로 연다)
         if is_large_file_followup(txt, self.chat_history):
@@ -2884,8 +3039,13 @@ class AssistantApp(QWidget):
             self._start_ai_worker(txt)
             return
 
+        # ── "계산기 열어줘" → 화면을 볼 것 없이 설치 목록에서 찾아 바로 실행 ──
+        if not stock_request and self._maybe_handle_app_open(txt):
+            QTimer.singleShot(50, self.auto_scroll_to_bottom)
+            return
+
         # ── "직접 ~해줘" / "지금 화면에 뭐 있어?" → 화면을 보고 작업/답변 ──
-        screen_mode = screen_agent.classify_screen_request(txt)
+        screen_mode = None if stock_request else screen_agent.classify_screen_request(txt)
         if screen_mode:
             self._start_screen_task(txt, screen_mode)
             QTimer.singleShot(50, self.auto_scroll_to_bottom)
@@ -2956,7 +3116,7 @@ class AssistantApp(QWidget):
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
 
         # ── 다른 프로그램을 조작해야 할 수도 있는 요청이면 루미가 먼저 판단 ──
-        if screen_agent.may_need_screen(txt):
+        if not stock_request and screen_agent.may_need_screen(txt):
             self._start_route_worker(txt)
             return
         self._start_skills_or_ai(txt)
@@ -3726,6 +3886,17 @@ class AssistantApp(QWidget):
     # act: 루미 창을 숨기고 안내 창만 띄운 채 마우스/키보드로 작업 → 끝나면 창을
     #      다시 띄우고 결과를 대화창에 보고. describe: 루미 창을 잠깐 숨기고 화면을
     #      찍어서 질문에 답만 한다 (조작 없음).
+    def _maybe_handle_app_open(self, txt: str) -> bool:
+        name = app_launcher.parse_open_only(txt)
+        if not name:
+            return False
+        self.chat_history.append({'role': 'user', 'content': txt})
+        # 검색창을 열어 확인하는 데 몇 초 걸리니 창이 멈추지 않게 따로 돌린다
+        self._app_open_worker = AppOpenWorker(name)
+        self._app_open_worker.done.connect(self.display_ai_response)
+        self._app_open_worker.start()
+        return True
+
     def _maybe_handle_web_open(self, txt: str) -> bool:
         """브라우저/웹사이트 열기 요청이면 처리하고 True (core/web_launcher.py 참고).
         사이트를 연 뒤 클릭/입력 등이 더 필요하면 화면 조작 에이전트가 이어받는다."""
@@ -3758,6 +3929,21 @@ class AssistantApp(QWidget):
         self.chat_history.append({'role': 'assistant', 'content': message})
         self.display_ai_response(f"🤖 로컬 비서: 🌐 {message}")
 
+    def _handle_stock_intent(self, intent: str, stock_plugin):
+        """끄기와 브리핑은 AI를 거치지 않는다 — 끄기는 늘 바로 돼야 하고, 숫자는 도구가 만든 그대로 보여 준다."""
+        if intent == "briefing":
+            self._set_input_enabled(False)
+            self._show_typing_indicator()
+            self.stock_panel.request_briefing()
+            return
+        self._on_stock_reply(stock_plugin.stop_stock_auto_trading() if intent == "stop"
+                             else "자동매매는 안전을 위해 대화로 켤 수 없어요. 주식 위젯의 '자동' 버튼에서 직접 켜 주세요.")
+        self.stock_panel.refresh()
+
+    def _on_stock_reply(self, message: str):
+        self.chat_history.append({'role': 'assistant', 'content': message})
+        self.display_ai_response(f"🤖 로컬 비서: {message}")
+
     def _screen_task_running(self) -> bool:
         return self._screen_worker is not None and self._screen_worker.isRunning()
 
@@ -3777,6 +3963,17 @@ class AssistantApp(QWidget):
             self._start_screen_task(txt, "act")
         else:
             self._start_skills_or_ai(txt)
+
+    def _confirm_screen_control(self, txt: str) -> bool:
+        """화면 조작을 시작하기 전에 항상 묻는다 — AI가 요청을 잘못 판단해도 사용자의 PC를 건드리기 전에 막는다.
+        (실제로 "자동매매 꺼줘"가 화면 조작으로 넘어가 다른 창에 글자를 입력한 일이 있었다)
+        Enter로는 시작되지 않고(버튼을 직접 눌러야 한다) Esc는 취소다. 창을 트레이로 숨긴 상태에서도 보이게 맨 위에 띄운다."""
+        request = txt if len(txt) <= 120 else txt[:120] + "…"
+        return lumi_dialog.choice(
+            self, "마우스와 키보드를 조작할까요?",
+            f"요청: {request}\n\n이 요청을 처리하려면 루미가 이 컴퓨터의 마우스와 키보드를 직접 움직여야 해요.\n"
+            "시작하면 화면의 다른 프로그램을 누르거나 글자를 입력할 수 있어요.",
+            [(False, "취소", "ghost"), (True, "조작 시작", "danger")], kind="warning", on_top=True) is True
 
     def _start_screen_task(self, txt: str, mode: str):
         from PyQt6.QtWidgets import QMessageBox
@@ -3832,6 +4029,11 @@ class AssistantApp(QWidget):
             return
 
         self.chat_history.append({'role': 'user', 'content': txt})
+        if mode == "act" and not self._confirm_screen_control(txt):
+            message = "화면 조작을 취소했어요. 마우스와 키보드는 건드리지 않았어요."
+            self.chat_history.append({'role': 'assistant', 'content': message})
+            self.display_ai_response(f"🤖 로컬 비서: {message}")
+            return
         self._set_input_enabled(False)
         self._show_typing_indicator()
         self._on_status_update("👀 화면을 보는 중")
@@ -4325,13 +4527,22 @@ class AssistantApp(QWidget):
         webbrowser.open(url)
 
     def auto_scroll_to_bottom(self):
-        sb = self.scroll_area.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        motion.smooth_scroll_to_bottom(self.scroll_area.verticalScrollBar())
+
+
+def _keep_running_on_uncaught_error(error_type, error, trace):
+    """PyQt는 슬롯에서 처리 못 한 예외가 나면 앱을 강제 종료한다 — 기록만 남기고 계속 돌게 한다.
+    주문이나 자동매매 도중 작은 화면 오류로 앱이 통째로 꺼지면 안 된다."""
+    from core.ai_worker import _log_error_trace   # 설치본은 콘솔이 없어 파일에 남겨야 원인을 찾을 수 있다
+    _log_error_trace(error.with_traceback(trace))
 
 
 if __name__ == "__main__":
+    sys.excepthook = _keep_running_on_uncaught_error
     lumi_icon.set_windows_app_id()   # QApplication보다 먼저 — 작업 표시줄에 파이썬 대신 루미 아이콘
     app = QApplication(sys.argv)
+    motion.install(app)
+    motion.set_enabled(not app_settings.get("ui_motion_off"))
     app.setApplicationName(lumi_icon.APP_NAME)
     app.setWindowIcon(lumi_icon.app_icon())   # 팝업 등 모든 창의 기본 아이콘
     # 창을 닫아도(트레이로 숨김) 프로세스가 종료되지 않게 한다 — Qt 기본값은
@@ -4362,7 +4573,9 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[대화기록 위치 이전 오류] {e}")
     ex  = AssistantApp()
+    ex.setProperty("motionWindow", True)   # 트레이에서 다시 열 때도 같은 움직임
     ex.show()
+    QTimer.singleShot(80, ex.reveal_current_page)
     app.aboutToQuit.connect(ex.shutdown_background_work)   # Cmd+Q 등 모든 종료 경로
     # PC 종료·로그아웃 때는 "창을 닫을까요?"를 묻지 않고 바로 끈다(물으면 PC 종료가 그 창에서 멈춘다)
     app.commitDataRequest.connect(lambda _m: setattr(ex, "_force_quit", True))
