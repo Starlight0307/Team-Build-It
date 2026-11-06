@@ -20,6 +20,8 @@ import sys
 import time
 import traceback
 
+# 호출어가 자동으로 켜지면 선택 구성요소 설치를 묻는 창이 떠서, 누를 사람이 없는 점검이 멈춘다 (2026-11-06 CI)
+os.environ.setdefault("LUMI_NO_AUTO_LISTEN", "1")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.chdir(ROOT)

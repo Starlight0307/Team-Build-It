@@ -155,6 +155,7 @@ def keys(monkeypatch):
     monkeypatch.setattr(al, "_mac_set_text", lambda f, t: log["typed"].append(t) or True)
     monkeypatch.setattr(al, "_mac_top_hit", lambda f: log["hit"])
     monkeypatch.setattr(al, "_mac_front_path", lambda: log["front"])
+    monkeypatch.setattr(al, "_mac_running", lambda path: False)   # 윈도우에는 pgrep이 없다
     monkeypatch.setattr(al, "_wait", lambda check, seconds: check())
     monkeypatch.setattr(al.time, "sleep", lambda s: None)
     return log

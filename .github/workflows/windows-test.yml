@@ -71,6 +71,7 @@ jobs:
         if: always()
         shell: bash
         run: |
+          set +e   # GitHub의 bash는 실패하면 바로 멈춰서 몇 회차가 어떻게 끝났는지 못 남긴다
           crashes=0
           for i in 1 2 3 4 5 6 7 8; do
             # 멈추면 작업 시간 제한(40분)에 걸려 로그까지 사라진다 — 한 번에 3분으로 끊어 어디서 멈췄는지 남긴다
