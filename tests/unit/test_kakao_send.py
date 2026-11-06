@@ -109,7 +109,7 @@ class FakeWin:
         self.needs_down, self.selected = False, False
         self.room_gone = False
         self.drop_first_char = False
-        self.global_enter_works, self.box_lost_focus = True, False
+        self.global_enter_works, self.box_lost_focus, self.focused_box = True, False, False
         self.tab, self.found_in, self.tab_stuck = "friends", ("friends", "chats"), False
 
     def tap(self, key, ctrl=False):
@@ -155,8 +155,11 @@ class FakeWin:
     def is_kakao(self, hwnd):
         return self.kakao
 
+    def focus_box(self, hwnd):
+        self.focused_box = not self.box_lost_focus
+
     def focus_child_class(self):
-        return "RICHEDIT50W" if self.front == 2 and not self.box_lost_focus else self.focus_class
+        return "RICHEDIT50W" if self.front == 2 and self.focused_box else self.focus_class
 
     def search_box(self):
         return 9 if self.focus_class == "Edit" and self.front == 1 else 0

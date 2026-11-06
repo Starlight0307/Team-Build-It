@@ -351,6 +351,19 @@ class _Win:
         self.tap(0x12)   # Alt를 한 번 누르면 앞으로 올리는 것이 허용된다
         return bool(user32.SetForegroundWindow(windows[0]))
 
+    def focus_box(self, hwnd: int):
+        """다른 프로그램의 칸에 포커스를 주려면 그 창의 입력 스레드에 잠시 붙어야 한다."""
+        import ctypes
+        user32, kernel32 = self._user32(), ctypes.windll.kernel32
+        target = user32.GetWindowThreadProcessId(hwnd, None)
+        mine = kernel32.GetCurrentThreadId()
+        attached = user32.AttachThreadInput(mine, target, True)
+        try:
+            user32.SetFocus(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(mine, target, False)
+
     def type(self, text: str) -> bool:
         from core import input_source
         return input_source.type_unicode(text, windows=True)
@@ -437,6 +450,7 @@ def _deliver_windows(to: str, text: str, press_enter: bool) -> str:
     # 칸에 직접 넣은 글은 Enter로 보내지지 않았다 (실측) — 키보드처럼 친다.
     # 앞으로 올린 직후에 치면 글자가 빠졌으니(실측) 기다리고, 정확히 같은지 본 뒤에만 보낸다
     time.sleep(0.5)
+    _win.focus_box(box)   # 이미 열린 창을 올리면 포커스가 대화 목록에 남는다 (실측)
     if not _wait(_message_box_has_focus, 1):
         raise KakaoSendError("입력칸에 포커스가 없어서 보내지 않았어요.")
     if not _win.type(text) or not _wait(lambda: _win.get_text(box) == text, 1.5):
