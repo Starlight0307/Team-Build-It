@@ -156,7 +156,7 @@ class StockAccountDialog(_StockDialog):
         self.status_info = _stock().account_status()
         self.changed = False
         extras = QHBoxLayout()
-        for text, handler in (("시세 키 (로그인 없이 시세 보기)", self._open_market_key), ("직접 입력 (카카오페이증권 등)", self._open_manual)):
+        for text, handler in (("시세 키 (공공데이터 시세로 보기)", self._open_market_key), ("직접 입력 (카카오페이증권 등)", self._open_manual)):
             btn = QPushButton(text)
             btn.setObjectName("LinkGhost")
             btn.setAutoDefault(False)
@@ -168,7 +168,7 @@ class StockAccountDialog(_StockDialog):
         elif self.status_info["logged_in"]:
             self._build_connect_form()
         else:
-            self.desc.setText("로그인하지 않아도 무료 시세 키를 넣으면 주식 변동을 볼 수 있어요. 계좌 연결과 직접 입력은 로그인 후 쓸 수 있어요.")
+            self.desc.setText("로그인하지 않아도 주식 변동을 볼 수 있어요. 무료 시세 키를 넣으면 공공데이터 시세로 바뀌어요. 계좌 연결과 직접 입력은 로그인 후 쓸 수 있어요.")
             self.desc.show()
 
     def _open_market_key(self):
@@ -270,7 +270,7 @@ class StockMarketKeyDialog(_StockDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent, "시세 키",
-                         "공공데이터포털에서 '금융위원회 주식시세정보' 활용을 신청하면 무료 키를 바로 받을 수 있어요.\n"
+                         "키가 없어도 네이버 금융 시세를 볼 수 있어요. 공공데이터 시세로 보려면 공공데이터포털에서 '금융위원회 주식시세정보' 활용을 신청해 무료 키를 받아 주세요.\n"
                          "ETF 그래프까지 보려면 '증권상품시세정보'도 같은 방법으로 신청해 주세요.\n"
                          "지난 영업일 종가 기준이라 장중 실시간 가격은 아니에요. 키는 이 컴퓨터에 암호화해 저장해요.")
         self.key_input = QLineEdit()
@@ -667,11 +667,6 @@ class StockPanel(Panel):
         self._sync_auto()
         status = _stock().account_status()
         has_portfolio = status["connected"] or status["has_manual"]
-        if not has_portfolio and not status["has_market_key"]:
-            self._gen += 1
-            self._loading = False
-            self._clear_numbers("톱니바퀴에서 무료 시세 키를 넣으면 로그인 없이 주식 변동을 볼 수 있어요.")
-            return
         if self._loading:
             return
         self._loading = True
@@ -714,7 +709,7 @@ class StockPanel(Panel):
                 f"<span style='color:{_pl_color(q['change']) or 'inherit'}'>{q['name']} {q['close']:,}원 "
                 f"{q['change']:+,}원 ({q['rate']:+.2f}%)</span>" for q in quotes))
             self.rows.show()
-            self.message.setText(f"{quotes[0]['date']} 종가 · {_stock().MARKET_SOURCE}")
+            self.message.setText(f"{quotes[0]['date']} 종가 · {_stock().market_source()}")
             self.message.show()
             self._style_labels()
             return

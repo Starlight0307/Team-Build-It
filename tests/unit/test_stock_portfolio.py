@@ -654,6 +654,8 @@ def _market_body(rows, code="00"):
                          "body": {"items": {"item": rows}, "totalCount": len(rows)}}}
 
 
+NAVER_ROWS = [{"localDate": "20261104", "closePrice": 221500.0, "openPrice": 226500.0, "highPrice": 228000.0, "lowPrice": 208000.0, "accumulatedTradingVolume": 22248738},
+              {"localDate": "20261103", "closePrice": 200000.0, "openPrice": 199000.0, "highPrice": 201000.0, "lowPrice": 198000.0, "accumulatedTradingVolume": 1000}]
 ROW_NEW = {"basDt": "20261104", "srtnCd": "005930", "itmsNm": "삼성전자", "clpr": "70000", "vs": "-500", "fltRt": "-.71"}
 ROW_OLD = {"basDt": "20261103", "srtnCd": "005930", "itmsNm": "삼성전자", "clpr": "70500", "vs": "100", "fltRt": ".14"}
 ROW_OTHER = {"basDt": "20261104", "srtnCd": "0059300", "itmsNm": "다른 종목", "clpr": "1", "vs": "0", "fltRt": "0"}
@@ -662,10 +664,15 @@ ROW_OTHER = {"basDt": "20261104", "srtnCd": "0059300", "itmsNm": "다른 종목"
 @pytest.fixture
 def market(tmp_path, monkeypatch):
     calls = []
-    state = {"body": _market_body([ROW_NEW, ROW_OLD, ROW_OTHER])}
+    state = {"body": _market_body([ROW_NEW, ROW_OLD, ROW_OTHER]), "naver": NAVER_ROWS}
 
-    def fake_get(url, timeout=None, params=None):
+    def fake_get(url, timeout=None, params=None, headers=None):
         calls.append(params)
+        if "naver" in url:
+            assert url == sp.NAVER_CHART_URL.format(code="005930") and "serviceKey" not in params
+            if isinstance(state["naver"], Exception):
+                raise state["naver"]
+            return FakeResponse(state["naver"])
         assert url in (sp.MARKET_URL, sp.MARKET_ETF_URL)
         if isinstance(state["body"], Exception):
             raise state["body"]
@@ -727,16 +734,39 @@ def test_single_item_response_and_empty_items_string(market):
         sp.market_quote("005930")
 
 
-def test_market_uses_cache_and_needs_key(market):
-    with pytest.raises(sp.StockError):
-        sp.market_quote("005930")
+def test_market_uses_cache_and_key_picks_the_source(market):
+    assert sp.market_quote("005930")["close"] == 221500 and sp.market_source() == sp.NAVER_SOURCE
     sp.set_market_key("K")
     n = len(market.calls)
-    sp.market_quote("005930"); sp.market_history("005930")
+    assert sp.market_quote("005930")["close"] == 70000 and sp.market_source() == sp.MARKET_SOURCE
+    sp.market_history("005930")
     assert len(market.calls) == n + 1
     sp.delete_market_key()
+    assert sp.market_history("005930")[-1] == ("2026-11-04", 221500)
+
+
+def test_no_key_reads_naver_in_the_public_data_shape(market, monkeypatch):
+    monkeypatch.setattr(sp, "market_open", lambda now=None: False)
+    assert sp.market_quote("005930") == {"code": "005930", "name": "삼성전자", "date": "2026-11-04", "close": 221500, "change": 21500, "rate": 10.75}
+    assert sp.market_bars("005930")[-1] == {"date": "2026-11-04", "open": 226500, "high": 228000, "low": 208000, "close": 221500, "volume": 22248738}
+    assert sp.market_bars("005930")[0]["date"] == "2026-11-03"
+
+
+def test_naver_row_of_today_is_not_a_close_during_market_hours(market, monkeypatch):
+    today = datetime.now(sp.KST).strftime("%Y%m%d")
+    market.state["naver"] = NAVER_ROWS + [dict(NAVER_ROWS[0], localDate=today, closePrice=1.0)]
+    monkeypatch.setattr(sp, "market_open", lambda now=None: True)
+    assert sp.market_quote("005930")["close"] == 221500
+    sp._market_cache.clear()
+    monkeypatch.setattr(sp, "market_open", lambda now=None: False)
+    assert sp.market_quote("005930")["close"] == 1
+
+
+@pytest.mark.parametrize("bad", [{"code": "blocked"}, requests.ConnectionError("x"), ValueError("not json")])
+def test_naver_failure_is_a_plain_error(market, bad):
+    market.state["naver"] = bad
     with pytest.raises(sp.StockError):
-        sp.market_history("005930")
+        sp.market_quote("005930")
 
 
 def test_manual_holding_needs_login_and_calculates_profit_from_close(market):

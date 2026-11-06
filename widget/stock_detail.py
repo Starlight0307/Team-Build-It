@@ -23,7 +23,7 @@ LIVE_REFRESH_MS = 60_000
 LIVE_PRICE_MS = 3_000   # 실시간 연결이 없는 증권사는 보고 있는 한 종목의 현재가만 자주 다시 읽는다
 TICK_DRAW_MS = 300
 STREAM_FRESH_SECONDS = 10   # 이만큼 체결이 없으면 현재가 조회로 확인한다 (거래가 뜸한 종목)
-MARKET_REFRESH_TICKS = 30   # 계좌 없이 보는 표는 30분마다 (시세 키 시세의 캐시 주기)
+MARKET_REFRESH_TICKS = 30   # 계좌 없이 보는 표는 30분마다 (키 없이 보는 시세의 캐시 주기)
 CARD_RADIUS = 20        # lumi_dialog의 LumiCard 모서리와 같다
 GLASS_INPUT = {False: "rgba(255,255,255,120)", True: "rgba(255,255,255,20)"}
 TOOL_STYLE = "margin: 0; padding: 0 10px; min-width: 0; min-height: 26px; max-height: 26px; font-size: 12px; border-radius: 9px;"
@@ -777,10 +777,10 @@ class StockDetailDialog(_StockDialog):
         if self.status_info["connected"] or self.status_info["has_manual"]:
             self.add_button("새로고침", "LinkGhost", self.reload)
             self.reload()
-        elif self.status_info["has_market_key"]:
-            self._show_market()
         else:
-            self._show_not_connected()
+            self._show_market()
+            if self.open_settings:
+                self.add_button("설정 열기", "LinkPrimary", self._connect_account)
 
     def _use_glass(self):
         """앱의 투명 모드와 같은 빛과 유리. 그림자 효과는 빛이 움직일 때마다 다시 계산돼 무거워서 뗀다."""
@@ -926,9 +926,9 @@ class StockDetailDialog(_StockDialog):
         if not connected and self._live_ticks % MARKET_REFRESH_TICKS == 0:
             if self.status_info["has_manual"]:
                 self.reload()
-            elif self.status_info["has_market_key"]:   # 실패하면 보던 표를 지우지 않는다
+            else:   # 실패하면 보던 표를 지우지 않는다
                 self._spawn(_stock().market_overview, lambda r: None if isinstance(r, Exception) else self._on_market(r))
-        if self.current_code and (is_open or self._was_open or not connected):   # 시세 키 시세는 30분 캐시라 부담이 없다
+        if self.current_code and (is_open or self._was_open or not connected):   # 키 없이 보는 시세는 30분 캐시라 부담이 없다
             self._refresh_chart()
         self._was_open = is_open
 
@@ -1147,16 +1147,6 @@ class StockDetailDialog(_StockDialog):
         label.setStyleSheet("font-size: 13px; font-weight: 700;")
         return label
 
-    def _show_not_connected(self):
-        self.summary.setText("시세 키가 필요해요")
-        self.summary_note.setText("무료 시세 키를 넣으면 로그인이나 계좌 없이 주식 변동과 가격 그래프를 볼 수 있어요.")
-        self.left_box.hide()
-        self.chart.set_message("시세 키를 넣으면 가격 그래프를 볼 수 있어요.")
-        self.bars.hide()
-        self.table.hide()
-        if self.open_settings:
-            self.add_button("설정 열기", "LinkPrimary", self._connect_account)
-
     def _show_market(self):
         """로그인·계좌 없이 보는 화면 — 주요 종목의 지난 영업일 시세."""
         self.summary.setText("즐겨찾기 시세" if self.favorites else "주요 종목 시세")
@@ -1173,7 +1163,7 @@ class StockDetailDialog(_StockDialog):
             self.table.hide()
             self.chart.set_message("시세를 받지 못했어요.")
             return
-        self.summary_note.setText(f"{result[0]['date']} 종가 기준 · 장중 실시간 가격이 아니에요 · {_stock().MARKET_SOURCE}")
+        self.summary_note.setText(f"{result[0]['date']} 종가 기준 · 장중 실시간 가격이 아니에요 · {_stock().market_source()}")
         self.holdings = result
         self.table.blockSignals(True)
         self.table.setRowCount(len(result))

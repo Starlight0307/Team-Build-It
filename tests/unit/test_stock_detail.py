@@ -144,11 +144,14 @@ def test_history_failure_shows_message_not_old_chart(qapp, stock, monkeypatch):
     assert dlg.chart.points == []
 
 
-def test_not_connected_guides_to_connect_without_network(qapp, stock):
+def test_not_connected_shows_market_and_can_open_settings(qapp, stock, monkeypatch):
     sp.disconnect_account()
+    monkeypatch.setattr(sp, "market_overview", lambda: QUOTES)
+    monkeypatch.setattr(sp, "market_bars", lambda code: _bars(POINTS))
     opened = []
     dlg = sd.StockDetailDialog(open_settings=lambda: opened.append(1))
-    assert "시세 키가 필요해요" in dlg.summary.text() and not dlg.search_input.isHidden()
+    assert dlg.summary.text() == "주요 종목 시세" and not dlg.search_input.isHidden()
+    assert _wait(qapp, lambda: "네이버" in dlg.summary_note.text()) and dlg.table.rowCount() == 2
     assert stock == []
     next(b for b in dlg.findChildren(sd.QPushButton) if b.text() == "설정 열기").click()
     assert opened == [1]
@@ -222,11 +225,14 @@ def test_panel_shows_market_rows_for_guest(qapp, stock, monkeypatch):
     panel.close()
 
 
-def test_guest_without_key_gets_guidance(qapp, stock):
+def test_guest_without_key_sees_prices(qapp, stock, monkeypatch):
     sp.set_current_user("guest")
+    monkeypatch.setattr(sp, "market_overview", lambda: QUOTES)
     panel = stock_panel.StockPanel()
+    panel.show()
     panel.refresh()
-    assert "로그인 없이" in panel.message.text()
+    assert _wait(qapp, lambda: "삼성전자 70,000원" in panel.rows.text()) and "네이버" in panel.message.text()
+    panel.close()
 
 
 def test_panel_has_detail_button_and_hand_cursor(qapp, stock):

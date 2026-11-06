@@ -52,6 +52,9 @@ MARKET_URL = "https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/g
 MARKET_ETF_URL = "https://apis.data.go.kr/1160100/GetSecuritiesProductInfoService_V2/getETFPriceInfo_V2"   # 같은 키로 따로 활용 신청(무료)
 MARKET_KEY_GUIDE_URL = "https://www.data.go.kr/data/15094808/openapi.do"
 MARKET_SOURCE = "출처: 금융위원회(공공데이터포털)"
+# shortcut: 네이버 비공식 주소라 예고 없이 막힐 수 있다, 막히면 키 없는 시세가 멈추니 공식 경로로 바꾼다
+NAVER_CHART_URL = "https://api.stock.naver.com/chart/domestic/item/{code}/day"
+NAVER_SOURCE = "출처: 네이버 금융"
 MARKET_CACHE_SECONDS = 1800
 TOSS_WS_URL = "wss://openapi-ws.tossinvest.com/ws/v1"
 TOSS_WS_PING_SECONDS = 60
@@ -1052,7 +1055,7 @@ def minute_bars(code: str) -> list:
 
 
 def price_bars(code: str) -> list:
-    """계좌가 연결돼 있으면 증권사 시세, 아니면 공공데이터 시세."""
+    """계좌가 연결돼 있으면 증권사 시세, 아니면 공공데이터(시세 키가 있을 때)나 네이버 시세."""
     if logged_in() and _load()["account"]:
         return get_price_bars(code)
     return market_bars(code)
@@ -1109,16 +1112,46 @@ def _query_market(url: str, code: str, key: str) -> list:
                   key=lambda r: str(r.get("basDt")))
 
 
+def _fetch_naver_rows(code: str) -> list:
+    """시세 키가 없을 때 — 공공데이터 응답과 같은 모양으로 바꿔 돌려준다."""
+    now = datetime.now(KST)
+    body = None
+    for attempt, wait in enumerate((6, 25)):   # 조회라 다시 보내도 안전하다
+        try:
+            body = requests.get(NAVER_CHART_URL.format(code=code), timeout=wait, headers={"User-Agent": "Lumi"}, params={
+                "startDateTime": (now - timedelta(days=150)).strftime("%Y%m%d0000"),
+                "endDateTime": now.strftime("%Y%m%d2359")}).json()
+            break
+        except (requests.RequestException, ValueError):
+            if attempt:
+                raise StockError("시세를 받지 못했어요. 인터넷 연결을 확인해 주세요.")
+    if not isinstance(body, list):
+        raise StockError("시세를 받지 못했어요. 잠시 뒤 다시 시도해 주세요.")
+    today = now.strftime("%Y%m%d") if market_open(now) else None   # 장중 오늘 값은 아직 종가가 아니다
+    picked = sorted((r for r in body if isinstance(r, dict) and re.fullmatch(r"\d{8}", str(r.get("localDate")))
+                     and r["localDate"] != today and _num(r.get("closePrice")) > 0), key=lambda r: r["localDate"])
+    name = load_master().get(code, code)
+    rows = []
+    for i, r in enumerate(picked):
+        close = _num(r["closePrice"])
+        before = _num(picked[i - 1]["closePrice"]) if i else close
+        rows.append({"basDt": r["localDate"], "itmsNm": name, "mkp": r.get("openPrice"), "hipr": r.get("highPrice"), "lopr": r.get("lowPrice"),
+                     "clpr": close, "trqu": r.get("accumulatedTradingVolume"), "vs": close - before, "fltRt": round((close - before) / before * 100, 2)})
+    return rows
+
+
+def market_source() -> str:
+    return MARKET_SOURCE if _market_key() else NAVER_SOURCE
+
+
 def _market_rows(code: str) -> list:
     if not re.fullmatch(r"[0-9A-Z]{6}", code or ""):
         raise StockError("종목코드가 올바르지 않아요.")
-    key = _market_key()
-    if not key:
-        raise StockError("시세 키가 필요해요. 주식 위젯의 톱니바퀴에서 무료 키를 넣어 주세요.")
     cached = _market_cache.get(code)
     if cached and time.monotonic() - cached[0] < MARKET_CACHE_SECONDS:
         return cached[1]
-    rows = _fetch_market_rows(code, key)
+    key = _market_key()
+    rows = _fetch_market_rows(code, key) if key else _fetch_naver_rows(code)
     _market_cache[code] = (time.monotonic(), rows)
     return rows
 
@@ -1648,7 +1681,7 @@ def get_stock_briefing() -> str:
     try:
         if not status["connected"] and not status["has_manual"] and status["has_market_key"]:
             quotes = market_overview()
-            return "\n".join([f"[주요 종목 · {quotes[0]['date']} 종가 · {MARKET_SOURCE}]"] + [
+            return "\n".join([f"[주요 종목 · {quotes[0]['date']} 종가 · {market_source()}]"] + [
                 f"- {q['name']}: {q['close']:,}원 ({q['change']:+,}원, {q['rate']:+.2f}%)" for q in quotes])
         p = fetch_portfolio()
     except StockError as e:
