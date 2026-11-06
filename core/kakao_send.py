@@ -351,13 +351,6 @@ class _Win:
         self.tap(0x12)   # Alt를 한 번 누르면 앞으로 올리는 것이 허용된다
         return bool(user32.SetForegroundWindow(windows[0]))
 
-    def focus(self, hwnd: int) -> bool:
-        return bool(self._user32().SetFocus(hwnd))
-
-    def type(self, text: str) -> bool:
-        from core import input_source
-        return input_source.type_unicode(text, windows=True)
-
 
 _win = _Win()
 
@@ -431,10 +424,11 @@ def _deliver_windows(to: str, text: str, press_enter: bool) -> str:
     box = _win.find_input(room)
     if not box:
         raise KakaoSendError("메시지 입력칸을 찾지 못해서 보내지 않았어요.")
-    _win.focus(box)
     if _box_text(box):   # 쓰던 글이 있으면 섞어 보내지 않는다
         raise KakaoSendError(f"{to} 대화창에 쓰던 글이 있어서 보내지 않았어요.")
-    if not _win.type(text) or not _wait(lambda: _win.get_text(box) == text, 1.5):
+    # 키보드식 입력은 창을 앞으로 올린 직후 글자가 빠졌다 (실측) — 칸에 직접 넣고, 정확히 같은지 본 뒤에만 보낸다
+    _win.set_text(box, text)
+    if not _wait(lambda: _win.get_text(box) == text, 1.5):
         _win.clear(box)
         raise KakaoSendError("입력칸에 글을 넣지 못해서 보내지 않았어요.")
     if _win.foreground() != room or _win.title(room) != to:
@@ -443,7 +437,7 @@ def _deliver_windows(to: str, text: str, press_enter: bool) -> str:
     if not press_enter:
         _win.clear(box)
         return f"{to} 대화창 확인 완료 (보내지 않음)"
-    _win.tap(_Win.VK_RETURN)
+    _win.press(box, _Win.VK_RETURN)
     if not _wait(lambda: _box_text(box) == "", 2):
         raise KakaoSendError(f"{to}에게 보내졌는지 확인하지 못했어요. 카카오톡을 직접 확인해 주세요. 다시 보내면 중복될 수 있어요.")
     return f"✅ {to}에게 보냈어요."

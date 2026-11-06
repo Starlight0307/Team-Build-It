@@ -108,6 +108,7 @@ class FakeWin:
         self.lose_search_text = False
         self.needs_down, self.selected = False, False
         self.room_gone = False
+        self.drop_first_char = False
         self.tab, self.found_in, self.tab_stuck = "friends", ("friends", "chats"), False
 
     def tap(self, key, ctrl=False):
@@ -122,6 +123,8 @@ class FakeWin:
 
     def press(self, hwnd, key):
         self.keys.append(key)
+        if key == self.VK_RETURN and hwnd == 2:
+            self.boxes[2] = ""
         if key == self.VK_DOWN:
             self.selected = True
         if key == self.VK_RETURN and self.front == 1 and (self.selected or not self.needs_down) and self.tab in self.found_in:
@@ -129,6 +132,10 @@ class FakeWin:
 
     def set_text(self, hwnd, text):
         self.typed.append(text)
+        if self.foreign_change and hwnd == 2:
+            self.front = 3
+        if self.drop_first_char and hwnd == 2:
+            text = text[1:]
         if not self.lose_search_text:
             self.boxes[hwnd] = text
 
@@ -199,6 +206,13 @@ def test_windows_sends_after_checks(win):
 
 def _message_enter_count(win):
     return win.keys.count(ks._Win.VK_RETURN)
+
+
+def test_windows_lost_character_is_cleared_and_not_sent(win):
+    win.drop_first_char = True
+    with pytest.raises(ks.KakaoSendError, match="글을 넣지"):
+        ks.send("민수", "내일 봐")
+    assert win.boxes[2] == "" and win.keys.count(ks._Win.VK_RETURN) == 1
 
 
 def test_windows_room_closed_before_yes_sends_nothing(win):
