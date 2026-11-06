@@ -325,13 +325,13 @@ def _win_keys(shown: str) -> bool:
         user32.keybd_event(key, 0, 0, 0)
         user32.keybd_event(key, 0, 2, 0)   # KEYEVENTF_KEYUP
     tap(0x5B)   # 시작 키
-    if not _wait(lambda: _win_foreground_exe() in _WIN_SEARCH_APPS, 1.5):
+    if not _wait(lambda: _win_foreground_exe() in _WIN_SEARCH_APPS, 3):
         return False
     if not input_source.type_unicode(shown, windows=True):
         tap(0x1B)
         return False
     # 처음 여는 검색창은 결과가 늦게 떠서, 고정 대기 뒤 Enter를 누르면 아무 일도 일어나지 않았다 (실측)
-    if not _wait(lambda: win_search_finished(ui_snapshot._read_windows()), 6):
+    if not _wait(lambda: win_search_finished(ui_snapshot._read_windows()), 10):
         tap(0x1B)
         return False
     if _win_foreground_exe() not in _WIN_SEARCH_APPS:

@@ -803,14 +803,18 @@ def _app_launch_and_snapshot():
     if not shown:
         return "FAIL", f"시작 메뉴 {len(apps)}개에 문자표가 없음"
     try:
-        by_keys = app_launcher._launch_by_keys(shown, target)   # 검색창을 처음 여는 경우를 시험한다
+        # 처음 여는 검색창은 러너에서 10초 넘게 걸릴 수 있다(그때는 명령 실행으로 넘어간다) — 기록만 하고, 다시 열 때로 판정한다
+        cold = app_launcher._launch_by_keys(shown, target)
+        subprocess.run(["taskkill", "/IM", "charmap.exe", "/F"], capture_output=True)
+        time.sleep(1)
+        by_keys = app_launcher._launch_by_keys(shown, target)
         time.sleep(1.5)
         front = app_launcher._win_foreground_exe()
         elements = ui_snapshot.snapshot()
     finally:
         subprocess.run(["taskkill", "/IM", "charmap.exe", "/F"], capture_output=True)
     ok = by_keys and front == "charmap.exe" and bool(elements)
-    return ("PASS" if ok else "FAIL"), (f"시작 메뉴 {len(apps)}개 · 시작 키 실행={by_keys} · 앞 창 {front} · 요소 {len(elements)}개 "
+    return ("PASS" if ok else "FAIL"), (f"시작 메뉴 {len(apps)}개 · 시작 키 실행 처음={cold} 다시={by_keys} · 앞 창 {front} · 요소 {len(elements)}개 "
                                         f"{ui_snapshot.describe(elements[:6])[:240]}")
 
 
