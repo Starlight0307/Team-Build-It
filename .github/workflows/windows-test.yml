@@ -73,7 +73,8 @@ jobs:
         run: |
           crashes=0
           for i in 1 2 3 4 5 6 7 8; do
-            PYTHONFAULTHANDLER=1 python scripts/windows_selftest.py --only 환경설정 > repeat.txt 2>&1
+            # 멈추면 작업 시간 제한(40분)에 걸려 로그까지 사라진다 — 한 번에 3분으로 끊어 어디서 멈췄는지 남긴다
+            PYTHONFAULTHANDLER=1 timeout 180 python scripts/windows_selftest.py --only 환경설정 > repeat.txt 2>&1
             code=$?
             # 끝까지 가면 결과 줄을 남긴다 — 글자 잘림으로 실패해도 결과 줄은 있고, 죽으면 없다
             if ! grep -q "^RESULT " repeat.txt; then
