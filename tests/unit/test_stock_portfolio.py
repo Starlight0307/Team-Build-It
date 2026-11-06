@@ -464,7 +464,18 @@ def test_parse_master_reads_code_and_name():
     assert sp._parse_master(_master_zip(line), "kospi") == {"005930": "삼성전자"}
 
 
+def _finish_background_work(seconds=10):
+    """앞선 테스트의 창이 시작한 작업이 늦게 끝나 종목 목록 기억을 덮어쓰지 않게 기다린다."""
+    import threading
+    import time
+    end = time.monotonic() + seconds
+    for thread in threading.enumerate():
+        if thread is not threading.current_thread():
+            thread.join(max(0, end - time.monotonic()))
+
+
 def test_master_falls_back_to_saved_file_and_downloads_once_a_day(tmp_path, monkeypatch):
+    _finish_background_work()
     monkeypatch.setattr(sp.storage_location, "user_data_dir", lambda name: str(tmp_path))
     monkeypatch.setattr(sp, "_master_memo", (None, {}))
     (tmp_path / "master.json").write_text(json.dumps({"date": "2000-01-01", "names": NAMES}), encoding="utf-8")
@@ -480,6 +491,7 @@ def test_master_falls_back_to_saved_file_and_downloads_once_a_day(tmp_path, monk
 
 @pytest.fixture
 def master_env(tmp_path, monkeypatch):
+    _finish_background_work()
     monkeypatch.setattr(sp.storage_location, "user_data_dir", lambda name: str(tmp_path))
     monkeypatch.setattr(sp, "_master_memo", (None, {}))
     monkeypatch.setattr(sp, "_master_stale", False)

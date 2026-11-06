@@ -963,7 +963,10 @@ def test_narrowest_window_shows_every_control_without_sideways_overflow(qapp, st
     def fits():
         return all(a.widget().width() <= a.viewport().width() for a in dlg.findChildren(QScrollArea)
                    if a.widget() and a.widget().isAncestorOf(dlg.chart))
-    assert _wait(qapp, fits, 5)
+    dlg.live_label.setText("현재가를 받지 못했어요 · 이전 값을 표시 중 · 아주 긴 안내 문구가 와도 폭을 밀면 안 된다")
+    widths = lambda: [(a.widget().width(), a.viewport().width()) for a in dlg.findChildren(QScrollArea)
+                      if a.widget() and a.widget().isAncestorOf(dlg.chart)]
+    assert _wait(qapp, fits, 15), widths()   # 느린 시험 서버에서는 배치가 늦게 끝난다
     assert len([b for b in dlg.findChildren(QPushButton) if b.toolTip().startswith("그래프")]) == 3
     dlg.close()
 

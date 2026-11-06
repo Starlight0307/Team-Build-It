@@ -662,10 +662,11 @@ class StockDetailDialog(_StockDialog):
             button.setVisible(bool(open_order and open_auto))
             self.trade_buttons.append(button)
             trades.addWidget(button)
-        trades.addStretch(1)
         self.live_label = QLabel()
         self.live_label.setStyleSheet(f"color: {self.p['sub']}; font-size: 12px; font-weight: 700;")
-        trades.addWidget(self.live_label)
+        self.live_label.setWordWrap(True)   # 글자가 길어도 창 폭을 밀지 않고 줄을 바꾼다
+        self.live_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        trades.addWidget(self.live_label, 1)
         right.addLayout(trades)
         periods = QHBoxLayout()
         periods.setSpacing(6)
