@@ -18,7 +18,7 @@ app = QApplication(sys.argv)
 from core import app_launcher, screen_agent, ui_snapshot  # noqa: E402
 from settings.config import SCREEN_MODEL, SCREEN_TEXT_MODEL  # noqa: E402
 
-LIMIT = 120
+LIMIT = 180
 
 
 def values():
@@ -46,10 +46,30 @@ TASKS = [
     ("시스템 설정 열어서 디스플레이 화면으로 가줘", lambda reply: window_title() == "디스플레이"),
     ("사전 앱에서 사과 찾아줘", lambda reply: front_is("Dictionary") and "사과" in window_title() + values()),
     ("Finder에서 다운로드 폴더 열어줘", lambda reply: front_is("Finder") and window_title() == "다운로드"),
+    ("메모장에 오늘 할 일 써줘", lambda reply: front_is("TextEdit") and "오늘 할 일" in values()),
+    ("지도 앱에서 강남역 찾아줘", lambda reply: front_is("Maps") and "강남" in window_title() + values()),
+    ("활성 상태 보기 열고 CPU 탭 보여줘", lambda reply: front_is("Activity Monitor") and "CPU" in window_title()),
+    ("App Store에서 카카오톡 찾아줘", lambda reply: front_is("App Store") and "카카오톡" in window_title() + values()),
+    ("시스템 설정에서 배터리 화면 보여줘", lambda reply: window_title() == "배터리"),
+    ("크롬에서 위키백과 사이트 들어가서 검색창에 아이폰 입력해줘", lambda reply: front_is("Chrome") and "아이폰" in window_title() + values()),
+]
+# AI 없이 바로 여는 요청: (요청, 맨 앞 앱, 창 제목에 있어야 할 글자)
+OPENS = [
+    ("크롬 켜서 장안대학교 홈페이지 들어가줘", "Chrome", "장안"),
+    ("네이버에서 아이폰 듀오 검색해줘", "", "아이폰 듀오"),
+    ("구글에 나이키 로고 검색 해줘", "", "나이키 로고"),
+    ("네이버 열어줘", "", "NAVER"),
+    ("사파리로 유튜브 열어줘", "Safari", "YouTube"),
+    ("파워포인트 열어줘", "PowerPoint", ""),
+    ("VS Code 열어줘", "Visual Studio Code", ""),
+    ("터미널 열어줘", "Terminal", ""),
+    ("카톡 열어줘", "KakaoTalk", ""),
 ]
 # (과제에 든 글자, 판정 뒤 닫을 앱 번들 ID)
 APPS = (("계산기", "com.apple.calculator"), ("텍스트", "com.apple.TextEdit"), ("설정", "com.apple.systempreferences"),
-        ("사전", "com.apple.Dictionary"))
+        ("사전", "com.apple.Dictionary"), ("메모장", "com.apple.TextEdit"), ("지도", "com.apple.Maps"),
+        ("활성 상태", "com.apple.ActivityMonitor"), ("App Store", "com.apple.AppStore"), ("사파리", "com.apple.Safari"),
+        ("파워포인트", "com.microsoft.Powerpoint"), ("VS Code", "com.microsoft.VSCode"), ("터미널", "com.apple.Terminal"))
 
 
 def is_running(bundle):
@@ -65,6 +85,33 @@ def close_app(task, was_running):
         if word in task and not was_running.get(bundle):
             discard = "close every document saving no\n" if bundle.endswith("TextEdit") else ""
             subprocess.run(["osascript", "-e", f'tell application id "{bundle}"\n{discard}quit\nend tell'], capture_output=True)
+
+
+def close_opened_tab(title_word):
+    """시험이 연 탭만 닫는다 — 제목으로 확인한 뒤에. 사용자의 다른 탭은 건드리지 않는다."""
+    if title_word and front_is("Chrome") and title_word in window_title():
+        subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to close active tab of front window'], capture_output=True)
+
+
+def run_open(text, app_name, title_word):
+    from core import web_launcher
+    started = time.time()
+    request = web_launcher.parse_open_request(text)
+    if request:
+        if request.get("target"):
+            request["url"] = web_launcher.find_homepage(request["target"])
+        web_launcher.open_request(request)
+    else:
+        app_launcher.launch(app_launcher.parse_open_only(text), exact=True)
+    end = time.time() + 12
+    ok = False
+    while time.time() < end and not ok:
+        time.sleep(0.2)
+        ok = front_is(app_name) and title_word in window_title()
+    took = round(time.time() - started, 1)
+    print(f"{'합격' if ok else '불합격'} {took}초 바로 열기 | {text}" + ("" if ok else f" | 앞={app_launcher._mac_front_path()} 제목={window_title()!r}"), flush=True)
+    close_opened_tab(title_word)
+    return ok, took
 
 
 def run(task, check, controller):
@@ -111,6 +158,11 @@ def main():
     controller = screen_agent.InputController()
     print(f"모델: 사진 {SCREEN_MODEL} / 글자 {SCREEN_TEXT_MODEL}", flush=True)
     total, seconds = 0, 0
+    for text, app_name, title_word in [o for o in OPENS if not words or any(w in o[0] for w in words)]:
+        was_running = {bundle: is_running(bundle) for _, bundle in APPS}
+        run_open(text, app_name, title_word)
+        close_app(text, was_running)
+        time.sleep(1)
     tasks = [t for t in TASKS if not words or any(w in t[0] for w in words)]
     for task, check in tasks:
         was_running = {bundle: is_running(bundle) for _, bundle in APPS}

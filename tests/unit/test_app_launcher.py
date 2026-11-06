@@ -193,3 +193,8 @@ def test_windows_search_finished_only_after_progress_bar_is_gone():
     busy = [{"role": "ControlType.Edit"}, {"role": "ControlType.ProgressBar"}]
     done = [{"role": "ControlType.Edit"}, {"role": "ControlType.Pane"}]
     assert not al.win_search_finished(busy) and not al.win_search_finished([]) and al.win_search_finished(done)
+
+
+def test_leading_app_understands_writing_into_an_app(mac):
+    assert al.leading_app("메모장에 오늘 할 일 써줘") == "메모장"
+    assert al.leading_app("오늘 날씨에 맞는 옷 추천해줘") is None

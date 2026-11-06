@@ -277,11 +277,10 @@ def test_step_budget_grows_with_request_size():
 
 def test_next_budget_only_extends_while_progressing():
     nb, cap = screen_agent.next_budget, screen_agent.SCREEN_AGENT_MAX_STEPS
-    assert nb(3, 3, 4, True) == 7                # 진행 중 + "4단계 남음" → 늘림
-    assert nb(3, 3, 4, False) == 3               # 헤매는 중이면 그대로
-    assert nb(8, 2, 1, True) == 8                # 줄이지는 않는다
-    assert nb(5, 18, 8, True) == cap             # 상한을 넘지 않는다
-    assert nb(5, 2, None, True) == 5 and nb(5, 2, "3", True) == 5
+    assert nb(3, 3, True) == 5                   # 진행 중이면 늘린다
+    assert nb(3, 3, False) == 3                  # 헤매는 중이면 그대로
+    assert nb(8, 2, True) == 8                   # 줄이지는 않는다
+    assert nb(5, cap, True) == cap               # 상한을 넘지 않는다
 
 
 def test_worker_extends_budget_and_stops_when_screen_is_stuck(monkeypatch):

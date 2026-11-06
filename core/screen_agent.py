@@ -93,8 +93,6 @@ ACTION_SCHEMA = {
         # 위 동작들로 목표가 확실히 끝나면 true (화면을 다시 확인하는 단계를 건너뛴다)
         "finish":  {"type": "boolean"},
         "summary": {"type": "string"},
-        # 목표까지 이번 단계를 포함해 화면을 몇 번 더 봐야 할지 예상 (단계 예산을 늘릴지 정할 때 쓴다)
-        "steps_left": {"type": "integer"},
     },
     "required": ["thought", "actions"],
 }
@@ -128,10 +126,10 @@ actions 배열 (1~4개):
 - 이 동작들로 목표가 확실히 끝나고 화면에서 읽어 알려줄 정보가 없으면 finish를 true로, summary에 한국어 보고를 쓰세요.
 - 목표를 이미 이뤘으면 actions에 done 하나만 (summary에 보고). 할 수 없으면 fail 하나만 (summary에 이유).
 
-답은 짧게: 필요한 필드만 쓰세요. element를 쓸 때는 target을 쓰지 마세요.
+답은 짧게: 필요한 필드만 쓰고, JSON은 줄바꿈과 공백 없이 한 줄로 쓰세요 (글자 수만큼 사용자가 기다립니다). element를 쓸 때는 target을 쓰지 마세요.
 
 계산기·입력칸처럼 키보드를 받는 곳은 버튼을 하나씩 누르지 말고 type으로 한 번에 넣으세요.
-  예) 계산기에서 12 곱하기 3: type "12*3=" — 표시된 식과 값을 읽어 done.
+  예) 계산기에서 12 곱하기 3: type "12*3=", 1250 나누기 5: type "1250/5=" — 표시된 식과 값을 읽어 done.
 입력 뒤 표시된 식이 목표와 다르면(앞에 다른 값이 붙음 등) 보고하지 말고 지운 뒤 다시 입력하세요.
 
 화면 요소 목록이 함께 오면:
@@ -142,7 +140,6 @@ actions 배열 (1~4개):
 
 규칙:
 - thought는 20자 이내로 아주 짧게 쓰세요 (예: "검색창에 입력").
-- steps_left에는 목표까지 화면을 몇 번 더 봐야 할지(이번 포함) 정수로 예상해 쓰세요.
 - 되돌리기 어려운 동작(삭제, 전송, 결제, 구매, 제출, 프로그램 종료, 설정 변경)이면 dangerous를 true로 하세요.
 - 비밀번호, 카드 번호 같은 민감 정보는 절대 입력하지 말고 fail 하세요.
 - 앞 동작이 효과가 없었다면 같은 동작을 반복하지 말고 다른 방법을 쓰세요.
@@ -534,8 +531,7 @@ def parse_action(raw: str) -> dict:
             raise ValueError("동작 없음")
         first = act["actions"][0]
         act = {**first, "thought": act.get("thought", ""), "then": act["actions"][1:],
-               "finish": act.get("finish"), "summary": first.get("summary") or act.get("summary", ""),
-               "steps_left": act.get("steps_left")}
+               "finish": act.get("finish"), "summary": first.get("summary") or act.get("summary", "")}
     if not isinstance(act, dict) or act.get("action") not in ACTIONS:
         raise ValueError(f"알 수 없는 동작: {act.get('action') if isinstance(act, dict) else act}")
     if not _has_position(act):
@@ -555,7 +551,7 @@ def estimate_step_budget(task: str) -> int:
     - 기본 3단계 (화면 보기 → 동작 → 확인)
     - 하위 작업("열고/입력하고/저장해줘" 등)마다 +2
     - 여러 항목을 다루는 요청("모두/각각/비교")은 +3, 긴 글을 입력하는 요청은 +1
-    진행이 잘 되면 실행 중에 모델의 예상(steps_left)을 보고 SCREEN_AGENT_MAX_STEPS까지 늘린다."""
+    진행이 잘 되면 실행 중에 SCREEN_AGENT_MAX_STEPS까지 늘린다."""
     t = task or ""
     parts = 1 + len(_SUBTASK_SPLIT.findall(t))
     budget = MIN_STEPS + 2 * (parts - 1)
@@ -566,12 +562,10 @@ def estimate_step_budget(task: str) -> int:
     return max(MIN_STEPS, min(START_MAX, budget))
 
 
-def next_budget(budget: int, step: int, steps_left, progressing: bool) -> int:
-    """단계 예산 갱신 — 화면이 바뀌며 진행 중일 때만, 모델이 '아직 n단계 남았다'고 하면 늘린다.
-    줄이지는 않는다 (끝나면 모델이 done 한다). 헤매는 중이면 늘리지 않는다."""
-    if not progressing or not isinstance(steps_left, int) or steps_left <= 0:
-        return budget
-    return max(budget, min(SCREEN_AGENT_MAX_STEPS, step + min(steps_left, 8)))
+def next_budget(budget: int, step: int, progressing: bool) -> int:
+    """단계 예산 갱신 — 화면이 바뀌며 진행 중이면 늘고, 헤매면 그대로라 STALL_LIMIT이나 예산에서 멈춘다.
+    모델의 예상 단계 수에 맡겼더니 잘 진행하다 처음 예산에서 끊겼다 (2026-11-06 실측)."""
+    return max(budget, min(SCREEN_AGENT_MAX_STEPS, step + 2)) if progressing else budget
 
 
 def _valid(act) -> bool:
@@ -1079,7 +1073,7 @@ class ScreenAgentWorker(QThread):
                     return self.finished_task.emit(
                         False, f"{STALL_LIMIT}단계 동안 화면이 바뀌지 않아서 멈췄어요. "
                                "원하는 창을 앞에 띄우거나 요청을 더 구체적으로 해 주세요.", history)
-                self.max_steps = next_budget(self.max_steps, step, act.get("steps_left"), progressing)
+                self.max_steps = next_budget(self.max_steps, step, progressing)
 
             self.finished_task.emit(False, f"{self.max_steps}단계 안에 끝내지 못해서 멈췄어요. "
                                            "목표를 더 작게 나눠서 다시 요청해 주세요.", history)
