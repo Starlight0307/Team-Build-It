@@ -160,7 +160,10 @@ def main():
     total, seconds = 0, 0
     for text, app_name, title_word in [o for o in OPENS if not words or any(w in o[0] for w in words)]:
         was_running = {bundle: is_running(bundle) for _, bundle in APPS}
-        run_open(text, app_name, title_word)
+        try:
+            run_open(text, app_name, title_word)
+        except Exception as e:
+            print(f"불합격 바로 열기 | {text} | {type(e).__name__}: {e}", flush=True)
         close_app(text, was_running)
         time.sleep(1)
     tasks = [t for t in TASKS if not words or any(w in t[0] for w in words)]

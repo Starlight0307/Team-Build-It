@@ -262,6 +262,10 @@ def _mac_front_path() -> str:
     return str(url.path()) if url is not None else ""
 
 
+def _mac_running(path: str) -> bool:
+    return subprocess.run(["pgrep", "-f", re.escape(path + "/Contents/")], capture_output=True).returncode == 0
+
+
 def _mac_close_search():
     for _ in range(3):   # 첫 Esc는 글자만 지운다. 닫힌 뒤 더 누르면 뒤에 있는 앱으로 간다
         if not _mac_search_field():
@@ -288,7 +292,10 @@ def _mac_keys(shown: str, path: str) -> bool:
     if not _mac_search_field():   # 그 사이 사용자가 다른 곳을 눌렀다
         return False
     _mac_key(_KEY_ENTER)
-    return bool(_wait(lambda: _mac_front_path() == path, 5))
+    if _wait(lambda: _mac_front_path() == path, 5):
+        return True
+    # 파워포인트처럼 늦게 뜨는 앱: 켜지는 중에 open을 또 부르면 실패가 나서 "못 켰다"고 잘못 알렸다 (실측)
+    return _mac_running(path) and bool(_wait(lambda: _mac_front_path() == path, 25))
 
 
 def _win_foreground_exe() -> str:
@@ -360,7 +367,7 @@ def launch(name: str, exact: bool = False) -> str:
         return shown
     if IS_MAC:
         result = subprocess.run(["open", target], capture_output=True, timeout=20)
-        if result.returncode != 0:
+        if result.returncode != 0 and not _mac_running(target):
             raise AppNotFound(f"'{shown}' 앱을 실행하지 못했어요.")
     elif IS_WIN:
         if target in _WINDOWS_COMMANDS:

@@ -198,3 +198,20 @@ def test_windows_search_finished_only_after_progress_bar_is_gone():
 def test_leading_app_understands_writing_into_an_app(mac):
     assert al.leading_app("메모장에 오늘 할 일 써줘") == "메모장"
     assert al.leading_app("오늘 날씨에 맞는 옷 추천해줘") is None
+
+
+def test_slow_app_is_waited_for_instead_of_opening_it_again(keys, monkeypatch):
+    waits = []
+
+    def wait(check, seconds):
+        waits.append(seconds)
+        return check() if seconds != 5 else False
+    monkeypatch.setattr(al, "_wait", wait)
+    monkeypatch.setattr(al, "_mac_running", lambda path: True)
+    assert al._mac_keys("계산기", "/A/Calculator.app") is True and 25 in waits
+
+
+def test_open_failure_is_fine_when_app_is_already_starting(mac, monkeypatch):
+    monkeypatch.setattr(al.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout=""))
+    monkeypatch.setattr(al, "_mac_running", lambda path: True)
+    assert al.launch("계산기") == "계산기"
