@@ -20,6 +20,7 @@ IS_MAC = sys.platform == "darwin"
 CONFIRM_SECONDS = 300
 _APP = "카톡"
 _KEY_ENTER = 36
+_MESSAGE_BOX = "메시지 입력"
 _ASK = re.compile(r"^(?:카카오톡|카톡)\s*(?:으로|에서|로)?\s*(?P<to>[^\s,]+?)\s*(?:에게|한테|께)\s*(?P<text>.+?)\s*"
                   r"(?:이?라고|고)?\s*(?:보내|전송해|전해)\s*(?:줘|줘요|주세요|줄래|줄래요|봐)?[\s.!?~]*$", re.S)
 _ASK_AFTER = re.compile(r"^(?P<to>[^\s,]+?)\s*(?:에게|한테|께)\s*(?:카카오톡|카톡)\s*(?:으로|로)?\s*(?P<text>.+?)\s*"
@@ -79,11 +80,46 @@ def _focused_value() -> str:
 
 
 def _set_focused(text: str) -> bool:
-    import ApplicationServices as AS
     if not _front_is_kakao():   # 다른 앱의 입력칸에 글이 들어가면 안 된다
         return False
+    import ApplicationServices as AS
     element = _focused()
     return element is not None and AS.AXUIElementSetAttributeValue(element, "AXValue", text) == 0
+
+
+def _find_message_box():
+    """대화창의 입력칸. 포커스를 믿지 않는다 — 대화 기록 영역에 포커스가 가 있으면 글이 입력되지 않는다 (실측)."""
+    from collections import deque
+    from core import app_launcher
+    app = app_launcher.focused_app_element()
+    window = app_launcher._ax(app, "AXFocusedWindow") if app is not None else None
+    queue, seen = deque([window] if window is not None else []), 0
+    while queue and seen < 800:
+        element = queue.popleft()
+        seen += 1
+        if app_launcher._ax(element, "AXRole") in ("AXTextField", "AXTextArea") and _MESSAGE_BOX in (
+                app_launcher._ax(element, "AXDescription"), app_launcher._ax(element, "AXTitle"), app_launcher._ax(element, "AXPlaceholderValue")):
+            return element
+        queue.extend(app_launcher._ax(element, "AXChildren") or [])
+    return None
+
+
+def _focus_message_box() -> bool:
+    import ApplicationServices as AS
+    box = _find_message_box()
+    return box is not None and AS.AXUIElementSetAttributeValue(box, "AXFocused", True) == 0 and _wait(_in_message_box, 1)
+
+
+def _in_message_box() -> bool:
+    from core import app_launcher
+    element = _focused()
+    return element is not None and _MESSAGE_BOX in (
+        app_launcher._ax(element, "AXDescription"), app_launcher._ax(element, "AXTitle"), app_launcher._ax(element, "AXPlaceholderValue"))
+
+
+def _type(text: str) -> bool:
+    from core import input_source
+    return _front_is_kakao() and input_source.type_unicode(text)
 
 
 def _front_is_kakao() -> bool:
@@ -157,8 +193,10 @@ def send(to: str, text: str, press_enter: bool = True) -> str:
     if not _wait(lambda: ui_snapshot.window_title() == to, 3):
         _close_search()
         raise KakaoSendError(f"'{to}' 대화창이 열렸는지 확인하지 못해서 보내지 않았어요.")
-    if not _set_focused(text) or not _wait(lambda: _focused_value() == text, 1.5):
-        _set_focused("")
+    # 입력칸 값을 직접 넣으면 화면에만 보이고 Enter·전송 버튼으로 보내지지 않는다 (실측) — 키보드처럼 친다
+    if not _focus_message_box() or _focused_value() or not _type(text) or not _wait(lambda: _focused_value() == text, 1.5):
+        if _in_message_box():
+            _set_focused("")
         raise KakaoSendError("입력칸에 글을 넣지 못해서 보내지 않았어요.")
     if ui_snapshot.window_title() != to or not _front_is_kakao():
         _set_focused("")

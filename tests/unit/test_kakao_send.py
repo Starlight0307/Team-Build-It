@@ -50,9 +50,15 @@ def kakao(monkeypatch):
         if code == ks._KEY_ENTER:
             state["field"] = ""
     monkeypatch.setattr(ks, "_set_focused", set_focused)
+    monkeypatch.setattr(ks, "_type", set_focused)
     monkeypatch.setattr(ks, "_focused_value", lambda: state["field"])
     monkeypatch.setattr(ks, "_key", key)
     monkeypatch.setattr(ks, "_open_search", lambda: True)
+    def focus_box():
+        state["field"] = ""
+        return state.get("box", True)
+    monkeypatch.setattr(ks, "_focus_message_box", focus_box)
+    monkeypatch.setattr(ks, "_in_message_box", lambda: True)
     monkeypatch.setattr(ks, "_in_search_field", lambda: True)
     return state
 
@@ -158,3 +164,10 @@ def test_name_never_goes_into_a_chat_input_box(kakao, monkeypatch):
     with pytest.raises(ks.KakaoSendError, match="검색창"):
         ks.send("민수", "내일 봐")
     assert kakao["typed"] == [] and kakao["keys"] == []
+
+
+def test_no_message_box_means_nothing_is_typed(kakao):
+    kakao["box"] = False
+    with pytest.raises(ks.KakaoSendError, match="글을 넣지"):
+        ks.send("민수", "내일 봐")
+    assert "내일 봐" not in kakao["typed"] and ks._KEY_ENTER not in kakao["keys"]
