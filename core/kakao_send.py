@@ -10,13 +10,16 @@ API는 같은 서비스를 쓰는 친구에게만 보낼 수 있어서 앱 화�
 - 입력칸의 글이 확인받은 내용과 같음
 대화 내용은 읽지 않는다.
 
-shortcut: 맥만 지원, 윈도우 카카오톡의 화면 구조를 실기에서 확인하면 추가한다.
+윈도우: 카카오톡 창 구조를 Win32로 다룬다. 대화 목록을 읽을 수 없어 맥과 달리 같은 이름이 여럿인지는 알 수 없고,
+검색 맨 위 대화방을 연 뒤 창 제목이 이름과 정확히 같을 때만 보낸다. 실제 PC 시험 전이다 (시험 서버에 카카오톡이 없다).
+shortcut: 창 클래스 이름(RichEdit)은 널리 쓰이는 값이다, 카카오톡이 바꾸면 "입력칸을 찾지 못해" 보내지 않고 멈춘다.
 """
 import re
 import sys
 import time
 
 IS_MAC = sys.platform == "darwin"
+IS_WIN = sys.platform == "win32"
 CONFIRM_SECONDS = 300
 _APP = "카톡"
 _KEY_ENTER = 36
@@ -169,11 +172,138 @@ def _wait(check, seconds: float):
         time.sleep(0.1)
 
 
+class _Win:
+    """윈도우 카카오톡을 다루는 부분. 시험에서 통째로 가짜로 바꾼다."""
+    WM_SETTEXT, WM_GETTEXT, WM_GETTEXTLENGTH = 0x000C, 0x000D, 0x000E
+    VK_CONTROL, VK_RETURN, VK_F = 0x11, 0x0D, 0x46
+
+    @staticmethod
+    def _user32():
+        import ctypes
+        return ctypes.windll.user32
+
+    def tap(self, key: int, ctrl: bool = False):
+        user32 = self._user32()
+        if ctrl:
+            user32.keybd_event(self.VK_CONTROL, 0, 0, 0)
+        user32.keybd_event(key, 0, 0, 0)
+        user32.keybd_event(key, 0, 2, 0)
+        if ctrl:
+            user32.keybd_event(self.VK_CONTROL, 0, 2, 0)
+
+    def foreground(self) -> int:
+        return self._user32().GetForegroundWindow()
+
+    def title(self, hwnd: int) -> str:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(512)
+        self._user32().GetWindowTextW(hwnd, buf, 512)
+        return buf.value
+
+    def is_kakao(self, hwnd: int) -> bool:
+        from core import app_launcher
+        return bool(hwnd) and hwnd == self.foreground() and "kakaotalk" in app_launcher._win_foreground_exe()
+
+    def focus_child_class(self) -> str:
+        """포커스가 있는 입력칸의 클래스 이름."""
+        import ctypes
+        from ctypes import wintypes
+
+        class GUITHREADINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD), ("hwndActive", wintypes.HWND),
+                        ("hwndFocus", wintypes.HWND), ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                        ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
+        info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
+        if not self._user32().GetGUIThreadInfo(0, ctypes.byref(info)) or not info.hwndFocus:
+            return ""
+        buf = ctypes.create_unicode_buffer(128)
+        self._user32().GetClassNameW(info.hwndFocus, buf, 128)
+        return buf.value
+
+    def find_input(self, hwnd: int) -> int:
+        """대화창의 메시지 입력칸."""
+        import ctypes
+        found = []
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def visit(child, _):
+            buf = ctypes.create_unicode_buffer(128)
+            self._user32().GetClassNameW(child, buf, 128)
+            if "richedit" in buf.value.casefold():
+                found.append(child)
+            return True
+        self._user32().EnumChildWindows(hwnd, callback_type(visit), None)
+        return found[0] if found else 0
+
+    def get_text(self, hwnd: int) -> str:
+        import ctypes
+        user32 = self._user32()
+        size = user32.SendMessageW(hwnd, self.WM_GETTEXTLENGTH, 0, 0)
+        buf = ctypes.create_unicode_buffer(size + 1)
+        user32.SendMessageW(hwnd, self.WM_GETTEXT, size + 1, ctypes.byref(buf))
+        return buf.value
+
+    def clear(self, hwnd: int):
+        import ctypes
+        self._user32().SendMessageW(hwnd, self.WM_SETTEXT, 0, ctypes.c_wchar_p(""))
+
+    def focus(self, hwnd: int) -> bool:
+        return bool(self._user32().SetFocus(hwnd))
+
+    def type(self, text: str) -> bool:
+        from core import input_source
+        return input_source.type_unicode(text, windows=True)
+
+
+_win = _Win()
+
+
+def _send_windows(to: str, text: str, press_enter: bool) -> str:
+    from core import app_launcher
+    try:
+        app_launcher.launch(_APP, exact=True)
+    except app_launcher.AppNotFound as e:
+        raise KakaoSendError("카카오톡이 설치돼 있지 않아요.") from e
+    if not _wait(lambda: _win.is_kakao(_win.foreground()), 4):
+        raise KakaoSendError("카카오톡을 앞으로 가져오지 못해서 보내지 않았어요.")
+    _win.tap(_Win.VK_F, ctrl=True)   # 검색창
+    time.sleep(0.5)
+    # 포커스가 대화 입력칸(RichEdit)이면 이름이 대화에 들어간다 — 검색창(Edit)일 때만 친다
+    if _win.focus_child_class().casefold() != "edit" or not _win.is_kakao(_win.foreground()) or not _win.type(to):
+        raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 주세요.")
+    time.sleep(1.0)
+    _win.tap(_Win.VK_RETURN)
+    if not _wait(lambda: _win.is_kakao(_win.foreground()) and _win.title(_win.foreground()) == to, 3):
+        raise KakaoSendError(f"'{to}' 대화창이 열렸는지 확인하지 못해서 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 말씀해 주세요.")
+    room = _win.foreground()
+    box = _win.find_input(room)
+    if not box:
+        raise KakaoSendError("메시지 입력칸을 찾지 못해서 보내지 않았어요.")
+    _win.focus(box)
+    if _win.get_text(box):   # 쓰던 글이 있으면 섞어 보내지 않는다
+        raise KakaoSendError(f"{to} 대화창에 쓰던 글이 있어서 보내지 않았어요.")
+    if not _win.type(text) or not _wait(lambda: _win.get_text(box) == text, 1.5):
+        _win.clear(box)
+        raise KakaoSendError("입력칸에 글을 넣지 못해서 보내지 않았어요.")
+    if _win.foreground() != room or _win.title(room) != to:
+        _win.clear(box)
+        raise KakaoSendError("도중에 창이 바뀌어서 보내지 않았어요.")
+    if not press_enter:
+        _win.clear(box)
+        return f"{to} 대화창 확인 완료 (보내지 않음)"
+    _win.tap(_Win.VK_RETURN)
+    if not _wait(lambda: _win.get_text(box) == "", 2):
+        raise KakaoSendError(f"{to}에게 보내졌는지 확인하지 못했어요. 카카오톡을 직접 확인해 주세요. 다시 보내면 중복될 수 있어요.")
+    return f"✅ {to}에게 보냈어요."
+
+
 def send(to: str, text: str, press_enter: bool = True) -> str:
     """보내고 안내 문장을 돌려준다. press_enter=False면 전송 직전까지 확인하고 글을 지운다 (시험용)."""
     from core import app_launcher, ui_snapshot
+    if IS_WIN:
+        return _send_windows(to, text, press_enter)
     if not IS_MAC:
-        raise KakaoSendError("카카오톡 보내기는 아직 맥에서만 돼요.")
+        raise KakaoSendError("카카오톡 보내기는 맥과 윈도우에서만 돼요.")
     try:
         app_launcher.launch(_APP, exact=True)
     except app_launcher.AppNotFound as e:

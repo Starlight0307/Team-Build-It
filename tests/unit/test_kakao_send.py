@@ -93,9 +93,113 @@ def test_dry_run_checks_everything_but_does_not_send(kakao):
     assert ks._KEY_ENTER not in kakao["keys"] and kakao["field"] == ""
 
 
-def test_windows_explains_it_is_not_supported_yet(monkeypatch):
+class FakeWin:
+    VK_F, VK_RETURN = ks._Win.VK_F, ks._Win.VK_RETURN
+
+    def __init__(self):
+        self.keys, self.typed, self.front, self.titles = [], [], 1, {1: "카카오톡", 2: "민수"}
+        self.kakao, self.focus_class, self.boxes, self.opens = True, "Edit", {2: ""}, 2
+        self.foreign_change = False
+
+    def tap(self, key, ctrl=False):
+        self.keys.append(key)
+        if key == self.VK_RETURN:
+            if self.front == 1:
+                self.front = self.opens
+            elif self.front in self.boxes:
+                self.boxes[self.front] = ""
+
+    def foreground(self):
+        return self.front
+
+    def title(self, hwnd):
+        return self.titles.get(hwnd, "")
+
+    def is_kakao(self, hwnd):
+        return self.kakao
+
+    def focus_child_class(self):
+        return self.focus_class
+
+    def find_input(self, hwnd):
+        return hwnd if hwnd in self.boxes else 0
+
+    def get_text(self, hwnd):
+        return self.boxes.get(hwnd, "")
+
+    def clear(self, hwnd):
+        self.boxes[hwnd] = ""
+
+    def focus(self, hwnd):
+        return True
+
+    def type(self, text):
+        self.typed.append(text)
+        if self.front in self.boxes:
+            self.boxes[self.front] = text
+            if self.foreign_change:
+                self.front = 3
+        return True
+
+
+@pytest.fixture
+def win(monkeypatch):
+    fake = FakeWin()
+    monkeypatch.setattr(ks, "IS_WIN", True)
     monkeypatch.setattr(ks, "IS_MAC", False)
-    with pytest.raises(ks.KakaoSendError, match="맥에서만"):
+    monkeypatch.setattr(ks, "_win", fake)
+    monkeypatch.setattr(app_launcher, "launch", lambda name, exact=False: "KakaoTalk")
+    monkeypatch.setattr(ks.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ks, "_wait", lambda check, seconds: check())
+    return fake
+
+
+def test_windows_sends_after_checks(win):
+    assert "보냈어요" in ks.send("민수", "내일 봐")
+    assert win.typed == ["민수", "내일 봐"] and win.keys.count(ks._Win.VK_RETURN) == 2
+
+
+def _message_enter_count(win):
+    return win.keys.count(ks._Win.VK_RETURN)
+
+
+def test_windows_name_is_not_typed_unless_in_search_box(win):
+    win.focus_class = "RichEdit50W"
+    with pytest.raises(ks.KakaoSendError, match="검색창"):
+        ks.send("민수", "내일 봐")
+    assert win.typed == [] and _message_enter_count(win) == 0
+
+
+def test_windows_wrong_room_is_not_sent(win):
+    win.titles[2] = "민수 엄마"
+    with pytest.raises(ks.KakaoSendError, match="대화창"):
+        ks.send("민수", "내일 봐")
+    assert "내일 봐" not in win.typed and _message_enter_count(win) == 1
+
+
+def test_windows_draft_in_the_room_is_not_mixed(win):
+    win.boxes[2] = "쓰던 글"
+    with pytest.raises(ks.KakaoSendError, match="쓰던 글"):
+        ks.send("민수", "내일 봐")
+    assert win.boxes[2] == "쓰던 글" and "내일 봐" not in win.typed
+
+
+def test_windows_focus_change_while_typing_is_not_sent(win):
+    win.foreign_change = True
+    with pytest.raises(ks.KakaoSendError, match="창이 바뀌어서"):
+        ks.send("민수", "내일 봐")
+    assert _message_enter_count(win) == 1 and win.boxes[2] == ""
+
+
+def test_windows_dry_run_does_not_send(win):
+    assert "보내지 않음" in ks.send("민수", "내일 봐", press_enter=False)
+    assert _message_enter_count(win) == 1 and win.boxes[2] == ""
+
+
+def test_other_systems_explain(monkeypatch):
+    monkeypatch.setattr(ks, "IS_MAC", False)
+    monkeypatch.setattr(ks, "IS_WIN", False)
+    with pytest.raises(ks.KakaoSendError, match="맥과 윈도우"):
         ks.send("민수", "내일 봐")
 
 
