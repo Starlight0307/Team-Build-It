@@ -793,6 +793,23 @@ def _settings_clip():
     return ("PASS" if ok else "FAIL"), " · ".join(results)
 
 
+@check("앱 실행과 화면 구조 읽기 (시작 메뉴, UI Automation)")
+def _app_launch_and_snapshot():
+    if not IS_WIN:
+        return "SKIP", "Windows 전용"
+    from core import app_launcher, ui_snapshot
+    apps = app_launcher.installed_apps(refresh=True)
+    app_launcher.launch("메모장")
+    try:
+        time.sleep(3)
+        elements = ui_snapshot.snapshot()
+    finally:
+        subprocess.run(["taskkill", "/IM", "notepad.exe", "/F"], capture_output=True)
+    if not apps:
+        return "FAIL", "시작 메뉴 목록이 비어 있음"
+    return ("PASS" if elements else "FAIL"), f"시작 메뉴 {len(apps)}개 · 메모장 요소 {len(elements)}개 " + ui_snapshot.describe(elements[:5])[:120]
+
+
 @check("창 제목·아이콘 (실제 Windows 창 — pythonw 대신 Lumi)")
 def _title_icon():
     if not IS_WIN:

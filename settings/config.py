@@ -45,4 +45,6 @@ VOICE_WAKE_WORDS = ("루미야", "루미아", "누미야", "우미야", "룬이�
 # 긴 생각을 먼저 해서 한 번 동작하는 데 2분 넘게 걸렸다 (M1 Pro 16GB 실측).
 # RAM이 8GB 정도인 PC는 "qwen3-vl:4b-instruct"(3.3GB)로 바꾸면 가볍다 (정확도는 낮아짐).
 SCREEN_MODEL = "qwen3-vl:8b-instruct"
+# 화면 요소 목록만 읽고 판단할 때 쓰는 모델 — 사진을 안 보니 다른 모델을 끼워 비교할 수 있다
+SCREEN_TEXT_MODEL = os.environ.get("LUMI_SCREEN_TEXT_MODEL") or SCREEN_MODEL
 SCREEN_AGENT_MAX_STEPS = 20

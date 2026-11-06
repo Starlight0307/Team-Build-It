@@ -84,7 +84,7 @@ from widget.calendar_widget import CalendarWidget
 from data.db import save_chat_to_file
 from core.voice import (VoiceListener, Speaker, VoiceInstallWorker,
                         missing_voice_packages, is_stop_phrase, VOICE_MODELS, current_voice_model)
-from core import screen_agent, web_launcher, skills
+from core import app_launcher, screen_agent, web_launcher, skills
 from core.skill_agent import SkillAgentWorker
 from widget.skills_widget import SkillsPage
 from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
@@ -338,6 +338,7 @@ class AssistantApp(QWidget):
         QTimer.singleShot(50, self.apply_theme)
         QTimer.singleShot(800, self._run_startup_update_check)
         QTimer.singleShot(1000, self.stock_panel.refresh)
+        app_launcher.prewarm()
         if "stock_portfolio" in self.installed_module_names:
             self.stock_panel.start_updates()
         # 신규 기능 6(앱 사용 통계) — 사용자가 이전에 기록을 켜둔 경우에만 이어서 기록한다.
@@ -2921,6 +2922,11 @@ class AssistantApp(QWidget):
             self._start_ai_worker(txt)
             return
 
+        # ── "계산기 열어줘" → 화면을 볼 것 없이 설치 목록에서 찾아 바로 실행 ──
+        if not stock_request and self._maybe_handle_app_open(txt):
+            QTimer.singleShot(50, self.auto_scroll_to_bottom)
+            return
+
         # ── "직접 ~해줘" / "지금 화면에 뭐 있어?" → 화면을 보고 작업/답변 ──
         screen_mode = None if stock_request else screen_agent.classify_screen_request(txt)
         if screen_mode:
@@ -3630,6 +3636,18 @@ class AssistantApp(QWidget):
     # act: 루미 창을 숨기고 안내 창만 띄운 채 마우스/키보드로 작업 → 끝나면 창을
     #      다시 띄우고 결과를 대화창에 보고. describe: 루미 창을 잠깐 숨기고 화면을
     #      찍어서 질문에 답만 한다 (조작 없음).
+    def _maybe_handle_app_open(self, txt: str) -> bool:
+        name = app_launcher.parse_open_only(txt)
+        if not name:
+            return False
+        self.chat_history.append({'role': 'user', 'content': txt})
+        try:
+            self.display_ai_response(f"🚀 {app_launcher.launch(name, exact=True)} 앱을 열었어요.")
+        except Exception as e:
+            print(f"[앱 실행] 오류: {type(e).__name__}")
+            self.display_ai_response(f"❌ {e}" if isinstance(e, app_launcher.AppNotFound) else f"❌ '{name}' 앱을 열지 못했어요.")
+        return True
+
     def _maybe_handle_web_open(self, txt: str) -> bool:
         """브라우저/웹사이트 열기 요청이면 처리하고 True (core/web_launcher.py 참고).
         사이트를 연 뒤 클릭/입력 등이 더 필요하면 화면 조작 에이전트가 이어받는다."""
