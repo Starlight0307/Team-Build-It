@@ -198,6 +198,15 @@ def connected_sources(owner: str) -> list:
     return [SOURCES["local"]] if SOURCES["local"].connected(owner) else []
 
 
+def overlaps(ev: dict, start, end) -> bool:
+    """일정이 [start, end) 안에 걸치는지. 경계를 보는 방식이 서버마다 달라(종일 일정을 UTC로 보는 등) 받은 뒤 다시 거른다."""
+    s, e = ev["start"], ev.get("end") or ev["start"]
+    if not isinstance(s, datetime) and not isinstance(e, datetime) and e <= s:
+        e = s + timedelta(days=1)   # 종일 일정의 끝은 다음 날 0시다. 끝이 시작과 같으면 그날 하루
+    s, e = _aware(s), _aware(e)
+    return s < end and (e > start or s >= start)
+
+
 def month_range(year: int, month: int):
     """달력 한 장(앞뒤 달 일부 포함 6주) 범위 — 월요일 시작."""
     first = datetime(year, month, 1, tzinfo=TZ)

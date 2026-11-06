@@ -495,7 +495,7 @@ class TodayPanel(_ListPanel):
         """(시각, 제목) 줄 목록. 연결된 캘린더를 모두 읽어 시간순으로 합친다."""
         from datetime import timedelta
         try:
-            from calendar_feature.calendar_sources import TZ, connected_sources
+            from calendar_feature.calendar_sources import TZ, connected_sources, overlaps
             sources = connected_sources(owner)
         except Exception as e:
             print(f"[오늘 일정] 캘린더 확인 오류: {e}")
@@ -506,7 +506,8 @@ class TodayPanel(_ListPanel):
         for src in sources:
             try:
                 for ev in src.events_between(owner, start, end):
-                    events.append((src.label, ev))
+                    if overlaps(ev, start, end):
+                        events.append((src.label, ev))
             except Exception as e:
                 print(f"[오늘 일정] {src.label} 읽기 오류: {type(e).__name__}: {e}")
                 failed.append(src.label)

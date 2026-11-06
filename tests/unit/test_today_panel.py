@@ -83,7 +83,9 @@ def test_all_failing_shows_message(panel_with):
 
 
 def test_event_from_last_night(panel_with):
-    p = panel_with([_Src("Apple", [_ev("밤샘 알바", 22, day_offset=-1)])])
+    ev = _ev("밤샘 알바", 22, day_offset=-1)
+    ev["end"] = ev["start"] + timedelta(hours=4)   # 오늘 새벽 2시까지
+    p = panel_with([_Src("Apple", [ev])])
     assert _texts(p) == ["어제부터 밤샘 알바"]
 
 
@@ -108,3 +110,20 @@ def test_calendar_page_write_notifies(qapp, monkeypatch):
     w.events_changed.connect(lambda: hits.append(1))
     w._after_write(True, None)
     assert hits == [1]
+
+
+def test_events_that_ended_before_today_are_dropped(panel_with):
+    """서버가 경계에 걸린 어제 일정을 돌려줘도(시간대가 다른 종일 일정, 자정에 끝난 일정) 오늘로 보이면 안 된다."""
+    today = datetime.now(cs.TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday = today - timedelta(days=1)
+    panel = panel_with([_Src("Apple", [
+        {"title": "어제종일", "start": yesterday.date(), "end": today.date(), "all_day": True},
+        {"title": "자정끝", "start": yesterday.replace(hour=16), "end": today, "all_day": False},
+        {"title": "밤샘", "start": yesterday.replace(hour=23), "end": today.replace(hour=1), "all_day": False},
+        {"title": "여러날", "start": yesterday.date(), "end": today.date() + timedelta(days=1), "all_day": True},
+        {"title": "하루종일", "start": today.date(), "end": today.date(), "all_day": True},
+        {"title": "내일종일", "start": today.date() + timedelta(days=1), "end": today.date() + timedelta(days=2), "all_day": True},
+    ])])
+    text = " ".join(_texts(panel))
+    assert "어제종일" not in text and "자정끝" not in text and "내일종일" not in text
+    assert "밤샘" in text and "여러날" in text and "하루종일" in text
