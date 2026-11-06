@@ -212,3 +212,60 @@ def test_equals_is_not_pressed_twice(qapp, monkeypatch):
     w.run()
     assert pressed == ["등호"] and results == [True]
     assert any("이미 계산" in n for n in w._notes)
+
+
+def test_ax_rect_rejects_infinite_size(monkeypatch):
+    AS = pytest.importorskip("ApplicationServices")
+    point = type("P", (), {"x": float("inf"), "y": 0.0, "width": 1.0, "height": 1.0})()
+    monkeypatch.setattr(ui, "_attr", lambda e, n: object())
+    monkeypatch.setattr(AS, "AXValueGetValue", lambda v, t, o: (True, point))
+    assert ui._ax_rect(object()) is None
+
+
+@pytest.mark.parametrize("act, task, over", [
+    ({"action": "click", "target": "열기"}, "App Store에서 카카오톡 찾아줘", True),
+    ({"action": "click", "target": "음성 2", "role": "RadioButton"}, "시스템 설정 사운드 화면으로 가줘", True),
+    ({"action": "click", "target": "사운드", "role": "Row"}, "시스템 설정 사운드 화면으로 가줘", False),
+    ({"action": "click", "target": "검색"}, "App Store에서 카카오톡 찾아줘", False),
+    ({"action": "click", "target": "열기"}, "첫번째 결과 눌러줘", False),
+    ({"action": "type", "text": "열기"}, "찾아줘", False),
+])
+def test_view_only_requests_do_not_run_or_change_things(act, task, over):
+    assert sa.oversteps(act, task) is over
+
+
+@pytest.mark.parametrize("word", ["허용", "받기", "Allow"])
+def test_permission_buttons_need_confirmation(word):
+    assert sa.is_dangerous({"action": "click", "target": word})
+
+
+NAMED = ui.clean([{**ROW, "role": "StaticText", "name": "", "value": "배터리"}, {**ROW, "role": "RadioButton", "name": "CPU", "value": "0"}])
+
+
+@pytest.mark.parametrize("task, name", [("시스템 설정에서 배터리 화면 보여줘", "배터리"), ("활성 상태 보기 열고 CPU 탭 보여줘", "CPU"),
+                                        ("배터리 화면으로 가서 저전력 켜줘", None), ("사운드 화면 보여줘", None), ("배터리 알려줘", None)])
+def test_named_screen_needs_exact_name_and_nothing_after_it(task, name):
+    found = sa.named_screen_element(task, NAMED)
+    assert (found and (found["name"] or found["value"])) == name or (found is None and name is None)
+
+
+def test_repeating_old_action_is_not_progress(qapp, monkeypatch):
+    w = sa.ScreenAgentWorker("x", controller=object())
+    monkeypatch.setattr(sa.ui_snapshot, "snapshot", lambda: [])
+    monkeypatch.setattr(w, "_capture", lambda: ("IMG", MON))
+    monkeypatch.setattr(w, "_start_esc_watch", lambda: None)
+    screens = iter(range(100))
+    monkeypatch.setattr(w, "_signature", lambda mon: next(screens))
+    monkeypatch.setattr(sa, "_changed", lambda a, b: True)
+    monkeypatch.setattr(w, "_wait_for_screen", lambda *a: True)
+    monkeypatch.setattr(w, "_perform", lambda act, mon: None)
+    w.max_steps = 20
+    a = '{"thought": "", "actions": [{"action": "click", "x": 1, "y": 1}]}'
+    b = '{"thought": "", "actions": [{"action": "click", "x": 2, "y": 2}]}'
+    replies = iter([a, b] * 10)
+    monkeypatch.setattr(w, "_ask_next_action", lambda *x: sa.parse_action(next(replies)))
+    results = []
+    w.finished_task.connect(lambda ok, msg, h: results.append((ok, msg)))
+    w.run()
+    assert results[0][0] is False and "멈췄어요" in results[0][1]
+    assert len(list(replies)) >= 14    # 20단계까지 헤매지 않았다

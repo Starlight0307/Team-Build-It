@@ -152,7 +152,7 @@ actions 배열 (1~4개):
 
 # 되돌리기 어려운 동작 — 모델이 dangerous를 빠뜨려도 여기서 한 번 더 잡는다
 _DANGER_WORDS = (
-    "삭제", "지우기", "지워", "제거", "휴지통", "전송", "보내기", "발송", "결제", "구매", "주문",
+    "허용", "allow", "승인", "받기", "삭제", "지우기", "지워", "제거", "휴지통", "전송", "보내기", "발송", "결제", "구매", "주문",
     "송금", "이체", "제출", "포맷", "초기화", "종료", "로그아웃", "탈퇴", "설치", "해지", "비우기",
     "delete", "remove", "trash", "send", "submit", "pay", "purchase", "buy", "checkout",
     "order", "transfer", "format", "reset", "shut", "uninstall", "install", "sign out", "log out",
@@ -617,7 +617,8 @@ def apply_element(act: dict, elements: list, mon: dict) -> dict:
     point = ui_snapshot.center_as_normalized(element, mon)
     if point is None:
         raise ValueError(f"요소가 이 화면 밖에 있음: {index}")
-    return {**act, "x": point[0], "y": point[1], "target": element["name"] or element["value"] or act.get("target", "")}
+    return {**act, "x": point[0], "y": point[1], "role": element["role"],
+            "target": element["name"] or element["value"] or act.get("target", "")}
 
 
 def plan_actions(act: dict) -> list:
@@ -674,6 +675,36 @@ _RISKY_TASK = re.compile(r"보내|전송|답장|제출|결제|구매|주문|송�
 
 class BadModelReply(RuntimeError):
     pass
+
+
+_VIEW_ONLY = re.compile(r"찾아|검색|보여|가줘|가 줘|이동|들어가")
+_CHANGE_WORDS = re.compile(r"켜|끄|꺼|바꿔|변경|설정해|눌러|클릭|선택|재생|틀어|실행|열어줘|입력|써줘|설치|저장|삭제")
+_RESULT_OPENERS = re.compile(r"열기|open|실행|재생|구입", re.I)
+_VALUE_CONTROLS = {"radiobutton", "checkbox", "switch", "popupbutton", "slider", "combobox", "row", "cell", "menuitem"}
+_NAMED_SCREEN = re.compile(r"([^\s,]+)\s*(?:화면|페이지|탭|메뉴)\s*(?:으로|로|을|를|에)?\s*"
+                           r"(?:가줘|가 줘|이동해줘|열어줘|보여줘|들어가줘|띄워줘)[\s.!?]*$")
+
+
+def oversteps(act: dict, task: str) -> bool:
+    """보거나 찾기만 하는 요청에서 결과를 실행하거나 값을 바꾸는 클릭인가.
+    실측: "카카오톡 찾아줘"에 앱을 열었고, "사운드 화면으로 가줘"에 Siri 목소리 항목을 눌렀다.
+    shortcut: 번호로 고른 요소만 종류를 안다, 좌표 클릭은 확인 창(is_dangerous)에만 맡긴다."""
+    if act.get("action") not in ("click", "double_click") or not _VIEW_ONLY.search(task or "") or _CHANGE_WORDS.search(task or ""):
+        return False
+    target = str(act.get("target") or "")
+    if target and target in task:
+        return False
+    return bool(_RESULT_OPENERS.search(target)) or str(act.get("role") or "").casefold() in _VALUE_CONTROLS
+
+
+def named_screen_element(task: str, elements: list):
+    """"배터리 화면 보여줘"처럼 끝나는 요청에서 그 이름의 요소. AI 없이 바로 누른다 — 이름이 정확히 같을 때만."""
+    match = _NAMED_SCREEN.search(task or "")
+    if not match:
+        return None
+    word = match.group(1).casefold()
+    return next((e for e in elements if word in (e["name"].casefold(), e["value"].casefold())
+                 and e["role"].casefold() not in ui_snapshot._INPUT_ROLES), None)
 
 
 def closes_app_unasked(act: dict, task: str) -> bool:
@@ -949,11 +980,13 @@ class ScreenAgentWorker(QThread):
             self._notes = []        # 다음 질문에 덧붙일 주의 사항 (기다려도 화면이 그대로 등)
             stale_waits = 0
             self.max_steps = estimate_step_budget(self.task)   # 진행에 따라 늘어난다 (next_budget)
-            self._open_named_app()
+            if not self._open_requested_page():
+                self._open_named_app()
             stalls = 0
             step = 0
             checked_summary = False
             last_target = None
+            seen_plans = set()
             while step < self.max_steps:
                 step += 1
                 if self._stopped_by_user():
@@ -965,6 +998,11 @@ class ScreenAgentWorker(QThread):
                     return self.finished_task.emit(False, "사용자 요청으로 작업을 멈췄어요.", history)
 
                 elements = ui_snapshot.snapshot()
+                if step == 1 and not self._stop.is_set():
+                    reached = self._click_named_screen(elements, mon)
+                    if reached:
+                        history.append(f"클릭: {reached}")
+                        return self.finished_task.emit(True, f"{reached} 화면을 열었어요.", history)
                 # 목록이 충분하면 글자만 읽힌다 (사진 읽기가 10초 이상). 진행이 막히면 사진도 함께 본다
                 text_only = len(elements) >= ui_snapshot.ENOUGH_ELEMENTS and stalls == 0 and repeat == 0
                 # 답 하나가 틀렸다고 작업을 끝내지 않는다. 사진을 함께 주고 다시 묻고, 계속 틀리면 멈춘다
@@ -1006,6 +1044,9 @@ class ScreenAgentWorker(QThread):
                         self.max_steps = max(self.max_steps, step + 1)   # 값을 읽어 보고할 단계는 남긴다
                         break
                     last_target = a.get("target")
+                    if oversteps(a, self.task):
+                        self._notes.append(f"주의: 보거나 찾기만 하는 요청이라 '{a.get('target')}'을(를) 누르지 않았습니다. 목표가 보이면 done 하세요.")
+                        break
                     if closes_app_unasked(a, self.task):   # 실측: 설정 화면을 고른 뒤 Cmd+Q를 눌러 작업이 끝났다
                         self._notes.append("주의: 요청에 없는 앱 종료는 하지 않았습니다. 앱을 끄지 말고 목표를 이뤘으면 done 하세요.")
                         break
@@ -1059,11 +1100,15 @@ class ScreenAgentWorker(QThread):
                 sig = (act["action"], act.get("x"), act.get("y"), act.get("text"), str(act.get("keys")))
                 repeat = repeat + 1 if sig == last_sig else 0
                 last_sig = sig
+                done_before = sig in seen_plans   # 전에 했던 동작을 또 하면 화면이 바뀌어도 진행이 아니다 (왔다 갔다 하며 헤맴)
+                seen_plans.add(sig)
+                if done_before:
+                    self._notes.append(f"주의: {describe_action(act)}은(는) 이미 했습니다. 지금 화면을 다시 읽고 다음 할 일을 하거나, 목표를 이뤘으면 done 하세요.")
 
                 # 진행 판단: 이번 단계로 화면이 바뀌었고 같은 동작 반복이 아니면 진행 중
                 step_after = self._signature(mon)
                 changed = step_before is None or step_after is None or _changed(step_before, step_after)
-                progressing = changed and repeat == 0
+                progressing = changed and repeat == 0 and not done_before
                 stalls = 0 if progressing else stalls + 1
                 if not changed:
                     # 2026-10-02 실측: 텍스트 편집기를 연 뒤 파일 선택 창을 못 알아보고 open_app만 반복했다
@@ -1081,6 +1126,39 @@ class ScreenAgentWorker(QThread):
             self.finished_task.emit(False, _friendly_error(e), history)
         finally:
             self._finished.set()   # Esc 감지 스레드 종료
+
+    def _open_requested_page(self) -> bool:
+        """요청에 사이트가 있으면 프로그램이 먼저 연다 — 모델이 주소를 치며 헤매지 않게 (실측: 같은 주소를 5번 입력)."""
+        from core import web_launcher
+        request = web_launcher.parse_open_request(self.task)
+        if not request or not (request.get("site") or request.get("target") or request.get("url")):
+            return False
+        if request.get("target") and not request.get("url"):
+            request["url"] = web_launcher.find_homepage(request["target"])
+        if not request.get("url"):
+            return False
+        web_launcher.open_request(request)
+        self.step_started.emit(0, f"🌐 페이지 열기: {request['url'][:50]}")
+        self._stop.wait(SETTLE_MAX_APP)
+        self._notes.append("참고: 요청한 페이지를 이미 새 탭에 열었습니다. 주소를 다시 입력하지 말고 그다음 할 일을 하세요.")
+        return True
+
+    def _click_named_screen(self, elements: list, mon: dict):
+        element = named_screen_element(self.task, elements)
+        point = ui_snapshot.center_as_normalized(element, mon) if element else None
+        if not point:
+            return None
+        name = element["name"] or element["value"]
+        act = {"action": "click", "x": point[0], "y": point[1], "target": name}
+        if is_dangerous(act, self.task):
+            return None
+        self.step_started.emit(1, describe_action(act))
+        before = self._signature(mon)
+        self._perform(act, mon)
+        self._wait_for_screen("click", before, mon)
+        title = active_window()[0] or ""
+        selected = any(e["name"] == name and e["value"] in ("1", "True") for e in ui_snapshot.snapshot())
+        return name if name.casefold() in title.casefold() or selected else None   # 확인이 안 되면 모델이 이어받는다
 
     def _open_named_app(self):
         """요청 앞머리의 앱은 화면을 읽기 전에 바로 켠다 — 첫 화면 읽기(15~30초)를 앱 켜는 데 쓰지 않게."""

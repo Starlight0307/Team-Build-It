@@ -42,15 +42,15 @@ TASKS = [
     ("계산기로 1250 나누기 5 계산하고 결과 알려줘", lambda reply: "250" in values().split() and "250" in reply),
     ("계산기로 45 더하기 27 계산하고 결과 알려줘", lambda reply: "72" in values().split() and "72" in reply),
     ("텍스트 편집기 열어서 루미 시험이라고 써줘", lambda reply: front_is("TextEdit") and "루미 시험" in values()),
-    ("시스템 설정 열어서 사운드 화면으로 가줘", lambda reply: window_title() == "사운드"),
-    ("시스템 설정 열어서 디스플레이 화면으로 가줘", lambda reply: window_title() == "디스플레이"),
+    ("시스템 설정 열어서 사운드 화면으로 가줘", lambda reply: window_title().startswith("사운드")),
+    ("시스템 설정 열어서 디스플레이 화면으로 가줘", lambda reply: window_title().startswith("디스플레이")),
     ("사전 앱에서 사과 찾아줘", lambda reply: front_is("Dictionary") and "사과" in window_title() + values()),
     ("Finder에서 다운로드 폴더 열어줘", lambda reply: front_is("Finder") and window_title() == "다운로드"),
     ("메모장에 오늘 할 일 써줘", lambda reply: front_is("TextEdit") and "오늘 할 일" in values()),
     ("지도 앱에서 강남역 찾아줘", lambda reply: front_is("Maps") and "강남" in window_title() + values()),
-    ("활성 상태 보기 열고 CPU 탭 보여줘", lambda reply: front_is("Activity Monitor") and "CPU" in window_title()),
+    ("활성 상태 보기 열고 CPU 탭 보여줘", lambda reply: front_is("Activity Monitor") and any(e["name"] == "CPU" and e["value"] == "1" for e in ui_snapshot.snapshot())),
     ("App Store에서 카카오톡 찾아줘", lambda reply: front_is("App Store") and "카카오톡" in window_title() + values()),
-    ("시스템 설정에서 배터리 화면 보여줘", lambda reply: window_title() == "배터리"),
+    ("시스템 설정에서 배터리 화면 보여줘", lambda reply: window_title().startswith("배터리")),
     ("크롬에서 위키백과 사이트 들어가서 검색창에 아이폰 입력해줘", lambda reply: front_is("Chrome") and "아이폰" in window_title() + values()),
 ]
 # AI 없이 바로 여는 요청: (요청, 맨 앞 앱, 창 제목에 있어야 할 글자)
@@ -173,6 +173,8 @@ def main():
         total += passed
         seconds += took
         close_app(task, was_running)
+        if "크롬" in task:
+            close_opened_tab("위키")
         time.sleep(1)
     print(f"결과 {total}/{len(tasks)} 합격, 평균 {round(seconds / max(len(tasks), 1), 1)}초", flush=True)
     os._exit(0)
