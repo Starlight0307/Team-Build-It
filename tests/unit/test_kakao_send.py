@@ -179,7 +179,10 @@ class FakeWin:
     def type(self, text):
         self.typed.append(text)
         if self.front in self.boxes:
-            self.boxes[self.front] = text[1:] if self.drop_first_char else text
+            drop = self.drop_first_char is True or (self.drop_first_char and self.drop_first_char > 0)
+            if drop and self.drop_first_char is not True:
+                self.drop_first_char -= 1
+            self.boxes[self.front] = text[1:] if drop else text
             if self.foreign_change:
                 self.front = 3
         return True
@@ -230,6 +233,12 @@ def test_windows_no_enter_without_focus_in_message_box(win):
     with pytest.raises(ks.KakaoSendError, match="포커스"):
         ks.send("민수", "내일 봐")
     assert win.keys.count(ks._Win.VK_RETURN) == 1 and win.boxes[2] == ""
+
+
+def test_windows_lost_character_is_typed_again_before_sending(win):
+    win.drop_first_char = 2
+    assert "보냈어요" in ks.send("민수", "내일 봐")
+    assert win.typed.count("내일 봐") == 3 and win.keys.count(ks._Win.VK_RETURN) == 2
 
 
 def test_windows_lost_character_is_cleared_and_not_sent(win):

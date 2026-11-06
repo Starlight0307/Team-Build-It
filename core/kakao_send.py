@@ -453,8 +453,12 @@ def _deliver_windows(to: str, text: str, press_enter: bool) -> str:
     _win.focus_box(box)   # 이미 열린 창을 올리면 포커스가 대화 목록에 남는다 (실측)
     if not _wait(_message_box_has_focus, 1):
         raise KakaoSendError("입력칸에 포커스가 없어서 보내지 않았어요.")
-    if not _win.type(text) or not _wait(lambda: _win.get_text(box) == text, 1.5):
+    for _ in range(3):   # 포커스를 옮긴 직후에는 글자가 빠질 때가 있다 (실측). 보내기 전이라 다시 쳐도 안전하다
+        time.sleep(0.3)
+        if _win.type(text) and _wait(lambda: _win.get_text(box) == text, 1.5):
+            break
         _win.clear(box)
+    else:
         raise KakaoSendError("입력칸에 글을 넣지 못해서 보내지 않았어요.")
     if _win.foreground() != room or _win.title(room) != to:
         _win.clear(box)
