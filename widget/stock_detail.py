@@ -192,11 +192,11 @@ class PriceChart(QWidget):
         self.zoom(0.85 if step > 0 else 1 / 0.85, self._index_at(event.position().x()))
 
     def zoom(self, factor: float, center: int = None):
-        """보이는 봉 수에 factor를 곱한다. center 봉이 제자리에 남고, 없으면 화면 가운데 기준."""
+        """보이는 봉 수에 factor를 곱한다. center 봉이 제자리에 남고, 없으면 오른쪽 끝 기준 — 최근 가격이 밀려나지 않게."""
         if not self.bars:
             return
         if center is None:
-            center = self.view_start + self.view_count // 2
+            center = self.view_start + self.view_count - 1
         count = self.view_count * factor
         count = max(min(self.MIN_BARS, len(self.bars)), min(len(self.bars), round(count)))
         share = (center - self.view_start) / max(1, self.view_count)
@@ -663,7 +663,7 @@ class StockDetailDialog(_StockDialog):
         periods.addSpacing(10)
         for name, tip, action in (("－", "그래프 축소", lambda: self.chart.zoom(1 / ZOOM_STEP)),
                                   ("＋", "그래프 확대", lambda: self.chart.zoom(ZOOM_STEP)),
-                                  ("전체", "그래프 전체 보기", lambda: self.chart.reset_zoom())):
+                                  ("원래대로", "그래프 전체 보기", lambda: self.chart.reset_zoom())):
             button = QPushButton(name)
             button.setObjectName("LinkGhost")
             button.setAutoDefault(False)

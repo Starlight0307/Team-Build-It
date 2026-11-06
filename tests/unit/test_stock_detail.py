@@ -939,7 +939,7 @@ def test_zoom_buttons_change_visible_range_within_limits(qapp, stock, monkeypatc
     assert _wait(qapp, lambda: dlg.chart.view_count == 200)
     chart = dlg.chart
     chart.zoom(sd.ZOOM_STEP)
-    assert chart.view_count == 140 and 0 <= chart.view_start <= 60
+    assert chart.view_count == 140 and chart.view_start + chart.view_count == 200   # 최근 봉이 화면에 남는다
     for _ in range(30):
         chart.zoom(sd.ZOOM_STEP)
     assert chart.view_count == chart.MIN_BARS
@@ -965,5 +965,27 @@ def test_narrowest_window_shows_every_control_without_sideways_overflow(qapp, st
                    if a.widget() and a.widget().isAncestorOf(dlg.chart))
     assert _wait(qapp, fits, 5)
     assert len([b for b in dlg.findChildren(QPushButton) if b.toolTip().startswith("그래프")]) == 3
+    dlg.close()
+
+
+@pytest.mark.parametrize("modifier", [Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ControlModifier])
+def test_wheel_zooms_chart_with_or_without_ctrl(qapp, stock, monkeypatch, modifier):
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QWheelEvent
+    from PyQt6.QtWidgets import QApplication
+    many = [(f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}", 70000 + i) for i in range(200)]
+    monkeypatch.setattr(sp, "get_price_bars", lambda code: _bars(many))
+    dlg = _dialog(qapp)
+    assert _wait(qapp, lambda: dlg.chart.view_count == 200)
+
+    def wheel(delta):
+        pos = QPointF(dlg.chart.width() / 2, dlg.chart.height() / 2)
+        QApplication.sendEvent(dlg.chart, QWheelEvent(pos, dlg.chart.mapToGlobal(pos), QPoint(0, 0), QPoint(0, delta), Qt.MouseButton.NoButton,
+                                                      modifier, Qt.ScrollPhase.NoScrollPhase, False))
+    wheel(120)
+    zoomed = dlg.chart.view_count
+    assert zoomed < 200
+    wheel(-120)
+    assert dlg.chart.view_count > zoomed
     dlg.close()
 
