@@ -328,7 +328,10 @@ def _win_keys(shown: str) -> bool:
     if _win_foreground_exe() not in _WIN_SEARCH_APPS:
         return False
     tap(0x0D)
-    return bool(_wait(lambda: _win_foreground_exe() not in _WIN_SEARCH_APPS, 5))
+    if _wait(lambda: _win_foreground_exe() not in _WIN_SEARCH_APPS, 5):
+        return True
+    tap(0x1B)   # 검색창을 열어 둔 채 명령 실행으로 넘어가지 않게
+    return False
 
 
 def _launch_by_keys(shown: str, target: str) -> bool:
