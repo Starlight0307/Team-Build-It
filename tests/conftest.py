@@ -56,10 +56,11 @@ _webbrowser.open = _webbrowser.open_new = _webbrowser.open_new_tab = lambda *a, 
 
 @pytest.fixture(autouse=True)
 def _no_real_app_launch(request, monkeypatch):
-    """시험의 요청 문장이 진짜 앱을 켜지 않게, 설치된 앱이 없는 것으로 둔다."""
+    """시험의 요청 문장이 진짜 앱을 켜지 않게, 설치된 앱이 없는 것으로 둔다. 진짜 Cmd+Space도 누르지 않는다."""
+    from core import app_launcher
+    monkeypatch.setattr(app_launcher, "_launch_by_keys", lambda shown, target: False)
     if request.module.__name__.endswith("test_app_launcher"):
         return
-    from core import app_launcher
     monkeypatch.setattr(app_launcher, "installed_apps", lambda refresh=False: {})
     monkeypatch.setattr(app_launcher, "_WINDOWS_COMMANDS", set())
 

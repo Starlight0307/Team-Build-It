@@ -78,11 +78,10 @@ def _walk_mac(element, out: list, end: float, depth: int = 0):
 
 def _read_mac() -> list:
     import ApplicationServices as AS
-    from AppKit import NSWorkspace
-    front = NSWorkspace.sharedWorkspace().frontmostApplication()
-    if front is None or front.processIdentifier() == os.getpid():
+    # NSWorkspace.frontmostApplication은 런루프가 없는 스레드에서 옛 값을 돌려준다 (실측: 설정을 켜도 텍스트 편집기 목록)
+    app = _attr(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication")
+    if app is None or AS.AXUIElementGetPid(app, None)[1] == os.getpid():
         return []
-    app = AS.AXUIElementCreateApplication(front.processIdentifier())
     window = _attr(app, "AXFocusedWindow") or next(iter(_attr(app, "AXWindows") or []), None)
     out = []
     if window is not None:

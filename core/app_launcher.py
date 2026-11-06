@@ -1,5 +1,6 @@
 """
-app_launcher.py  ─  설치된 프로그램을 이름으로 찾아 실행한다 (맥: open, 윈도우: 시작 메뉴 목록).
+app_launcher.py  ─  설치된 프로그램을 이름으로 찾아, 사람처럼 검색창으로 실행한다 (맥: Cmd+Space, 윈도우: 시작 키).
+검색창을 쓸 수 없거나 결과가 맞는지 확인되지 않으면 정해진 명령으로 실행한다 (맥: open, 윈도우: 시작 메뉴 ID).
 
 왜 따로 두나
 - 2026-11-06 실측: "계산기 열어줘"가 `open -a 계산기`로 실패했는데(맥 앱의 실제 이름은 Calculator) 실패를
@@ -21,6 +22,10 @@ import time
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
 _CACHE_SECONDS = 300
+_MAC_SEARCH_APPS = ("com.apple.Spotlight", "com.apple.campo")   # macOS 27의 Cmd+Space는 Siri 겸용 검색창(campo)
+_WIN_SEARCH_APPS = ("searchhost.exe", "searchapp.exe", "startmenuexperiencehost.exe")
+_KEY_SPACE, _KEY_ENTER, _KEY_ESC = 49, 36, 53
+_INVISIBLE = re.compile("[\u2060\u2068\u2069\u200e\u200f]")
 _MAC_DIRS = ("/Applications", "/Applications/Utilities", "/System/Applications",
              "/System/Applications/Utilities", "/System/Library/CoreServices", "~/Applications")
 # 부르는 이름 → 앱 이름 후보. 앱 정보에 한글 이름이 없는 것들
@@ -183,9 +188,164 @@ def resolve(name: str, exact: bool = False):
     raise AppNotFound(f"'{name}' 앱을 찾지 못했어요. 설치돼 있는지 확인해 주세요.")
 
 
+def _wait(check, seconds: float):
+    end = time.monotonic() + seconds
+    while True:
+        value = check()
+        if value or time.monotonic() >= end:
+            return value
+        time.sleep(0.04)
+
+
+def _mac_key(code: int, cmd: bool = False):
+    import Quartz
+    for down in (True, False):
+        event = Quartz.CGEventCreateKeyboardEvent(None, code, down)
+        Quartz.CGEventSetFlags(event, Quartz.kCGEventFlagMaskCommand if cmd else 0)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+
+def _ax(element, name):
+    import ApplicationServices as AS
+    err, value = AS.AXUIElementCopyAttributeValue(element, name, None)
+    return value if err == 0 else None
+
+
+def _mac_search_field():
+    """포커스가 시스템 검색창에 있으면 그 입력칸, 아니면 None."""
+    import ApplicationServices as AS
+    from AppKit import NSRunningApplication
+    element = _ax(AS.AXUIElementCreateSystemWide(), "AXFocusedUIElement")
+    if element is None or _ax(element, "AXRole") != "AXTextField":
+        return None
+    _, pid = AS.AXUIElementGetPid(element, None)
+    app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+    return element if app is not None and app.bundleIdentifier() in _MAC_SEARCH_APPS else None
+
+
+def _mac_set_text(field, text: str) -> bool:
+    import ApplicationServices as AS
+    return AS.AXUIElementSetAttributeValue(field, "AXValue", text) == 0
+
+
+def _mac_top_hit(field) -> str:
+    """검색창의 맨 위 결과 글. 예: "계산기.app — 열기"."""
+    import ApplicationServices as AS
+    _, pid = AS.AXUIElementGetPid(field, None)
+    stack = list(_ax(AS.AXUIElementCreateApplication(pid), "AXWindows") or [])
+    for _ in range(300):
+        if not stack:
+            break
+        element = stack.pop()
+        if _ax(element, "AXRole") == "AXTextArea":
+            return _INVISIBLE.sub("", str(_ax(element, "AXValue") or ""))
+        stack.extend(_ax(element, "AXChildren") or [])
+    return ""
+
+
+def hit_matches(hit: str, shown: str, path: str) -> bool:
+    """Enter를 눌러도 되는 결과인가. 없는 앱은 "이름 — Siri에게 물어보기"로 나와서, 그대로 누르면 Siri에게 질문이 간다."""
+    text = _norm(hit)
+    return ".app" in hit and (_norm(shown) in text or _norm(os.path.basename(path).removesuffix(".app")) in text)
+
+
+def _mac_front_path() -> str:
+    # NSWorkspace.frontmostApplication은 런루프가 없는 스레드에서 옛 값을 돌려준다 (실측)
+    import ApplicationServices as AS
+    from AppKit import NSRunningApplication
+    app = _ax(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication")
+    if app is None:
+        return ""
+    _, pid = AS.AXUIElementGetPid(app, None)
+    running = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+    url = running.bundleURL() if running is not None else None
+    return str(url.path()) if url is not None else ""
+
+
+def _mac_close_search():
+    for _ in range(3):   # 첫 Esc는 글자만 지운다. 닫힌 뒤 더 누르면 뒤에 있는 앱으로 간다
+        if not _mac_search_field():
+            return
+        _mac_key(_KEY_ESC)
+        time.sleep(0.3)
+
+
+def _mac_keys(shown: str, path: str) -> bool:
+    """Cmd+Space로 앱을 켠다. 검색창이 열린 것과 맨 위 결과를 확인한 뒤에만 글자를 넣고 Enter를 누른다 —
+    Cmd+Space가 다른 기능으로 바뀐 PC에서 글자와 Enter가 대화창 등 엉뚱한 곳으로 가면 안 된다."""
+    from core import input_source
+    before = input_source.current()
+    _mac_key(_KEY_SPACE, cmd=True)
+    field = _wait(_mac_search_field, 1.5)
+    if not field:
+        if input_source.current() != before:   # Cmd+Space를 입력기 전환에 쓰는 PC
+            input_source.restore(before)
+        return False
+    # 글자는 키로 보내지 않는다: 문자 전송은 이 창이 받지 않고(실측), 붙여넣기는 클립보드를 건드린다
+    if not _mac_set_text(field, shown) or not _wait(lambda: hit_matches(_mac_top_hit(field), shown, path), 2.5):
+        _mac_close_search()
+        return False
+    if not _mac_search_field():   # 그 사이 사용자가 다른 곳을 눌렀다
+        return False
+    _mac_key(_KEY_ENTER)
+    return bool(_wait(lambda: _mac_front_path() == path, 5))
+
+
+def _win_foreground_exe() -> str:
+    import ctypes
+    from ctypes import wintypes
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(pid))
+    handle = kernel32.OpenProcess(0x1000, False, pid.value)   # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ""
+    try:
+        buf, size = ctypes.create_unicode_buffer(512), wintypes.DWORD(512)
+        kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+        return os.path.basename(buf.value).casefold()
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _win_keys(shown: str) -> bool:
+    """시작 키로 앱을 켠다. 시작 메뉴가 앞에 온 것을 확인한 뒤에만 글자를 넣는다.
+    shortcut: 맨 위 결과를 읽지 않고 이름이 시작 메뉴 목록에 있는 것만 믿는다, 윈도우 실기 시험 때 UI Automation으로 확인을 추가."""
+    import ctypes
+    from core import input_source
+    user32 = ctypes.windll.user32
+
+    def tap(key):
+        user32.keybd_event(key, 0, 0, 0)
+        user32.keybd_event(key, 0, 2, 0)   # KEYEVENTF_KEYUP
+    tap(0x5B)   # 시작 키
+    if not _wait(lambda: _win_foreground_exe() in _WIN_SEARCH_APPS, 1.5):
+        return False
+    if not input_source.type_unicode(shown, windows=True):
+        tap(0x1B)
+        return False
+    time.sleep(0.9)
+    if _win_foreground_exe() not in _WIN_SEARCH_APPS:
+        return False
+    tap(0x0D)
+    return bool(_wait(lambda: _win_foreground_exe() not in _WIN_SEARCH_APPS, 5))
+
+
+def _launch_by_keys(shown: str, target: str) -> bool:
+    try:
+        return _mac_keys(shown, target) if IS_MAC else _win_keys(shown)
+    except Exception as e:
+        print(f"[앱 실행] 검색창 사용 실패: {type(e).__name__}")
+        return False
+
+
 def launch(name: str, exact: bool = False) -> str:
     """앱을 실행하고 맨 앞으로 가져온다 → 보여 줄 이름. 실행하지 못하면 예외 (조용히 넘어가지 않는다)."""
     shown, target = resolve(name, exact)
+    if not (IS_MAC or IS_WIN):
+        raise AppNotFound("이 운영체제에서는 앱 실행을 지원하지 않아요.")
+    if not (IS_WIN and target in _WINDOWS_COMMANDS) and _launch_by_keys(shown, target):
+        return shown
     if IS_MAC:
         result = subprocess.run(["open", target], capture_output=True, timeout=20)
         if result.returncode != 0:
@@ -195,8 +355,6 @@ def launch(name: str, exact: bool = False) -> str:
             os.startfile(target)
         else:
             subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{target}"])
-    else:
-        raise AppNotFound("이 운영체제에서는 앱 실행을 지원하지 않아요.")
     return shown
 
 

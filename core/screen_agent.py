@@ -1059,10 +1059,13 @@ class ScreenAgentWorker(QThread):
         name = leading_app(self.task)
         if not name:
             return
+        self._controller.injecting = True   # 검색창을 닫는 Esc가 작업 중지로 잡히지 않게
         try:
             shown = launch(name, exact=True)
         except (AppNotFound, OSError, subprocess.SubprocessError):
             return
+        finally:
+            self._controller.injecting = False
         self.step_started.emit(0, f"🚀 앱 실행: {shown}")
         self._stop.wait(SETTLE_MAX)
         self._clear_calculator(name, shown)

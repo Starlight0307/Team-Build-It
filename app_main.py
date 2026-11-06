@@ -73,6 +73,22 @@ from widget.history_widget import HistoryWidget
 from widget.mypage_widget import MyPageWidget
 
 
+class AppOpenWorker(QThread):
+    done = pyqtSignal(str)
+
+    def __init__(self, name: str):
+        super().__init__()
+        self.name = name
+
+    def run(self):
+        name = self.name
+        try:
+            self.done.emit(f"🚀 {app_launcher.launch(name, exact=True)} 앱을 열었어요.")
+        except Exception as e:
+            print(f"[앱 실행] 오류: {type(e).__name__}")
+            self.done.emit(f"❌ {e}" if isinstance(e, app_launcher.AppNotFound) else f"❌ '{name}' 앱을 열지 못했어요.")
+
+
 class AutoLoginWorker(QThread):
     """저장된 세션으로 자동 로그인 시도 (네트워크 호출이라 백그라운드에서)."""
     done = pyqtSignal(str)   # 성공한 아이디, 실패하면 빈 문자열
@@ -3641,11 +3657,10 @@ class AssistantApp(QWidget):
         if not name:
             return False
         self.chat_history.append({'role': 'user', 'content': txt})
-        try:
-            self.display_ai_response(f"🚀 {app_launcher.launch(name, exact=True)} 앱을 열었어요.")
-        except Exception as e:
-            print(f"[앱 실행] 오류: {type(e).__name__}")
-            self.display_ai_response(f"❌ {e}" if isinstance(e, app_launcher.AppNotFound) else f"❌ '{name}' 앱을 열지 못했어요.")
+        # 검색창을 열어 확인하는 데 몇 초 걸리니 창이 멈추지 않게 따로 돌린다
+        self._app_open_worker = AppOpenWorker(name)
+        self._app_open_worker.done.connect(self.display_ai_response)
+        self._app_open_worker.start()
         return True
 
     def _maybe_handle_web_open(self, txt: str) -> bool:

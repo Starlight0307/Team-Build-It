@@ -121,22 +121,69 @@ def test_mac_reads_korean_name_from_real_system_app():
     assert "계산기" in al._mac_names("/System/Applications/Calculator.app")
 
 
-def _chat_host(replies):
+def test_chat_opens_app_directly_and_reports_result(qapp, mac):
     import app_main
-    host = type("H", (), {"chat_history": [], "display_ai_response": lambda self, text: replies.append(text)})()
-    return lambda text: app_main.AssistantApp._maybe_handle_app_open(host, text)
-
-
-def test_chat_opens_app_directly_and_reports_result(mac):
     replies = []
-    handle = _chat_host(replies)
-    assert handle("계산기 열어줘") is True and mac == [["open", "/A/Calculator.app"]]
-    assert "열었어요" in replies[0]
-    assert handle("오늘 날씨 어때") is False and len(replies) == 1
+    worker = app_main.AppOpenWorker("계산기")
+    worker.done.connect(replies.append)
+    worker.run()
+    assert mac == [["open", "/A/Calculator.app"]] and "열었어요" in replies[0]
 
 
-def test_chat_reports_launch_failure(mac, monkeypatch):
-    monkeypatch.setattr(al.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1))
+def test_chat_reports_launch_failure(qapp, mac, monkeypatch):
+    import app_main
+    monkeypatch.setattr(al.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout=""))
     replies = []
-    assert _chat_host(replies)("계산기 열어줘") is True
+    worker = app_main.AppOpenWorker("계산기")
+    worker.done.connect(replies.append)
+    worker.run()
     assert replies[0].startswith("❌")
+
+
+@pytest.mark.parametrize("hit, ok", [("계산기.app —열기", True), ("KakaoTalk —카카오톡.app", True),
+                                     ("계산기 —Siri에게 물어보기", False), ("다른앱.app —열기", False), ("", False)])
+def test_enter_only_on_matching_app_result(hit, ok):
+    assert al.hit_matches(hit, "계산기" if "Kakao" not in hit else "KakaoTalk", "/A/Calculator.app") is ok
+
+
+@pytest.fixture
+def keys(monkeypatch):
+    """검색창 흐름을 가짜로 — 무엇을 눌렀는지 기록한다."""
+    log = {"pressed": [], "typed": [], "field": "F", "hit": "계산기.app —열기", "front": "/A/Calculator.app"}
+    monkeypatch.setattr(al, "_mac_key", lambda code, cmd=False: log["pressed"].append(code))
+    monkeypatch.setattr(al, "_mac_search_field", lambda: log["field"])
+    monkeypatch.setattr(al, "_mac_set_text", lambda f, t: log["typed"].append(t) or True)
+    monkeypatch.setattr(al, "_mac_top_hit", lambda f: log["hit"])
+    monkeypatch.setattr(al, "_mac_front_path", lambda: log["front"])
+    monkeypatch.setattr(al, "_wait", lambda check, seconds: check())
+    monkeypatch.setattr(al.time, "sleep", lambda s: None)
+    return log
+
+
+def test_keys_type_and_enter_when_verified(keys):
+    assert al._mac_keys("계산기", "/A/Calculator.app") is True
+    assert keys["typed"] == ["계산기"] and keys["pressed"] == [al._KEY_SPACE, al._KEY_ENTER]
+
+
+def test_nothing_is_typed_unless_search_field_has_focus(keys):
+    keys["field"] = None
+    assert al._mac_keys("계산기", "/A/Calculator.app") is False
+    assert keys["typed"] == [] and al._KEY_ENTER not in keys["pressed"]
+
+
+def test_no_enter_when_top_result_is_not_the_app(keys):
+    keys["hit"] = "계산기 —Siri에게 물어보기"
+    assert al._mac_keys("계산기", "/A/Calculator.app") is False
+    assert al._KEY_ENTER not in keys["pressed"] and al._KEY_ESC in keys["pressed"]
+
+
+def test_reports_failure_when_another_app_came_to_front(keys):
+    keys["front"] = "/A/Other.app"
+    assert al._mac_keys("계산기", "/A/Calculator.app") is False
+
+
+def test_launch_falls_back_to_command_only_when_keys_fail(mac, monkeypatch):
+    monkeypatch.setattr(al, "_launch_by_keys", lambda shown, target: True)
+    assert al.launch("계산기") and mac == []
+    monkeypatch.setattr(al, "_launch_by_keys", lambda shown, target: False)
+    assert al.launch("계산기") and mac == [["open", "/A/Calculator.app"]]
