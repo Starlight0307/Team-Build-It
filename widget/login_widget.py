@@ -5,11 +5,12 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLineEdit, QPushButton, QLabel, QCheckBox, QScrollArea, QStyle, QStyleOptionButton,
                              QSizePolicy, QGraphicsDropShadowEffect)
 from PyQt6.QtCore import pyqtSignal, Qt, QEvent, QObject, QThread, pyqtSlot, QTimer, QPointF, QRectF, QSize
-from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPainterPath, QPixmap, QRadialGradient
+from PyQt6.QtGui import QColor, QPainter, QPen, QPainterPath, QPixmap, QRadialGradient
 
 from data.db import verify_login
 from settings.theme import glass_enabled
 from widget import icons
+from widget.account_link_dialog import kakao_symbol
 from widget.lumi_icon import logo_pixmap
 
 
@@ -122,25 +123,6 @@ def _glowing_logo(size: int, glow: int) -> QPixmap:
     p.end()
     pm.setDevicePixelRatio(ratio)
     return pm
-
-
-def _kakao_symbol(size: int = 18) -> QIcon:
-    """카카오 말풍선 기호 (카카오 로그인 버튼 안내의 검정 기호)."""
-    ratio = 3
-    pm = QPixmap(size * ratio, size * ratio)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setBrush(QColor("#000000"))
-    p.setPen(Qt.PenStyle.NoPen)
-    s = size * ratio
-    p.drawEllipse(QRectF(s * 0.04, s * 0.08, s * 0.92, s * 0.72))
-    tail = QPainterPath()
-    tail.moveTo(s * 0.28, s * 0.68); tail.lineTo(s * 0.24, s * 0.94); tail.lineTo(s * 0.50, s * 0.76); tail.closeSubpath()
-    p.drawPath(tail)
-    p.end()
-    pm.setDevicePixelRatio(ratio)
-    return QIcon(pm)
 
 
 class GoogleLoginWorker(QThread):
@@ -395,7 +377,7 @@ class LoginWidget(QWidget):
         self.btn_google.clicked.connect(self._handle_google_login)
         L.addWidget(self.btn_google); L.addSpacing(8)
 
-        self.btn_kakao = QPushButton(_kakao_symbol(), "  카카오 로그인"); self.btn_kakao.setObjectName("K")
+        self.btn_kakao = QPushButton(kakao_symbol(18), "  카카오 로그인"); self.btn_kakao.setObjectName("K")
         self.btn_kakao.setIconSize(QSize(18, 18))
         self.btn_kakao.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_kakao.clicked.connect(self._handle_kakao_login)

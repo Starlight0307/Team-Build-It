@@ -1,5 +1,5 @@
 """
-계정 연동 팝업 — 마이페이지의 [구글 연동하기] / [애플 연동하기] 버튼이 띄운다.
+계정 연동 팝업 — 마이페이지의 [구글 연동하기] / [애플 연동하기] / [카카오 연동하기] 버튼이 띄운다.
 
 루미 화면과 같은 느낌(둥근 카드, 보라 버튼)으로, 다크·라이트 모드 모두 글자와 입력칸이 또렷하게
 보이도록 색을 테마별로 정한다(로그인 화면 widget/auth_style.py와 같은 색 묶음).
@@ -46,6 +46,13 @@ _APPLE_SVG = (
     '2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>')
 
 
+# 카카오 로그인 버튼 안내의 말풍선 기호
+_KAKAO_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#000000" d="'
+    'M12 2.5C6.2 2.5 1.5 6.2 1.5 10.8c0 3 2 5.6 5 7.1l-1.2 4.2c-.1.4.3.7.6.5l5-3.3c.4 0 .7.1 1.1.1 '
+    '5.8 0 10.5-3.7 10.5-8.3S17.8 2.5 12 2.5z"/></svg>')
+
+
 def _render(svg: str, size: int, badge: str = None) -> QPixmap:
     from PyQt6.QtSvg import QSvgRenderer
     from PyQt6.QtWidgets import QApplication
@@ -68,10 +75,17 @@ def _render(svg: str, size: int, badge: str = None) -> QPixmap:
     return pm
 
 
+def kakao_symbol(size: int) -> QIcon:
+    """노란 카카오 로그인 버튼 위에 얹는 검은 말풍선."""
+    return QIcon(_render(_KAKAO_SVG, size))
+
+
 def brand_icon(name: str, size: int, color: str) -> QIcon:
-    """google: 흰 동그라미 위 4색 G / apple: 테마 글자색 사과(어두운 배경에 검은 사과가 묻히지 않게)."""
+    """google: 흰 동그라미 위 4색 G / kakao: 노란 동그라미 위 말풍선 / apple: 테마 글자색 사과(어두운 배경에 검은 사과가 묻히지 않게)."""
     if name == "google":
         return QIcon(_render(_GOOGLE_SVG, size, badge="#FFFFFF"))
+    if name == "kakao":
+        return QIcon(_render(_KAKAO_SVG, size, badge="#FEE500"))
     return QIcon(_render(_APPLE_SVG.format(color=color), size))
 
 
@@ -104,6 +118,25 @@ class _GoogleWorker(QThread):
     def run(self):
         from plugins.calendar_tool import connect_google_calendar
         self.result_ready.emit(*connect_google_calendar(self.cancel_event))
+
+
+class _KakaoWorker(_GoogleWorker):
+    def run(self):
+        from auth.supabase_google_auth import link_kakao_to_current_account, GoogleAlreadyLinkedElsewhere, LoginCancelled
+        from data import db
+        try:
+            db._refresh_session_if_needed()
+            link_kakao_to_current_account(db._session["access_token"], cancel_event=self.cancel_event)
+            self.result_ready.emit(True, "카카오 계정을 연동했어요! 다음부터 카카오 로그인으로도 이 계정에 들어올 수 있어요.")
+        except GoogleAlreadyLinkedElsewhere as e:
+            self.result_ready.emit(False, str(e))
+        except LoginCancelled:
+            self.result_ready.emit(False, "카카오 연결을 취소했어요.")
+        except TimeoutError:
+            self.result_ready.emit(False, "카카오 로그인 대기 시간(1분)이 지났어요. 다시 시도해주세요.")
+        except Exception as e:
+            print(f"[카카오 연동 오류] {type(e).__name__}")
+            self.result_ready.emit(False, "카카오 계정 연결에 실패했어요. 잠시 후 다시 시도해 주세요.")
 
 
 class _AppleWorker(QThread):
@@ -193,6 +226,56 @@ class GoogleLinkDialog(LinkDialog):
     def _done(self, ok: bool, msg: str):
         self.connected = ok
         self.set_status(_strip_icon(msg), "ok" if ok else "err")
+        self.btn_primary.setEnabled(True)
+        self.btn_primary.setText("완료" if ok else "다시 시도")
+        self.btn_secondary.setText("닫기")
+
+    def _thread_finished(self):
+        self._worker = None
+
+    def reject(self):
+        if self._worker is not None:   # 진행 중이면 취소만 걸고, 스레드가 끝나면 닫는다
+            self._worker.cancel_event.set()
+            self._worker.finished.connect(super().reject)
+            return
+        super().reject()
+
+
+# ─────────────────────────────────────────────
+# 🟡 카카오
+# ─────────────────────────────────────────────
+
+class KakaoLinkDialog(LinkDialog):
+    """구글처럼 브라우저에서 로그인한다. 카카오는 로그인 수단으로만 쓴다(캘린더 없음)."""
+
+    def __init__(self, parent, is_dark: bool, linked: bool):
+        desc = ("카카오 계정이 연동돼 있어요. 카카오 로그인으로도 이 계정에 들어올 수 있어요." if linked else
+                "카카오 계정을 연동하면 카카오 로그인으로도 루미에 들어올 수 있어요. 브라우저가 열리면 카카오 계정으로 로그인해 주세요.")
+        super().__init__(parent, is_dark, "kakao", "카카오 연동", desc)
+        self._worker = None
+        self.connected = False
+        if linked:
+            self.btn_primary.hide()
+            self.btn_secondary.setText("닫기")
+            return
+        self.btn_primary.setText("브라우저에서 로그인")
+        self.btn_primary.clicked.connect(self._start)
+
+    def _start(self):
+        if self.connected:
+            self.accept()
+            return
+        self._worker = _KakaoWorker()
+        self._worker.result_ready.connect(self._done)
+        self._worker.finished.connect(self._thread_finished)
+        self.btn_primary.setEnabled(False)
+        self.btn_secondary.setText("취소")
+        self.set_status("브라우저에서 진행 중이에요… 끝나면 이 창에 결과가 나와요.")
+        self._worker.start()
+
+    def _done(self, ok: bool, msg: str):
+        self.connected = ok
+        self.set_status(msg, "ok" if ok else "err")
         self.btn_primary.setEnabled(True)
         self.btn_primary.setText("완료" if ok else "다시 시도")
         self.btn_secondary.setText("닫기")

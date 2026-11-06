@@ -175,6 +175,12 @@ def _button(text: str, icon_name: str = None, fn=None, name: str = "MPSave") -> 
     return b
 
 
+def account_badges(no_password: bool, google: bool, apple: bool, kakao: bool) -> list:
+    """내 정보에 보여 줄 계정 종류. 연결된 것을 모두 보여 주고, 비밀번호로 쓰는 계정이면 Lumi 계정도 함께."""
+    linked = [name for on, name in ((google, "구글 계정"), (apple, "애플 계정"), (kakao, "카카오 계정")) if on]
+    return linked if no_password and linked else ["Lumi 계정"] + linked
+
+
 class MyPageWidget(QWidget):
     logout_requested = pyqtSignal()
     import_guest_requested = pyqtSignal()   # 비로그인 때 쓰던 데이터 가져오기 (app_main이 처리)
@@ -187,6 +193,8 @@ class MyPageWidget(QWidget):
         self._username = None
         self._is_google = False
         self._google_linked = False
+        self._kakao_linked = False
+        self._no_password = False
         self._is_dark = False
         self._columns = 0
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -235,10 +243,9 @@ class MyPageWidget(QWidget):
 
         name_col = QVBoxLayout(); name_col.setSpacing(4)
         self.lbl_username = QLabel("사용자"); self.lbl_username.setObjectName("MPName")
-        self.lbl_account_type = QLabel(""); self.lbl_account_type.setObjectName("MPBadge")
-        self.lbl_account_type.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.badge_row = QHBoxLayout(); self.badge_row.setSpacing(6); self.badge_row.addStretch(1)
         name_col.addStretch(); name_col.addWidget(self.lbl_username)
-        name_col.addWidget(self.lbl_account_type); name_col.addStretch()
+        name_col.addLayout(self.badge_row); name_col.addStretch()
         head.addLayout(name_col)
         head.addStretch()
 
@@ -282,7 +289,9 @@ class MyPageWidget(QWidget):
         # ── 계정 연동 — 버튼만 두고, 누르면 루미 스타일 팝업(widget/account_link_dialog.py)에서 연결한다 ──
         self.sec_link, lay = _section("계정 연동", "calendar")
         self.btn_google = QPushButton(" 구글 연동하기"); self.btn_apple = QPushButton(" 애플 연동하기")
-        for b, fn in ((self.btn_google, self._open_google_dialog), (self.btn_apple, self._open_apple_dialog)):
+        self.btn_kakao = QPushButton(" 카카오 연동하기")
+        for b, fn in ((self.btn_google, self._open_google_dialog), (self.btn_apple, self._open_apple_dialog),
+                      (self.btn_kakao, self._open_kakao_dialog)):
             b.setObjectName("MPBrand"); b.setMinimumHeight(46); b.setIconSize(QSize(20, 20))
             b.setCursor(Qt.CursorShape.PointingHandCursor); b.clicked.connect(fn)
             lay.addWidget(b)
@@ -394,17 +403,25 @@ class MyPageWidget(QWidget):
         self.input_birthday.setText(profile["birthday"] if profile else "")
 
         self._is_google = bool(profile and profile.get("is_google"))
-        self.pw_section.setVisible(not self._is_google)
         for w in (self.input_current_pw, self.input_new_pw, self.input_new_pw2):
             w.clear()
 
         from data.db import linked_login_providers
         providers = linked_login_providers()
         self._google_linked = self._is_google or bool(providers and "google" in providers)
-        self.lbl_account_type.setText(
-            "구글 계정" if self._is_google else
-            "Lumi 계정 · 구글 연동됨" if self._google_linked else "Lumi 계정")
+        self._kakao_linked = bool(providers and "kakao" in providers)
+        # 구글·카카오로만 가입한 계정은 비밀번호가 없다. 서버에 못 물어봤으면 구글 표시만 믿는다
+        self._no_password = self._is_google or bool(providers and "email" not in providers)
+        self.pw_section.setVisible(not self._no_password)
         self._update_link_buttons()
+
+    def _show_account_badges(self, apple: bool):
+        while self.badge_row.count() > 1:   # 맨 뒤 신축 공간은 남긴다
+            self.badge_row.takeAt(0).widget().deleteLater()
+        for i, text in enumerate(account_badges(self._no_password, self._google_linked, apple, self._kakao_linked)):
+            badge = QLabel(text); badge.setObjectName("MPBadge")
+            badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            self.badge_row.insertWidget(i, badge)
 
     def _update_link_buttons(self):
         """버튼 글자로만 상태를 알린다 — 자세한 안내는 팝업에서."""
@@ -413,10 +430,14 @@ class MyPageWidget(QWidget):
         from widget.account_link_dialog import brand_icon
         state, _ = google_calendar_status()
         self.btn_google.setText(" 구글 연동됨" if state == "valid" else " 구글 연동하기")
-        self.btn_apple.setText(" 애플 연동됨" if apple_backend.connected_account(_current_user_id) else " 애플 연동하기")
+        apple = bool(apple_backend.connected_account(_current_user_id))
+        self.btn_apple.setText(" 애플 연동됨" if apple else " 애플 연동하기")
+        self.btn_kakao.setText(" 카카오 연동됨" if self._kakao_linked else " 카카오 연동하기")
+        self._show_account_badges(apple)
         text_color = "#E8EAF0" if self._is_dark else "#221D40"
         self.btn_google.setIcon(brand_icon("google", 20, text_color))
         self.btn_apple.setIcon(brand_icon("apple", 20, text_color))
+        self.btn_kakao.setIcon(brand_icon("kakao", 20, text_color))
 
     def _open_google_dialog(self):
         from plugins.calendar_tool import google_calendar_status
@@ -437,6 +458,13 @@ class MyPageWidget(QWidget):
                         apple_backend.connected_account(_current_user_id),
                         apple_backend.connected_kind(_current_user_id)).exec()
         self._update_link_buttons()
+
+    def _open_kakao_dialog(self):
+        from widget.account_link_dialog import KakaoLinkDialog
+        dlg = KakaoLinkDialog(self, self._is_dark, self._kakao_linked)
+        dlg.exec()
+        if dlg.connected and self._username:
+            self.refresh(self._username)   # 배지·버튼 글자 갱신
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -588,7 +616,7 @@ class MyPageWidget(QWidget):
     def _withdraw(self):
         if not self._username:
             return
-        if self._is_google:
+        if self._no_password:
             self._withdraw_google()
             return
 
@@ -625,10 +653,10 @@ class MyPageWidget(QWidget):
             lumi_dialog.warning(self, "오류", "비밀번호가 올바르지 않습니다.")
 
     def _withdraw_google(self):
-        """구글 가입 계정은 비밀번호가 없어서, 안내를 읽고 "탈퇴"를 직접 입력하면 처리한다."""
+        """구글·카카오로 가입한 계정은 비밀번호가 없어서, 안내를 읽고 "탈퇴"를 직접 입력하면 처리한다."""
         text, ok = lumi_dialog.getText(
             self, "회원 탈퇴",
-            "정말 탈퇴하시겠어요? 이 구글 계정으로는 다시 로그인할 수 없게 되고,\n"
+            "정말 탈퇴하시겠어요? 이 계정으로는 다시 로그인할 수 없게 되고,\n"
             "이 컴퓨터에 저장된 대화기록, 설정, 기억도 함께 삭제돼요.\n\n"
             "계속하려면 '탈퇴'라고 입력해주세요.",
         )
