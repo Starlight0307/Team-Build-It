@@ -94,7 +94,7 @@ def run(task, check, controller):
     time.sleep(0.5)
     passed = False
     try:
-        passed = bool(check(str(result.get("msg") or "")))
+        passed = bool(result.get("ok")) and bool(check(str(result.get("msg") or "")))   # 실패를 보고했으면 화면이 맞아도 불합격
     except Exception as e:
         print("  판정 오류:", type(e).__name__)
     print(f"{'합격' if passed else '불합격'} {took}초 동작 {len(steps)}개 | {task}", flush=True)

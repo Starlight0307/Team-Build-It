@@ -588,6 +588,7 @@ def _has_position(act: dict) -> bool:
     return True
 
 
+_EQUALS = ("등호", "=", "Equals")
 _CLEAR_BUTTONS = ("모두 지우기", "지우기", "All Clear", "Clear", "CE")
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
@@ -958,6 +959,7 @@ class ScreenAgentWorker(QThread):
             stalls = 0
             step = 0
             checked_summary = False
+            last_target = None
             while step < self.max_steps:
                 step += 1
                 if self._stopped_by_user():
@@ -1004,6 +1006,11 @@ class ScreenAgentWorker(QThread):
                 for i, a in enumerate(plan):
                     desc = describe_action(a)
                     self.step_started.emit(step, desc)
+                    if a["action"] == "click" and a.get("target") in _EQUALS and last_target in _EQUALS:
+                        # 등호를 또 누르면 답에 같은 계산을 한 번 더 한다 (실측: 1250 ÷ 5 → 250 → 50)
+                        self._notes.append("주의: 이미 계산했습니다. 등호를 다시 누르지 말고 표시된 값을 읽어 done 하세요.")
+                        break
+                    last_target = a.get("target")
                     if closes_app_unasked(a, self.task):   # 실측: 설정 화면을 고른 뒤 Cmd+Q를 눌러 작업이 끝났다
                         self._notes.append("주의: 요청에 없는 앱 종료는 하지 않았습니다. 앱을 끄지 말고 목표를 이뤘으면 done 하세요.")
                         break
@@ -1107,7 +1114,7 @@ class ScreenAgentWorker(QThread):
             return
         image, mon = self._capture()
         point = ui_snapshot.center_as_normalized(clear, mon)
-        if point:
+        for _ in range(2 if point else 0):   # 한 번으로는 "0 ÷"처럼 남은 연산이 지워지지 않았다 (실측)
             self._perform({"action": "click", "x": point[0], "y": point[1], "target": clear["name"]}, mon)
             self._stop.wait(BATCH_GAP)
 

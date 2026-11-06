@@ -193,3 +193,22 @@ def test_one_bad_reply_does_not_end_the_task(qapp, monkeypatch):
 def test_repeated_bad_replies_stop_with_an_error(qapp, monkeypatch):
     results = _asking_worker(monkeypatch, [sa.BadModelReply("좌표 없음")] * sa.STALL_LIMIT)
     assert results[0][0] is False and "좌표 없음" in results[0][1]
+
+
+def test_equals_is_not_pressed_twice(qapp, monkeypatch):
+    w = sa.ScreenAgentWorker("x", controller=object())
+    monkeypatch.setattr(sa.ui_snapshot, "snapshot", lambda: ui.clean([{**ROW, "name": "등호"}]))
+    monkeypatch.setattr(w, "_capture", lambda: ("IMG", MON))
+    monkeypatch.setattr(w, "_start_esc_watch", lambda: None)
+    monkeypatch.setattr(w, "_signature", lambda mon: None)
+    monkeypatch.setattr(w, "_wait_for_screen", lambda *a: True)
+    pressed = []
+    monkeypatch.setattr(w, "_perform", lambda act, mon: pressed.append(act["target"]))
+    click = '{"thought": "", "actions": [{"action": "click", "element": 1}]}'
+    replies = iter([click, click, _done("끝")])
+    monkeypatch.setattr(w, "_ask_next_action", lambda *a: sa.parse_action(next(replies)))
+    results = []
+    w.finished_task.connect(lambda ok, msg, h: results.append(ok))
+    w.run()
+    assert pressed == ["등호"] and results == [True]
+    assert any("이미 계산" in n for n in w._notes)
