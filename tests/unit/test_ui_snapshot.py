@@ -145,3 +145,11 @@ def test_calculator_is_cleared_before_typing_other_apps_are_not(qapp, monkeypatc
     assert done == []
     w._clear_calculator("계산기", "계산기")
     assert done[0]["target"] == "모두 지우기" and (done[0]["x"], done[0]["y"]) == (120, 210)
+
+
+def test_result_question_gets_displayed_value_when_answer_has_none():
+    assert "36" in sa.with_displayed_value("결과 확인 완료", ui.clean([{**ROW, "name": "표시", "value": "36"}]), "12 곱하기 3 결과 알려줘")
+    assert sa.with_displayed_value("결과는 36", CALC, "결과 알려줘") == "결과는 36"
+    assert sa.with_displayed_value("썼어요", CALC, "메모에 써줘") == "썼어요"
+    two = ui.clean([{**ROW, "value": "1"}, {**ROW, "value": "2"}])
+    assert sa.with_displayed_value("완료", two, "결과 알려줘") == "완료"

@@ -602,6 +602,15 @@ def unsupported_numbers(summary: str, elements: list, task: str) -> list:
     return [n for n in _NUMBER.findall(summary or "") if n.replace(",", "") not in known]
 
 
+def with_displayed_value(summary: str, elements: list, task: str) -> str:
+    """결과를 물었는데 답에 숫자가 없으면 화면의 값을 붙인다. 모델이 "결과 확인 완료"로만 답해서 지시만으로는 고쳐지지 않았다 (실측).
+    숫자 칸이 하나일 때만 — 여럿이면 어느 값인지 모른다."""
+    if not re.search(r"알려|결과|얼마|몇", task or "") or re.search(r"\d", summary):
+        return summary
+    numbers = [e["value"] for e in elements if _NUMBER.fullmatch(e["value"])]
+    return f"{summary} 화면에 표시된 값은 {numbers[0]}이에요.".strip() if len(numbers) == 1 else summary
+
+
 def apply_element(act: dict, elements: list, mon: dict) -> dict:
     """번호로 고른 요소 → 정확한 좌표. 이름을 target에 넣어 위험 동작 판단(전송, 삭제 등)에도 쓴다."""
     index = act.get("element")
@@ -970,6 +979,7 @@ class ScreenAgentWorker(QThread):
                         return self.finished_task.emit(
                             False, f"작업 결과를 확인하지 못했어요. 보고하려던 값({', '.join(wrong[:3])})이 화면과 달라요. "
                                    "화면을 직접 확인해 주세요.", history)
+                    act["summary"] = with_displayed_value(act.get("summary") or act.get("thought") or "", elements, self.task)
                 if act["action"] in ("done", "fail"):
                     self.step_started.emit(step, describe_action(act))
                     summary = act.get("summary") or act.get("thought") or ""
@@ -1196,8 +1206,9 @@ class ScreenAgentWorker(QThread):
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, user]
         last_err = None
         for _ in range(2):   # 형식이 틀리면 한 번 더 묻는다
+            # think=False: 생각을 켜 두는 모델(gemma4, qwen3.5)은 답이 비어 "JSON 없음"으로 실패했다 (실측)
             resp = ollama.chat(model=SCREEN_MODEL if image else SCREEN_TEXT_MODEL, messages=messages, format=ACTION_SCHEMA,
-                               keep_alive="15m",
+                               keep_alive="15m", think=False,
                                options={"temperature": 0, "num_ctx": 8192, "num_predict": 512})
             try:
                 return parse_action(resp["message"]["content"])
