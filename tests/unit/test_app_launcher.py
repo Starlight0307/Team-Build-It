@@ -229,3 +229,10 @@ def test_lumi_feature_word_counts_as_app_only_when_user_says_app(mac, monkeypatc
     monkeypatch.setattr(al, "installed_apps", lambda refresh=False: apps)
     assert al.leading_app("캘린더 앱에서 내일 일정 찾아줘") == "캘린더"
     assert al.leading_app("캘린더에서 내일 일정 찾아줘") is None
+
+
+@pytest.mark.parametrize("front, before, ok", [("charmap.exe", "windowsterminal.exe", True), ("explorer.exe", "windowsterminal.exe", False),
+                                               ("searchhost.exe", "windowsterminal.exe", False), ("windowsterminal.exe", "windowsterminal.exe", False),
+                                               ("", "x.exe", False)])
+def test_windows_launch_counts_only_when_a_new_app_is_in_front(front, before, ok):
+    assert al.win_launch_succeeded(front, before) is ok

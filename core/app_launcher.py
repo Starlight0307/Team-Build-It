@@ -326,6 +326,11 @@ def _win_foreground_exe() -> str:
         kernel32.CloseHandle(handle)
 
 
+def win_launch_succeeded(front: str, before: str) -> bool:
+    """맨 앞 창이 검색창도 바탕화면도 아닌 새 앱으로 바뀌었는가."""
+    return bool(front) and front not in _WIN_SEARCH_APPS and front not in ("explorer.exe", before)
+
+
 def win_search_finished(rows: list) -> bool:
     """검색 중에는 진행 표시줄이 있고, 끝나면 사라지며 결과 칸(Pane)이 생긴다."""
     roles = [str(row.get("role")) for row in rows]
@@ -342,6 +347,7 @@ def _win_keys(shown: str) -> bool:
     def tap(key):
         user32.keybd_event(key, 0, 0, 0)
         user32.keybd_event(key, 0, 2, 0)   # KEYEVENTF_KEYUP
+    before = _win_foreground_exe()
     tap(0x5B)   # 시작 키
     if not _wait(lambda: _win_foreground_exe() in _WIN_SEARCH_APPS, 3):
         return False
@@ -355,9 +361,11 @@ def _win_keys(shown: str) -> bool:
     if _win_foreground_exe() not in _WIN_SEARCH_APPS:
         return False
     tap(0x0D)
-    if _wait(lambda: _win_foreground_exe() not in _WIN_SEARCH_APPS, 5):
+    # 검색창이 닫혔다고 앱이 켜진 건 아니다 (실측: 앞 창이 explorer.exe인데 성공으로 판단). 이미 켜져 있던 앱이면 명령 실행으로 앞으로 가져온다
+    if _wait(lambda: win_launch_succeeded(_win_foreground_exe(), before), 5):
         return True
-    tap(0x1B)   # 검색창을 열어 둔 채 명령 실행으로 넘어가지 않게
+    if _win_foreground_exe() in _WIN_SEARCH_APPS:
+        tap(0x1B)   # 검색창을 열어 둔 채 명령 실행으로 넘어가지 않게
     return False
 
 
