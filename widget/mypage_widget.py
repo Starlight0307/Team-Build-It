@@ -1,4 +1,5 @@
 import re
+import webbrowser
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame,
                              QLabel, QPushButton, QLineEdit, QMessageBox,
@@ -18,6 +19,9 @@ _NAMESPACE_LABELS = {
     "kill_confirm": ("shield-check", "프로세스 종료 확인 이력"),
     "price_search_history": ("search", "가격 검색 이력"),
 }
+
+
+PRIVACY_URL = "https://lumi-website-five.vercel.app/privacy.html"
 
 
 class MemoryDialog(QDialog):
@@ -345,6 +349,11 @@ class MyPageWidget(QWidget):
         self._arrange_sections(2)
 
         foot = QHBoxLayout(); foot.addStretch()
+        self.btn_privacy = QPushButton("개인정보처리방침")
+        self.btn_privacy.setObjectName("MPWithdraw")
+        self.btn_privacy.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_privacy.clicked.connect(lambda: webbrowser.open(PRIVACY_URL))
+        foot.addWidget(self.btn_privacy)
         self.btn_withdraw = QPushButton("회원 탈퇴")
         self.btn_withdraw.setObjectName("MPWithdraw")
         self.btn_withdraw.setCursor(Qt.CursorShape.PointingHandCursor)
