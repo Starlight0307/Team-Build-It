@@ -98,6 +98,7 @@ class AutoLoginWorker(QThread):
         self.done.emit(try_auto_login() or "")
 from widget.calendar_widget import CalendarWidget
 from data.db import save_chat_to_file
+from core import voice as voice_module
 from core.voice import (VoiceListener, Speaker, VoiceInstallWorker, OptionalInstallWorker, missing_optional_packages,
                         retry_optional_packages,
                         missing_voice_packages, is_stop_phrase, VOICE_MODELS, current_voice_model)
@@ -158,6 +159,11 @@ def _sync_calendar_user(user_id: str):
         # 2026-09-29 메모장 — todo_list와 같은 이유로 로그인한 사용자만.
         from plugins.notes import set_current_user as set_notes_user
         set_notes_user(user_id)
+    except ImportError:
+        pass
+    try:
+        from plugins.meeting_notes import set_current_user as set_meeting_user
+        set_meeting_user(user_id)
     except ImportError:
         pass
     # 회원별 개인화 저장소 — 환경설정 / 루미가 기억하는 것 / 앱 사용 기록
@@ -3848,6 +3854,8 @@ class AssistantApp(QWidget):
         self._update_voice_buttons()
 
     def _on_wake_heard(self, command: str):
+        if voice_module.MIC_RESERVED.is_set():   # 회의 녹음 중
+            return
         self._voice_conversation = True     # 부른 뒤로는 대화처럼 이어서 듣는다
         self._update_voice_buttons()
         if command:

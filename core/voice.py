@@ -409,6 +409,9 @@ def is_stop_phrase(text: str) -> bool:
 # ─────────────────────────────────────────────
 # 🎙️ 듣기
 # ─────────────────────────────────────────────
+MIC_RESERVED = threading.Event()   # 회의 녹음 중(plugins/meeting_notes.py) — 호출어에 반응하지 않는다
+
+
 class VoiceListener(QThread):
     """마이크를 한 번 열어두고, 모드에 따라 말을 받아쓴다.
     메인 스레드는 listen_for_command()/pause()/set_wake_enabled()/stop()만

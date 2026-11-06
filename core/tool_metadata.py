@@ -436,6 +436,26 @@ TOOL_METADATA: dict = {
         name="get_due_todo_reminders", module="todo_list", category="todo",
         risk_level="safe", read_only=False, llm_exposed=False,
     ),
+    "start_meeting_recording": ToolMetadata(
+        name="start_meeting_recording", module="meeting_notes", category="meeting_notes",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "stop_meeting_recording": ToolMetadata(
+        name="stop_meeting_recording", module="meeting_notes", category="meeting_notes",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "list_meetings": ToolMetadata(
+        name="list_meetings", module="meeting_notes", category="meeting_notes",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "show_meeting": ToolMetadata(
+        name="show_meeting", module="meeting_notes", category="meeting_notes",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "delete_meeting": ToolMetadata(
+        name="delete_meeting", module="meeting_notes", category="meeting_notes",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
     "add_note": ToolMetadata(
         name="add_note", module="notes", category="notes",
         risk_level="safe", read_only=False, llm_exposed=True,

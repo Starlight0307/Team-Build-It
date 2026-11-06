@@ -58,6 +58,11 @@ PLUGIN_PILLS = {
     "notes": [
         ("📝 메모장", "메모 목록 보여줘"),
     ],
+    "meeting_notes": [
+        ("🎙️ 회의 녹음 시작", "회의 녹음 시작해줘"),
+        ("⏹️ 회의 녹음 끝내기", "회의 녹음 끝내줘"),
+        ("📝 회의록 목록", "회의록 목록 보여줘"),
+    ],
     "text_tools": [
         ("📄 텍스트 요약/번역", "[요약해줘: ]"),
     ],
@@ -124,6 +129,9 @@ PLUGIN_CARDS = {
     ],
     "notes": [
         ("📝", "메모장", "짧은 메모를 저장하고 나중에 검색해서 찾습니다(로그인 필요).", "메모 목록 보여줘"),
+    ],
+    "meeting_notes": [
+        ("🎙️", "회의 녹음 요약", "회의를 녹음해 이 컴퓨터 안에서 받아쓰고 요약합니다(로그인 필요).", "회의 녹음 시작해줘"),
     ],
     "text_tools": [
         ("📄", "텍스트 요약/번역", "붙여넣은 글을 요약하거나 다른 언어로 번역합니다.", "[요약해줘: ]"),
@@ -371,6 +379,15 @@ AVAILABLE_PLUGINS = [
         # 2026-09-29 로컬 신규 추가 — 아직 GitHub에 push 전이라 로컬 파일
         # 기준으로만 정확한 값(push 시 재계산 필요, 다른 신규 항목과 동일).
         "sha256": "0cf7d4cce9510b56bfd927cc923b44ffedfa5846500b5a0ea60d762b2bea554b",
+        "dependencies": []
+    },
+    {
+        "name": "회의 녹음 요약",
+        "desc": "회의를 녹음해 이 컴퓨터 안에서 받아쓰고 요약·결정 사항·할 일을 정리(소리는 밖으로 나가지 않음, 음성 구성요소 필요, 로그인 필요)",
+        "func_names": ["start_meeting_recording", "stop_meeting_recording", "list_meetings", "show_meeting", "delete_meeting"],
+        "module_name": "meeting_notes",
+        "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/meeting_notes.py",
+        "sha256": "5a15f4aba7e8db3c067fc56c57126660b09c3265cc76cefe884c22effc1746fb",
         "dependencies": []
     },
     {

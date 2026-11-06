@@ -34,3 +34,10 @@ def test_label_html_escapes_text():
     html = icons.label_html("clock", "<b>3시</b> & 4시")
     assert "<img" in html and "&lt;b&gt;" in html and "&amp;" in html
     assert icons.label_html("없는아이콘", "글자") == "글자"
+
+
+def test_every_mapped_emoji_has_a_real_icon_file():
+    """표에 넣었는데 PNG를 안 만든 이모지가 없어야 한다 — 새 아이콘은 scripts/make_icons.py로 만든다."""
+    missing = {e: n for e, n in {**icons.EMOJI_ICON, **icons.TOAST_ICON}.items()
+               if not (icons.exists(n) and os.path.exists(icons.path(n, white=True)))}
+    assert not missing

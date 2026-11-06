@@ -855,6 +855,10 @@ _TOOL_CATEGORIES = {
         ("메모", "메모장", "노트", "기억해둬", "기록해둬"),
         ("add_note", "list_notes", "search_note", "delete_note", "update_note"),
     ),
+    "meeting_notes": (
+        ("회의 녹음", "회의녹음", "회의록", "녹음 시작", "녹음 끝", "녹음 그만", "녹음해줘"),
+        ("start_meeting_recording", "stop_meeting_recording", "list_meetings", "show_meeting", "delete_meeting"),
+    ),
     "text_tools": (
         # 2026-09-29 문서/텍스트 요약·번역 — 다른 카테고리 키워드와 안 겹치는
         # 고유 신호("요약"/"번역")만 쓴다.
@@ -5597,6 +5601,11 @@ TOOL_STATUS_NAMES = {
     "complete_todo":              "✅  할 일 완료 처리 중",
     "delete_todo":                "✅  할 일 삭제 중",
     "reopen_todo":                "✅  할 일 완료 취소 중",
+    "start_meeting_recording":   "🎙️  회의 녹음 시작 중",
+    "stop_meeting_recording":    "🎙️  받아쓰고 요약하는 중 (긴 회의는 몇 분 걸려요)",
+    "list_meetings":             "📝  회의록 목록 조회 중",
+    "show_meeting":              "📝  회의록 여는 중",
+    "delete_meeting":            "📝  회의록 삭제 중",
     "add_note":                  "📝  메모 저장 중",
     "list_notes":                "📝  메모 목록 조회 중",
     "search_note":                "📝  메모 검색 중",

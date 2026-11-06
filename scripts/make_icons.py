@@ -35,6 +35,8 @@ ICONS = [
     "rocket", "shopping-cart", "lock", "bug", "satellite", "house", "brush", "hard-drive", "wallet",
     "hourglass", "notebook-pen", "file-text", "folder-search", "receipt", "lightbulb", "chart-line",
     "shield-check", "bell", "alarm-clock", "check-check",
+    # 작업 상태 문구 · 화면 작업 단계 · 회의 녹음
+    "banknote", "bell-off", "bot", "brick-wall", "calendar-days", "circle-stop", "circle-x", "clipboard-list", "cloud-rain", "cloud-sun-rain", "compass", "disc", "eye", "globe", "hand-coins", "handshake", "key", "keyboard", "link", "mail", "mouse-pointer-click", "octagon-x", "pencil", "plug", "radio-tower", "refresh-cw", "repeat", "target", "trash-2", "triangle-alert", "wifi", "zap",
     # 마이페이지
     "brain", "log-out",
     # 종료 버튼 · 환경설정 > 실행

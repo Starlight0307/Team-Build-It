@@ -29,6 +29,12 @@ EMOJI_ICON = {
     "🛡️": "shield-check", "🛡": "shield-check", "🔔": "bell", "💾": "hard-drive", "💽": "hard-drive",
     "🌤️": "cloud-sun", "⛅": "cloud-sun", "☀️": "sun", "🎨": "palette", "🎙️": "audio-lines", "🎤": "mic",
     "🧩": "puzzle", "🪄": "wand-sparkles", "⚙️": "settings", "💬": "message-circle", "✨": "sparkles",
+    "🔑": "key", "⚡": "zap", "🌧️": "cloud-rain", "🌧": "cloud-rain", "💵": "banknote", "🌦️": "cloud-sun-rain", "🌦": "cloud-sun-rain", "💿": "disc",
+    "🗑️": "trash-2", "🗑": "trash-2", "📋": "clipboard-list", "📶": "wifi", "🎯": "target", "✏️": "pencil", "✏": "pencil", "🔕": "bell-off",
+    "🔁": "repeat", "🧭": "compass", "🔌": "plug", "🔄": "refresh-cw", "📡": "radio-tower", "📆": "calendar-days", "💸": "hand-coins", "🌐": "globe",
+    "🛑": "octagon-x", "🤝": "handshake", "✉️": "mail", "✉": "mail", "🧱": "brick-wall", "🔗": "link", "🤖": "bot", "⏹️": "circle-stop",
+    "⏹": "circle-stop", "❌": "circle-x", "⚠️": "triangle-alert", "⚠": "triangle-alert", "👀": "eye", "🖱️": "mouse-pointer-click", "🖱": "mouse-pointer-click", "⌨️": "keyboard",
+    "⌨": "keyboard",
 }
 
 

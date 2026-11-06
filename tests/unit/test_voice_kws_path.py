@@ -82,6 +82,9 @@ def silence(n):
 WAKE_SCRIPT = silence(20) + [0.2] * 10 + [0.3] * 10 + silence(60)
 
 
+_KEEP_ALIVE = []   # 뒤에서 도는 인식기 준비 스레드가 끝나기 전에 듣기 객체가 사라지지 않게
+
+
 @pytest.fixture
 def env(monkeypatch):
     FakeGate.log = []
@@ -104,7 +107,11 @@ def env(monkeypatch):
     spotter = FakeSpotter()
     monkeypatch.setattr(wake_detector, "WakeSpotter", lambda: spotter)
     lis._wake_enabled = True
-    return types.SimpleNamespace(lis=lis, events=events, whisper=whisper, spotter=spotter, mp=monkeypatch)
+    yield types.SimpleNamespace(lis=lis, events=events, whisper=whisper, spotter=spotter, mp=monkeypatch)
+    # 뒤로 미뤄진 신호가 다음 시험의 이벤트 처리 중에 이미 사라진 람다를 불러 앱 전체가 죽었다 (2026-11-06 간헐 139)
+    for signal in (lis.wake_heard, lis.notice, lis.state_changed, lis.failed):
+        signal.disconnect()
+    _KEEP_ALIVE.append(lis)
 
 
 def use_gate(env, **kw):
