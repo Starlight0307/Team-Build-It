@@ -23,7 +23,7 @@ def test_only_clear_yes_counts(text, yes):
 
 def test_question_shows_receiver_and_text():
     q = ks.confirm_question("민수", "내일 봐")
-    assert "민수" in q and "내일 봐" in q and "보낼까요" in q
+    assert "민수" in q and "내일 봐" in q and "받는 사람이 맞나요" in q
 
 
 @pytest.fixture
@@ -55,6 +55,7 @@ def kakao(monkeypatch):
     monkeypatch.setattr(ks, "_focused_value", lambda: state["field"])
     monkeypatch.setattr(ks, "_key", key)
     monkeypatch.setattr(ks, "_open_search", lambda: True)
+    monkeypatch.setattr(ks, "_raise_room_mac", lambda to: state.get("room_alive", True))
     def focus_box():
         state["field"] = ""
         return state.get("box", True)
@@ -104,6 +105,7 @@ class FakeWin:
         self.main_found = True
         self.lose_search_text = False
         self.needs_down, self.selected = False, False
+        self.room_gone = False
         self.tab, self.found_in, self.tab_stuck = "friends", ("friends", "chats"), False
 
     def tap(self, key, ctrl=False):
@@ -136,6 +138,12 @@ class FakeWin:
 
     def raise_main(self):
         return self.main_found
+
+    def raise_room(self, to):
+        if self.room_gone:
+            return False
+        self.front = self.opens
+        return True
 
     def current_tab(self):
         return self.tab
@@ -189,6 +197,28 @@ def test_windows_sends_after_checks(win):
 
 def _message_enter_count(win):
     return win.keys.count(ks._Win.VK_RETURN)
+
+
+def test_windows_room_closed_before_yes_sends_nothing(win):
+    ks.open_room("민수")
+    win.room_gone = True
+    with pytest.raises(ks.KakaoSendError, match="찾지 못해서"):
+        ks.deliver("민수", "내일 봐")
+    assert "내일 봐" not in win.typed
+
+
+def test_windows_room_comes_back_to_front_before_sending(win):
+    ks.open_room("민수")
+    win.front = 7   # 사용자가 루미 창에서 답한다
+    assert "보냈어요" in ks.deliver("민수", "내일 봐")
+
+
+def test_mac_room_closed_before_yes_sends_nothing(kakao):
+    ks.open_room("민수")
+    kakao["room_alive"] = False
+    with pytest.raises(ks.KakaoSendError, match="찾지 못해서"):
+        ks.deliver("민수", "내일 봐")
+    assert "내일 봐" not in kakao["typed"] and ks._KEY_ENTER not in kakao["keys"]
 
 
 def test_windows_stops_when_main_window_cannot_come_to_front(win):
@@ -305,41 +335,60 @@ def test_other_systems_explain(monkeypatch):
 def _host():
     import app_main
     replies = []
-    host = type("H", (), {"chat_history": [], "display_ai_response": lambda self, t: replies.append(t)})()
+
+    class Host:
+        chat_history = []
+        display_ai_response = staticmethod(replies.append)
+        _kakao_room_ready = app_main.AssistantApp._kakao_room_ready
+    host = Host()
     return host, replies, lambda t: app_main.AssistantApp._maybe_handle_kakao_send(host, t)
 
 
 class FakeWorker:
-    made = []
+    calls = []
+    fail = None
 
-    def __init__(self, to, text):
-        FakeWorker.made.append((to, text))
-        self.done = type("S", (), {"connect": lambda self, f: None})()
+    def __init__(self, action, *args):
+        self.call = (action.__name__, args)
+        self.callback = None
+        worker = self
+        self.done = type("S", (), {"connect": lambda self, f: setattr(worker, "callback", f)})()
 
     def start(self):
-        pass
+        FakeWorker.calls.append(self.call)
+        self.callback(not FakeWorker.fail, FakeWorker.fail or "")
 
 
 @pytest.fixture
 def workers(monkeypatch):
     import app_main
-    FakeWorker.made = []
-    monkeypatch.setattr(app_main, "KakaoSendWorker", FakeWorker)
-    return FakeWorker.made
+    FakeWorker.calls, FakeWorker.fail = [], None
+    monkeypatch.setattr(app_main, "KakaoWorker", FakeWorker)
+    return FakeWorker.calls
 
 
-def test_chat_asks_first_and_sends_only_after_yes(workers):
+def test_chat_opens_room_asks_then_sends_only_after_yes(workers):
     host, replies, handle = _host()
-    assert handle("카톡으로 민수한테 내일 봐 보내줘") is True and "보낼까요" in replies[0] and workers == []
-    assert handle("어 보내줘") is True and workers == [("민수", "내일 봐")]
-    assert handle("어 보내줘") is False and len(workers) == 1   # 한 번 승낙으로 두 번 보내지 않는다
+    assert handle("카톡으로 민수한테 내일 봐 보내줘") is True
+    assert workers == [("open_room", ("민수",))] and "받는 사람이 맞나요" in replies[0] and "내일 봐" in replies[0]
+    assert handle("어 보내줘") is True and workers[1] == ("deliver", ("민수", "내일 봐"))
+    assert handle("어 보내줘") is False and len(workers) == 2   # 한 번 승낙으로 두 번 보내지 않는다
+
+
+def test_room_open_failure_is_reported_and_yes_sends_nothing(workers):
+    FakeWorker.fail = "❌ 대화창을 찾지 못했어요"
+    host, replies, handle = _host()
+    handle("카톡으로 민수한테 내일 봐 보내줘")
+    assert replies == ["❌ 대화창을 찾지 못했어요"]
+    FakeWorker.fail = None
+    assert handle("어 보내줘") is False and len(workers) == 1
 
 
 def test_other_answer_cancels(workers):
     host, replies, handle = _host()
     handle("카톡으로 민수한테 내일 봐 보내줘")
     assert handle("오늘 날씨 어때") is False
-    assert handle("어 보내줘") is False and workers == []
+    assert handle("어 보내줘") is False and len(workers) == 1
 
 
 def test_yes_without_question_does_nothing(workers):
@@ -353,7 +402,7 @@ def test_old_question_expires(workers, monkeypatch):
     handle("카톡으로 민수한테 내일 봐 보내줘")
     now = app_main.time.time()
     monkeypatch.setattr(app_main.time, "time", lambda: now + ks.CONFIRM_SECONDS + 1)
-    assert handle("어 보내줘") is False and workers == []
+    assert handle("어 보내줘") is False and len(workers) == 1
 
 
 def test_nothing_is_set_when_another_app_is_in_front(monkeypatch):

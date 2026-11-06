@@ -50,7 +50,8 @@ def is_yes(text: str) -> bool:
 
 
 def confirm_question(to: str, text: str) -> str:
-    return f"💬 {to}에게 이렇게 보낼까요?\n\n{text}\n\n맞으면 \"어 보내줘\"라고 말씀해 주세요. 다른 말을 하면 보내지 않아요."
+    return (f"💬 {to} 대화창을 열어 뒀어요. 받는 사람이 맞나요? 이렇게 보낼까요?\n\n{text}\n\n"
+            "맞으면 \"어 보내줘\"라고 말씀해 주세요. 다른 말을 하면 보내지 않아요.")
 
 
 def _key(code: int):
@@ -330,6 +331,23 @@ class _Win:
         self._user32().PostMessageW(hwnd, self.WM_KEYDOWN, key, 0)
         self._user32().PostMessageW(hwnd, self.WM_KEYUP, key, 0)
 
+    def raise_room(self, to: str) -> bool:
+        """제목이 정확히 같은 카카오톡 창이 하나일 때만 앞으로 올린다."""
+        import ctypes
+        user32 = self._user32()
+        windows = []
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def visit(hwnd, _):
+            if self.title(hwnd) == to and "kakaotalk" in self._exe_of(hwnd) and user32.IsWindowVisible(hwnd):
+                windows.append(hwnd)
+            return True
+        user32.EnumWindows(callback_type(visit), None)
+        if len(windows) != 1:
+            return False
+        self.tap(0x12)   # Alt를 한 번 누르면 앞으로 올리는 것이 허용된다
+        return bool(user32.SetForegroundWindow(windows[0]))
+
     def focus(self, hwnd: int) -> bool:
         return bool(self._user32().SetFocus(hwnd))
 
@@ -388,7 +406,7 @@ def _open_room_windows(to: str, tab: str) -> bool:
     return False
 
 
-def _send_windows(to: str, text: str, press_enter: bool) -> str:
+def _open_windows(to: str):
     from core import app_launcher
     try:
         app_launcher.launch(_APP, exact=True)
@@ -400,6 +418,12 @@ def _send_windows(to: str, text: str, press_enter: bool) -> str:
     # 나와의 채팅과 단톡방은 친구 검색에 나오지 않는다 — 친구에서 먼저 찾고, 없으면 채팅에서 찾는다
     if not _open_room_windows(to, "friends") and not _open_room_windows(to, "chats"):
         raise KakaoSendError(f"'{to}' 대화창이 열렸는지 확인하지 못해서 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 말씀해 주세요.")
+
+
+def _deliver_windows(to: str, text: str, press_enter: bool) -> str:
+    # 확인을 받는 사이 사용자는 루미 창에 있었다 — 그 대화창을 다시 앞으로 올리고 다시 확인한다
+    if not _win.raise_room(to) or not _wait(lambda: _win.is_kakao(_win.foreground()) and _win.title(_win.foreground()) == to, 3):
+        raise KakaoSendError(f"'{to}' 대화창을 찾지 못해서 보내지 않았어요. 창을 닫았거나 같은 이름의 창이 여러 개일 수 있어요.")
     room = _win.foreground()
     box = _win.find_input(room)
     if not box:
@@ -422,13 +446,8 @@ def _send_windows(to: str, text: str, press_enter: bool) -> str:
     return f"✅ {to}에게 보냈어요."
 
 
-def send(to: str, text: str, press_enter: bool = True) -> str:
-    """보내고 안내 문장을 돌려준다. press_enter=False면 전송 직전까지 확인하고 글을 지운다 (시험용)."""
+def _open_mac(to: str):
     from core import app_launcher, ui_snapshot
-    if IS_WIN:
-        return _send_windows(to, text, press_enter)
-    if not IS_MAC:
-        raise KakaoSendError("카카오톡 보내기는 맥과 윈도우에서만 돼요.")
     try:
         app_launcher.launch(_APP, exact=True)
     except app_launcher.AppNotFound as e:
@@ -448,6 +467,29 @@ def send(to: str, text: str, press_enter: bool = True) -> str:
     if not _wait(lambda: ui_snapshot.window_title() == to, 3):
         _close_search()
         raise KakaoSendError(f"'{to}' 대화창이 열렸는지 확인하지 못해서 보내지 않았어요.")
+
+
+def _raise_room_mac(to: str) -> bool:
+    """제목이 정확히 같은 카카오톡 창이 하나일 때만 앞으로 올린다."""
+    import ApplicationServices as AS
+    from AppKit import NSApplicationActivateIgnoringOtherApps, NSRunningApplication
+    from core import app_launcher
+    apps = NSRunningApplication.runningApplicationsWithBundleIdentifier_("com.kakao.KakaoTalkMac")
+    if not apps:
+        return False
+    element = AS.AXUIElementCreateApplication(apps[0].processIdentifier())
+    windows = [w for w in app_launcher._ax(element, "AXWindows") or [] if app_launcher._ax(w, "AXTitle") == to]
+    if len(windows) != 1:
+        return False
+    AS.AXUIElementPerformAction(windows[0], "AXRaise")
+    return bool(apps[0].activateWithOptions_(NSApplicationActivateIgnoringOtherApps))
+
+
+def _deliver_mac(to: str, text: str, press_enter: bool) -> str:
+    from core import ui_snapshot
+    # 확인을 받는 사이 사용자는 루미 창에 있었다 — 그 대화창을 다시 앞으로 올리고 다시 확인한다
+    if not _raise_room_mac(to) or not _wait(lambda: _front_is_kakao() and ui_snapshot.window_title() == to, 3):
+        raise KakaoSendError(f"'{to}' 대화창을 찾지 못해서 보내지 않았어요. 창을 닫았거나 같은 이름의 창이 여러 개일 수 있어요.")
     # 입력칸 값을 직접 넣으면 화면에만 보이고 Enter·전송 버튼으로 보내지지 않는다 (실측) — 키보드처럼 친다
     if not _focus_message_box() or _focused_value() or not _type(text) or not _wait(lambda: _focused_value() == text, 1.5):
         if _in_message_box():
@@ -463,3 +505,29 @@ def send(to: str, text: str, press_enter: bool = True) -> str:
     if not _wait(lambda: _focused_value() == "", 2):
         raise KakaoSendError(f"{to}에게 보내졌는지 확인하지 못했어요. 카카오톡을 직접 확인해 주세요. 다시 보내면 중복될 수 있어요.")
     return f"✅ {to}에게 보냈어요."
+
+
+def open_room(to: str):
+    """받는 사람의 대화창을 연다. 사용자가 눈으로 받는 사람을 확인한 뒤 deliver로 보낸다.
+    윈도우는 같은 이름이 여럿인지 프로그램이 알 수 없고, 맥도 표시 이름만으로는 사람을 구분할 수 없다."""
+    if IS_WIN:
+        _open_windows(to)
+    elif IS_MAC:
+        _open_mac(to)
+    else:
+        raise KakaoSendError("카카오톡 보내기는 맥과 윈도우에서만 돼요.")
+
+
+def deliver(to: str, text: str, press_enter: bool = True) -> str:
+    """열어 둔 대화창으로 보내고 안내 문장을 돌려준다. press_enter=False면 전송 직전까지 확인하고 글을 지운다 (시험용)."""
+    if IS_WIN:
+        return _deliver_windows(to, text, press_enter)
+    if IS_MAC:
+        return _deliver_mac(to, text, press_enter)
+    raise KakaoSendError("카카오톡 보내기는 맥과 윈도우에서만 돼요.")
+
+
+def send(to: str, text: str, press_enter: bool = True) -> str:
+    """시험 도구용: 열고 바로 보낸다. 앱은 open_room과 deliver 사이에 사용자 확인을 받는다."""
+    open_room(to)
+    return deliver(to, text, press_enter)
