@@ -33,6 +33,7 @@ ALIASES = {
     "워드": ("Microsoft Word", "Word"), "엑셀": ("Microsoft Excel", "Excel"),
     "파워포인트": ("Microsoft PowerPoint", "PowerPoint"), "피피티": ("Microsoft PowerPoint", "PowerPoint"),
     "아웃룩": ("Microsoft Outlook", "Outlook"), "한글": ("Hancom Office HWP", "Hwp", "한글"),
+    "브이에스코드": ("Visual Studio Code",), "vscode": ("Visual Studio Code",), "비주얼스튜디오코드": ("Visual Studio Code",),
     "포토샵": ("Adobe Photoshop",), "일러스트레이터": ("Adobe Illustrator",), "프리미어": ("Adobe Premiere Pro",),
     "파인더": ("Finder",), "터미널": ("Terminal", "Windows Terminal"),
     "메모장": ("notepad", "TextEdit"), "그림판": ("mspaint",), "계산기": ("calc", "Calculator"),
@@ -135,6 +136,20 @@ def prewarm():
     threading.Thread(target=installed_apps, daemon=True).start()
 
 
+def _spotlight(name: str):
+    """목록을 훑은 폴더 밖에 설치된 앱 — 스포트라이트 검색을 키 입력 없이 쓴다. 이름이 정확히 같은 앱만.
+    키보드로 검색창에 치면 입력기 상태와 맨 앞 창에 따라 엉뚱한 곳에 입력되고, 맨 위 결과가 파일일 수도 있다."""
+    if re.search(r"['\"\\*]", name):   # 검색식이 깨지지 않게
+        return None
+    query = f"kMDItemContentType == 'com.apple.application-bundle' && kMDItemDisplayName == '{name}'cd"
+    try:
+        out = subprocess.run(["mdfind", query], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    paths = [line for line in out.splitlines() if line.endswith(".app")]
+    return (name, paths[0]) if len(paths) == 1 else None
+
+
 def resolve(name: str, exact: bool = False):
     """이름 → (보여 줄 이름, 경로·AppID·명령). 못 찾으면 AppNotFound.
     exact면 이름이 정확히 같을 때만 — 사용자 말을 짐작해 엉뚱한 앱을 켜지 않게."""
@@ -142,12 +157,22 @@ def resolve(name: str, exact: bool = False):
     if not key or re.search(r"[;&|<>`$]", name or ""):
         raise AppNotFound("앱 이름이 올바르지 않아요.")
     apps = installed_apps()
-    for candidate in (name,) + ALIASES.get(key, ()):
+    aliases = ALIASES.get(key, ())
+    for candidate in (name,) + aliases:
         ckey = _norm(candidate)
         if IS_WIN and ckey in _WINDOWS_COMMANDS:
             return str(name), ckey
         if ckey in apps:
             return apps[ckey]
+    for candidate in aliases:   # "Adobe Photoshop 2026"처럼 뒤에 연도·판 이름이 붙은 앱
+        ckey = _norm(candidate)
+        found = {path: shown for k, (shown, path) in apps.items() if k.startswith(ckey)}
+        if len(found) == 1:
+            path, shown = next(iter(found.items()))
+            return shown, path
+    spotlight = _spotlight(aliases[0] if aliases else name) if IS_MAC else None
+    if spotlight:
+        return spotlight
     if not exact and len(key) >= 3:
         partial = {path: shown for k, (shown, path) in apps.items() if key in k}
         if len(partial) == 1:

@@ -19,6 +19,8 @@ def mac(monkeypatch):
     calls = []
 
     def run(cmd, **k):
+        if cmd[0] == "mdfind":   # 시험 PC의 진짜 앱이 끼어들지 않게
+            return subprocess.CompletedProcess(cmd, 0, stdout="")
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0)
     monkeypatch.setattr(al.subprocess, "run", run)
@@ -37,9 +39,29 @@ def test_launch_runs_open_with_found_path_only(mac):
 
 
 def test_launch_reports_failure_instead_of_hiding_it(mac, monkeypatch):
-    monkeypatch.setattr(al.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1))
+    monkeypatch.setattr(al.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout=""))
     with pytest.raises(al.AppNotFound, match="실행하지 못했어요"):
         al.launch("계산기")
+
+
+def test_alias_finds_app_with_year_in_its_name(mac, monkeypatch):
+    apps = {al._norm("Adobe Photoshop 2026"): ("Adobe Photoshop 2026", "/A/PS.app")}
+    monkeypatch.setattr(al, "installed_apps", lambda refresh=False: apps)
+    assert al.resolve("포토샵", exact=True)[1] == "/A/PS.app"
+
+
+def test_spotlight_finds_app_outside_scanned_folders_only_when_unique(mac, monkeypatch):
+    hits = {"out": "/Users/me/Tools/Odd.app\n"}
+
+    def run(cmd, **k):
+        assert cmd[0] == "mdfind"
+        return subprocess.CompletedProcess(cmd, 0, stdout=hits["out"])
+    monkeypatch.setattr(al.subprocess, "run", run)
+    assert al.resolve("Odd")[1] == "/Users/me/Tools/Odd.app"
+    hits["out"] = "/a/Odd.app\n/b/Odd.app\n"
+    with pytest.raises(al.AppNotFound):
+        al.resolve("Odd")
+    assert al._spotlight("a'b") is None
 
 
 @pytest.mark.parametrize("name", ["없는앱", "rm -rf ~;", "calc & del", "$(reboot)", "`id`", ""])
