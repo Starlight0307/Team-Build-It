@@ -73,7 +73,7 @@ def _fit_history_to_budget(messages: list, tools) -> list:
 
 from calendar_feature import calendar_preference
 from core.preference_memory import get_pref, save_pref
-from core import user_memory
+from core import small_talk, user_memory
 
 # 실제 호출하는 Ollama 모델 — 이 파일 안에 7곳 넘게 문자열로 직접 박혀
 # 있던 것을 상수 하나로 통합했다(ChatGPT 검수 지적, 2026-09-23): Agent
@@ -4476,7 +4476,7 @@ def _build_current_weather_reply(raw_results: str):
     m = _CURRENT_WEATHER.match(raw_results.strip())
     if not m:
         return None
-    return (f"{m.group('icon')} 지금 {m.group('city')}은(는) {m.group('desc')}, {m.group('temp')}°C예요 "
+    return (f"{m.group('icon')} 지금 {m.group('city')}{'은' if (ord(m.group('city')[-1]) - 0xAC00) % 28 else '는'} {m.group('desc')}, {m.group('temp')}°C예요 "
             f"(체감 {m.group('feels')}°C). 습도는 {m.group('hum')}%, 바람은 {m.group('wind')}m/s로 불고 있어요.")
 
 
@@ -5282,20 +5282,56 @@ _CASUAL_TONE_RULE = (
     "결과를 바로 자연스럽게 전해 주세요.\n"
 )
 _CHAT_RULE = (
-    "\n- 인사와 잡담에는 1~2문장으로 짧게 답하세요. 날씨·날짜·기분처럼 모르는 일을 지어내지 말고, "
-    "사용자의 말에 먼저 공감하거나 답한 뒤 필요할 때만 되물으세요. 사용자에 대해 모르는 것은 모른다고 말하세요."
+    "\n- 대화 맨 앞의 옷, 할머니, 할 일, 물, 세종대왕, 운동, 수학, 바닷물, 영화 이야기는 말투 예시일 뿐 실제로 나눈 대화가 아닙니다. '전에 말한'처럼 언급하지 마세요."
+    "\n- 잡담에는 1~2문장으로 짧게 답하세요. 사용자의 말에 먼저 공감하거나 답한 뒤 필요할 때만 되물으세요.\n"
+    "- 날씨, 점수, 경험, 영화처럼 모르는 일을 지어내지 마세요. 사용자에 대해 모르는 것은 모른다고 말하세요.\n"
+    "- '좋은 하루 보내세요', '무엇을 도와드릴까요'로 끝맺지 마세요."
 )
-_CHAT_EXAMPLES = (
-    "\n예시 (이 문장을 그대로 따라 하지 말고 분위기만 참고하세요):\n"
-    "사용자: 안녕 → 안녕하세요! 무슨 일 있으세요?\n사용자: 고마워 → 천만에요, 또 불러 주세요.\n"
-    "사용자: 오늘 기분 어때? → 저는 잘 지내요. 오늘 하루는 어떠셨어요?\n"
-    "사용자: 심심해 → 심심하시군요. 재미있는 이야기 하나 해 드릴까요?\n"
-    "사용자: 피곤해 → 고생 많으셨어요. 오늘은 푹 쉬세요."
+# 시스템 프롬프트에 예시를 적는 것보다 실제 앞 대화로 넣을 때 모델이 말투를 더 잘 따른다
+_CHAT_SHOTS = (
+    ("새 옷 샀어", "오, 좋겠어요! 어떤 옷이에요?", "오, 좋겠다! 어떤 옷이야?"),
+    ("할머니가 보고 싶어", "많이 보고 싶으시겠어요. 전화 한번 드려 보면 어때요?", "많이 보고 싶겠다. 전화 한번 드려 보면 어때?"),
+    ("요즘 할 일이 너무 많아", "정말 바쁘시겠어요. 그중에 제일 급한 게 뭐예요?", "정말 바쁘겠다. 그중에 제일 급한 게 뭐야?"),
+    ("물 마시고 싶다", "물 한 잔 좋죠. 잠깐 쉬었다 하세요.", "물 한 잔 좋지. 잠깐 쉬었다 해."),
+    ("세종대왕이 누구야?", "조선의 네 번째 왕이고, 한글을 만든 분이에요.", "조선의 네 번째 왕이고, 한글을 만든 분이야."),
+    ("나 요즘 운동 시작했어", "멋져요! 어떤 운동을 하세요?", "멋지다! 무슨 운동 해?"),
+    ("수학이 어려웠어", "수학은 정말 어렵죠. 어떤 단원이 제일 힘들었어요?", "수학 진짜 어렵지. 어떤 단원이 제일 힘들었어?"),
+    ("나도 좋아", "다행이에요. 좋은 일 있으셨어요?", "다행이다. 좋은 일 있었어?"),
+    ("그렇구나", "네, 궁금한 게 있으면 또 물어보세요.", "응, 궁금한 거 있으면 또 물어봐."),
+    ("바닷물은 왜 짜?", "강물이 녹여 온 소금기가 바다에 쌓여서 그래요.", "강물이 녹여 온 소금기가 바다에 쌓여서 그래."),
+    ("어제 본 영화 재밌었어", "재밌었다니 다행이에요. 어떤 영화였어요?", "재밌었다니 다행이다. 무슨 영화였어?"),
 )
+_NOT_KOREAN = re.compile(r"[一-鿿぀-ヿЀ-ӿ]|[A-Za-z]*[à-ÿĀ-ỿ][A-Za-z]*")
+_MADE_UP_SENTENCE = re.compile(r"전에 (?:말|물|얘기|이야기)|날씨|기온|비가|확인해 ?(?:봤|드릴까)|확인한 결과|좋은 하루 보내|도와드릴까요"
+                               r"|주문해|데려다|데려드|예약해 ?드릴|가게 해 ?드릴|드릴까요|줄까\?")   # 할 수 없는 일을 약속하지 않게
+_SENTENCE = re.compile(r"[^.!?…\n]+[.!?…]*")
 
 
-_DATE_WORDS = {"오늘", "내일", "모레", "글피", "어제"}
+def _polish_chat_reply(reply: str, user_text: str) -> str:
+    """모델의 잡담에서 고장 난 문장만 뺀다 — 외국어, 묻지 않은 날씨, 지어낸 확인, 끝이 잘린 문장."""
+    sentences = [m.group().strip() for m in _SENTENCE.finditer(reply.replace("사용자님", "").replace("루미야가", "제가").strip())]
+    if len(sentences) > 1 and not re.search(r"[.!?…요다]$", sentences[-1]):
+        sentences.pop()
+    kept = [s for s in sentences if not _NOT_KOREAN.search(s)
+            and not (_MADE_UP_SENTENCE.search(s) and not _MADE_UP_SENTENCE.search(user_text))]
+    return " ".join(kept[:3])
+
+
+_ASKS_REPEAT = re.compile(r"뭐라고요?|(?:아까|방금)\s*뭐라고\s*(?:했어요?|했니)|다시\s*(?:말해\s*(?:줘|주세요)|한번\s*말해\s*(?:줘|주세요))|잘\s*못\s*들었어요?")
+_ASKS_DATE = re.compile(r"며칠|몇\s*일|요일|날짜|오늘|내일|모레|어제|글피")
+_DATE_WORDS = {"오늘", "내일", "모레", "글피", "어제", "이번주", "다음주", "이번달", "다음달"}
 _SCHEDULE_QUESTION = re.compile(r"뭐\s*(해|하|있)|몇\s*시|언제|약속")
+
+
+_REQUEST_WORD = re.compile(r"줘|주세요|줄래|알려|보여|찾아|켜|꺼|추가|삭제|지워|설정|맞춰|확인|검사|점검|스캔|메모|기록|얼마|몇|언제|뭐|뭘|어디|어때|왜|있어|있나|\d")
+_STATEMENT_END = re.compile(r"(?:았|었|했|였|왔|갔|봤|샀|줬)(?:어|어요|다|네|네요|음)?$|(?:짜증나|귀찮|피곤|힘들|좋|싫|싶|나쁘|슬프|기쁘|설레|걱정돼|야근해)(?:다|아|어|네|요|아요|어요|네요)?$")
+
+
+def _is_plain_statement(text: str) -> bool:
+    """"나 오늘 월급 받았어"처럼 그냥 하는 말 — 도구로 보내면 수입 기록이나 브리핑이 실행된다.
+    금액이 있거나("8000원 썼어") 요청·질문 낱말이 있으면 지금처럼 도구로 보낸다."""
+    text = (text or "").strip().rstrip(".!~ㅠㅜㅋㅎ ")
+    return bool(text) and "?" not in text and not _REQUEST_WORD.search(text) and bool(_STATEMENT_END.search(text))
 
 
 def _only_mentions_a_date(text: str, keywords) -> bool:
@@ -5303,6 +5339,11 @@ def _only_mentions_a_date(text: str, keywords) -> bool:
     "어제는?" 같은 짧은 후속 질문과 "내일 뭐 해?" 같은 일정 질문은 지금처럼 도구로 보낸다."""
     text = (text or "").lower().strip()
     found = {kw for kw in keywords if kw in text}
+    if "있어" in found and "?" in text:   # "나 오늘 데이트 있어"는 잡담, "내일 약속 있어?"는 일정 질문
+        return False
+    if found == {"있어"}:   # "할 말 있어"
+        return True
+    found.discard("있어")
     return bool(found) and found <= _DATE_WORDS and len(text) > 6 and not _SCHEDULE_QUESTION.search(text)
 
 
@@ -5312,12 +5353,22 @@ def _tone_rule() -> str:
 
 def _chat_rules() -> str:
     """도구를 쓰지 않는 대화에만 붙인다 — 도구 선택 정확도와 문맥 길이에 영향을 주지 않게."""
-    return _CHAT_RULE + ("" if user_memory.is_casual() else _CHAT_EXAMPLES) + user_memory.prompt_block()
+    return _CHAT_RULE + user_memory.prompt_block()
+
+
+def _chat_messages(history: list) -> list:
+    """시스템 프롬프트 바로 뒤에 예시 대화를 끼운다. 대화 기록에는 남기지 않는다."""
+    casual = user_memory.is_casual()
+    shots = [m for text, polite, banmal in _CHAT_SHOTS
+             for m in ({'role': 'user', 'content': text}, {'role': 'assistant', 'content': banmal if casual else polite})]
+    return history[:1] + shots + history[1:]
 
 
 # 함수 선택 규칙 — (이 규칙이 다루는 함수들, 규칙 문장). 이번 요청에 그 함수가 하나라도 실려 갈 때만 붙인다.
 # 함수가 None이면 도구를 보내는 요청에는 늘 붙인다. 문장은 2026-10-19 이전 시스템 프롬프트 그대로다.
 _FUNCTION_RULES = (
+    ({"search_files"},
+     "- '보고서 파일 어디 있어?'처럼 파일 위치를 물으면 그 이름으로 search_files를 부르세요.\n"),
     ({"search_product_price"},
      "제품명(아이폰, 맥북, 갤럭시 등) + 가격/얼마/최저가 키워드 → search_product_price 호출"),
     ({"search_events"},
@@ -5825,7 +5876,9 @@ class AIWorker(QThread):
         if "설명해" in text:
             return (any(kw in text for kw in self._FEATURE_CONTEXT_HINTS)
                     or any(kw in self.user_text.lower() for kw in self._TOOL_KEYWORDS))
-        return "어떻게" in text
+        # "코딩 공부 어떻게 시작해?"는 앱 사용법이 아니다 — 기능을 가리킬 때만 설명으로 본다
+        return "어떻게" in text and ("루미" in text or any(kw in text for kw in self._FEATURE_CONTEXT_HINTS)
+                                    or any(kw in self.user_text.lower() for kw in self._TOOL_KEYWORDS))
 
     def _extract_event_title(self, text: str) -> str:
         """사용자 입력에서 일정 제목만 추출 — 날짜/시간/주어/동사/조사 제거 후 남은 명사구.
@@ -6375,7 +6428,7 @@ class AIWorker(QThread):
         """사용자 입력(+ 필요시 직전 AI 답변)에 도구 관련 키워드가 있는지 빠르게 판단."""
         if self._file_filter_route() is not None:
             return True
-        if _only_mentions_a_date(self.user_text, self._TOOL_KEYWORDS):
+        if _is_plain_statement(self.user_text) or _only_mentions_a_date(self.user_text, self._TOOL_KEYWORDS):
             return False
         text = self._keyword_search_text()
         found = {kw for kw in self._TOOL_KEYWORDS if kw in text}
@@ -6788,6 +6841,7 @@ class AIWorker(QThread):
         _ollama_local.client = self._ollama_client
         try:
             import sys
+            self.user_text = small_talk.strip_name(self.user_text)
             speech_reply = user_memory.note_message(self.user_text)
             if speech_reply:
                 self.chat_history.append({'role': 'user', 'content': self.user_text})
@@ -7030,6 +7084,18 @@ class AIWorker(QThread):
             # 직전 답이 질문·제안이 아니면 할 일이 없으므로 정해진 짧은 대답을 한다.
             # 2026-10-13 실제 앱 점검: LLM에 맡기면 "그럼 다른 일어나 볼게요!" 같은 어색한 문장이 나왔다.
             # (직전 답이 "~할까요?"면 승낙/거절로 처리돼야 하므로 여기서 가로채지 않는다)
+            # 승낙(좋아, 그래)은 표로 답하면 앞서 제안한 도구 실행이 끊기므로 아래 경로에 맡긴다
+            prev_reply = next((str(m.get('content', '')) for m in reversed(self.chat_history) if m.get('role') == 'assistant'), '')
+            asked = '?' in prev_reply or '까요' in prev_reply
+            canned = (None if self._ACK_ONLY.match(self.user_text.strip()) or (asked and self._is_decline_reply())
+                      else small_talk.reply(self.user_text, user_memory.is_casual()))
+            if _ASKS_REPEAT.fullmatch(self.user_text.strip().rstrip("?!. ")):   # 모델은 앞말을 되풀이하지 못하고 지어낸다
+                canned = prev_reply or ("아직 한 말이 없어. 뭐든 말해 봐." if user_memory.is_casual() else "아직 드린 말씀이 없어요. 편하게 말씀해 주세요.")
+            if canned:
+                self.chat_history.append({'role': 'user', 'content': self.user_text})
+                self.chat_history.append({'role': 'assistant', 'content': canned})
+                self.response_ready.emit(f"🤖 로컬 비서: {canned}")
+                return
             if self._ACK_ONLY.match(self.user_text.strip()):
                 prev = next((str(m.get('content', '')) for m in reversed(self.chat_history)
                              if m.get('role') == 'assistant'), '')
@@ -7408,6 +7474,9 @@ class AIWorker(QThread):
             for name, func in func_map.items():
                 if name in hidden_calendar_funcs or name in hidden_realtime_funcs:
                     continue
+                # 통계 도구를 함께 주면 "이번주 스케줄 보여줘"에 일정 대신 통계를 고른다
+                if name in ("get_schedule_summary", "local_get_schedule_summary") and not re.search(r"통계|분석|패턴|요약", self.user_text):
+                    continue
                 if allowed_category_funcs is not None and name not in allowed_category_funcs:
                     continue
                 if name in TOOL_SCHEMAS:
@@ -7471,7 +7540,7 @@ class AIWorker(QThread):
                         and name in allowed_category_funcs
                     )
                 system_content = (
-                    "당신은 사용자의 PC를 돕는 비서 '루미'입니다. '루미야'는 사용자가 당신을 부르는 말입니다.\n"
+                    "당신의 이름은 루미이고 PC를 돕는 비서입니다. '루미야'는 당신을 부르는 말입니다. 상대를 '사용자님'이라고 부르지 마세요.\n"
                     f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}. 모레: {_day_after_tomorrow}\n"
                     + explain_intro +
                     f"{feature_docs}\n\n"
@@ -7486,7 +7555,7 @@ class AIWorker(QThread):
                 # 없는 요청에까지 붙었다. 보내지 않은 함수는 모델이 어차피 호출할 수 없다.
                 sent_funcs = {t["function"]["name"] for t in ollama_tools} if use_tools else set()
                 system_content = (
-                    "당신은 사용자의 PC를 돕는 비서 '루미'입니다. '루미야'는 사용자가 당신을 부르는 말입니다.\n"
+                    "당신의 이름은 루미이고 PC를 돕는 비서입니다. '루미야'는 당신을 부르는 말입니다. 상대를 '사용자님'이라고 부르지 마세요.\n"
                     f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}. 모레: {_day_after_tomorrow}\n"
                     + _function_rules_text(sent_funcs) +
                     "\n"
@@ -7531,6 +7600,8 @@ class AIWorker(QThread):
 
             if ollama_tools and not use_tools and not is_explanation:
                 system_content += _chat_rules()
+                if not _ASKS_DATE.search(self.user_text):   # 날짜가 눈앞에 있으면 묻지 않아도 "내일은 일요일이에요"라고 한다
+                    system_content = re.sub(r"오늘 날짜: .*\n|날짜 계산 규칙: .*\n", "", system_content)
 
             # 새 세션 첫 메시지면 __init__에서 미리 불러온 직전 세션 맥락을
             # 시스템 프롬프트 끝에 참고용으로 덧붙인다 (있을 때만).
@@ -7579,9 +7650,9 @@ class AIWorker(QThread):
 
             response = _ollama_chat(
                 model=OLLAMA_MODEL, think=OLLAMA_THINK,
-                messages=self.chat_history,
+                messages=self.chat_history if use_tools else _chat_messages(self.chat_history),
                 tools=ollama_tools if use_tools else None,
-                options=({'temperature': 0.1} if use_tools else {'temperature': 0.3})
+                options=({'temperature': 0.1} if use_tools else {'temperature': 0.3, 'repeat_penalty': 1.2})
                         | {'num_predict': _MAX_REPLY_TOKENS}
             )
 
@@ -8213,6 +8284,10 @@ class AIWorker(QThread):
                         clean_reply = retry_response['message']['content'].strip()
 
             clean_reply = clean_reply.strip()
+            if not use_tools:
+                clean_reply = (_polish_chat_reply(clean_reply, self.user_text)
+                               or ("그랬구나. 조금 더 얘기해 줄래?" if user_memory.is_casual()
+                                   else "그러셨군요. 조금 더 들려주실래요?"))
 
             self.chat_history.append({'role': 'assistant', 'content': clean_reply})
             self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")

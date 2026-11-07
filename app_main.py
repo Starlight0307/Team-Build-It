@@ -66,6 +66,7 @@ from widget.widgets import (CommandCard, FitHeightPage, MessageBubble, TypingInd
                             AutoSizeStackedWidget, ToggleSwitch, AgentOverlay, ScrollTopFade)
 from widget.marketplace import PluginMarketplaceWidget
 from widget import icons, motion
+from core import small_talk, user_memory
 from widget.dashboard import (Panel, SystemStatsPanel, WeatherPanel, TodayPanel, TodoPanel,
                               SessionPanel, LumiOrb, NUM_FONT)
 
@@ -4333,6 +4334,8 @@ class AssistantApp(QWidget):
     def display_ai_response(self, text, speak_text=None):
         self._hide_typing_indicator()
         self._set_input_enabled(True)
+        if user_memory.is_casual():   # 도구 결과처럼 코드가 만든 답도 부탁받은 말투로
+            text = small_talk.to_casual(text)
 
         # 일반 메시지 버블 표시
         new_bubble = MessageBubble(text, False, max_width=self.scroll_area.viewport().width())

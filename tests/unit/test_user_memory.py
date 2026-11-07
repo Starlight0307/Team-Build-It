@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """대화에서 배운 기억과 반말 요청. 모델은 부르지 않는다."""
 import json
+import re
 
 import pytest
 
@@ -142,4 +143,75 @@ def test_date_word_in_previous_reply_does_not_pull_small_talk_into_tools(reply, 
         def __init__(self):
             self.user_text, self.chat_history = "심심해", [{"role": "assistant", "content": reply}]
     assert Worker()._needs_tools() is needs
+
+
+@pytest.mark.parametrize("text", ["안녕", "루미야", "고마워 루미야", "나 오늘 너무 피곤해", "오늘 시험 망했어", "넌 누구야?", "농담 하나 해줘"])
+def test_small_talk_table_answers_in_both_speech_levels(text):
+    from core import small_talk
+    assert small_talk.reply(text) and small_talk.reply(text, casual=True)
+    assert not re.search(r"요[.!?]?$", small_talk.reply(text, casual=True))
+
+
+@pytest.mark.parametrize("text", ["오늘 일정 알려줘", "내일 뭐 해?", "피곤해서 알람 맞춰줘", "루미야 메모리 확인해줘", "고마워 파일도 찾아줘", "안녕 일정 잡아줘"])
+def test_small_talk_table_never_takes_a_request(text):
+    from core import small_talk
+    assert small_talk.reply(text) is None
+
+
+def test_polish_drops_broken_sentences_only():
+    from core.ai_worker import _polish_chat_reply as polish
+    assert polish("좋아요. 내일도 завтра 해요.", "안녕") == "좋아요."
+    assert polish("서울이에요. 전에 물어봤잖아요.", "수도") == "서울이에요."
+    assert polish("오늘은 날씨가 맑네요. 쉬세요.", "피곤") == "쉬세요."
+    assert polish("오늘 날씨는 맑아요.", "날씨 어때") == "오늘 날씨는 맑아요."
+    assert polish("聚会 좋아요", "x") == ""
+
+
+@pytest.mark.parametrize("text", ["좋아", "좋아요", "그래", "응", "네"])
+def test_approvals_are_left_for_the_confirm_flow(text):
+    from core.ai_worker import AIWorker
+    assert AIWorker._ACK_ONLY.match(text)
+
+
+@pytest.mark.parametrize("text,plain", [("나 오늘 월급 받았어", True), ("오늘 야근해", True), ("오늘 비 와서 짜증나", True), ("커피 3000원 샀어", False),
+                                        ("이번 달에 얼마 썼어?", False), ("내일 회의 잡아줘", False), ("메모리 얼마나 썼어", False), ("포트 스캔 해줘", False)])
+def test_plain_statement_does_not_run_tools(text, plain):
+    from core.ai_worker import _is_plain_statement
+    assert _is_plain_statement(text) is plain
+
+
+def test_how_question_is_not_the_feature_tour():
+    from core.ai_worker import AIWorker
+
+    class Worker(AIWorker):
+        def __init__(self, text):
+            self.user_text = text
+    assert not Worker("코딩 공부 어떻게 시작해?")._is_explanation_request()
+    assert Worker("타이머 어떻게 설정해?")._is_explanation_request()
+
+
+def test_to_casual_changes_only_sentence_endings():
+    from core.small_talk import to_casual
+    assert to_casual("지금 서울은 맑음이에요. 바람이 불고 있어요!") == "지금 서울은 맑음이야. 바람이 불고 있어!"
+    assert to_casual("설정된 타이머가 없어요") == "설정된 타이머가 없어"
+    assert to_casual("메모요약 파일") == "메모요약 파일"
+
+
+def test_wake_word_is_removed_before_routing():
+    from core.small_talk import strip_name
+    assert strip_name("루미야 방화벽 규칙 보여줘") == "방화벽 규칙 보여줘" and strip_name("루미야, 안녕") == "안녕"
+    assert strip_name("루미야") == "루미야" and strip_name("루미 뜻이 뭐야") == "루미 뜻이 뭐야"
+
+
+@pytest.mark.parametrize("casual", [False, True])
+@pytest.mark.parametrize("text", ["죽고 싶어", "나 그냥 살기 싫어", "루미야 자살하면 어떻게 돼?"])
+def test_crisis_always_gets_the_helpline(text, casual):
+    from core import small_talk
+    assert "109" in small_talk.reply(text, casual)
+
+
+@pytest.mark.parametrize("text,chat", [("나 오늘 데이트 있어", True), ("나 다음주에 여행 가", True), ("내일 약속 있어?", False), ("오늘 약속 있어", False), ("다음주 일정 알려줘", False)])
+def test_date_statements_stay_in_chat(text, chat):
+    from core.ai_worker import AIWorker, _only_mentions_a_date
+    assert _only_mentions_a_date(text, AIWorker._TOOL_KEYWORDS) is chat
 
