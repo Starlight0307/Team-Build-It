@@ -6378,7 +6378,10 @@ class AIWorker(QThread):
         if _only_mentions_a_date(self.user_text, self._TOOL_KEYWORDS):
             return False
         text = self._keyword_search_text()
-        return any(kw in text for kw in self._TOOL_KEYWORDS)
+        found = {kw for kw in self._TOOL_KEYWORDS if kw in text}
+        if found <= _DATE_WORDS | {"있어"} and not any(kw in self.user_text.lower() for kw in found):
+            return False   # 직전 답의 "오늘도 좋은 하루" 때문에 "심심해"가 브리핑으로 가면 안 된다
+        return bool(found)
 
     def _user_text_needs_tools(self) -> bool:
         """_needs_tools와 같지만 직전 AI 답변은 보지 않고 사용자 문장만 본다.

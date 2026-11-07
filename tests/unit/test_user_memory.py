@@ -133,3 +133,13 @@ def test_casual_is_repeated_last_in_the_prompt(member):
     um.note_message("반말로 해줘")
     assert "반말" in um.prompt_block()
 
+
+@pytest.mark.parametrize("reply,needs", [("안녕! 오늘도 좋은 하루 보내고 있어?", False), ("CPU 사용률이 높아요. 메모리도 볼까요?", True)])
+def test_date_word_in_previous_reply_does_not_pull_small_talk_into_tools(reply, needs):
+    from core.ai_worker import AIWorker
+
+    class Worker(AIWorker):
+        def __init__(self):
+            self.user_text, self.chat_history = "심심해", [{"role": "assistant", "content": reply}]
+    assert Worker()._needs_tools() is needs
+
