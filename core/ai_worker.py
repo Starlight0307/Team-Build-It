@@ -73,6 +73,7 @@ def _fit_history_to_budget(messages: list, tools) -> list:
 
 from calendar_feature import calendar_preference
 from core.preference_memory import get_pref, save_pref
+from core import user_memory
 
 # 실제 호출하는 Ollama 모델 — 이 파일 안에 7곳 넘게 문자열로 직접 박혀
 # 있던 것을 상수 하나로 통합했다(ChatGPT 검수 지적, 2026-09-23): Agent
@@ -5276,6 +5277,42 @@ _SOFT_TONE_RULE = (
     "'~습니다'로 딱딱하게 끝내거나 '확인해봤는데,'처럼 보고하듯 시작하지 말고, 결과를 바로 자연스럽게 "
     "전해주세요. 반말은 쓰지 마세요.\n"
 )
+_CASUAL_TONE_RULE = (
+    "- 말투: 사용자가 반말을 부탁했으니 친한 친구처럼 편한 반말(~야, ~해, ~어)로 말하세요. "
+    "결과를 바로 자연스럽게 전해 주세요.\n"
+)
+_CHAT_RULE = (
+    "\n- 인사와 잡담에는 1~2문장으로 짧게 답하세요. 날씨·날짜·기분처럼 모르는 일을 지어내지 말고, "
+    "사용자의 말에 먼저 공감하거나 답한 뒤 필요할 때만 되물으세요. 사용자에 대해 모르는 것은 모른다고 말하세요."
+)
+_CHAT_EXAMPLES = (
+    "\n예시 (이 문장을 그대로 따라 하지 말고 분위기만 참고하세요):\n"
+    "사용자: 안녕 → 안녕하세요! 무슨 일 있으세요?\n사용자: 고마워 → 천만에요, 또 불러 주세요.\n"
+    "사용자: 오늘 기분 어때? → 저는 잘 지내요. 오늘 하루는 어떠셨어요?\n"
+    "사용자: 심심해 → 심심하시군요. 재미있는 이야기 하나 해 드릴까요?\n"
+    "사용자: 피곤해 → 고생 많으셨어요. 오늘은 푹 쉬세요."
+)
+
+
+_DATE_WORDS = {"오늘", "내일", "모레", "글피", "어제"}
+_SCHEDULE_QUESTION = re.compile(r"뭐\s*(해|하|있)|몇\s*시|언제|약속")
+
+
+def _only_mentions_a_date(text: str, keywords) -> bool:
+    """"나 오늘 피곤해"처럼 날짜 낱말만 있는 잡담 — 도구로 보내면 엉뚱하게 하루 브리핑을 부른다.
+    "어제는?" 같은 짧은 후속 질문과 "내일 뭐 해?" 같은 일정 질문은 지금처럼 도구로 보낸다."""
+    text = (text or "").lower().strip()
+    found = {kw for kw in keywords if kw in text}
+    return bool(found) and found <= _DATE_WORDS and len(text) > 6 and not _SCHEDULE_QUESTION.search(text)
+
+
+def _tone_rule() -> str:
+    return _CASUAL_TONE_RULE if user_memory.is_casual() else _SOFT_TONE_RULE
+
+
+def _chat_rules() -> str:
+    """도구를 쓰지 않는 대화에만 붙인다 — 도구 선택 정확도와 문맥 길이에 영향을 주지 않게."""
+    return _CHAT_RULE + ("" if user_memory.is_casual() else _CHAT_EXAMPLES) + user_memory.prompt_block()
 
 
 # 함수 선택 규칙 — (이 규칙이 다루는 함수들, 규칙 문장). 이번 요청에 그 함수가 하나라도 실려 갈 때만 붙인다.
@@ -5413,7 +5450,7 @@ def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
             "없지만 ~가 위험할 수 있어요'처럼 안전하다는 말과 위험하다는 말을 한 문장/문단에 "
             "같이 쓰면 앞뒤가 안 맞는 답이 되니 절대 이렇게 섞어 쓰지 마.\n"
             "- 문장마다 줄바꿈을 넣어서 뚝뚝 끊어 보이게 하지 말고, 자연스러운 대화 문단으로 이어줘.\n"
-            + _SOFT_TONE_RULE +
+            + _tone_rule() +
             "\n"
             "일정 조회 결과라면 결과에 있는 제목과 시간만 그대로 보여주고(말투 규칙은 지켜줘), "
             "일정이 없으면 '등록된 일정이 없어요'처럼 부드럽게 알려줘 (위 점검 결과 방식은 적용하지 마).\n"
@@ -5747,6 +5784,8 @@ class AIWorker(QThread):
         self.installed_tools    = installed_tools
         self.current_session_id = current_session_id
         self._recent_context    = None
+        self._learn_text        = None
+        self.finished.connect(self._learn_after_reply)
         self._ollama_client     = ollama.Client()   # 이 워커 전용 연결 — stop()이 끊는다
         # 직전 세션 맥락 로딩(파일 I/O)은 여기서 하지 않는다 — AIWorker는
         # QThread를 상속하는 방식이라 __init__은 이 객체를 생성한 스레드
@@ -6336,6 +6375,8 @@ class AIWorker(QThread):
         """사용자 입력(+ 필요시 직전 AI 답변)에 도구 관련 키워드가 있는지 빠르게 판단."""
         if self._file_filter_route() is not None:
             return True
+        if _only_mentions_a_date(self.user_text, self._TOOL_KEYWORDS):
+            return False
         text = self._keyword_search_text()
         return any(kw in text for kw in self._TOOL_KEYWORDS)
 
@@ -6735,10 +6776,22 @@ class AIWorker(QThread):
         """'대답 멈추기' — 진행 중인 Ollama 요청의 연결을 끊는다(스레드 밖에서 불러도 된다)."""
         self._ollama_client._client.close()
 
+    def _learn_after_reply(self):
+        """답을 다 한 뒤에 부른다 — 기억 추출이 답변과 모델을 두고 다투지 않게."""
+        if self._learn_text:
+            user_memory.learn_later(self._learn_text)
+
     def run(self):
         _ollama_local.client = self._ollama_client
         try:
             import sys
+            speech_reply = user_memory.note_message(self.user_text)
+            if speech_reply:
+                self.chat_history.append({'role': 'user', 'content': self.user_text})
+                self.chat_history.append({'role': 'assistant', 'content': speech_reply})
+                self.response_ready.emit(f"🤖 로컬 비서: {speech_reply}")
+                return
+            self._learn_text = self.user_text
             from datetime import datetime
             from zoneinfo import ZoneInfo
 
@@ -6979,8 +7032,11 @@ class AIWorker(QThread):
                              if m.get('role') == 'assistant'), '')
                 if not ('?' in prev or '까요' in prev):
                     thanks = any(k in self.user_text for k in ('고마', '감사', '땡큐', 'ㄱㅅ'))
-                    reply = ("천만에요! 더 필요한 게 있으면 언제든 말씀해 주세요." if thanks
-                             else "좋아요! 더 필요한 게 있으면 말씀해 주세요.")
+                    if user_memory.is_casual():
+                        reply = "천만에! 또 필요하면 말해." if thanks else "좋아! 또 필요하면 말해."
+                    else:
+                        reply = ("천만에요! 더 필요한 게 있으면 언제든 말씀해 주세요." if thanks
+                                 else "좋아요! 더 필요한 게 있으면 말씀해 주세요.")
                     self.chat_history.append({'role': 'user', 'content': self.user_text})
                     self.chat_history.append({'role': 'assistant', 'content': reply})
                     self.response_ready.emit(f"🤖 로컬 비서: {reply}")
@@ -7412,12 +7468,12 @@ class AIWorker(QThread):
                         and name in allowed_category_funcs
                     )
                 system_content = (
-                    "당신은 사용자의 PC를 돕는 유능한 AI 비서입니다.\n"
+                    "당신은 사용자의 PC를 돕는 비서 '루미'입니다. '루미야'는 사용자가 당신을 부르는 말입니다.\n"
                     f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}. 모레: {_day_after_tomorrow}\n"
                     + explain_intro +
                     f"{feature_docs}\n\n"
                     "*** 답변 규칙 ***\n"
-                    + _SOFT_TONE_RULE +
+                    + _tone_rule() +
                     "- 내부 함수 이름이나 코드는 언급하지 말고, 사용자가 실제로 어떤 말을 하면 되는지로 설명하세요.\n"
                     "- 답변 시작/끝에 따옴표(\") 절대 금지."
                 )
@@ -7427,7 +7483,7 @@ class AIWorker(QThread):
                 # 없는 요청에까지 붙었다. 보내지 않은 함수는 모델이 어차피 호출할 수 없다.
                 sent_funcs = {t["function"]["name"] for t in ollama_tools} if use_tools else set()
                 system_content = (
-                    "당신은 사용자의 PC를 돕는 유능한 AI 비서입니다.\n"
+                    "당신은 사용자의 PC를 돕는 비서 '루미'입니다. '루미야'는 사용자가 당신을 부르는 말입니다.\n"
                     f"오늘 날짜: {_today} ({_weekday}요일). 내일: {_tomorrow}. 모레: {_day_after_tomorrow}\n"
                     + _function_rules_text(sent_funcs) +
                     "\n"
@@ -7438,7 +7494,7 @@ class AIWorker(QThread):
                        "사용자의 전체 문장을 넣지 마세요.\n" if sent_funcs & {"create_event", "local_create_event"} else "") +
                     "\n"
                     "*** 답변 규칙 ***\n"
-                    + _SOFT_TONE_RULE +
+                    + _tone_rule() +
                     "- 당신은 결과를 그냥 전달만 하는 게 아니라 사용자를 돕는 비서입니다. "
                     "점검/진단류 결과를 '모든 항목이 정상입니다'처럼 뭉뚱그리지 말고, "
                     "무엇을 확인했는지 → 항목별로 어땠는지 순서로 구체적으로 설명하고, "
@@ -7469,6 +7525,9 @@ class AIWorker(QThread):
                         "아닌 이상) 같은 함수를 다시 사용하세요 — '어제'/'오늘'/'지난주' 같은 "
                         "날짜 표현만 보고 무조건 캘린더 함수로 넘어가지 마세요."
                     )
+
+            if ollama_tools and not use_tools and not is_explanation:
+                system_content += _chat_rules()
 
             # 새 세션 첫 메시지면 __init__에서 미리 불러온 직전 세션 맥락을
             # 시스템 프롬프트 끝에 참고용으로 덧붙인다 (있을 때만).
@@ -7519,7 +7578,7 @@ class AIWorker(QThread):
                 model=OLLAMA_MODEL, think=OLLAMA_THINK,
                 messages=self.chat_history,
                 tools=ollama_tools if use_tools else None,
-                options=({'temperature': 0.1} if use_tools else {'temperature': 0.7})
+                options=({'temperature': 0.1} if use_tools else {'temperature': 0.3})
                         | {'num_predict': _MAX_REPLY_TOKENS}
             )
 

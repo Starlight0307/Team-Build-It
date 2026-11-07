@@ -18,6 +18,8 @@ from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDi
 _NAMESPACE_LABELS = {
     "kill_confirm": ("shield-check", "프로세스 종료 확인 이력"),
     "price_search_history": ("search", "가격 검색 이력"),
+    "user_memory": ("brain", "대화에서 기억한 것"),
+    "user_style": ("brain", "대화 방식"),
 }
 
 

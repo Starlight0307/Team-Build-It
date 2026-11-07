@@ -1,6 +1,7 @@
 from data.secure_store import secure_open
 import json
 import os
+import threading
 from datetime import datetime
 
 from core.user_context import safe_uid, is_guest
@@ -17,6 +18,7 @@ from core.user_context import safe_uid, is_guest
 _DIR = os.path.dirname(__file__)
 _GUEST_FILE = os.path.join(_DIR, "preference_memory.json")
 _FILE = _GUEST_FILE
+_write_lock = threading.Lock()   # 대화 기억은 작업 스레드에서도 저장한다 — 동시에 쓰면 한쪽이 사라진다
 _USER_DIR = None   # 계정별 기억 폴더 — 처음 필요할 때 앱 폴더 밖(storage_location)으로 정한다
 
 
@@ -60,19 +62,23 @@ def save_pref(namespace: str, key: str, value) -> None:
     저장 시각을 자동으로 함께 기록해서 get_pref(max_age_days=...)로 만료 처리를
     할 수 있게 한다."""
     try:
-        try:
-            with secure_open(_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            data = {}
-        data.setdefault(namespace, {})[key.strip()] = {
-            "value": value,
-            "saved_at": datetime.now().isoformat(),
-        }
-        with secure_open(_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+        with _write_lock:
+            try:
+                with secure_open(_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except FileNotFoundError:
+                data = {}
+            except ValueError:   # 읽지 못한 파일을 덮어쓰면 기억이 전부 사라지니 따로 남겨 둔다
+                os.replace(_FILE, _FILE + ".corrupt")
+                data = {}
+            data.setdefault(namespace, {})[key.strip()] = {
+                "value": value,
+                "saved_at": datetime.now().isoformat(),
+            }
+            with secure_open(_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[기억] 저장 실패: {type(e).__name__}")
 
 
 def list_all() -> dict:
@@ -88,20 +94,21 @@ def list_all() -> dict:
 
 def delete_pref(namespace: str, key: str) -> None:
     """저장된 기억 중 항목 하나만 지운다 (namespace 전체가 아니라 key 하나)."""
-    try:
-        with secure_open(_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return
-    if namespace in data and key in data[namespace]:
-        del data[namespace][key]
-        if not data[namespace]:
-            del data[namespace]
+    with _write_lock:
         try:
-            with secure_open(_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            with secure_open(_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
         except Exception:
-            pass
+            return
+        if namespace in data and key in data[namespace]:
+            del data[namespace][key]
+            if not data[namespace]:
+                del data[namespace]
+            try:
+                with secure_open(_FILE, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
 
 
 def clear_preferences(namespace: str = None) -> None:
