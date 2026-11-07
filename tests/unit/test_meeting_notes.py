@@ -111,7 +111,7 @@ def test_each_account_has_its_own_meetings(meeting):
 def test_transcribe_passes_samples_not_a_path(tmp_path, monkeypatch):
     """경로를 넘기면 faster-whisper 1.2.1이 av 19에서 TypeError로 실패한다."""
     import wave
-    import numpy as np
+    np = pytest.importorskip("numpy")
     from core.voice import VoiceListener
     path = str(tmp_path / "m.wav")
     with wave.open(path, "wb") as f:
