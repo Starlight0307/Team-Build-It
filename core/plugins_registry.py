@@ -308,7 +308,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["get_stock_briefing", "open_stock_order", "stop_stock_auto_trading"],
         "module_name": "stock_portfolio",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/stock_portfolio.py",
-        "sha256": "4828265d8e67be246468d7de4ae76ab0d7a1b0feae950ec61d2fd88d6d89080f",
+        "sha256": "240db95e6bff70a7ecbf7a55625033b9b0a6e2868465d495fcd6427102b55b89",
         "dependencies": []
     },
     {
@@ -387,7 +387,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["start_meeting_recording", "stop_meeting_recording", "list_meetings", "show_meeting", "delete_meeting"],
         "module_name": "meeting_notes",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/meeting_notes.py",
-        "sha256": "1f853c699621a68452eaf8768d547dd91f1c6960018bbdd5c7c3cbf0dd54baa8",
+        "sha256": "0baa52e42fb2db66bd6c4b0caa41129f99b500622c69530081c78f1de7e937eb",
         "dependencies": []
     },
     {

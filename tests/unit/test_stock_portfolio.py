@@ -752,6 +752,15 @@ def test_no_key_reads_naver_in_the_public_data_shape(market, monkeypatch):
     assert sp.market_bars("005930")[0]["date"] == "2026-11-03"
 
 
+def test_no_account_minute_bars_come_from_naver(market, monkeypatch):
+    row = {"localDateTime": "20261106090200", "currentPrice": 181100.0, "openPrice": 180000.0, "highPrice": 181300.0, "lowPrice": 179200.0, "accumulatedTradingVolume": 1743312}
+    monkeypatch.setattr(sp.requests, "get", lambda url, **kw: FakeResponse([row, {"localDateTime": "bad", "currentPrice": 1}]))
+    assert sp.minute_bars("005930") == [{"date": "2026-11-06 09:02", "open": 180000, "high": 181300, "low": 179200, "close": 181100, "volume": 1743312}]
+    monkeypatch.setattr(sp.requests, "get", lambda url, **kw: FakeResponse({"code": "blocked"}))
+    with pytest.raises(sp.StockError):
+        sp.minute_bars("005930")
+
+
 def test_naver_row_of_today_is_not_a_close_during_market_hours(market, monkeypatch):
     today = datetime.now(sp.KST).strftime("%Y%m%d")
     market.state["naver"] = NAVER_ROWS + [dict(NAVER_ROWS[0], localDate=today, closePrice=1.0)]
@@ -1710,8 +1719,8 @@ def test_toss_minute_bars_are_sorted_in_korean_time(broker_env):
     assert any((c[2].get("params") or {}).get("interval") == "1m" for c in fake.calls)
 
 
-def test_minute_bars_explain_unsupported_broker(broker_env, monkeypatch):
+def test_broker_without_minute_api_uses_naver(broker_env, monkeypatch):
     broker_env("toss", _toss_routes())
     monkeypatch.setattr(sp, "_broker", lambda data: object())
-    with pytest.raises(sp.StockError, match="토스증권"):
-        sp.minute_bars("005930")
+    monkeypatch.setattr(sp, "_naver_minute_bars", lambda code: ["naver"])
+    assert sp.minute_bars("005930") == ["naver"]

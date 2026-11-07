@@ -54,6 +54,7 @@ MARKET_KEY_GUIDE_URL = "https://www.data.go.kr/data/15094808/openapi.do"
 MARKET_SOURCE = "출처: 금융위원회(공공데이터포털)"
 # shortcut: 네이버 비공식 주소라 예고 없이 막힐 수 있다, 막히면 키 없는 시세가 멈추니 공식 경로로 바꾼다
 NAVER_CHART_URL = "https://api.stock.naver.com/chart/domestic/item/{code}/day"
+NAVER_MINUTE_URL = "https://api.stock.naver.com/chart/domestic/item/{code}/minute"
 NAVER_SOURCE = "출처: 네이버 금융"
 MARKET_CACHE_SECONDS = 1800
 TOSS_WS_URL = "wss://openapi-ws.tossinvest.com/ws/v1"
@@ -1041,17 +1042,19 @@ def get_price_history(code: str, days: int = 150) -> list:
 
 
 def minute_bars(code: str) -> list:
-    """1분봉 오래된 순, date는 "2026-11-06 09:31". 공개 명세에서 확인한 토스증권만 지원한다."""
+    """1분봉 오래된 순, date는 "2026-11-06 09:31". 공개 명세에서 확인한 토스증권은 증권사 시세, 그 외에는 네이버 시세."""
     if not re.fullmatch(r"[0-9A-Z]{6}", code or ""):
         raise StockError("종목코드가 올바르지 않아요.")
-    with _lock:
-        data = _require_account()
-    broker = _broker(data)
-    if not hasattr(broker, "minute_bars"):
-        raise StockError("1분봉은 토스증권을 연결했을 때 볼 수 있어요. 지금 연결한 증권사는 아직 지원하지 않아요.")
-    bars = broker.minute_bars(code)
-    _store_token(data)
-    return bars
+    if logged_in():
+        with _lock:
+            data = _load()
+        if data["account"]:
+            broker = _broker(data)
+            if hasattr(broker, "minute_bars"):
+                bars = broker.minute_bars(code)
+                _store_token(data)
+                return bars
+    return _naver_minute_bars(code)
 
 
 def price_bars(code: str) -> list:
@@ -1112,21 +1115,37 @@ def _query_market(url: str, code: str, key: str) -> list:
                   key=lambda r: str(r.get("basDt")))
 
 
-def _fetch_naver_rows(code: str) -> list:
-    """시세 키가 없을 때 — 공공데이터 응답과 같은 모양으로 바꿔 돌려준다."""
-    now = datetime.now(KST)
+def _naver_get(url: str, params: dict = None) -> list:
     body = None
     for attempt, wait in enumerate((6, 25)):   # 조회라 다시 보내도 안전하다
         try:
-            body = requests.get(NAVER_CHART_URL.format(code=code), timeout=wait, headers={"User-Agent": "Lumi"}, params={
-                "startDateTime": (now - timedelta(days=150)).strftime("%Y%m%d0000"),
-                "endDateTime": now.strftime("%Y%m%d2359")}).json()
+            body = requests.get(url, timeout=wait, headers={"User-Agent": "Lumi"}, params=params).json()
             break
         except (requests.RequestException, ValueError):
             if attempt:
                 raise StockError("시세를 받지 못했어요. 인터넷 연결을 확인해 주세요.")
     if not isinstance(body, list):
         raise StockError("시세를 받지 못했어요. 잠시 뒤 다시 시도해 주세요.")
+    return body
+
+
+def _naver_minute_bars(code: str) -> list:
+    bars = {}
+    for r in _naver_get(NAVER_MINUTE_URL.format(code=code)):
+        stamp = str(r.get("localDateTime")) if isinstance(r, dict) else ""
+        if re.fullmatch(r"\d{14}", stamp) and _num(r.get("currentPrice")) > 0:
+            date = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[8:10]}:{stamp[10:12]}"
+            bars[date] = dict(_bar("", r.get("openPrice"), r.get("highPrice"), r.get("lowPrice"), r["currentPrice"],
+                                   r.get("accumulatedTradingVolume")), date=date)   # _bar는 일봉 날짜 형식만 안다
+    return [bars[d] for d in sorted(bars)]
+
+
+def _fetch_naver_rows(code: str) -> list:
+    """시세 키가 없을 때 — 공공데이터 응답과 같은 모양으로 바꿔 돌려준다."""
+    now = datetime.now(KST)
+    body = _naver_get(NAVER_CHART_URL.format(code=code), {
+        "startDateTime": (now - timedelta(days=150)).strftime("%Y%m%d0000"),
+        "endDateTime": now.strftime("%Y%m%d2359")})
     today = now.strftime("%Y%m%d") if market_open(now) else None   # 장중 오늘 값은 아직 종가가 아니다
     picked = sorted((r for r in body if isinstance(r, dict) and re.fullmatch(r"\d{8}", str(r.get("localDate")))
                      and r["localDate"] != today and _num(r.get("closePrice")) > 0), key=lambda r: r["localDate"])
