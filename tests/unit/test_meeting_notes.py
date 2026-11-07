@@ -106,3 +106,23 @@ def test_each_account_has_its_own_meetings(meeting):
     mn.stop_meeting_recording()
     mn.set_current_user("lee")
     assert "없어요" in mn.list_meetings()
+
+
+def test_transcribe_passes_samples_not_a_path(tmp_path, monkeypatch):
+    """경로를 넘기면 faster-whisper 1.2.1이 av 19에서 TypeError로 실패한다."""
+    import wave
+    import numpy as np
+    from core.voice import VoiceListener
+    path = str(tmp_path / "m.wav")
+    with wave.open(path, "wb") as f:
+        f.setnchannels(1); f.setsampwidth(2); f.setframerate(mn.SAMPLE_RATE)
+        f.writeframes(np.array([0, 16384, -32768], dtype=np.int16).tobytes())
+    seen = []
+
+    class Model:
+        def transcribe(self, audio, **kw):
+            seen.append(audio)
+            return [], None
+    monkeypatch.setattr(VoiceListener, "_load_model", classmethod(lambda cls: Model()))
+    assert mn._transcribe(path) == ""
+    assert seen[0].dtype == np.float32 and seen[0].tolist() == [0.0, 0.5, -1.0]

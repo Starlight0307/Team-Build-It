@@ -101,8 +101,12 @@ def _reserve_mic(on: bool):
 
 
 def _transcribe(path: str) -> str:
+    import numpy as np
     from core.voice import VoiceListener
-    segments, _ = VoiceListener._load_model().transcribe(path, language="ko", beam_size=5, vad_filter=True,
+    # 파일 경로를 넘기면 faster-whisper가 av로 푸는데, 최신 av(19)와 맞지 않아 실패한다. 형식을 아는 녹음이라 직접 읽는다
+    with wave.open(path, "rb") as f:
+        audio = np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+    segments, _ = VoiceListener._load_model().transcribe(audio, language="ko", beam_size=5, vad_filter=True,
                                                          condition_on_previous_text=False)
     return " ".join(s.text.strip() for s in segments if not (s.no_speech_prob > 0.6 and s.avg_logprob < -1.0)).strip()
 
