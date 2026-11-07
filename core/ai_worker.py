@@ -5339,6 +5339,8 @@ def _only_mentions_a_date(text: str, keywords) -> bool:
     "어제는?" 같은 짧은 후속 질문과 "내일 뭐 해?" 같은 일정 질문은 지금처럼 도구로 보낸다."""
     text = (text or "").lower().strip()
     found = {kw for kw in keywords if kw in text}
+    if re.search(r"줘|주세요|보여|알려", text):   # "이번주 스케줄 보여줘"는 낱말이 날짜뿐이어도 요청이다
+        return False
     if "있어" in found and "?" in text:   # "나 오늘 데이트 있어"는 잡담, "내일 약속 있어?"는 일정 질문
         return False
     if found == {"있어"}:   # "할 말 있어"

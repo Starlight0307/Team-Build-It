@@ -210,7 +210,7 @@ def test_crisis_always_gets_the_helpline(text, casual):
     assert "109" in small_talk.reply(text, casual)
 
 
-@pytest.mark.parametrize("text,chat", [("나 오늘 데이트 있어", True), ("나 다음주에 여행 가", True), ("내일 약속 있어?", False), ("오늘 약속 있어", False), ("다음주 일정 알려줘", False)])
+@pytest.mark.parametrize("text,chat", [("나 오늘 데이트 있어", True), ("나 다음주에 여행 가", True), ("내일 약속 있어?", False), ("오늘 약속 있어", False), ("다음주 일정 알려줘", False), ("이번주 스케줄 보여줘", False)])
 def test_date_statements_stay_in_chat(text, chat):
     from core.ai_worker import AIWorker, _only_mentions_a_date
     assert _only_mentions_a_date(text, AIWorker._TOOL_KEYWORDS) is chat

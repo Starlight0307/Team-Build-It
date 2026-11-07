@@ -94,7 +94,8 @@ def _wanted(expected):
 
 def _trigger_cases():
     cases = [(c["text"], c["expected"]) for c in TOOL_SELECTION_CASES if c["expected"] and not c["id"].startswith("network_security_3")] + TRIGGERS
-    return cases + [("루미야 " + t, e) for t, e in cases]
+    # 호출어는 모델에 넘기기 전에 코드가 떼어 내니(small_talk.strip_name) 표본만 본다
+    return cases + [("루미야 " + t, e) for t, e in cases[::5]]
 
 
 def test_tools_still_fire_when_called(spied_installed_tools, memory):  # noqa: F811
