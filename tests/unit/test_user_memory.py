@@ -215,3 +215,67 @@ def test_date_statements_stay_in_chat(text, chat):
     from core.ai_worker import AIWorker, _only_mentions_a_date
     assert _only_mentions_a_date(text, AIWorker._TOOL_KEYWORDS) is chat
 
+
+@pytest.mark.parametrize("kind", ["good", "bad", "plan", "wish", "did", "opinion", "other"])
+@pytest.mark.parametrize("casual", [False, True])
+def test_statement_reply_uses_the_kind_and_avoids_repeating(kind, casual):
+    from core import small_talk
+    ask = lambda s, t: json.dumps({"kind": kind})
+    first = small_talk.statement_reply("지갑 잃어버렸어", casual, ask)
+    assert first in small_talk._KIND_REPLIES[kind][1 if casual else 0]
+    assert small_talk.statement_reply("지갑 잃어버렸어", casual, ask, avoid=first) != first
+
+
+@pytest.mark.parametrize("text", ["파이썬이 뭐야?", "이순신이 누구야", "스트레스 어떻게 풀어", "왜 그래"])
+def test_questions_are_not_classified(text):
+    from core import small_talk
+
+    def ask(system, text):
+        raise AssertionError("질문은 분류하지 않는다")
+    assert small_talk.statement_reply(text, False, ask) is None
+
+
+@pytest.mark.parametrize("raw", ["깨짐", json.dumps({"kind": "없는것"})])
+def test_bad_classification_falls_back_to_the_model(raw):
+    from core import small_talk
+    assert small_talk.statement_reply("지갑 잃어버렸어", False, lambda s, t: raw) is None
+
+
+@pytest.mark.parametrize("text,chat", [("라면 끓이는 법 알려줘", True), ("독도는 어디 있어?", True), ("보고서 파일 어디 있어?", False), ("10분 뒤에 알려줘", False),
+                                       ("지금 날씨 알려줘", False), ("타이머 뭐 돌고 있어?", False)])
+def test_generic_words_alone_are_not_a_tool_request(text, chat):
+    from core.ai_worker import AIWorker, _only_generic_words
+    assert _only_generic_words(text, AIWorker._TOOL_KEYWORDS) is chat
+
+
+@pytest.mark.parametrize("text", ["우산 잃어버렸어", "어제 밤샜어", "사촌이랑 다퉜어", "방금 샤워했어"])
+def test_past_events_are_statements(text):
+    from core.ai_worker import _is_plain_statement
+    assert _is_plain_statement(text)
+
+
+def test_requests_are_not_classified_as_statements():
+    from core import small_talk
+
+    def ask(system, text):
+        raise AssertionError("요청은 분류하지 않는다")
+    assert small_talk.statement_reply("김치찌개 끓이는 법 알려줘", False, ask) is None
+    assert small_talk.statement_reply("추천해 주세요", False, ask) is None
+
+
+def test_measure_question_is_not_a_price_search():
+    from core.ai_worker import _ASKS_MEASURE
+    assert _ASKS_MEASURE.search("에베레스트산 높이가 얼마야?") and not _ASKS_MEASURE.search("갤럭시 S25 얼마야?")
+
+
+def test_more_statements_and_measure_questions():
+    from core.ai_worker import _ASKS_MEASURE, _is_plain_statement
+    assert _is_plain_statement("피자 시켜 먹을까 해") and _is_plain_statement("야식 먹을까 말까")
+    assert _ASKS_MEASURE.search("서울에서 부산까지 얼마나 걸려?") and _ASKS_MEASURE.search("물 하루에 얼마나 마셔?")
+
+
+@pytest.mark.parametrize("text", ["오늘 뭐 입지", "오늘은 여기까지 할게", "나 이제 나갈게", "잠깐 쉬어야겠다", "말 잘 들어줘서 고마워"])
+def test_more_table_phrases(text):
+    from core import small_talk
+    assert small_talk.reply(text)
+

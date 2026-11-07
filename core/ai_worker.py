@@ -72,7 +72,7 @@ def _fit_history_to_budget(messages: list, tools) -> list:
 
 
 from calendar_feature import calendar_preference
-from core.preference_memory import get_pref, save_pref
+from core.preference_memory import get_pref, list_all, save_pref
 from core import small_talk, user_memory
 
 # 실제 호출하는 Ollama 모델 — 이 파일 안에 7곳 넘게 문자열로 직접 박혀
@@ -5317,6 +5317,7 @@ def _polish_chat_reply(reply: str, user_text: str) -> str:
     return " ".join(kept[:3])
 
 
+_ASKS_FACT = re.compile(r"법\s*알려|방법|어떻게|왜|누구|누가|몇\s*개|몇\s*명|언제|어디|영어로|일본어로|중국어로|뭐야|뭔가요|뭐예요")
 _ASKS_REPEAT = re.compile(r"뭐라고요?|(?:아까|방금)\s*뭐라고\s*(?:했어요?|했니)|다시\s*(?:말해\s*(?:줘|주세요)|한번\s*말해\s*(?:줘|주세요))|잘\s*못\s*들었어요?")
 _ASKS_DATE = re.compile(r"며칠|몇\s*일|요일|날짜|오늘|내일|모레|어제|글피")
 _DATE_WORDS = {"오늘", "내일", "모레", "글피", "어제", "이번주", "다음주", "이번달", "다음달"}
@@ -5324,14 +5325,37 @@ _SCHEDULE_QUESTION = re.compile(r"뭐\s*(해|하|있)|몇\s*시|언제|약속")
 
 
 _REQUEST_WORD = re.compile(r"줘|주세요|줄래|알려|보여|찾아|켜|꺼|추가|삭제|지워|설정|맞춰|확인|검사|점검|스캔|메모|기록|얼마|몇|언제|뭐|뭘|어디|어때|왜|있어|있나|\d")
-_STATEMENT_END = re.compile(r"(?:았|었|했|였|왔|갔|봤|샀|줬)(?:어|어요|다|네|네요|음)?$|(?:짜증나|귀찮|피곤|힘들|좋|싫|싶|나쁘|슬프|기쁘|설레|걱정돼|야근해)(?:다|아|어|네|요|아요|어요|네요)?$")
+_STATEMENT_END = re.compile(r"(?:까\s*해|까\s*말까)$|(?:짜증나|귀찮|피곤|힘들|좋|싫|싶|나쁘|슬프|기쁘|설레|걱정돼|야근해)(?:다|아|어|네|요|아요|어요|네요)?$")
 
 
 def _is_plain_statement(text: str) -> bool:
     """"나 오늘 월급 받았어"처럼 그냥 하는 말 — 도구로 보내면 수입 기록이나 브리핑이 실행된다.
     금액이 있거나("8000원 썼어") 요청·질문 낱말이 있으면 지금처럼 도구로 보낸다."""
     text = (text or "").strip().rstrip(".!~ㅠㅜㅋㅎ ")
-    return bool(text) and "?" not in text and not _REQUEST_WORD.search(text) and bool(_STATEMENT_END.search(text))
+    if not text or "?" in text or _REQUEST_WORD.search(text):
+        return False
+    return bool(_STATEMENT_END.search(text)) or _ends_in_past_tense(text)
+
+
+def _ends_in_past_tense(text: str) -> bool:
+    """받침 ㅆ + 어/어요/다/네: 잃어버렸어, 밤샜어, 다퉜어."""
+    m = re.search(r"([가-힣])(?:어|어요|다|네|네요|음)$", text)
+    return bool(m) and (ord(m.group(1)) - 0xAC00) % 28 == 20
+
+
+_PC_THING = re.compile(r"파일|폴더|사진|문서|보고서|cpu|메모리|디스크|컴퓨터|피시|\bpc\b|일정|회의|타이머")
+
+
+_ASKS_MEASURE = re.compile(r"(?:높이|길이|거리|인구|무게|크기|넓이|나이|깊이).{0,6}(?:얼마|몇)|까지\s*얼마나\s*걸려|얼마나\s*(?:마셔|먹어|자야|자\b|운동)")   # "얼마"가 가격 검색으로 가지 않게
+_ASKS_MY_FACT = re.compile(r"(?:내|제)\s*(?:이름|직업|취미|생일|사는\s*곳).{0,6}(?:기억|알아|아세요|뭐게|뭐야|뭐예요)|내가\s*(?:누구|뭐\s*좋아)")
+
+
+def _only_generic_words(text: str, keywords) -> bool:
+    """"라면 끓이는 법 알려줘", "독도는 어디 있어?" — '알려줘'와 '있어'만으로는 PC 작업인지 알 수 없다.
+    도구를 주면 날씨를 부르거나 "처리하지 못했어요"가 나오니 대화로 답한다."""
+    text = (text or "").lower().strip()
+    found = {kw for kw in keywords if kw in text}
+    return bool(found) and found <= {"알려줘", "있어", "언제"} and not _PC_THING.search(text)
 
 
 def _only_mentions_a_date(text: str, keywords) -> bool:
@@ -5349,6 +5373,10 @@ def _only_mentions_a_date(text: str, keywords) -> bool:
     return bool(found) and found <= _DATE_WORDS and len(text) > 6 and not _SCHEDULE_QUESTION.search(text)
 
 
+def list_all_facts() -> dict:
+    return list_all().get(user_memory.FACTS, {})
+
+
 def _tone_rule() -> str:
     return _CASUAL_TONE_RULE if user_memory.is_casual() else _SOFT_TONE_RULE
 
@@ -5356,6 +5384,11 @@ def _tone_rule() -> str:
 def _chat_rules() -> str:
     """도구를 쓰지 않는 대화에만 붙인다 — 도구 선택 정확도와 문맥 길이에 영향을 주지 않게."""
     return _CHAT_RULE + user_memory.prompt_block()
+
+
+def _ask_kind(system: str, text: str) -> str:
+    return _ollama_chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, format="json", options={"temperature": 0, "num_predict": 30},
+                        messages=[{"role": "system", "content": system}, {"role": "user", "content": text}])["message"]["content"]
 
 
 def _chat_messages(history: list) -> list:
@@ -6430,7 +6463,8 @@ class AIWorker(QThread):
         """사용자 입력(+ 필요시 직전 AI 답변)에 도구 관련 키워드가 있는지 빠르게 판단."""
         if self._file_filter_route() is not None:
             return True
-        if _is_plain_statement(self.user_text) or _only_mentions_a_date(self.user_text, self._TOOL_KEYWORDS):
+        if (_is_plain_statement(self.user_text) or _only_mentions_a_date(self.user_text, self._TOOL_KEYWORDS)
+                or _only_generic_words(self.user_text, self._TOOL_KEYWORDS) or _ASKS_MEASURE.search(self.user_text)):
             return False
         text = self._keyword_search_text()
         found = {kw for kw in self._TOOL_KEYWORDS if kw in text}
@@ -7091,6 +7125,8 @@ class AIWorker(QThread):
             asked = '?' in prev_reply or '까요' in prev_reply
             canned = (None if self._ACK_ONLY.match(self.user_text.strip()) or (asked and self._is_decline_reply())
                       else small_talk.reply(self.user_text, user_memory.is_casual()))
+            if _ASKS_MY_FACT.search(self.user_text) and not list_all_facts():   # 모델은 모를 때 자기 이름을 댄다
+                canned = "아직 들은 적이 없어. 알려 주면 기억할게." if user_memory.is_casual() else "아직 들은 적이 없어요. 알려 주시면 기억할게요."
             if _ASKS_REPEAT.fullmatch(self.user_text.strip().rstrip("?!. ")):   # 모델은 앞말을 되풀이하지 못하고 지어낸다
                 canned = prev_reply or ("아직 한 말이 없어. 뭐든 말해 봐." if user_memory.is_casual() else "아직 드린 말씀이 없어요. 편하게 말씀해 주세요.")
             if canned:
@@ -7120,7 +7156,9 @@ class AIWorker(QThread):
             tr_match = (re.fullmatch(_lang + r'\s*로\s*[\'"“‘](?P<t1>.+?)[\'"”’]\s*(?:을|를)?\s*(?:좀\s*)?번역\s*해\s*(?:줘|주세요|줄래)[.!?\s]*',
                                      self.user_text.strip())
                         or re.fullmatch(r'[\'"“‘](?P<t1>.+?)[\'"”’]\s*(?:을|를)?\s*' + _lang
-                                        + r'\s*로\s*(?:좀\s*)?번역\s*해\s*(?:줘|주세요|줄래)[.!?\s]*', self.user_text.strip()))
+                                        + r'\s*로\s*(?:좀\s*)?번역\s*해\s*(?:줘|주세요|줄래)[.!?\s]*', self.user_text.strip())
+                        or re.fullmatch(r'(?P<t1>[^\s\'"]+?)(?:은|는|이|가)?\s*' + _lang
+                                        + r'\s*로\s*(?:뭐야|뭐예요|뭐라고\s*해요?|어떻게\s*말해요?)[.!?\s]*', self.user_text.strip()))
             if tr_match:
                 func_map = {f.__name__: f for f in self.installed_tools}
                 if 'translate_text' in func_map:
@@ -7649,6 +7687,14 @@ class AIWorker(QThread):
             sys.stderr.write(f"   - use_tools: {use_tools}\n")
             sys.stderr.write(f"   - tools 개수: {len(ollama_tools) if use_tools else 0}\n")
             sys.stderr.flush()
+
+            if ollama_tools and not use_tools and not is_explanation:
+                last_reply = next((str(m.get('content', '')) for m in reversed(self.chat_history) if m.get('role') == 'assistant'), '')
+                picked = small_talk.statement_reply(self.user_text, user_memory.is_casual(), _ask_kind, last_reply)
+                if picked:
+                    self.chat_history.append({'role': 'assistant', 'content': picked})
+                    self.response_ready.emit(f"🤖 로컬 비서: {picked}")
+                    return
 
             response = _ollama_chat(
                 model=OLLAMA_MODEL, think=OLLAMA_THINK,
@@ -8287,9 +8333,11 @@ class AIWorker(QThread):
 
             clean_reply = clean_reply.strip()
             if not use_tools:
-                clean_reply = (_polish_chat_reply(clean_reply, self.user_text)
-                               or ("그랬구나. 조금 더 얘기해 줄래?" if user_memory.is_casual()
-                                   else "그러셨군요. 조금 더 들려주실래요?"))
+                clean_reply = _polish_chat_reply(clean_reply, self.user_text)
+                if not clean_reply:   # 고장 난 문장만 남았으면 지어내지 않고 모른다고 한다
+                    clean_reply = "그건 내가 잘 모르겠어. 다르게 물어봐 줄래?" if user_memory.is_casual() else "그건 제가 잘 모르겠어요. 다르게 물어봐 주실래요?"
+                elif _ASKS_FACT.search(self.user_text):   # 이 모델은 사실을 자주 틀린다("한글은 이순신이 만들었다")
+                    clean_reply += " 내가 틀릴 수도 있으니 중요한 건 확인해 봐." if user_memory.is_casual() else " 제가 틀릴 수도 있으니 중요한 건 확인해 보세요."
 
             self.chat_history.append({'role': 'assistant', 'content': clean_reply})
             self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")
