@@ -108,6 +108,26 @@ class AppOpenWorker(QThread):
             self.done.emit(f"❌ {e}" if isinstance(e, app_launcher.AppNotFound) else f"❌ '{name}' 앱을 열지 못했어요.")
 
 
+class ConfirmedToolWorker(QThread):
+    """확인창에서 '예'를 누른 뒤 오래 걸리는 도구(예: Defender 검사)를 UI 스레드 밖에서 실행한다.
+    result_ready(text, ok): ok=False면 text는 고정 오류 문구(예외 상세 없음)."""
+    result_ready = pyqtSignal(str, bool)
+
+    def __init__(self, func, args: dict, func_name: str):
+        super().__init__()
+        self._func = func
+        self._args = dict(args or {})
+        self._func_name = func_name
+
+    def run(self):
+        try:
+            result = self._func(**self._args)
+            self.result_ready.emit(str(result), True)
+        except Exception as e:
+            print(f"[확인 후 실행 오류] {self._func_name}: {type(e).__name__}")
+            self.result_ready.emit("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.", False)
+
+
 class AutoLoginWorker(QThread):
     """저장된 세션으로 자동 로그인 시도 (네트워크 호출이라 백그라운드에서)."""
     done = pyqtSignal(str)   # 성공한 아이디, 실패하면 빈 문자열
@@ -394,6 +414,7 @@ class AssistantApp(QWidget):
         self._screen_pull_worker     = None   # 화면 인식 모델 다운로드
         self._screen_pending         = None   # 모델 다운로드 끝나면 이어서 할 (요청, 모드)
         self._web_worker             = None   # 목록에 없는 사이트의 홈페이지 주소 찾기
+        self._confirm_worker         = None   # 확인 후 실행하는 느린 도구(Defender 검사 등) 스레드
         self._skill_worker           = None   # OpenClaw 스킬 고르기/실행 (core/skill_agent.py)
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -532,12 +553,44 @@ class AssistantApp(QWidget):
             self.tray_icon.hide()
         QApplication.instance().quit()
 
+    # 종료 때 정리해도 되는 자식 프로세스 이름(이 앱이 Defender 검사로 띄운 PowerShell만)
+    _KILLABLE_CHILD_PREFIXES = ("powershell", "pwsh")
+
+    @classmethod
+    def _kill_own_shell_children(cls):
+        """이 프로세스의 자식 중 powershell*/pwsh*만 종료한다(다른 프로세스는 건드리지 않음).
+        검사 스레드가 기다리던 subprocess.run이 곧바로 반환되게 하려는 협조적 취소다."""
+        try:
+            import psutil
+            for child in psutil.Process().children(recursive=True):
+                try:
+                    if child.name().lower().startswith(cls._KILLABLE_CHILD_PREFIXES):
+                        child.kill()
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[종료] 자식 프로세스 정리 실패: {type(e).__name__}")
+
+    @classmethod
+    def _wait_or_cancel(cls, worker, ms: int) -> bool:
+        """종료 경로 전용. QThread.terminate()는 Windows에서 TerminateThread라 락/GIL을 쥔 채
+        끊겨 인터프리터 종료가 멈출 수 있으므로 쓰지 않는다. 대신 정상 대기 → 자식 PowerShell
+        종료(협조적 취소) → 짧게 재대기 순으로 한다. 끝났으면 True."""
+        try:
+            if worker.wait(ms):
+                return True
+            cls._kill_own_shell_children()
+            return bool(worker.wait(2000))
+        except RuntimeError:   # 이미 삭제된 객체
+            return True
+
     def shutdown_background_work(self):
         """백그라운드 작업(마이크/화면 작업/음성 출력)을 멈추고 끝날 때까지 기다린다.
         어떤 경로로 종료하든(트레이 종료, Cmd+Q, Ctrl+C) 여러 번 불려도 안전하다.
         2026-09-30 사용자 PC에서 마이크(VoiceListener)가 켜진 채 Ctrl+C 등으로
         종료하자 "QThread: Destroyed while thread is still running"으로 앱이 강제
         종료된 충돌 보고서가 두 건 있었다."""
+        stuck_scan = False
         self.stock_panel.close_detail()
         if self._screen_worker is not None and self._screen_worker.isRunning():
             self._screen_worker.stop()
@@ -547,8 +600,15 @@ class AssistantApp(QWidget):
             self._skill_worker.wait(2000)
         if self._route_worker is not None and self._route_worker.isRunning():
             self._route_worker.wait(3000)
+        if self._confirm_worker is not None and self._confirm_worker.isRunning():
+            if not self._wait_or_cancel(self._confirm_worker, 3000):
+                stuck_scan = True
         for worker in list(self._abandoned_workers):   # '대답 멈추기'로 손 뗀 워커
-            worker.wait(2000)
+            if isinstance(worker, ConfirmedToolWorker):
+                if not self._wait_or_cancel(worker, 2000):
+                    stuck_scan = True
+            else:
+                worker.wait(2000)
         if self._speaker is not None:
             self._speaker.shutdown()
         if self._optional_install_worker is not None and self._optional_install_worker.isRunning():
@@ -556,6 +616,18 @@ class AssistantApp(QWidget):
         if self._voice_listener is not None:
             self._voice_listener.stop()
             self._voice_listener.wait(2000)
+        if stuck_scan:
+            # 자식을 정리해도 검사 스레드가 안 끝난 최후의 경우: 살아 있는 QThread를 둔 채 종료하면
+            # "Destroyed while thread is still running" 충돌 보고서가 남으므로, 다른 정리를 모두 마친
+            # 지금 로그 한 줄만 남기고 프로세스를 바로 끝낸다(terminate()보다 안전한 선택).
+            print("[종료] Defender 검사 스레드가 끝나지 않아 프로세스를 바로 종료합니다.")
+            sys.stdout.flush()
+            try:   # os._exit는 정상 종료 정리를 건너뛰므로 트레이 유령 아이콘이 남지 않게 먼저 숨긴다
+                if self.tray_icon:
+                    self.tray_icon.hide()
+            except Exception:
+                pass
+            os._exit(0)
 
     def _confirm_quit(self):
         """상단 바 종료 버튼 — 실수로 누르는 일이 없게 한 번 묻고 완전히 끈다."""
@@ -1813,6 +1885,9 @@ class AssistantApp(QWidget):
         if worker is not None and worker.isRunning():
             self._show_toast("답변을 만드는 중이에요. 끝난 뒤에 새 채팅을 시작해 주세요.")
             return
+        if self._confirm_worker_running():
+            self._show_toast("Defender 검사를 하는 중이에요. 끝난 뒤에 새 채팅을 시작해 주세요.")
+            return
         if not self.chat_bubbles and not self.chat_history:
             self.input_field.setFocus()   # 이미 빈 새 채팅
             return
@@ -2850,6 +2925,12 @@ class AssistantApp(QWidget):
         """계정이 바뀐 직후, 그 계정의 환경설정을 화면에 다시 반영한다
         (테마 / 음성 답변 / 날씨 지역 / 홈 위젯 배치 / 스킬 목록 / 앱 사용 기록 이어가기).
         화면에 남은 이전 계정의 대화 내용도 함께 비운다(다른 계정에게 보이면 안 되므로)."""
+        if self._confirm_worker is not None:   # 이전 계정의 검사 결과가 새 계정 화면에 새면 안 된다
+            self._confirm_worker.silent = True   # 새 계정 화면에는 '멈춘 검사가 끝났어요' 토스트도 띄우지 않는다
+            self._abandon_worker(self._confirm_worker)
+            self._confirm_worker = None
+            self._hide_typing_indicator()
+            self._set_input_enabled(True)
         self._clear_conversation()
         self.stock_panel.close_detail()   # 이전 계정의 보유 종목이 떠 있으면 안 된다
         self._sync_surface_buttons()
@@ -3053,7 +3134,8 @@ class AssistantApp(QWidget):
         if ((self.worker is not None and self.worker.isRunning()) or self._screen_task_running()
                 or (self._web_worker is not None and self._web_worker.isRunning())
                 or (self._skill_worker is not None and self._skill_worker.isRunning())
-                or (self._route_worker is not None and self._route_worker.isRunning())):
+                or (self._route_worker is not None and self._route_worker.isRunning())
+                or self._confirm_worker_running()):
             self._show_toast("⏳ 아직 이전 요청을 처리하고 있어요. 잠시만 기다려주세요.")
             return
 
@@ -3288,6 +3370,15 @@ class AssistantApp(QWidget):
 
         if reply == QMessageBox.StandardButton.Yes:
             func_map = {f.__name__: f for f in self.installed_tools}
+            if func_name in func_map and func_name in self._SLOW_CONFIRMED_FUNCS:
+                # Defender 검사처럼 최대 몇 분 걸리는 도구는 UI 스레드에서 돌리면 창이 멈춘다 → 백그라운드로
+                if self._confirm_worker_running(include_abandoned=True):
+                    self.display_ai_response("🤖 로컬 비서: 이미 다른 검사가 진행 중이라 이번 요청은 실행하지 않았어요. 끝난 뒤 다시 요청해 주세요.")
+                    self._relock_if_scanning()
+                    QTimer.singleShot(50, self.auto_scroll_to_bottom)
+                else:
+                    self._start_confirmed_worker(func_map[func_name], args, func_name)
+                return
             if func_name in func_map:
                 try:
                     result = func_map[func_name](**args)
@@ -3304,6 +3395,76 @@ class AssistantApp(QWidget):
         else:
             self.display_ai_response("🤖 로컬 비서: 알겠어요, 요청하신 작업은 하지 않았어요.")
 
+        # 검사 중에 다른 확인창을 처리했다면 display_ai_response가 풀어버린 입력 잠금을 다시 건다
+        self._relock_if_scanning()
+        QTimer.singleShot(50, self.auto_scroll_to_bottom)
+
+    _SLOW_CONFIRMED_FUNCS = frozenset({"scan_file_with_defender"})
+
+    def _confirm_worker_running(self, include_abandoned: bool = False) -> bool:
+        """include_abandoned: '대답 멈추기'로 손 뗐지만 아직 도는 검사도 센다(Defender 동시 2회 방지)."""
+        def alive(w):
+            try:
+                return w is not None and w.isRunning()
+            except RuntimeError:   # 이미 삭제됨
+                return False
+        if alive(self._confirm_worker):
+            return True
+        return include_abandoned and any(
+            isinstance(w, ConfirmedToolWorker) and alive(w) for w in self._abandoned_workers)
+
+    def _relock_if_scanning(self):
+        if self._confirm_worker_running():
+            if not getattr(self, "_typing", None):
+                self._show_typing_indicator()
+            self._set_input_enabled(False)
+            self._on_status_update("🛡️ Defender로 검사 중이에요… (최대 2분 걸릴 수 있어요)")
+
+    def _on_confirmed_worker_finished(self, worker):
+        """안전망: 결과 신호 없이 스레드가 끝났으면(비정상 종료) 입력 잠금을 풀고 고정 오류문을 보여준다."""
+        if worker is self._confirm_worker:
+            self._confirm_worker = None
+            self.display_ai_response("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.")
+        elif (isinstance(worker, ConfirmedToolWorker) and worker in self._abandoned_workers
+              and not getattr(worker, "silent", False)):
+            self._show_toast("🛡️ 아까 멈춘 검사가 끝났어요. 다시 요청하면 결과를 볼 수 있어요.")
+
+    def _start_confirmed_worker(self, func, args: dict, func_name: str):
+        if not getattr(self, "_typing", None):
+            self._show_typing_indicator()
+        self._set_input_enabled(False)
+        self._on_status_update("🛡️ Defender로 검사 중이에요… (최대 2분 걸릴 수 있어요)")
+        worker = ConfirmedToolWorker(func, args, func_name)
+        worker.origin = (self.current_session_id, MOCK_USER.get("name"))   # 시작 시점의 세션·계정
+        self._confirm_worker = worker
+        worker.result_ready.connect(
+            lambda text, ok, w=worker, n=func_name, a=dict(args): self._on_confirmed_result(w, n, a, text, ok))
+        worker.finished.connect(lambda w=worker: self._on_confirmed_worker_finished(w))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        QTimer.singleShot(50, self.auto_scroll_to_bottom)
+
+    def _on_confirmed_result(self, worker, func_name: str, args: dict, text: str, ok: bool):
+        if worker is not self._confirm_worker:   # 새 워커로 교체됐거나 정리된 뒤 늦게 온 결과는 버린다
+            return
+        self._confirm_worker = None
+        if getattr(worker, "origin", None) != (self.current_session_id, MOCK_USER.get("name")):
+            # 검사 도중 세션/계정이 바뀌었다 — 다른 대화에 결과를 표시·저장하지 않고 입력만 푼다
+            self._hide_typing_indicator()
+            self._set_input_enabled(True)
+            self._show_toast("검사 중에 대화가 바뀌어서 검사 결과는 표시하지 않았어요.")
+            return
+        if ok:
+            try:
+                from core.ai_worker import _build_deterministic_reply
+                reply = _build_deterministic_reply(text) or text
+                self.display_ai_response(f"🤖 로컬 비서: {reply}")
+                self._remember_kill_confirmation(func_name, args)
+            except Exception as e:
+                print(f"[확인 후 실행 오류] {func_name}: {type(e).__name__}")
+                self.display_ai_response("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.")
+        else:
+            self.display_ai_response(text)
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
 
     def _remember_kill_confirmation(self, func_name: str, args: dict):
@@ -4304,7 +4465,7 @@ class AssistantApp(QWidget):
             self._stop_screen_task()
             return
         self._pending_steps.clear()
-        for attr in ("worker", "_skill_worker", "_route_worker", "_web_worker", "_overall_worker"):
+        for attr in ("worker", "_skill_worker", "_route_worker", "_web_worker", "_overall_worker", "_confirm_worker"):
             self._abandon_worker(getattr(self, attr, None))
             setattr(self, attr, None)
         self.display_ai_response("🤖 로컬 비서: 대답을 멈췄어요. 이미 실행을 시작한 작업은 마저 끝날 수 있어요.")
@@ -4348,6 +4509,7 @@ class AssistantApp(QWidget):
             save_chat_to_file(MOCK_USER["name"], "assistant", clean,
                               self.current_session_id, self.current_session_title)
 
+        self._relock_if_scanning()   # 검사 중 다른 경로의 응답이 입력 잠금을 풀지 못하게
         self._track_last_event()
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
         QTimer.singleShot(0, self._refresh_info_panels)   # 대화로 일정/할 일이 바뀌었을 수 있음
@@ -4358,7 +4520,8 @@ class AssistantApp(QWidget):
             self.update_sidebar_ui()
 
         # ── 복합 요청의 다음 단계가 남아있으면 자동으로 이어서 전송 ──
-        if self._pending_steps:
+        # (Defender 검사 중이면 보류 — 검사 결과 표시 뒤 이 자리에서 이어서 전송된다)
+        if self._pending_steps and not self._confirm_worker_running():
             next_step = self._pending_steps.pop(0)
             QTimer.singleShot(500, lambda t=next_step: self.send_message(t))
 

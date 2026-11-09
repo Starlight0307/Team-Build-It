@@ -1072,14 +1072,18 @@ def check_dns_settings() -> str:
     if platform.system() != "Windows":
         return CheckResult("⚠️ 이 기능은 Windows 전용입니다.", unknown=1)
 
+    ps = _ns_powershell_exe()
+    if not ps:
+        return CheckResult("[🌐 DNS 설정]\nWindows PowerShell을 찾지 못해 DNS 설정을 확인하지 못했어요.", unknown=1)
     try:
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
+            [ps, "-NoProfile", "-Command",
              "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
              "Get-DnsClientServerAddress -AddressFamily IPv4 | "
              "Where-Object {$_.ServerAddresses.Count -gt 0} | "
              "ForEach-Object { $_.ServerAddresses -join ',' }"],
-            capture_output=True, encoding="utf-8", errors="replace", timeout=15
+            capture_output=True, encoding="utf-8", errors="replace", timeout=15,
+            env=_ps_env()
         )
         raw = proc.stdout.strip()
         if not raw:
@@ -1149,6 +1153,13 @@ _UNBLOCKABLE_PROGRAMS = {
 }
 
 
+def _ps_env():
+    """PowerShell 하위 프로세스용 환경변수. PowerShell 7/Claude Code 터미널에서 실행하면 PSModulePath에
+    PS7 경로가 섞여 Windows PowerShell 5.1이 Microsoft.PowerShell.Security(서명 확인 등)를 못 불러온다 —
+    PSModulePath만 빼서 5.1이 기본값을 쓰게 하고 나머지 환경변수는 그대로 물려준다."""
+    return {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+
+
 def _ns_powershell_exe():
     """Windows PowerShell 전체 경로 — malware_detection._powershell_exe와 같은 규칙(플러그인끼리 import하지
     않는 관례라 각자 둔다). Windows 폴더를 OS API로 구하고, 못 구하면 None."""
@@ -1177,7 +1188,7 @@ def _ps_json(script: str, timeout: int = 30):
             [ps, "-NoProfile", "-NonInteractive", "-Command",
              "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + script],
             capture_output=True, encoding="utf-8", errors="replace", timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=_ps_env(),
         )
         return json.loads(proc.stdout.strip() or "null")
     except (subprocess.SubprocessError, OSError, ValueError):
@@ -1224,12 +1235,14 @@ def _run_admin_powershell(script: str, timeout: int = 90):
     try:
         if _is_admin():
             subprocess.run([ps, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                           capture_output=True, timeout=timeout, creationflags=flags)
+                           capture_output=True, timeout=timeout, creationflags=flags,
+                           env=_ps_env())
         else:
             outer = (f"Start-Process -FilePath {_ps_quote(ps)} -Verb RunAs -WindowStyle Hidden -Wait "
                      f"-ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}'")
             subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", outer],
-                           capture_output=True, timeout=timeout, creationflags=flags)
+                           capture_output=True, timeout=timeout, creationflags=flags,
+                           env=_ps_env())
         if not os.path.isfile(out_file):
             return None, ("관리자 권한 작업이 끝나지 않아 방화벽을 바꾸지 않았어요 "
                           "(관리자 승인 창에서 '아니요'를 눌렀거나, 관리자 작업을 실행하지 못했어요).")

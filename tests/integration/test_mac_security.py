@@ -442,7 +442,12 @@ def test_startup_notice_uses_mac_labels_and_keeps_port_alert():
         "get_listening_ports": lambda: CheckResult("[x]\n🚨 5900", critical=1, summary="위험 1개"),
     }
     notice = build_startup_notice(func_map)
-    assert "macOS 업데이트" in notice and "Mac 방화벽" in notice and "Windows" not in notice
+    assert "Windows" not in notice and "✅ 방화벽 — 이상 없음" in notice and "✅ 업데이트 — 이상 없음" in notice and "설치 기록" not in notice
+    # 걸린 항목의 줄 이름은 Mac 용어로 나온다
+    func_map["check_update_status"] = lambda: CheckResult("[x]\n⚠️ 오래됨", warning=1, summary="오래됐어요.")
+    func_map["check_firewall_status"] = lambda: CheckResult("[x]\n⚠️ 꺼짐", warning=1, summary="꺼져 있어요.")
+    notice2 = build_startup_notice(func_map)
+    assert "macOS 업데이트" in notice2 and "Mac 방화벽" in notice2 and "Windows" not in notice2
     # Mac 방화벽이 켜져 있어도 열린 위험 포트를 ⚠️로 낮추지 않는다(Windows 기본 차단과 동작이 다름)
     assert "🚨 열린 포트" in notice
 

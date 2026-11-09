@@ -180,34 +180,35 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "network_security",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/network_security.py",
-        "sha256": "2dc15725883dc99668b2957c722bf3fdd9bd7b28ce456d0f335fd0210304beb1",
+        "sha256": "163b7074a7c64d68a158b36b8ce56d1bd7b7ec2ac3590cb3cef4971af8089017",
         "dependencies": ["psutil"]
     },
     {
         "name": "악성코드 탐지",
-        "desc": "백신(Defender) 상태, 의심 프로세스, 시작프로그램(레지스트리/폴더), 예약 작업, 자동 시작 서비스 점검",
+        "desc": "백신(Defender) 상태, 의심 프로세스, 시작프로그램(레지스트리/폴더), 예약 작업, 자동 시작 서비스 점검, 브라우저 확장·알림 권한 점검, 받은 파일 점검·Defender 파일 검사",
         "func_names": [
             "detect_suspicious_processes", "scan_startup_items", "scan_suspicious_services",
             "get_malware_report", "check_defender_status", "scan_scheduled_tasks",
             "trust_security_item", "untrust_security_item", "list_trusted_security_items",
-            "describe_trust_candidate",
+            "describe_trust_candidate", "describe_scan_file_target",
+            "scan_browser_extensions", "find_recent_downloads", "check_downloaded_file", "scan_file_with_defender",
         ],
         "module_name": "malware_detection",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/malware_detection.py",
-        "sha256": "226a845630b1dc91d19ea9505ecc281af9b66df4c4f0b3c17679c5d0dfd93448",
+        "sha256": "4e76e17bdfb28b95e836a59c1128e50ebb5e5dfb8877c075fa970cbb7b74e515",
         "dependencies": ["psutil"]
     },
     {
         "name": "시스템 보안 점검",
-        "desc": "Windows 업데이트 상태, 공유 폴더 권한, 로그인 실패 이력, 보안 설정(UAC·원격 데스크톱·SMBv1·BitLocker) 확인",
+        "desc": "Windows 업데이트 상태, 공유 폴더 권한, 로그인 실패 이력, 보안 설정(UAC·원격 데스크톱·SMBv1·BitLocker), 랜섬웨어 준비 상태 확인",
         "func_names": [
             "check_update_status", "scan_shared_folders", "get_login_failures", "check_security_settings",
-            "get_system_security_report",
+            "get_system_security_report", "check_ransomware_readiness",
             "restrict_shared_folder_permission",
         ],
         "module_name": "system_security",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_security.py",
-        "sha256": "dedef83cf984993c18dad10f22ab2ee190de4e7cfdcb8aaca213b1fe456bf550",
+        "sha256": "af554c753347e1a175e16fc07866d3fe09a7c06ae9482933bb4aefb0e9de7a0e",
         "dependencies": []
     },
     {

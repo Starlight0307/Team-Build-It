@@ -21,3 +21,36 @@ def test_hash_ignores_windows_line_endings(tmp_path, monkeypatch):
     lf = u.plugin_hash("x")
     (tmp_path / "plugins" / "x.py").write_bytes(b"a = 1\nb = 2\n")
     assert u.plugin_hash("x") == lf and re.fullmatch(r"[0-9a-f]{64}", lf)
+
+
+# ── PowerShell 하위 프로세스 환경: PSModulePath를 물려주지 않는다 ──
+import importlib
+import subprocess
+from types import SimpleNamespace
+
+import pytest
+
+
+@pytest.mark.parametrize("mod", ["plugins.malware_detection", "plugins.system_security", "plugins.network_security"])
+def test_ps_env_drops_psmodulepath_only(mod, monkeypatch):
+    m = importlib.import_module(mod)
+    monkeypatch.setenv("PSModulePath", r"C:\PS7\Modules")
+    monkeypatch.setenv("LUMI_KEEP_ME", "1")
+    env = m._ps_env()
+    assert not any(k.upper() == "PSMODULEPATH" for k in env)
+    assert env["LUMI_KEEP_ME"] == "1"
+
+
+def test_powershell_calls_pass_clean_env(monkeypatch):
+    import plugins.system_security as ss
+    seen = {}
+
+    def fake_run(*a, **kw):
+        seen.update(kw)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setenv("PSModulePath", r"C:\PS7\Modules")
+    monkeypatch.setattr(ss, "_powershell_exe", lambda: "powershell")
+    monkeypatch.setattr(ss.subprocess, "run", fake_run)
+    ss._run_powershell("1", timeout=5)
+    assert "env" in seen and not any(k.upper() == "PSMODULEPATH" for k in seen["env"])
