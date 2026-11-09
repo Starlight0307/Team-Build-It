@@ -5326,7 +5326,7 @@ _SCHEDULE_QUESTION = re.compile(r"뭐\s*(해|하|있)|몇\s*시|언제|약속")
 
 
 _REQUEST_WORD = re.compile(r"줘|주세요|줄래|알려|보여|찾아|(?<!시)켜|꺼|추가|삭제|지워|설정|맞춰|확인|검사|점검|스캔|메모|기록|얼마|몇|언제|뭐|뭘|어디|어때|왜|있어|있나|\d")
-_STATEMENT_END = re.compile(r"(?:까\s*해|까\s*말까)$|(?:짜증나|귀찮|피곤|힘들|좋|싫|싶|나쁘|슬프|기쁘|설레|걱정돼|야근해)(?:다|아|어|네|요|아요|어요|네요)?$")
+_STATEMENT_END = re.compile(r"(?:까\s*해|까\s*말까)$|(?:짜증나|귀찮|피곤|힘들|좋|싫|싶|나쁘|슬프|기쁘|설레|걱정돼|야근해)(?:다|아|어|네|요|아요|어요|네요)?$|[가-힣]야$")   # "오늘 월급날이야"
 
 
 def _is_plain_statement(text: str) -> bool:
@@ -8355,7 +8355,7 @@ class AIWorker(QThread):
                 clean_reply = _polish_chat_reply(clean_reply, self.user_text)
                 if not clean_reply:   # 고장 난 문장만 남았으면 지어내지 않고 모른다고 한다
                     clean_reply = "그건 내가 잘 모르겠어. 다르게 물어봐 줄래?" if user_memory.is_casual() else "그건 제가 잘 모르겠어요. 다르게 물어봐 주실래요?"
-                elif _ASKS_FACT.search(self.user_text) and not any(_HEDGE_WORD in str(m.get('content', '')) for m in self.chat_history[-8:]):   # 매번 붙이면 지겹다   # 이 모델은 사실을 자주 틀린다("한글은 이순신이 만들었다")
+                elif _ASKS_FACT.search(self.user_text) and not re.search(r"확인해\s*보", clean_reply) and not any(_HEDGE_WORD in str(m.get('content', '')) for m in self.chat_history[-8:]):   # 매번 붙이면 지겹다   # 이 모델은 사실을 자주 틀린다("한글은 이순신이 만들었다")
                     clean_reply += " 내가 틀릴 수도 있으니 중요한 건 확인해 봐." if user_memory.is_casual() else " 제가 틀릴 수도 있으니 중요한 건 확인해 보세요."
 
             self.chat_history.append({'role': 'assistant', 'content': clean_reply})

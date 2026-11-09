@@ -173,7 +173,7 @@ def test_approvals_are_left_for_the_confirm_flow(text):
     assert AIWorker._ACK_ONLY.match(text)
 
 
-@pytest.mark.parametrize("text,plain", [("나 오늘 월급 받았어", True), ("오늘 야근해", True), ("오늘 비 와서 짜증나", True), ("커피 3000원 샀어", False),
+@pytest.mark.parametrize("text,plain", [("나 오늘 월급 받았어", True), ("오늘 월급날이야", True), ("이거 뭐야", False), ("오늘 야근해", True), ("오늘 비 와서 짜증나", True), ("커피 3000원 샀어", False),
                                         ("이번 달에 얼마 썼어?", False), ("내일 회의 잡아줘", False), ("메모리 얼마나 썼어", False), ("포트 스캔 해줘", False)])
 def test_plain_statement_does_not_run_tools(text, plain):
     from core.ai_worker import _is_plain_statement
