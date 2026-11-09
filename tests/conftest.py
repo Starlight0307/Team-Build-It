@@ -255,6 +255,17 @@ def _isolate_login_state(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_preference_memory(tmp_path, monkeypatch):
+    """메인 창을 만드는 테스트가 실제 기억 파일(core/preference_memory.json)을 다른 키로 못 읽고
+    .corrupt로 옮긴 뒤 새로 쓴 일이 있었다(2026-11-09, test_confirm_threading). 비로그인·계정 경로 모두 임시로."""
+    from core import preference_memory
+    guest = str(tmp_path / "guest_preference_memory.json")   # isolated_preference_memory(회원 흉내)와 다른 이름이어야 한다
+    monkeypatch.setattr(preference_memory, "_GUEST_FILE", guest)
+    monkeypatch.setattr(preference_memory, "_FILE", guest)
+    monkeypatch.setattr(preference_memory, "_USER_DIR", str(tmp_path / "preference_memory_users"))
+
+
+@pytest.fixture(autouse=True)
 def _windows_security_logic_by_default(request, monkeypatch):
     """보안 플러그인 테스트는 대부분 Windows 동작을 흉내 낸다 — Mac 개발 PC에서 돌려도 Mac 점검
     (core/mac_security.py)으로 빠지지 않게 끈다. Mac 점검 테스트는 @pytest.mark.mac_security로 표시한다."""
