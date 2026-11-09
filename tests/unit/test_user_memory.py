@@ -173,7 +173,7 @@ def test_approvals_are_left_for_the_confirm_flow(text):
     assert AIWorker._ACK_ONLY.match(text)
 
 
-@pytest.mark.parametrize("text,plain", [("나 오늘 월급 받았어", True), ("오늘 월급날이야", True), ("이거 뭐야", False), ("오늘 야근해", True), ("오늘 비 와서 짜증나", True), ("커피 3000원 샀어", False),
+@pytest.mark.parametrize("text,plain", [("나 오늘 월급 받았어", True), ("오늘 월급날이야", True), ("이거 뭐야", False), ("노트북이 갑자기 꺼졌어", True), ("불 꺼줘", False), ("오늘 야근해", True), ("오늘 비 와서 짜증나", True), ("커피 3000원 샀어", False),
                                         ("이번 달에 얼마 썼어?", False), ("내일 회의 잡아줘", False), ("메모리 얼마나 썼어", False), ("포트 스캔 해줘", False)])
 def test_plain_statement_does_not_run_tools(text, plain):
     from core.ai_worker import _is_plain_statement
@@ -249,7 +249,7 @@ def test_holiday_dates_come_from_the_table(monkeypatch):
     assert small_talk.reply("추석 연휴 기차표 언제 열려?") is None
 
 
-@pytest.mark.parametrize("text", ["요즘 들을 만한 노래 있어?", "볼만한 거 있어?", "할 일이 없어서 왔어", "주말에 뭐 하지?", "너무 춥다", "더워 죽겠다", "너랑 얘기하고 싶어서 왔어", "항상 고마워", "잠깐 화장실 다녀올게", "그냥 심심해서 불러 봤어", "요즘 아무 의욕이 없어", "너 보고 싶어서 왔어", "오늘 뭐 해 먹지?", "잠깐 전화 받고 올게", "내일 아침 뭐 먹지?", "요즘 재밌는 게임 있어?", "그냥 너랑 얘기하고 싶었어", "심심해서 너 불렀어", "오늘 정말 피곤한 하루였어", "할 일이 없어서 너 불렀어", "오늘 너무 춥네", "요즘 다 재미없어", "얘기하니까 마음이 풀렸어", "오늘 날씨 덥네", "오늘 하루 너무 길었어", "요즘 다 지루해", "너랑 놀고 싶어서 왔어"])
+@pytest.mark.parametrize("text", ["요즘 들을 만한 노래 있어?", "볼만한 거 있어?", "할 일이 없어서 왔어", "주말에 뭐 하지?", "너무 춥다", "더워 죽겠다", "너랑 얘기하고 싶어서 왔어", "항상 고마워", "잠깐 화장실 다녀올게", "그냥 심심해서 불러 봤어", "요즘 아무 의욕이 없어", "너 보고 싶어서 왔어", "오늘 뭐 해 먹지?", "잠깐 전화 받고 올게", "내일 아침 뭐 먹지?", "요즘 재밌는 게임 있어?", "그냥 너랑 얘기하고 싶었어", "심심해서 너 불렀어", "오늘 정말 피곤한 하루였어", "할 일이 없어서 너 불렀어", "오늘 너무 춥네", "요즘 다 재미없어", "얘기하니까 마음이 풀렸어", "오늘 날씨 덥네", "오늘 하루 너무 길었어", "요즘 다 지루해", "너랑 놀고 싶어서 왔어", "오늘은 이만", "요즘 만사가 지겨워", "오늘 날씨 쌀쌀하네"])
 def test_open_questions_get_written_answers(text):
     from core import small_talk
     assert small_talk.reply(text) and small_talk.reply(text, casual=True)
