@@ -118,3 +118,24 @@ def test_price_no_result_message_is_shown_as_is(qapp):
     out = _run_with_tools(qapp, "아이폰 16 최저가 검색해줘", [search_product_price])
     assert out and "가져오지 못했어요" in out[0]
     assert "이미 계산됨" not in out[0]
+
+
+@pytest.mark.parametrize("text,lookup", [("잡채 만드는 법 알려줘", True), ("한라산 높이가 얼마야?", True), ("한글은 누가 만들었어?", True),
+                                         ("독도는 어디 있어?", True), ("보고서 파일 어디 있어?", False), ("루미 설정 방법 알려줘", False),
+                                         ("우울할 때 뭐 하면 좋아?", False), ("컴퓨터 메모리 얼마나 써?", False)])
+def test_info_questions_open_google_instead_of_guessing(text, lookup):
+    from core.ai_worker import _needs_lookup
+    assert _needs_lookup(text) is lookup
+
+
+def test_lookup_opens_google_search_without_asking_the_model(qapp, monkeypatch):
+    import core.ai_worker as ai
+    from core import web_launcher
+    opened = []
+    monkeypatch.setattr(ai, "_ollama_chat", lambda **kw: pytest.fail("정보 질문은 모델이 답하지 않는다"))
+    monkeypatch.setattr(web_launcher, "open_request", lambda req: opened.append(req) or "기본 브라우저에서 열었어요.")
+    w, out = _worker("잡채 만드는 법 알려줘"), []
+    w.response_ready.connect(out.append)
+    w.run()
+    assert opened[0]["url"] == "https://www.google.com/search?q=%EC%9E%A1%EC%B1%84+%EB%A7%8C%EB%93%9C%EB%8A%94+%EB%B2%95"
+    assert "구글" in out[0] and "열었어요" in out[0]

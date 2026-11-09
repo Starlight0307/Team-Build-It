@@ -5402,6 +5402,35 @@ _ASKS_MEASURE = re.compile(r"(?:높이|길이|거리|인구|무게|크기|넓이
 _ASKS_MY_FACT = re.compile(r"(?:내|제)\s*(?:이름|직업|취미|생일|사는\s*곳).{0,6}(?:기억|알아|아세요|뭐게|뭐야|뭐예요)|내가\s*(?:누구|뭐\s*좋아하는지|뭘\s*좋아하는지)")
 
 
+# 정보를 찾아와야 답할 수 있는 질문 — 모델이 요리법·거리를 자주 지어내서(2026-11-09 평가) 구글 검색 결과를 띄운다
+_NEEDS_LOOKUP = re.compile(r"(?:만드는|끓이는|싸는|굽는|담그는|볶는|무치는|부치는)\s*(?:법|방법)|레시피|조리법"
+                           r"|(?:누가|누구가)\s*(?:만들|발명|썼|지었|세웠|그렸)|[가-힣]+(?:은|는)\s*누구(?:야|예요|에요)"
+                           r"|(?:언제|몇\s*년에)\s*(?:생겼|만들어|태어났|세워|지어|일어났|시작됐)|어디에?\s*있(?:어|나요|어요)")
+_NOT_LOOKUP = ("기능", "루미", "앱", "어플", "설정", "플러그인")
+_LOOKUP_TAIL = re.compile(r"\s*(?:좀\s*)?(?:알려\s*(?:줘|주세요|줄래)|가르쳐\s*(?:줘|주세요))?[?？!.~\s]*$")
+
+
+def _needs_lookup(text: str) -> bool:
+    text = (text or "").strip()
+    return bool(_NEEDS_LOOKUP.search(text) or _ASKS_MEASURE.search(text)) and not _PC_THING.search(text.lower()) \
+        and not any(w in text for w in _NOT_LOOKUP)
+
+
+def _lookup_reply(text: str) -> str:
+    """구글 검색 결과를 기본 브라우저로 열고 그렇게 했다고 답한다. 검색어(사용자의 말)만 밖으로 나간다."""
+    from urllib.parse import quote_plus
+    from core import web_launcher
+    query = _LOOKUP_TAIL.sub("", text.strip()) or text.strip()
+    try:
+        opened = web_launcher.open_request({"site": "구글", "query": query,
+                                            "url": "https://www.google.com/search?q=" + quote_plus(query)})
+        reply = f"이런 정보는 제가 틀릴 수 있어서 구글에서 찾아봤어요. {opened}"
+    except Exception as e:
+        print(f"[구글 검색 열기 실패] {type(e).__name__}")
+        reply = f"이런 정보는 제가 틀릴 수 있어서 검색해 보시는 게 좋아요. 구글에서 '{query}'로 찾아보세요."
+    return small_talk.to_casual(reply) if user_memory.is_casual() else reply
+
+
 def _only_generic_words(text: str, keywords) -> bool:
     """"라면 끓이는 법 알려줘", "독도는 어디 있어?" — '알려줘'와 '있어'만으로는 PC 작업인지 알 수 없다.
     도구를 주면 날씨를 부르거나 "처리하지 못했어요"가 나오니 대화로 답한다."""
@@ -7676,6 +7705,12 @@ class AIWorker(QThread):
             # 자체를 막는다 — 프롬프트로 "이럴 땐 호출하지 마"라고 아무리 지시해도
             # 실제로 llama3.1이 계속 무시하고 상태확인/실행 함수를 부르는 걸 확인했음.
             is_explanation = self._is_explanation_request()
+            if _needs_lookup(self.user_text) and not (ollama_tools and self._needs_tools()):
+                lookup = _lookup_reply(self.user_text)
+                self.chat_history.append({'role': 'user', 'content': self.user_text})
+                self.chat_history.append({'role': 'assistant', 'content': lookup})
+                self.response_ready.emit(f"🤖 로컬 비서: {lookup}")
+                return
 
             # "루미 기능 설명해줘"처럼 특정 기능을 가리키지 않는 전체 소개는 정해진 안내로 — 2026-10-19: AI가 소개하면
             # "악성코드를 제거할 수 있습니다"처럼 없는 기능을 덧붙였다. 예시 문장은 실제 앱에서 동작을 확인한 것들이다.
