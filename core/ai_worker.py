@@ -73,6 +73,13 @@ def _fit_history_to_budget(messages: list, tools) -> list:
 
 from calendar_feature import calendar_preference
 from core.preference_memory import get_pref, save_pref
+from core.symptom_triage import (match_symptom as _match_symptom, run_triage as _run_symptom_triage,
+                                 CAUSE_REQUEST as _CAUSE_REQUEST)
+from core import security_faq as _security_faq
+
+# CPU 카드 답변 끝에 붙이는 안내 — "원인 점검" 표현은 증상 점검(2.6c)으로 이어진다
+_SLOW_TRIAGE_HINT = "원인을 더 찾으려면 '컴퓨터 느린 원인 점검해줘'라고 말해 보세요."
+
 from core import user_memory
 
 # 실제 호출하는 Ollama 모델 — 이 파일 안에 7곳 넘게 문자열로 직접 박혀
@@ -419,6 +426,20 @@ def _describe_trust_security_item(a: dict, func_map: dict) -> str:
             "본인이 직접 설치한 프로그램이 맞을 때만 진행하세요.")
 
 
+def _describe_scan_file_with_defender(a: dict, func_map: dict) -> str:
+    """Defender 파일 검사 확인창 — Defender가 위협을 찾으면 정책에 따라 파일을 격리(이동)할 수 있어서 미리 알린다."""
+    path = str(a.get("path", "") or "").strip().strip('"')
+    # 승인창에 보이는 경로와 실제 검사 경로가 다르지 않게, 검사 때와 같은 검증(링크 따라가기·정리) 결과를 보여준다
+    describe = func_map.get("describe_scan_file_target")
+    try:
+        target = describe(path) if describe else f"파일: {path or '(경로 없음)'}"
+    except Exception:
+        target = f"파일: {path or '(경로 없음)'}"
+    return (f"Windows 보안(Microsoft Defender)으로 이 파일 검사\n\n{target}\n\n"
+            "※ 루미는 파일을 열거나 옮기지 않아요. 다만 Defender가 위협을 찾으면 정책에 따라 파일을 자동으로 격리할 수 있어요"
+            "(보호 기록에서 복원 가능). 큰 파일은 검사에 시간이 걸릴 수 있어요.")
+
+
 def _describe_block_risky_open_ports(a: dict, func_map: dict) -> str:
     """block_risky_open_ports 확인창 — 실제로 막힐 포트를 실행 전에 조회해 보여준다
     (_describe_disable_risky_firewall_rules와 같은 원칙)."""
@@ -495,6 +516,8 @@ _DANGEROUS_FUNCS = {
     # 2026-10-08: Windows 방화벽을 바꾸는 기능 — 확인창 + Windows 관리자 승인(UAC) 두 번을 거친다
     "enable_windows_firewall": lambda a, fm: ("Windows 방화벽을 모든 네트워크(도메인·개인·공용)에서 켜고 들어오는 연결을 "
                                               "기본으로 막기 (나가는 연결은 그대로)\n\n※ Windows 관리자 승인 창이 뜹니다."),
+    # 2026-11-07: Defender가 파일을 자동 격리(이동)할 수 있고 Defender 검사 기록이 남는다 — 확인창을 거친다
+    "scan_file_with_defender": _describe_scan_file_with_defender,
     "block_risky_open_ports": _describe_block_risky_open_ports,
     "block_program_internet": _describe_block_program_internet,
     "remove_lumi_firewall_rule": _describe_remove_lumi_firewall_rule,
@@ -710,22 +733,35 @@ _TOOL_CATEGORIES = {
          "백신", "바이러스", "디펜더", "defender", "예약 작업", "예약작업", "작업 스케줄러",
          "xprotect", "게이트키퍼", "gatekeeper", "파일볼트", "filevault", "디스크 암호화", "크론", "cron",
          # 3단계: 신뢰 목록(오탐 예외)
-         "신뢰 목록", "신뢰해", "내가 설치", "예외 처리"),
+         "신뢰 목록", "신뢰해", "내가 설치", "예외 처리",
+         # PC 응급실: 브라우저 확장·알림 점검, 받은 파일 점검. "받은 파일"/"다운로드한 파일"은 file_search의
+         # "받은"/"다운로드"와도 겹쳐 search_files가 함께 노출된다(키워드 포함 관계라 피할 수 없음 — 둘 다 읽기 전용).
+         # "브라우저 확장"은 calendar의 "브라우저"와 겹쳐서 넣지 않았다.
+         "확장 프로그램", "확장프로그램", "알림 권한", "스팸 알림", "팝업", "광고",
+         "알림을 허용", "알림 허용", "허용한 사이트",
+         "다운로드한 파일", "받은 파일", "파일 검사", "파일 점검"),
         ("detect_suspicious_processes", "scan_startup_items", "scan_suspicious_services", "get_malware_report",
          "block_suspicious_process", "check_defender_status", "scan_scheduled_tasks",
          # trust_security_item은 _DANGEROUS_FUNCS에 있어 확인창 없이는 실행되지 않는다
-         "trust_security_item", "untrust_security_item", "list_trusted_security_items"),
+         "trust_security_item", "untrust_security_item", "list_trusted_security_items",
+         # scan_file_with_defender는 _DANGEROUS_FUNCS에 있어 확인창 없이는 실행되지 않는다
+         "scan_browser_extensions", "find_recent_downloads", "check_downloaded_file", "scan_file_with_defender"),
     ),
     "system_security": (
         ("업데이트", "패치", "공유폴더", "공유 폴더", "로그인실패", "로그인 실패",
          "보안", "종합", "점수", "리포트",
          # 2026-10-13 4단계: 보안 설정
          "uac", "사용자 계정 컨트롤", "원격 데스크톱", "원격데스크톱", "rdp", "smb", "비트로커", "bitlocker",
-         "드라이브 암호화", "장치 암호화"),
+         "드라이브 암호화", "장치 암호화",
+         # 랜섬웨어 준비 상태 — "백업" 단독은 data_backup(루미 데이터 내보내기)의 키워드라서 상태를 묻는 말만 넣는다.
+         # 이 말들은 data_backup 키워드("백업")에도 같이 걸리지만, _narrow_backup_status가 상태 질문일 때
+         # 쓰기 도구 export_my_data만 뺀다.
+         "랜섬웨어", "복원 지점", "복원지점", "파일 히스토리", "백업 상태", "백업 되고", "백업돼", "백업 돼"),
         # restrict_shared_folder_permission도 _DANGEROUS_FUNCS + _DETECTION_BEFORE_ACTION에
         # 등록되어 있어 확인창 없이는 실행되지 않는다 — 위 network_security와 동일한 원칙.
         ("check_update_status", "scan_shared_folders", "get_login_failures",
-         "get_system_security_report", "restrict_shared_folder_permission", "check_security_settings"),
+         "get_system_security_report", "restrict_shared_folder_permission", "check_security_settings",
+         "check_ransomware_readiness"),
     ),
     "realtime_monitor": (
         ("실시간", "감시", "모니터링", "백그라운드"),
@@ -1183,6 +1219,21 @@ def _narrow_system_trend(allowed: set, text: str) -> set:
     # 안 고른 사례(2026-10-02 도구 선택 평가) — 앱/게임/사용 시간 이야기가 없으면 뺀다
     if not _APP_USAGE_WORDS.search(t) and "app_usage" in _TOOL_CATEGORIES:
         allowed = allowed - set(_TOOL_CATEGORIES["app_usage"][1])
+    return allowed
+
+
+# "백업 되고 있어?"·"백업 상태 알려줘"는 PC의 백업 준비 상태를 묻는 말이라 루미 데이터 내보내기(export_my_data, 파일을
+# 만드는 쓰기 도구)가 같이 노출되면 안 된다. data_backup의 "백업" 키워드는 그대로 두고, 상태를 묻는 말에 내보내기를
+# 부탁하는 표현이 없으면 이 도구만 뺀다("내 데이터 백업해줘"는 상태 표현이 없어 그대로 노출).
+_BACKUP_STATUS_ASK = re.compile(r"백업\s*(상태|되고|돼|된|이\s*되|잘\s*되)")
+_BACKUP_EXPORT_ASK = re.compile(r"내보내|데이터\s*파일|데이터\s*저장|백업\s*(해|만들|받)")
+
+
+def _narrow_backup_status(allowed: set, text: str) -> set:
+    t = text or ""
+    if ("export_my_data" in allowed and _BACKUP_STATUS_ASK.search(t)
+            and not _BACKUP_EXPORT_ASK.search(t)):
+        return allowed - {"export_my_data"}
     return allowed
 
 
@@ -5683,6 +5734,7 @@ TOOL_STATUS_NAMES = {
     "check_web_redirection":     "🧭  웹 접속 경로 확인 중",
     "check_wifi_security":       "📶  Wi-Fi 보안 확인 중",
     "check_security_settings":   "🔐  Windows 보안 설정 확인 중",
+    "check_ransomware_readiness": "🛡️  랜섬웨어 대비 상태 확인 중",
     "check_firewall_status":     "🧱  방화벽 상태 확인 중",
     "enable_windows_firewall":   "🧱  Windows 방화벽 켜는 중",
     "block_risky_open_ports":    "🧱  위험한 포트 차단 규칙 만드는 중",
@@ -5701,6 +5753,10 @@ TOOL_STATUS_NAMES = {
     "untrust_security_item":     "🤝  신뢰 목록에서 빼는 중",
     "list_trusted_security_items": "🤝  신뢰 목록 확인 중",
     "get_malware_report":        "📊  악성코드 탐지 리포트 생성 중",
+    "scan_browser_extensions":   "🧩  브라우저 확장·알림 점검 중",
+    "find_recent_downloads":     "📥  최근 받은 파일 찾는 중",
+    "check_downloaded_file":     "📄  받은 파일 점검 중",
+    "scan_file_with_defender":   "🛡️  Defender로 파일 검사 중",
     "check_update_status":       "🔄  업데이트 상태 확인 중",
     "scan_shared_folders":       "📁  공유 폴더 점검 중",
     "restrict_shared_folder_permission": "📁  공유 폴더 권한 제한 중",
@@ -6746,6 +6802,7 @@ class AIWorker(QThread):
         if allowed:
             allowed = _narrow_reminder_funcs(allowed, text)
             allowed = _narrow_system_trend(allowed, text)
+            allowed = _narrow_backup_status(allowed, text)
             allowed = _narrow_by_action_words(allowed, text)
         return allowed if allowed else None
 
@@ -6777,7 +6834,11 @@ class AIWorker(QThread):
 
     def stop(self):
         """'대답 멈추기' — 진행 중인 Ollama 요청의 연결을 끊는다(스레드 밖에서 불러도 된다)."""
+        self._stop_requested = True   # 증상 점검 같은 긴 점검이 사이사이에 확인하고 멈춘다
         self._ollama_client._client.close()
+
+    def _should_stop(self) -> bool:
+        return bool(getattr(self, "_stop_requested", False)) or self.isInterruptionRequested()
 
     def _learn_after_reply(self):
         """답을 다 한 뒤에 부른다 — 기억 추출이 답변과 모델을 두고 다투지 않게."""
@@ -7116,6 +7177,9 @@ class AIWorker(QThread):
             # 이 규칙이 가로채 지금 CPU 상위 프로그램만 보여줬다. 비교 표현이 있으면 LLM에 맡긴다.
             if has_slow and re.search(r"어제|그제|지난|예전|평소|보다|비교|요즘|며칠", text_lower):
                 has_slow = False
+            # "컴퓨터 느린 원인 점검해줘" — CPU 카드 대신 증상 점검(2.6c)이 받는다
+            if has_slow and _CAUSE_REQUEST.search(text_lower.replace(" ", "")):
+                has_slow = False
             # "이번주 컴퓨터 상태 추이 보여줘"도 같다 — 2026-10-19: 홈 화면 'PC 상태 추이' 버튼의 질문이 이 규칙에 걸려
             # 지금 상태만 나왔다. 기간·변화 표현이 있으면 LLM이 추이(get_system_trend)를 고르게 둔다.
             if has_system_status and re.search(_SYSTEM_TREND_REQUEST, text_lower):
@@ -7151,7 +7215,10 @@ class AIWorker(QThread):
 
                         # 왜 이 목록을 보여주는지 함께 — 2026-10-19 팀 피드백: "내 PC가 왜 이렇게 느려?"에 목록만 나와 의아했다
                         asked_slow = any(kw in text_lower for kw in slow_keywords)
-                        self.response_ready.emit(f"🤖 로컬 비서: {_slow_pc_reply(tool_result, asked_slow)}")
+                        slow_reply = _slow_pc_reply(tool_result, asked_slow)
+                        if asked_slow:
+                            slow_reply += f"\n{_SLOW_TRIAGE_HINT}"
+                        self.response_ready.emit(f"🤖 로컬 비서: {slow_reply}")
                         return
                     except Exception as e:
                         print(f"[AI 워커] CPU 프로세스 조회 오류: {e}")
@@ -7297,6 +7364,39 @@ class AIWorker(QThread):
                 self.response_ready.emit(f"🤖 로컬 비서: {health_report}")
                 return
 
+            # ── 빠른 감지 2.6a: 시작 보안 점검 관련 질문(뭐야/왜/자세히) → 고정 답변 (core/security_faq.py) ──
+            # '열린 포트가 뭐야'가 2.6b의 "열린 포트" 키워드에 걸려 점검이 돌지 않게 2.6b보다 먼저 본다.
+            # match는 정보 질문에만 반응하고 "열린 포트 보여줘"·바꾸는 요청은 None이라 기존 경로가 그대로 받는다
+            faq_id = _security_faq.match(text_lower)
+            if faq_id:
+                sys.stderr.write(f"\n🎯 시작 보안 점검 FAQ 직접 답변: {faq_id}\n")
+                sys.stderr.flush()
+                faq_context = None
+                if faq_id == "startup_detail":
+                    from core.startup_security import STARTUP_CHECKS, display_label
+                    from core import mac_security as _mac_sec
+                    faq_funcs = {f.__name__: f for f in self.installed_tools}
+                    todo = [(fn, display_label(fl)) for fn, fl in STARTUP_CHECKS if faq_funcs.get(fn)]
+                    sections = []
+                    for n, (fname, flabel) in enumerate(todo, 1):
+                        if self._should_stop():     # '대답 멈추기' — 조용히 중단, 결과를 내보내지 않는다
+                            return
+                        self.status_update.emit(f"🛡️  {n}/{len(todo)} 확인 중: {flabel}")
+                        try:
+                            # 시작 알림처럼 Mac 관리자 암호 창을 띄우지 않는다
+                            with _mac_sec.no_admin_prompt():
+                                raw = str(faq_funcs[fname]())
+                            sections.append((flabel, _build_deterministic_reply(raw) or raw))
+                        except Exception as e:
+                            sys.stderr.write(f"[시작 보안 FAQ 점검 오류] {type(e).__name__}"
+                                             + chr(10))
+                            sections.append((flabel, "확인하지 못했어요."))
+                    if self._should_stop():
+                        return
+                    faq_context = {"sections": sections, "missing": len(todo) < len(STARTUP_CHECKS)}
+                self.response_ready.emit(f"🤖 로컬 비서: {_security_faq.answer(faq_id, faq_context)}")
+                return
+
             # ── 빠른 감지 2.6b: 보안 점검 하나(열린 포트/방화벽/백신/시작프로그램) 직접 실행 ──
             security_func_name = _single_security_check_request(text_lower)
             security_func = next((f for f in self.installed_tools if f.__name__ == security_func_name), None)
@@ -7312,6 +7412,37 @@ class AIWorker(QThread):
                     return
                 reply = _build_deterministic_reply(raw) or raw
                 self.response_ready.emit(f"🤖 로컬 비서: {reply}")
+                return
+
+            # ── 빠른 감지 2.6c: 증상 말하기("인터넷이 이상해요" 등) → 증상별 점검 묶음 (core/symptom_triage.py) ──
+            # 기존 fast-path(종합 점검/CPU 카드/단일 점검)가 모두 먼저고, 그 뒤에서만 본다. 조치는 하지 않는다.
+            # 뒤에 오는 2.7(캘린더+파일)·2.8(PC 정리) fast-path가 맡는 문장은 양보한다
+            triage_symptom = None
+            if not _is_pc_cleanup_request(text_lower) and not _is_calendar_file_search_request(text_lower):
+                triage_symptom = _match_symptom(text_lower)
+            if triage_symptom:
+                sys.stderr.write(f"\n🎯 증상 점검 직접 호출: {triage_symptom}\n")
+                sys.stderr.flush()
+                func_map = {f.__name__: f for f in self.installed_tools}
+                self.status_update.emit("🩺  증상에 맞는 점검 중")
+                try:
+                    triage_reply = _run_symptom_triage(
+                        triage_symptom, func_map,
+                        progress=lambda i, n, label: self.status_update.emit(f"🩺  {i}/{n} 확인 중: {label}"),
+                        should_stop=self._should_stop)
+                except Exception as e:
+                    sys.stderr.write(f"[증상 점검 오류] {type(e).__name__}\n")   # 종류만 남긴다
+                    self.response_ready.emit("🤖 로컬 비서: 점검 중 문제가 생겨 끝내지 못했어요. 잠시 후 다시 시도해주세요.")
+                    return
+                if triage_reply is None:    # '대답 멈추기'로 중단 — 결과를 내보내지 않는다
+                    return
+                if not triage_reply:
+                    self.response_ready.emit(
+                        "🤖 로컬 비서: 지금은 이 증상에 맞는 점검 기능을 찾지 못했어요. "
+                        "마켓플레이스에서 시스템/보안 관련 플러그인이 설치되어 있는지 확인해주세요."
+                    )
+                    return
+                self.response_ready.emit(f"🤖 로컬 비서: {triage_reply}")
                 return
 
             # ── 빠른 감지 2.7: 캘린더+파일 검색 연계 요청 직접 감지 ──
@@ -7957,7 +8088,8 @@ class AIWorker(QThread):
 
                     if func_name in func_map:
                         valid_params = inspect.signature(func_map[func_name]).parameters
-                        args = {k: v for k, v in args.items() if k in valid_params}
+                        # `_precomputed`는 증상 점검(core/symptom_triage)만 넘기는 내부 인자 — 모델이 보내도 버린다
+                        args = {k: v for k, v in args.items() if k in valid_params and k != '_precomputed'}
 
                         # ── 위험한 동작은 즉시 실행하지 않고 모아둔다 (루프가
                         # 끝난 뒤 한꺼번에 확인 요청) ──

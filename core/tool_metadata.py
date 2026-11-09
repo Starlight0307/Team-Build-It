@@ -208,6 +208,10 @@ TOOL_METADATA: dict = {
         name="check_security_settings", module="system_security", category="system_security",
         risk_level="safe", read_only=True, llm_exposed=True,
     ),
+    "check_ransomware_readiness": ToolMetadata(
+        name="check_ransomware_readiness", module="system_security", category="system_security",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
     "discover_iot_devices": ToolMetadata(
         name="discover_iot_devices", module="iot_control", category="iot",
         risk_level="safe", read_only=True, llm_exposed=True,
@@ -674,12 +678,32 @@ TOOL_METADATA: dict = {
         name="trust_security_item", module="malware_detection", category="malware_detection",
         risk_level="dangerous", read_only=False, llm_exposed=True,
     ),
+    "scan_browser_extensions": ToolMetadata(
+        name="scan_browser_extensions", module="malware_detection", category="malware_detection",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "find_recent_downloads": ToolMetadata(
+        name="find_recent_downloads", module="malware_detection", category="malware_detection",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "check_downloaded_file": ToolMetadata(
+        name="check_downloaded_file", module="malware_detection", category="malware_detection",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
+    "scan_file_with_defender": ToolMetadata(
+        name="scan_file_with_defender", module="malware_detection", category="malware_detection",
+        risk_level="dangerous", read_only=False, llm_exposed=True,
+    ),
     "untrust_security_item": ToolMetadata(
         name="untrust_security_item", module="malware_detection", category="malware_detection",
         risk_level="safe", read_only=False, llm_exposed=True,
     ),
     "describe_trust_candidate": ToolMetadata(
         name="describe_trust_candidate", module="malware_detection", category="malware_detection",
+        risk_level="safe", read_only=True, llm_exposed=False,
+    ),
+    "describe_scan_file_target": ToolMetadata(
+        name="describe_scan_file_target", module="malware_detection", category="malware_detection",
         risk_level="safe", read_only=True, llm_exposed=False,
     ),
     "list_trusted_security_items": ToolMetadata(

@@ -3,6 +3,7 @@ import platform
 import subprocess
 import csv
 import io
+import time
 from datetime import datetime
 
 from core import mac_security, security_records
@@ -83,6 +84,20 @@ TOOL_SCHEMAS = {
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
+    "check_ransomware_readiness": {
+        "type": "function",
+        "function": {
+            "name": "check_ransomware_readiness",
+            "description": (
+                "랜섬웨어(파일을 잠그고 돈을 요구하는 악성코드)에 대비가 되어 있는지 '예방·복구 준비 상태'를 읽기만 해서 "
+                "확인합니다: 랜섬웨어 방지(Windows 보안), 문서·바탕화면·사진의 OneDrive 백업 위치, 복원 지점, "
+                "그리고 랜섬웨어가 자주 쓰는 통로(오래된 파일 공유 방식·원격 데스크톱·공유 폴더·업데이트). "
+                "랜섬웨어를 찾아내는 기능이 아니고 설정도 바꾸지 않습니다. "
+                "사용자가 '랜섬웨어 대비돼 있어?', '백업 되고 있어?', '복원 지점 있어?', '랜섬웨어가 걱정돼' 등을 말할 때 호출하세요."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
     "restrict_shared_folder_permission": {
         "type": "function",
         "function": {
@@ -112,6 +127,13 @@ TOOL_SCHEMAS = {
 # 🔄 Windows 업데이트 상태 확인
 # ─────────────────────────────────────────────
 
+def _ps_env():
+    """PowerShell 하위 프로세스용 환경변수. PowerShell 7/Claude Code 터미널에서 실행하면 PSModulePath에
+    PS7 경로가 섞여 Windows PowerShell 5.1이 Microsoft.PowerShell.Security(서명 확인 등)를 못 불러온다 —
+    PSModulePath만 빼서 5.1이 기본값을 쓰게 하고 나머지 환경변수는 그대로 물려준다."""
+    return {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+
+
 def _powershell_exe() -> str:
     """Windows PowerShell 전체 경로 — PATH의 'powershell'은 같은 이름의 다른 프로그램으로 가로챌
     수 있어서 실제 Windows 폴더(OS API) 기준으로 찾는다(malware_detection._powershell_exe와 같은 규칙,
@@ -139,7 +161,8 @@ def _run_powershell(command: str, timeout: int):
     return subprocess.run(
         [_powershell_exe(), "-NoProfile", "-Command",
          "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + command],
-        capture_output=True, encoding="utf-8", errors="replace", timeout=timeout
+        capture_output=True, encoding="utf-8", errors="replace", timeout=timeout,
+        env=_ps_env()
     )
 
 
@@ -709,6 +732,330 @@ def check_security_settings() -> str:
                f"{safe}가지는 안전하게 되어 있어요.")
     if not_ok:
         summary += " " + ". ".join(not_ok) + "."
+    return CheckResult(f"{title}\n" + "\n".join(lines), summary=summary, **counts)
+
+
+# ─────────────────────────────────────────────
+# 🛡️ 랜섬웨어 준비 상태 (읽기 전용 — 탐지가 아니라 '예방·복구 준비'만 본다)
+# ─────────────────────────────────────────────
+# 2026-11 이 PC(Windows 11 Home)에서 직접 읽어 본 것만 넣었다.
+#  - 랜섬웨어 방지(Controlled Folder Access): Get-MpPreference의 EnableControlledFolderAccess(0/1/2)가 Home에서도
+#    관리자 권한 없이 읽혔다. Defender가 주 백신(AMRunningMode=Normal)일 때만 뜻이 있어서 함께 읽는다.
+#  - 폴더 위치: Known Folder 경로가 OneDrive 폴더 안인지 '경로'만 본다. 동기화가 잘 되는지는 읽지 않는다.
+#  - 복원 지점: 일반 권한에서는 '액세스가 거부'돼 읽히지 않았다 → 읽혔을 때만 말하고, 못 읽으면 ❔.
+#  - 파일 히스토리: 서비스(fhsvc)가 '수동·중지'여도 꺼짐이라는 뜻이 아니라서(필요할 때 시작됨) 판정하지 않는다.
+# 점수 체계(get_system_security_report)에는 넣지 않는다 — 개별 도구로만 쓴다.
+
+_RW_LIMIT = "※ 이 점검은 준비 상태를 보는 거예요. 켜져 있다고 해서 랜섬웨어를 완전히 막는다는 뜻은 아니에요."
+_CFA_NAMES = {0: "off", 1: "on", 2: "audit"}
+_RW_TOKEN = "LUMI_RW"
+_RW_TIME_BUDGET = 45   # 초 — 이 점검 전체의 시간 상한(느린 PowerShell 호출이 겹칠 때 무한정 기다리지 않게)
+# (표시 이름, 폴더 GUID) — 문서·바탕화면·사진
+_KNOWN_FOLDERS = (
+    ("문서", "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}"),
+    ("바탕화면", "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"),
+    ("사진", "{33E28130-4E1E-4676-835A-98395C3BC3BB}"),
+)
+
+
+def _rw_probe():
+    """랜섬웨어 방지(CFA)와 복원 지점을 PowerShell 한 번으로 읽는다(느린 호출을 두 번 하지 않으려고 합쳤다).
+    각각 따로 try/catch라 한쪽이 실패해도 다른 쪽은 읽힌다(복원 지점은 권한이 없으면 마지막 명령이 실패해 종료 코드가 1이
+    되므로 exit 0으로 끝낸다 — 결과는 종료 코드가 아니라 토큰 줄로만 읽는다). 줄 목록, 실행 자체가 실패하면 None."""
+    try:
+        proc = _run_powershell(
+            "try { $s = Get-MpComputerStatus -ErrorAction Stop; $p = Get-MpPreference -ErrorAction Stop; "
+            f"'{_RW_TOKEN}|CFA|' + $s.AntivirusEnabled + '|' + $s.AMRunningMode + '|' + $p.EnableControlledFolderAccess "
+            "} catch { }; "
+            "try { $r = @(Get-CimInstance -Namespace root\\default -ClassName SystemRestore -ErrorAction Stop); "
+            f"'{_RW_TOKEN}|RP|' + $r.Count }} catch {{ }}; exit 0", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if getattr(proc, "returncode", 1) != 0:           # 실패한 명령의 출력은 상태로 쓰지 않는다
+        return None
+    return (proc.stdout or "").splitlines()
+
+
+def _rw_fields(lines, kind):
+    for line in lines or ():
+        parts = line.strip().split("|")
+        if len(parts) >= 2 and parts[0] == _RW_TOKEN and parts[1] == kind:
+            return parts[2:]
+    return None
+
+
+def _controlled_folder_access(lines):
+    """(상태, 이유) — 상태: 'on'/'off'/'audit'/None. None이면 이유: 'not_primary'(Defender가 주 백신이 아니거나 꺼져 있음)
+    또는 'failed'."""
+    f = _rw_fields(lines, "CFA")
+    if not f or len(f) != 3:
+        return None, "failed"
+    if f[0].lower() != "true" or f[1] != "Normal":    # 꺼짐·Passive·'Not running'·빈 값 모두 Defender 설정이 적용된다고 볼 수 없다
+        return None, "not_primary"
+    if f[2].isdigit() and int(f[2]) in _CFA_NAMES:
+        return _CFA_NAMES[int(f[2])], None
+    return None, "failed"
+
+
+def _known_folder_paths():
+    """{표시 이름: 실제 경로 또는 None} — Known Folder API(OneDrive로 옮겨졌으면 그 경로가 나온다)."""
+    out = {}
+    try:
+        import ctypes
+        from ctypes import wintypes
+        import uuid
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD), ("d", ctypes.c_ubyte * 8)]
+
+        def guid(text):
+            u = uuid.UUID(text)
+            g = _GUID()
+            g.a, g.b, g.c = u.time_low, u.time_mid, u.time_hi_version
+            for i, byte in enumerate(u.bytes[8:]):
+                g.d[i] = byte
+            return g
+
+        func = ctypes.windll.shell32.SHGetKnownFolderPath
+        func.argtypes = [ctypes.POINTER(_GUID), wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
+        for label, text in _KNOWN_FOLDERS:
+            ptr = ctypes.c_wchar_p()
+            g = guid(text)
+            hr = func(ctypes.byref(g), 0, None, ctypes.byref(ptr))
+            out[label] = ptr.value if hr == 0 else None
+            ctypes.windll.ole32.CoTaskMemFree(ptr)
+    except Exception:
+        return {label: None for label, _ in _KNOWN_FOLDERS}
+    return out
+
+
+def _onedrive_roots():
+    roots = []
+    for name in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        v = os.environ.get(name)
+        if v and v not in roots:
+            roots.append(v)
+    return roots
+
+
+def _is_under(path: str, root: str) -> bool:
+    try:
+        p, r = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(root))
+        return os.path.commonpath([p, r]) == r
+    except ValueError:                      # 드라이브가 다름 등
+        return False
+
+
+def _restore_point_count(lines):
+    """복원 지점 개수 — 1개 이상 읽힐 때만 정수, 아니면 None. 권한 거부(빈 출력)와 0개는 '시스템 보호 꺼짐'과 구분이
+    안 돼서 둘 다 None으로 둔다."""
+    f = _rw_fields(lines, "RP")
+    if f and len(f) == 1 and f[0].isdigit() and int(f[0]) > 0:
+        return int(f[0])
+    return None
+
+
+def _onedrive_guess(path: str) -> bool:
+    """환경변수로 OneDrive 폴더를 못 찾았을 때의 보조 판단 — 경로 구성 요소 중 'OneDrive' 또는 'OneDrive - …'가 있으면
+    OneDrive 폴더 아래로 '보인다'(이름만 본 추정이라 확정 문구에는 쓰지 않는다)."""
+    parts = os.path.normcase(os.path.normpath(path)).split(os.sep)[1:-1]
+    return any(p == "onedrive" or p.startswith("onedrive - ") for p in parts)
+
+
+def _removable_or_network_drives():
+    """연결된 이동식(2)·네트워크(4) 드라이브 글자 목록 — 정보용. 못 읽으면 None."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        mask = ctypes.windll.kernel32.GetLogicalDrives()
+        found = []
+        for i in range(26):
+            if mask & (1 << i):
+                letter = chr(65 + i) + ":\\"
+                if ctypes.windll.kernel32.GetDriveTypeW(letter) in (2, 4):
+                    found.append(letter[:2])
+        return found
+    except Exception:
+        return None
+
+
+def check_ransomware_readiness(*, _precomputed=None) -> str:
+    """랜섬웨어 예방·복구 준비 상태(읽기 전용). 탐지가 아니고, 아무것도 바꾸지 않는다.
+    _precomputed: 증상 점검(core/symptom_triage)처럼 같은 점검을 방금 돌린 쪽이 {함수 이름: 결과}로 넘기면
+    업데이트·공유 폴더 점검을 다시 돌리지 않고 그 결과를 쓴다(없거나 못 쓰는 결과면 직접 돌린다)."""
+    print("\n[시스템 보안] 랜섬웨어 준비 상태 확인 중...")
+    title = "[🛡️ 랜섬웨어 준비 상태]"
+    if mac_security.is_mac() or platform.system() != "Windows":
+        return CheckResult(f"{title}\n{UNKNOWN_MARK} 이 점검은 Windows 전용이에요.", unknown=1)
+    counts = {"critical": 0, "warning": 0, "unknown": 0}
+    lines, summary_bits = [], []
+    marks = {"critical": "🚨", "warning": "⚠️", "unknown": UNKNOWN_MARK, "ok": "✅", "info": "ℹ️"}
+
+    def add(severity, text, bit=None):
+        if severity in counts:
+            counts[severity] += 1
+        lines.append(f"{marks[severity]} {text}")
+        if bit:
+            summary_bits.append(bit)
+
+    # 1) 랜섬웨어 방지(Controlled Folder Access)와 2-b) 복원 지점 — PowerShell 한 번으로 같이 읽는다
+    # 꺼짐은 기본값이고, 켜면 정상 프로그램이 문서 폴더에 저장하지 못하는 호환 문제가 생길 수 있어서
+    # 주의(warning)가 아니라 안내(info)로 둔다 — 판정 개수에 넣지 않는다.
+    # 시간 상한: 느린 호출(PowerShell)이 쌓여도 전체가 _RW_TIME_BUDGET초를 넘기면 남은 통로 점검은 하지 않고
+    # '시간이 걸려 확인하지 못함'으로 남긴다(✅로 보이지 않게).
+    started = time.monotonic()
+    try:
+        probe = _rw_probe()
+    except Exception:
+        probe = None
+    try:
+        state, why = _controlled_folder_access(probe)
+    except Exception:
+        state, why = None, "failed"
+    how = "Windows 보안 > 바이러스 및 위협 방지 > 랜섬웨어 방지"
+    if state == "on":
+        add("ok", "랜섬웨어 방지(Windows 보안의 '제어된 폴더 액세스')가 켜져 있어요 — 모르는 프로그램이 내 문서 폴더를 "
+                  "바꾸는 걸 막도록 설정돼 있어요. 다만 이게 랜섬웨어를 완전히 막는다는 뜻은 아니에요.", "랜섬웨어 방지는 켜져 있어요")
+    elif state == "audit":
+        add("info", "랜섬웨어 방지가 '감사 모드'예요 — 기록만 남기고 실제로 막지는 않아요. 막으려면 "
+                    f"{how}에서 켤 수 있어요(켜면 일부 프로그램이 문서 폴더에 저장하지 못할 수 있어요).", "랜섬웨어 방지는 기록만 해요")
+    elif state == "off":
+        add("info", f"랜섬웨어 방지(제어된 폴더 액세스)는 꺼져 있어요(Windows 기본값이에요). 켜고 싶다면 {how}에서 켤 수 "
+                    "있어요. 켜면 일부 프로그램이 문서 폴더에 저장하지 못할 수 있어요.", "랜섬웨어 방지는 꺼져 있어요(기본값)")
+    elif why == "not_primary":
+        add("unknown", "Defender가 주 백신이 아니거나 꺼져 있어서 Windows 랜섬웨어 방지 상태는 확인하지 못했어요. "
+                       "다른 백신을 쓴다면 그 백신의 설정에서 확인해 주세요.", "랜섬웨어 방지는 확인하지 못했어요(Defender가 주 백신이 아니거나 꺼져 있어요)")
+    else:
+        add("unknown", "랜섬웨어 방지 설정을 읽지 못했어요.", "랜섬웨어 방지는 확인하지 못했어요")
+
+    # 2-a) OneDrive 폴더 백업 — '경로가 OneDrive 안인지'까지만 본다(동기화가 잘 되는지는 읽지 않는다)
+    # 못 읽은 폴더는 읽은 것처럼 말하지 않고 따로 ❔로 남긴다. 환경변수로 OneDrive 폴더를 못 찾았어도 경로에 OneDrive
+    # 이름이 있으면 '안으로 보인다'까지만 말한다(추정이라 ✅가 아니라 안내).
+    try:
+        paths = _known_folder_paths()
+        roots = _onedrive_roots()
+    except Exception:
+        paths, roots = {}, []
+    labels = [k for k, _ in _KNOWN_FOLDERS]
+    unread = [k for k in labels if not paths.get(k)]
+    sure, guess, outside = [], [], []
+    for k in labels:
+        p = paths.get(k)
+        if not p:
+            continue
+        if any(_is_under(p, r) for r in roots):
+            sure.append(k)
+        elif not roots and _onedrive_guess(p):
+            guess.append(k)
+        else:
+            outside.append(k)
+    j = "·".join
+    if len(unread) == len(labels):
+        add("unknown", "문서·바탕화면·사진 폴더의 위치를 읽지 못했어요.", "폴더 백업 위치는 확인하지 못했어요")
+    else:
+        facts, bits = [], []
+        if sure:
+            facts.append(f"{j(sure)} 폴더는 OneDrive 폴더 안에 있어요")
+            bits.append(f"{j(sure)}은 OneDrive 안")
+        if guess:
+            facts.append(f"{j(guess)} 폴더는 경로에 OneDrive 이름이 있어 안에 있는 것으로 보이지만, OneDrive 설정은 확인하지 못했어요")
+            bits.append(f"{j(guess)}은 OneDrive 안으로 보임(설정은 확인 못 함)")
+        if outside:
+            facts.append(f"{j(outside)} 폴더는 OneDrive 밖에 있어요")
+            bits.append(f"{j(outside)}은 OneDrive 밖")
+        if unread:
+            bits.append(f"{j(unread)}은 확인하지 못했어요")
+        if not sure and not guess:                      # 읽은 폴더가 모두 OneDrive 밖
+            extra = ("OneDrive가 설정돼 있지 않은 것 같아요. " if not roots else "")
+            add("warning", ". ".join(facts) + f" — {extra}이 PC가 잠기면 같이 잠길 수 있어요. 다른 백업을 쓴다면 괜찮아요. "
+                           "OneDrive 설정(작업 표시줄 OneDrive 아이콘) > 동기화 및 백업에서 폴더를 백업할 수 있어요.",
+                ", ".join(bits))
+        elif outside or guess:
+            add("info", ". ".join(facts) + ". 위치만 본 거예요 — 동기화가 잘 되는지, 되돌릴 수 있는 기록이 있는지는 "
+                        "확인하지 못했어요.", ", ".join(bits))
+        else:
+            add("ok", ". ".join(facts) + ". 위치만 본 거예요 — 동기화가 잘 되는지는 확인하지 못했고, 동기화는 파일이 잠겨도 "
+                      "그대로 따라가 버릴 수 있어서 완전한 백업은 아니에요.", ", ".join(bits))
+        if unread:
+            add("unknown", f"{j(unread)} 폴더의 위치는 읽지 못해서 OneDrive 안인지 확인하지 못했어요.")
+
+    # 2-b) 복원 지점 — 일반 권한에서는 보통 읽히지 않는다(이 PC 확인). 1개 이상 읽힌 경우만 말한다
+    try:
+        n = _restore_point_count(probe)
+    except Exception:
+        n = None
+    if n:
+        add("info", f"복원 지점이 {n}개 있어요. 복원 지점은 시스템 설정용이라 내 파일을 되살려 주지는 않아요.",
+            "복원 지점이 있어요")
+    else:
+        add("unknown", "권한이 없거나 복원 지점이 없어서 확인하지 못했어요(시스템 보호가 꺼져 있을 수도 있어요). 파일 히스토리 "
+                       "사용 여부도 이 방법으로는 읽을 수 없어요 — 설정 > 시스템 > 정보 > 시스템 보호, 제어판 > 파일 히스토리에서 "
+                       "직접 볼 수 있어요.", "복원 지점·파일 히스토리는 확인하지 못했어요")
+
+    # 3) 이미 있는 점검 재사용(중복 구현 없이 판정 개수만 가져온다). SMBv1·원격 데스크톱은 add 방식 함수를 그대로 쓰고,
+    # 업데이트·공유 폴더는 결과의 개수를 그대로 합산한다. 각각 이 함수 안에서 한 번만 센다.
+    entry_notes = []
+
+    def entry_add(severity, text):
+        if severity in counts:
+            counts[severity] += 1
+        if severity != "ok":
+            entry_notes.append(f"{marks[severity]} {text}")
+
+    def out_of_time():
+        return time.monotonic() - started > _RW_TIME_BUDGET
+
+    for check in (_check_smb1, _check_remote_desktop):
+        if out_of_time():
+            entry_add("unknown", "시간이 걸려 일부 통로 설정은 확인하지 못했어요")
+            break
+        try:
+            check(entry_add)
+        except Exception:
+            entry_add("unknown", "일부 통로 설정을 확인하지 못했어요")
+    reuse = _precomputed if isinstance(_precomputed, dict) else {}
+    for label, fn, key in (("Windows 업데이트", check_update_status, "check_update_status"),
+                          ("공유 폴더", scan_shared_folders, "scan_shared_folders")):
+        if out_of_time():
+            entry_add("unknown", f"시간이 걸려 {label}은(는) 확인하지 못했어요")
+            continue
+        try:
+            r = reuse.get(key)
+            c = _judgment_counts(r) if r is not None else None
+            if c is None:
+                r = fn()
+                c = _judgment_counts(r)
+        except Exception:
+            r, c = None, None
+        if c is None:
+            entry_add("unknown", f"{label}을(를) 확인하지 못했어요")
+            continue
+        counts["critical"] += c[0]
+        counts["warning"] += c[1]
+        counts["unknown"] += c[2]
+        s = getattr(r, "summary", "")
+        if sum(c):
+            mark = marks["critical" if c[0] else "warning" if c[1] else "unknown"]
+            entry_notes.append(f"{mark} {label} — {s}" if s else f"{mark} {label}")
+    if entry_notes:
+        lines.append("랜섬웨어가 자주 쓰는 통로 중 살펴볼 것:")
+        lines.extend(f"  {x}" for x in entry_notes)
+        summary_bits.append("자주 쓰이는 통로(오래된 파일 공유·원격 접속·공유 폴더·업데이트) 중 살펴볼 게 있어요")
+    else:
+        lines.append("✅ 랜섬웨어가 자주 쓰는 통로(오래된 파일 공유 방식·원격 데스크톱·공유 폴더·업데이트)에서 눈에 띄는 "
+                     "문제는 보이지 않았어요.")
+        summary_bits.append("자주 쓰이는 통로에서는 눈에 띄는 문제가 없었어요")
+
+    # 4) 정보 — 연결된 외장·네트워크 드라이브(랜섬웨어는 연결된 드라이브의 파일도 잠글 수 있다)
+    drives = _removable_or_network_drives()
+    if drives:
+        lines.append(f"ℹ️ 외장·네트워크 드라이브가 연결돼 있어요({', '.join(drives)}). 연결된 채로 두면 랜섬웨어가 그 안의 "
+                     "파일도 잠글 수 있어서, 백업용이라면 백업할 때만 연결하는 게 좋아요.")
+
+    lines.append(_RW_LIMIT)
+    summary = "랜섬웨어 대비 상태(예방·복구 준비)를 읽기만 해서 봤어요. " + ". ".join(summary_bits) + ". " \
+              "이 결과가 랜섬웨어를 완전히 막는다는 뜻은 아니에요."
     return CheckResult(f"{title}\n" + "\n".join(lines), summary=summary, **counts)
 
 

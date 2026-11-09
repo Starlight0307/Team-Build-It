@@ -389,10 +389,10 @@ def test_startup_notice_combines_rows_and_keeps_port_judgment():
         "get_listening_ports": lambda: _cr("[x]", c=2, summary="네트워크에 열린 포트 3개 — 위험 2개"),
     }
     out = build_startup_notice(fm)
-    assert "✅ Windows 업데이트: 최신 상태예요." in out
-    assert "✅ Windows 방화벽: 모든 네트워크에서 켜짐" in out
-    assert "🚨 열린 포트: 네트워크에 열린 포트 3개 — 위험 2개" in out
-    assert out.startswith("🛡️ 시작 보안 점검 — 바로 확인이 필요한 항목이 있어요.")
+    # 정상 항목은 한 줄로 묶이고, 걸린 항목만 한 줄씩 나온다
+    assert "✅ 방화벽 — 이상 없음" in out and "✅ 업데이트 — 이상 없음 (설치 기록 기준)" in out and "✅ Windows" not in out
+    assert "🚨 열린 포트 — 네트워크에 열린 포트 3개 — 위험 2개" in out
+    assert out.startswith("🛡️ 시작 보안 점검 · 바로 확인 필요 ")
 
 
 def test_startup_notice_keeps_critical_when_firewall_off_and_survives_errors():
@@ -404,16 +404,16 @@ def test_startup_notice_keeps_critical_when_firewall_off_and_survives_errors():
         "get_listening_ports": lambda: _cr("[x]", c=1, summary="위험 1개"),
     }
     out = build_startup_notice(fm)
-    assert "❔ Windows 업데이트: 확인하지 못했어요" in out
-    assert "🚨 열린 포트: 위험 1개" in out
-    assert "바로 확인이 필요한" in out
+    assert "❔ Windows 업데이트 — 확인 못 함" in out
+    assert "🚨 열린 포트 — 위험 1개" in out
+    assert "바로 확인 필요" in out
 
 
 def test_startup_notice_plain_string_is_unknown_and_empty_when_no_plugins():
     assert build_startup_notice({}) == ""
     out = build_startup_notice({"check_update_status": lambda: "[t]\n그냥 글"})
-    assert out.startswith("🛡️ 시작 보안 점검 — 일부는 확인하지 못했어요.")
-    assert "자세히 보려면" not in out
+    assert out.startswith("🛡️ 시작 보안 점검 · 모두 확인 못 함")
+    assert "열린 포트 보여줘" not in out and "시작 보안 점검 자세히 알려줘" in out
 
 
 # ── 4단계: 방화벽 규칙 원문 판정 + 열린 포트의 방화벽 기준 판정 ─────────

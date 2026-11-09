@@ -57,6 +57,10 @@ TOOL_SELECTION_CASES = [
     {"id": "malware_detection_1", "text": "의심스러운 프로세스 있는지 확인해줘", "expected": {"detect_suspicious_processes"}},
     {"id": "malware_detection_2", "text": "악성코드 검사해줘", "expected": {"get_malware_report"}},
     {"id": "malware_detection_3", "text": "시작프로그램 목록 보여줘", "expected": {"scan_startup_items"}},
+    {"id": "malware_detection_4", "text": "브라우저 확장 프로그램 점검해줘", "expected": {"scan_browser_extensions"}},
+    {"id": "malware_detection_5", "text": "알림을 허용한 사이트가 있는지 확인해줘", "expected": {"scan_browser_extensions"}},
+    {"id": "malware_detection_6", "text": "최근에 받은 파일 목록 보여줘", "expected": {"find_recent_downloads"}},
+    {"id": "system_security_ransom_1", "text": "랜섬웨어 대비 상태 점검해줘", "expected": {"check_ransomware_readiness"}},
 
     # ── system_security ──
     {"id": "system_security_1", "text": "윈도우 업데이트 상태 확인해줘", "expected": {"check_update_status"}},
