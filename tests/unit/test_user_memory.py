@@ -145,7 +145,7 @@ def test_date_word_in_previous_reply_does_not_pull_small_talk_into_tools(reply, 
     assert Worker()._needs_tools() is needs
 
 
-@pytest.mark.parametrize("text", ["안녕", "루미야", "고마워 루미야", "나 오늘 너무 피곤해", "오늘 시험 망했어", "넌 누구야?", "농담 하나 해줘"])
+@pytest.mark.parametrize("text", ["안녕", "루미야", "고마워 루미야", "나 오늘 너무 피곤해", "오늘 시험 망했어", "넌 누구야?", "농담 하나 해줘", "내일 또 보자", "심심해서 왔어", "요즘 다 귀찮아"])
 def test_small_talk_table_answers_in_both_speech_levels(text):
     from core import small_talk
     assert small_talk.reply(text) and small_talk.reply(text, casual=True)
@@ -225,6 +225,41 @@ def test_statement_reply_uses_kind_and_real_topic_and_avoids_repeating(kind, cas
     assert first and small_talk.statement_reply("지갑 잃어버렸어", casual, ask, recent=[first]) != first
     invented = small_talk.statement_reply("가방 잃어버렸어", casual, ask)   # 말에 없는 주제는 쓰지 않는다
     assert invented and "지갑" not in invented
+
+
+@pytest.mark.parametrize("text,topic", [("심심해서 왔어", "심심"), ("내일 또 보자", "보자"), ("요즘 다 힘들어", "다")])
+def test_statement_reply_skips_words_that_are_not_a_topic(text, topic):
+    from core import small_talk
+    reply = small_talk.statement_reply(text, False, lambda s, t: json.dumps({"kind": "good", "topic": topic}))
+    assert reply and topic not in reply
+
+
+def test_holiday_dates_come_from_the_table(monkeypatch):
+    from datetime import datetime as real
+    from core import small_talk
+
+    class Fixed(real):
+        @classmethod
+        def now(cls, tz=None):
+            return real(2026, 11, 9)
+    monkeypatch.setattr(small_talk, "datetime", Fixed)
+    assert small_talk.reply("추석이 언제야?") == "다음 추석은 2027년 9월 15일 수요일이에요."
+    assert small_talk.reply("크리스마스는 언제야") == "크리스마스는 2026년 12월 25일 금요일이에요."
+    assert small_talk.reply("설날 언제야", casual=True) == "다음 설날은 2027년 2월 7일 일요일이야."
+    assert small_talk.reply("추석 연휴 기차표 언제 열려?") is None
+
+
+@pytest.mark.parametrize("text", ["요즘 들을 만한 노래 있어?", "볼만한 거 있어?", "할 일이 없어서 왔어", "주말에 뭐 하지?"])
+def test_open_questions_get_written_answers(text):
+    from core import small_talk
+    assert small_talk.reply(text) and small_talk.reply(text, casual=True)
+
+
+def test_one_letter_topic_is_only_for_body_parts():
+    from core import small_talk
+    ask = lambda kind: (lambda s, t: json.dumps({"kind": kind, "topic": "장" if kind != "health" else "목"}))
+    assert "장" not in small_talk.statement_reply("방금 장 보고 왔어", False, ask("other"))
+    assert "목" in small_talk.statement_reply("목이 칼칼해", False, ask("health"))
 
 
 def test_every_reply_template_keeps_its_speech_level():
