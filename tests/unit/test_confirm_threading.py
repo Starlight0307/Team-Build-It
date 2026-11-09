@@ -35,6 +35,8 @@ def win(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(app_settings, "_PATH", str(tmp_path / "settings.json"))
     monkeypatch.setattr(app_settings, "_cache", None)
     import app_main
+    # 창을 만들 때 0.8초 뒤 시작 보안 점검 결과가 화면에 끼어든다 — 점검이 빨리 끝나는 맥·CI에서 _shown이 어긋났다
+    monkeypatch.setattr(app_main.AssistantApp, "_run_startup_update_check", lambda self: None)
     w = app_main.AssistantApp()
     monkeypatch.setattr(w, "_start_screen_task", lambda *a: None)
     monkeypatch.setattr(w, "_start_route_worker", lambda *a: None)

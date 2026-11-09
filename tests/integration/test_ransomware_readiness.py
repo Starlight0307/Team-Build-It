@@ -1,10 +1,13 @@
 """check_ransomware_readiness — 실제 PowerShell/레지스트리 없이 판정·문구를 확인한다."""
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 import plugins.system_security as ss
+
+WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Windows 경로·대소문자 규칙을 실제 파일로 확인하는 시험")
 
 RW = ss._RW_TOKEN
 _REAL_CFA, _REAL_RESTORE, _REAL_PROBE = ss._controlled_folder_access, ss._restore_point_count, ss._rw_probe
@@ -174,6 +177,7 @@ def test_known_folder_function_raising_is_unknown(base, monkeypatch):
     assert r.warning == 0 and r.unknown == 2
 
 
+@WINDOWS_ONLY
 def test_no_env_but_path_looks_like_onedrive_is_not_false_warning(base, monkeypatch, tmp_path):
     monkeypatch.delenv("OneDrive")
     p = tmp_path / "u" / "OneDrive"
@@ -192,6 +196,7 @@ def test_no_env_and_no_onedrive_name_warns(base, monkeypatch, tmp_path):
     assert r.warning == 1 and "OneDrive가 설정돼 있지 않은" in r
 
 
+@WINDOWS_ONLY
 def test_onedrive_guess_names(tmp_path):
     assert ss._onedrive_guess(str(tmp_path / "OneDrive" / "문서"))
     assert ss._onedrive_guess(str(tmp_path / "OneDrive - 회사" / "문서"))
@@ -220,6 +225,7 @@ def test_commercial_root_counts_as_inside(base, monkeypatch, tmp_path):
     assert r.warning == 0 and "OneDrive 폴더 안" in r
 
 
+@WINDOWS_ONLY
 def test_is_under_normalization(tmp_path):
     root = str(tmp_path / "OneDrive")
     assert ss._is_under(str(tmp_path / "OneDrive" / "a"), root)

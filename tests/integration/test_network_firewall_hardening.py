@@ -5,6 +5,7 @@
 실제 psutil/PowerShell/UAC를 부르지 않고 가짜 연결 목록·가짜 PowerShell 결과를 넣어 판정과
 '방화벽을 바꾸는 명령이 무엇으로 만들어지는지'를 확인한다.
 """
+import sys
 from collections import namedtuple
 from unittest.mock import patch
 
@@ -13,6 +14,8 @@ import pytest
 
 import plugins.network_security as ns
 from core.startup_security import build_startup_notice
+
+WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Windows 환경 변수(%SystemRoot%)·경로 규칙에 기대는 시험")
 
 Addr = namedtuple("Addr", "ip port")
 Conn = namedtuple("Conn", "status laddr pid")
@@ -422,6 +425,7 @@ def _rule(text, name="r"):
     return ns._rule_from_text(name, "v2.33|" + text)
 
 
+@WINDOWS_ONLY
 def test_rule_text_parsing():
     r = _rule("Action=Allow|Active=TRUE|Dir=In|Protocol=6|Profile=Domain|Profile=Private|LPort=445|LPort=139|"
               "RA4=LocalSubnet|App=%SystemRoot%\\system32\\svchost.exe|Svc=LanmanServer|")
@@ -490,6 +494,7 @@ def test_port_allowed_by_matching_rule_keeps_severity_with_rule_name():
     assert r.critical == 1 and "(방화벽 허용 규칙: 파일 공유)" in r
 
 
+@WINDOWS_ONLY
 def test_port_rule_matching_details():
     info = {"procs": {"mysqld.exe"}, "exes": {"C:\\DB\\mysqld.exe"}, "no_exe": set()}
     other_app = _rule("Protocol=6|App=C:\\Other\\x.exe|", "다른 앱")
@@ -517,6 +522,7 @@ def test_port_verdict_when_firewall_off_or_unknown():
     assert r.critical == 1 and "방화벽이 꺼져 있거나" in r
 
 
+@WINDOWS_ONLY
 def test_rpc_keywords_and_service_rules():
     svchost = {"procs": {"svchost.exe"}, "exes": set()}
     epmap = _rule("Protocol=6|LPort=RPC-EPMap|Svc=RpcSs|App=%SystemRoot%\\system32\\svchost.exe|", "EPMAP")
@@ -594,6 +600,7 @@ def test_real_rule_samples_parse():
     assert _real("CDP-WFD")["restricted"] == "WFDCDPSvc"
 
 
+@WINDOWS_ONLY
 def test_real_rules_verdicts():
     system = {"procs": {"System"}, "exes": set()}
     svchost = {"procs": {"svchost.exe"}, "exes": set()}
@@ -636,6 +643,7 @@ def test_port_spec_interpretation():
     assert ns._port_matches(445, "100-200") is False
 
 
+@WINDOWS_ONLY
 def test_unsure_rule_makes_port_unknown_not_blocked():
     info = {"procs": {"System"}, "exes": set()}
     weird = ns._rule_from_text("이상한 규칙", "v2.33|Protocol=6|LPort=SomethingNew|App=System|")
@@ -700,6 +708,7 @@ def test_listening_ports_records_unreadable_paths():
     assert ports[445]["no_exe"] == {"System", "svc.exe"} and ports[445]["exes"] == set()
 
 
+@WINDOWS_ONLY
 def test_program_rule_with_unreadable_paths_and_missing_info():
     """4-1 4차: 프로그램 지정 규칙도 경로를 못 읽은 프로세스가 있으면 '적용 안 됨'을 확정하지 않는다."""
     rule = ns._rule_from_text("DB", "v2.33|Protocol=6|App=C:\\DB\\mysqld.exe|")
@@ -715,6 +724,7 @@ def test_program_rule_with_unreadable_paths_and_missing_info():
     assert ns._firewall_verdict(3306, all_read, _ctx(rules=[rule]))[0] == "blocked"
 
 
+@WINDOWS_ONLY
 def test_blocked_only_when_every_relevant_rule_is_definitely_not_applicable():
     """'방화벽이 막는 중'(감점 없음)은 관련 규칙이 모두 확실히 '적용 안 됨'일 때만 — True(적용될 수 있음)나
     None(판단 불가)이 하나라도 있으면 위험 등급이 그대로 남는다."""
