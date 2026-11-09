@@ -255,6 +255,14 @@ def _isolate_login_state(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_startup_security_check(monkeypatch):
+    """창을 만들면 0.8초 뒤 시작 보안 점검이 진짜 PowerShell로 돈다. 결과가 다른 테스트의 화면 기록에 끼어들고(2026-11-09
+    test_confirm_threading), 남은 스레드가 다음 테스트가 바꿔 둔 subprocess.run을 불렀다(Windows CI, test_ui_snapshot).
+    build_startup_notice 자체 시험은 모듈을 불러올 때 함수를 따로 받아 두어 영향이 없다."""
+    monkeypatch.setattr("core.startup_security.build_startup_notice", lambda func_map: "")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_preference_memory(tmp_path, monkeypatch):
     """메인 창을 만드는 테스트가 실제 기억 파일(core/preference_memory.json)을 다른 키로 못 읽고
     .corrupt로 옮긴 뒤 새로 쓴 일이 있었다(2026-11-09, test_confirm_threading). 비로그인·계정 경로 모두 임시로."""

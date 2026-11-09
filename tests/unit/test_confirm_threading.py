@@ -35,8 +35,6 @@ def win(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(app_settings, "_PATH", str(tmp_path / "settings.json"))
     monkeypatch.setattr(app_settings, "_cache", None)
     import app_main
-    # 창을 만들 때 0.8초 뒤 시작 보안 점검 결과가 화면에 끼어든다 — 점검이 빨리 끝나는 맥·CI에서 _shown이 어긋났다
-    monkeypatch.setattr(app_main.AssistantApp, "_run_startup_update_check", lambda self: None)
     w = app_main.AssistantApp()
     monkeypatch.setattr(w, "_start_screen_task", lambda *a: None)
     monkeypatch.setattr(w, "_start_route_worker", lambda *a: None)
@@ -77,7 +75,8 @@ def _measure_ui_gaps(win, monkeypatch, blocking: bool):
     stamps = []
     t = QTimer()
     t.setInterval(50)
-    t.timeout.connect(lambda: stamps.append(time.perf_counter()))
+    # 검사가 도는 동안의 틱만 잰다 — 시작 전 준비와 결과 표시는 검사가 아니라서(Windows CI에서 처음 그리기가 1초 넘게 걸렸다)
+    t.timeout.connect(lambda: None if (stamps and not blocking and win._shown) else stamps.append(time.perf_counter()))
     t.start()
     t0 = time.perf_counter()
     stamps.append(t0)
@@ -85,10 +84,13 @@ def _measure_ui_gaps(win, monkeypatch, blocking: bool):
         monkeypatch.setattr(type(win), "_SLOW_CONFIRMED_FUNCS", frozenset())
     win._on_confirm_required(_payload("scan_file_with_defender", path="x"))
     returned = time.perf_counter() - t0
+    if not blocking:
+        stamps[:] = [time.perf_counter()]
     _spin(5000, until=lambda: bool(win._shown) and (not blocking or len(stamps) > 1))
     _spin(100)
     t.stop()
-    stamps.append(time.perf_counter())
+    if blocking:
+        stamps.append(time.perf_counter())
     gap = max(b - a for a, b in zip(stamps, stamps[1:]))
     return returned, gap, len(stamps), win._shown
 
