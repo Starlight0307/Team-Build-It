@@ -249,10 +249,16 @@ def test_holiday_dates_come_from_the_table(monkeypatch):
     assert small_talk.reply("추석 연휴 기차표 언제 열려?") is None
 
 
-@pytest.mark.parametrize("text", ["요즘 들을 만한 노래 있어?", "볼만한 거 있어?", "할 일이 없어서 왔어", "주말에 뭐 하지?", "너무 춥다", "더워 죽겠다", "너랑 얘기하고 싶어서 왔어"])
+@pytest.mark.parametrize("text", ["요즘 들을 만한 노래 있어?", "볼만한 거 있어?", "할 일이 없어서 왔어", "주말에 뭐 하지?", "너무 춥다", "더워 죽겠다", "너랑 얘기하고 싶어서 왔어", "항상 고마워", "잠깐 화장실 다녀올게", "그냥 심심해서 불러 봤어", "요즘 아무 의욕이 없어"])
 def test_open_questions_get_written_answers(text):
     from core import small_talk
     assert small_talk.reply(text) and small_talk.reply(text, casual=True)
+
+
+def test_achievement_is_celebrated_not_asked_about():
+    from core import small_talk
+    reply = small_talk.statement_reply("드디어 논문 다 썼어", False, lambda s, t: json.dumps({"kind": "did", "topic": "논문"}))
+    assert reply in [r.format(t="논문") for r in small_talk._KIND_REPLIES["good"][0]]
 
 
 def test_one_letter_topic_is_only_for_body_parts():
