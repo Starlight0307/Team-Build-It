@@ -133,7 +133,7 @@ def test_lookup_opens_google_search_without_asking_the_model(qapp, monkeypatch):
     from core import web_launcher
     opened = []
     monkeypatch.setattr(ai, "_ollama_chat", lambda **kw: pytest.fail("정보 질문은 모델이 답하지 않는다"))
-    monkeypatch.setattr(web_launcher, "open_request", lambda req: opened.append(req) or "기본 브라우저에서 열었어요.")
+    monkeypatch.setattr(web_launcher, "open_request", lambda req: opened.append(req) or f"기본 브라우저에서 '{req['query']}' 구글 검색 결과를 열었어요.")
     w, out = _worker("잡채 만드는 법 알려줘"), []
     w.response_ready.connect(out.append)
     w.run()

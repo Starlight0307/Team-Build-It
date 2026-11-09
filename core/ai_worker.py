@@ -5424,7 +5424,7 @@ def _lookup_reply(text: str) -> str:
     try:
         opened = web_launcher.open_request({"site": "구글", "query": query,
                                             "url": "https://www.google.com/search?q=" + quote_plus(query)})
-        reply = f"이런 정보는 제가 틀릴 수 있어서 구글에서 찾아봤어요. {opened}"
+        reply = f"이런 정보는 제가 틀릴 수 있어서, {opened}"
     except Exception as e:
         print(f"[구글 검색 열기 실패] {type(e).__name__}")
         reply = f"이런 정보는 제가 틀릴 수 있어서 검색해 보시는 게 좋아요. 구글에서 '{query}'로 찾아보세요."
