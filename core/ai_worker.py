@@ -5317,6 +5317,7 @@ def _polish_chat_reply(reply: str, user_text: str) -> str:
     return " ".join(kept[:3])
 
 
+_HEDGE_WORD = "틀릴 수도 있으니"
 _ASKS_FACT = re.compile(r"법\s*알려|방법|어떻게|왜|누구|누가|몇\s*개|몇\s*명|언제|어디|영어로|일본어로|중국어로|뭐야|뭔가요|뭐예요")
 _ASKS_REPEAT = re.compile(r"뭐라고요?|(?:아까|방금)\s*뭐라고\s*(?:했어요?|했니)|다시\s*(?:말해\s*(?:줘|주세요)|한번\s*말해\s*(?:줘|주세요))|잘\s*못\s*들었어요?")
 _ASKS_DATE = re.compile(r"며칠|몇\s*일|요일|날짜|오늘|내일|모레|어제|글피")
@@ -5346,8 +5347,8 @@ def _ends_in_past_tense(text: str) -> bool:
 _PC_THING = re.compile(r"파일|폴더|사진|문서|보고서|cpu|메모리|디스크|컴퓨터|피시|\bpc\b|일정|회의|타이머")
 
 
-_ASKS_MEASURE = re.compile(r"(?:높이|길이|거리|인구|무게|크기|넓이|나이|깊이).{0,6}(?:얼마|몇)|까지\s*얼마나\s*걸려|얼마나\s*(?:마셔|먹어|자야|자\b|운동)")   # "얼마"가 가격 검색으로 가지 않게
-_ASKS_MY_FACT = re.compile(r"(?:내|제)\s*(?:이름|직업|취미|생일|사는\s*곳).{0,6}(?:기억|알아|아세요|뭐게|뭐야|뭐예요)|내가\s*(?:누구|뭐\s*좋아)")
+_ASKS_MEASURE = re.compile(r"(?:높이|길이|거리|인구|무게|크기|넓이|나이|깊이).{0,6}(?:얼마|몇)|까지\s*얼마나\s*걸려|얼마나\s*(?:마셔|먹어|자야|자\b|운동)|몇\s*시간\s*(?:자|자야|운동|공부)")   # "얼마"가 가격 검색으로 가지 않게
+_ASKS_MY_FACT = re.compile(r"(?:내|제)\s*(?:이름|직업|취미|생일|사는\s*곳).{0,6}(?:기억|알아|아세요|뭐게|뭐야|뭐예요)|내가\s*(?:누구|뭐\s*좋아하는지|뭘\s*좋아하는지)")
 
 
 def _only_generic_words(text: str, keywords) -> bool:
@@ -5387,7 +5388,7 @@ def _chat_rules() -> str:
 
 
 def _ask_kind(system: str, text: str) -> str:
-    return _ollama_chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, format="json", options={"temperature": 0, "num_predict": 30},
+    return _ollama_chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, format="json", options={"temperature": 0, "num_predict": 50},
                         messages=[{"role": "system", "content": system}, {"role": "user", "content": text}])["message"]["content"]
 
 
@@ -6868,6 +6869,20 @@ class AIWorker(QThread):
         """'대답 멈추기' — 진행 중인 Ollama 요청의 연결을 끊는다(스레드 밖에서 불러도 된다)."""
         self._ollama_client._client.close()
 
+    def _my_fact_reply(self) -> str:
+        """"내 이름 기억해?" — 모델은 모를 때 자기 이름을 댄다. 저장된 기억으로만 답한다."""
+        m = _ASKS_MY_FACT.search(self.user_text)
+        if not m:
+            return ""
+        casual = user_memory.is_casual()
+        facts = {k: v.get("value") for k, v in list_all_facts().items()}
+        asked = m.group().replace(" ", "")
+        key = "좋아하는 것" if "좋아" in asked else next((k for k in ("이름", "직업", "취미", "생일", "사는 곳") if k.replace(" ", "") in asked), "")
+        if key and facts.get(key):
+            return f"그럼! {key}은(는) {facts[key]}잖아.".replace("은(는)", "은" if (ord(key[-1]) - 0xAC00) % 28 else "는") if casual else \
+                f"그럼요! {key}은(는) {facts[key]}잖아요.".replace("은(는)", "은" if (ord(key[-1]) - 0xAC00) % 28 else "는")
+        return "아직 들은 적이 없어. 알려 주면 기억할게." if casual else "아직 들은 적이 없어요. 알려 주시면 기억할게요."
+
     def _learn_after_reply(self):
         """답을 다 한 뒤에 부른다 — 기억 추출이 답변과 모델을 두고 다투지 않게."""
         if self._learn_text:
@@ -6885,6 +6900,12 @@ class AIWorker(QThread):
                 self.response_ready.emit(f"🤖 로컬 비서: {speech_reply}")
                 return
             self._learn_text = self.user_text
+            my_fact = self._my_fact_reply()
+            if my_fact:   # 메모 검색 같은 도구 경로보다 먼저 — "기억해"가 메모 낱말이기도 하다
+                self.chat_history.append({'role': 'user', 'content': self.user_text})
+                self.chat_history.append({'role': 'assistant', 'content': my_fact})
+                self.response_ready.emit(f"🤖 로컬 비서: {my_fact}")
+                return
             from datetime import datetime
             from zoneinfo import ZoneInfo
 
@@ -7125,8 +7146,6 @@ class AIWorker(QThread):
             asked = '?' in prev_reply or '까요' in prev_reply
             canned = (None if self._ACK_ONLY.match(self.user_text.strip()) or (asked and self._is_decline_reply())
                       else small_talk.reply(self.user_text, user_memory.is_casual()))
-            if _ASKS_MY_FACT.search(self.user_text) and not list_all_facts():   # 모델은 모를 때 자기 이름을 댄다
-                canned = "아직 들은 적이 없어. 알려 주면 기억할게." if user_memory.is_casual() else "아직 들은 적이 없어요. 알려 주시면 기억할게요."
             if _ASKS_REPEAT.fullmatch(self.user_text.strip().rstrip("?!. ")):   # 모델은 앞말을 되풀이하지 못하고 지어낸다
                 canned = prev_reply or ("아직 한 말이 없어. 뭐든 말해 봐." if user_memory.is_casual() else "아직 드린 말씀이 없어요. 편하게 말씀해 주세요.")
             if canned:
@@ -7689,8 +7708,8 @@ class AIWorker(QThread):
             sys.stderr.flush()
 
             if ollama_tools and not use_tools and not is_explanation:
-                last_reply = next((str(m.get('content', '')) for m in reversed(self.chat_history) if m.get('role') == 'assistant'), '')
-                picked = small_talk.statement_reply(self.user_text, user_memory.is_casual(), _ask_kind, last_reply)
+                recent = [str(m.get('content', '')) for m in self.chat_history[-12:] if m.get('role') == 'assistant']
+                picked = small_talk.statement_reply(self.user_text, user_memory.is_casual(), _ask_kind, recent)
                 if picked:
                     self.chat_history.append({'role': 'assistant', 'content': picked})
                     self.response_ready.emit(f"🤖 로컬 비서: {picked}")
@@ -8336,7 +8355,7 @@ class AIWorker(QThread):
                 clean_reply = _polish_chat_reply(clean_reply, self.user_text)
                 if not clean_reply:   # 고장 난 문장만 남았으면 지어내지 않고 모른다고 한다
                     clean_reply = "그건 내가 잘 모르겠어. 다르게 물어봐 줄래?" if user_memory.is_casual() else "그건 제가 잘 모르겠어요. 다르게 물어봐 주실래요?"
-                elif _ASKS_FACT.search(self.user_text):   # 이 모델은 사실을 자주 틀린다("한글은 이순신이 만들었다")
+                elif _ASKS_FACT.search(self.user_text) and not any(_HEDGE_WORD in str(m.get('content', '')) for m in self.chat_history[-8:]):   # 매번 붙이면 지겹다   # 이 모델은 사실을 자주 틀린다("한글은 이순신이 만들었다")
                     clean_reply += " 내가 틀릴 수도 있으니 중요한 건 확인해 봐." if user_memory.is_casual() else " 제가 틀릴 수도 있으니 중요한 건 확인해 보세요."
 
             self.chat_history.append({'role': 'assistant', 'content': clean_reply})

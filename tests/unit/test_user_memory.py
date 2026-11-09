@@ -216,14 +216,22 @@ def test_date_statements_stay_in_chat(text, chat):
     assert _only_mentions_a_date(text, AIWorker._TOOL_KEYWORDS) is chat
 
 
-@pytest.mark.parametrize("kind", ["good", "bad", "plan", "wish", "did", "opinion", "other"])
+@pytest.mark.parametrize("kind", sorted(__import__("core.small_talk", fromlist=["x"])._KIND_REPLIES))
 @pytest.mark.parametrize("casual", [False, True])
-def test_statement_reply_uses_the_kind_and_avoids_repeating(kind, casual):
+def test_statement_reply_uses_kind_and_real_topic_and_avoids_repeating(kind, casual):
     from core import small_talk
-    ask = lambda s, t: json.dumps({"kind": kind})
+    ask = lambda s, t: json.dumps({"kind": kind, "topic": "지갑"})
     first = small_talk.statement_reply("지갑 잃어버렸어", casual, ask)
-    assert first in small_talk._KIND_REPLIES[kind][1 if casual else 0]
-    assert small_talk.statement_reply("지갑 잃어버렸어", casual, ask, avoid=first) != first
+    assert first and small_talk.statement_reply("지갑 잃어버렸어", casual, ask, recent=[first]) != first
+    invented = small_talk.statement_reply("가방 잃어버렸어", casual, ask)   # 말에 없는 주제는 쓰지 않는다
+    assert invented and "지갑" not in invented
+
+
+def test_every_reply_template_keeps_its_speech_level():
+    from core import small_talk
+    for polite, polite_plain, casual, casual_plain in small_talk._KIND_REPLIES.values():
+        assert all(re.search(r"요|죠|니다|!|\.\.\.", r) for r in polite + polite_plain)
+        assert not any(re.search(r"(?:세요|어요|아요|해요|네요|예요)[.!?]?$", r) for r in casual + casual_plain)
 
 
 @pytest.mark.parametrize("text", ["파이썬이 뭐야?", "이순신이 누구야", "스트레스 어떻게 풀어", "왜 그래"])
@@ -278,4 +286,27 @@ def test_more_statements_and_measure_questions():
 def test_more_table_phrases(text):
     from core import small_talk
     assert small_talk.reply(text)
+
+
+def test_introduction_is_greeted_by_name():
+    from core import small_talk
+    assert small_talk.reply("내 이름은 민수야") == "반가워요, 민수님!" and small_talk.reply("제 이름은 지은이에요", True) == "반가워, 지은!"
+
+
+def test_my_fact_question_answers_from_memory_only(member):
+    from core.ai_worker import AIWorker
+
+    class Worker(AIWorker):
+        def __init__(self, text):
+            self.user_text = text
+    assert "아직 들은 적이 없어요" in Worker("내 이름 기억해?")._my_fact_reply()
+    pm.save_pref(um.FACTS, "이름", "민수")
+    assert Worker("내 이름 기억해?")._my_fact_reply() == "그럼요! 이름은 민수잖아요."
+    assert Worker("오늘 일정 알려줘")._my_fact_reply() == ""
+
+
+def test_filler_words_are_never_used_as_topic():
+    from core import small_talk
+    reply = small_talk.statement_reply("망한 것 같아", False, lambda s, t: json.dumps({"kind": "bad", "topic": "것"}))
+    assert reply and not reply.startswith("것")
 
