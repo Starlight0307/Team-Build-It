@@ -1186,6 +1186,8 @@ _ACTION_WORD_GATES = (
     (re.compile(r"예산|까지만"), ("set_monthly_budget",)),
     # 2026-10-19 기능 점검: "오늘 앱 사용 시간 알려줘"가 3번 다 사용 시간 조회 대신 기록 켜짐/꺼짐 확인을 골랐다
     (re.compile(r"켜져|꺼져|켜졌|꺼졌|켜있|꺼있|켜 있|꺼 있|측정\s*중|기록\s*중|기록하고|상태"), ("get_usage_status",)),
+    # 2026-11-09 새 문장 평가: "보일러가 안 돼"에 확인창 없는 기기 제어가 보일러 끄기를 불렀다 — 켜고 끄라는 말이 있을 때만
+    (re.compile(r"켜|꺼|끄|끈|틀어|돌려|작동시|멈춰|중지|\bon\b|\boff\b", re.IGNORECASE), ("control_iot_device",)),
 )
 
 
@@ -7950,6 +7952,7 @@ class AIWorker(QThread):
                 # 새로 만들 이유가 없었고, 모듈 밖에서 테스트가 import해서
                 # 검증할 수 있어야 했다.
 
+                offered_names = {t.get('function', {}).get('name') for t in ollama_tools}
                 for tool in response['message']['tool_calls']:
                     func_name = tool['function']['name']
                     args      = tool['function']['arguments']
@@ -7967,6 +7970,9 @@ class AIWorker(QThread):
                     if (_file_route and func_name in ('search_files', 'find_large_files')
                             and func_name != _file_route and _file_route in func_map):
                         func_name, args = _file_route, {}
+                    if func_name not in offered_names:   # 이번 요청에 보여 주지 않은 도구는 모델이 불러도 실행하지 않는다(위 파일 경로 교정 뒤에 본다)
+                        print(f"[도구 차단] 노출하지 않은 {func_name} 호출을 건너뜀")
+                        continue
 
                     # 2026-10-11 실제 앱 테스트: "내일 일정 알려줘"에 LLM이 get_upcoming_events(days=1)를
                     # 골라 "내일 하루"가 아니라 "지금부터 24시간"을 조회했다. 하루를 콕 집은 요청(오늘/내일/

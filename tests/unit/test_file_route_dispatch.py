@@ -37,6 +37,8 @@ def _run(monkeypatch, user_text, llm_call_name, llm_args, chat_history=None):
         return {"message": {"role": "assistant", "content": "완료"}}
 
     monkeypatch.setattr(ai_worker.ollama, "chat", fake_chat)
+    for f in [search_files, find_large_files]:   # 플러그인을 불러오지 않는 시험이라 도구 설명을 직접 등록한다(설명 없는 도구는 모델에 보여 주지 않아 실행도 안 된다)
+        monkeypatch.setitem(ai_worker.TOOL_SCHEMAS, f.__name__, {"type": "function", "function": {"name": f.__name__, "description": "시험", "parameters": {"type": "object", "properties": {}}}})
     worker = AIWorker(user_text, list(chat_history or []), [search_files, find_large_files])
     worker.run()
     return calls
