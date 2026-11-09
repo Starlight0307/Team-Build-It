@@ -249,7 +249,7 @@ def test_holiday_dates_come_from_the_table(monkeypatch):
     assert small_talk.reply("추석 연휴 기차표 언제 열려?") is None
 
 
-@pytest.mark.parametrize("text", ["요즘 들을 만한 노래 있어?", "볼만한 거 있어?", "할 일이 없어서 왔어", "주말에 뭐 하지?"])
+@pytest.mark.parametrize("text", ["요즘 들을 만한 노래 있어?", "볼만한 거 있어?", "할 일이 없어서 왔어", "주말에 뭐 하지?", "너무 춥다", "더워 죽겠다", "너랑 얘기하고 싶어서 왔어"])
 def test_open_questions_get_written_answers(text):
     from core import small_talk
     assert small_talk.reply(text) and small_talk.reply(text, casual=True)
