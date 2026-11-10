@@ -149,10 +149,10 @@ class _StockDialog(lumi_dialog.LumiDialog):
 
 
 class StockAccountDialog(_StockDialog):
-    """모의 계좌 연결, 주문 기능 켜기·한도, 연결 해제."""
+    """계좌 연결(여러 증권사), 연결된 계좌 목록과 계좌별 해제, 주문 기능 켜기·한도."""
 
-    def __init__(self, parent=None):
-        super().__init__(parent, "주식 계좌 설정")
+    def __init__(self, parent=None, add_mode=False):
+        super().__init__(parent, "증권 계좌 추가" if add_mode else "주식 계좌 설정")
         self.status_info = _stock().account_status()
         self.changed = False
         extras = QHBoxLayout()
@@ -163,7 +163,7 @@ class StockAccountDialog(_StockDialog):
             btn.clicked.connect(handler)
             extras.addWidget(btn)
         self.body.addLayout(extras)
-        if self.status_info["connected"]:
+        if self.status_info["connected"] and not add_mode:
             self._build_connected()
         elif self.status_info["logged_in"]:
             self._build_connect_form()
@@ -235,14 +235,26 @@ class StockAccountDialog(_StockDialog):
         self.accept()
 
     def _build_connected(self):
-        self.desc.setText(f"{self.status_info['account']} 연결됨")
+        self.desc.setText("연결된 증권사예요. 잔고는 모두 합쳐 보여 주고, 주문과 자동매매는 주 계좌로만 나가요.\n"
+                          "증권사에 연결하지 못하면 마지막으로 받은 종목을 공공데이터 시세로 계산해요.")
         self.desc.show()
+        for account in self.status_info["accounts"]:
+            row = QHBoxLayout()
+            name = QLabel(account["label"] + (" · 주 계좌" if account["primary"] else ""))
+            name.setObjectName("LumiText")
+            row.addWidget(name, 1)
+            remove = QPushButton("연결 해제")
+            remove.setObjectName("LumiDanger")
+            remove.setAutoDefault(False)
+            remove.clicked.connect(lambda _=False, a=account: self._disconnect_one(a))
+            row.addWidget(remove)
+            self.body.addLayout(row)
         self.order_check = QCheckBox("주문 기능 켜기 (주문 창에서 직접 확정해야 나가요)")
         self.order_check.setChecked(self.status_info["order_enabled"])
         self.body.addWidget(self.order_check)
         self.limit_input = QLineEdit(f"{self.status_info['order_limit']:,}")
         self.field("1회 주문 한도(원)", self.limit_input)
-        self.add_button("연결 해제", "LumiDanger", self._disconnect)
+        self.add_button("계좌 추가", "LinkGhost", self._add_account)
         self.add_button("저장", "LinkPrimary", self._save_settings)
 
     def _save_settings(self):
@@ -258,9 +270,15 @@ class StockAccountDialog(_StockDialog):
         self.changed = True
         self.accept()
 
-    def _disconnect(self):
-        if lumi_dialog.question(self, "계좌 연결 해제", "저장된 키를 지우고 자동매매도 끌까요?") == QMessageBox.StandardButton.Yes:
-            _stock().disconnect_account()
+    def _add_account(self):
+        if StockAccountDialog(self, add_mode=True).exec():
+            self.changed = True
+            self.accept()
+
+    def _disconnect_one(self, account: dict):
+        note = "주문과 자동매매가 꺼지고, 다음 계좌가 주 계좌가 돼요." if account["primary"] else "이 계좌의 잔고는 더 이상 합쳐 보여 주지 않아요."
+        if lumi_dialog.question(self, "계좌 연결 해제", f"{account['label']}의 저장된 키를 지울까요?\n{note}") == QMessageBox.StandardButton.Yes:
+            _stock().disconnect_account(account["id"])
             self.changed = True
             self.accept()
 
@@ -709,7 +727,8 @@ class StockPanel(Panel):
                 f"<span style='color:{_pl_color(q['change']) or 'inherit'}'>{q['name']} {q['close']:,}원 "
                 f"{q['change']:+,}원 ({q['rate']:+.2f}%)</span>" for q in quotes))
             self.rows.show()
-            self.message.setText(f"{quotes[0]['date']} 종가 · {_stock().market_source()}")
+            self.message.setText((f"{portfolio['notice']}\n" if portfolio.get("notice") else "")
+                                 + f"{quotes[0]['date']} 종가 · {_stock().market_source()}")
             self.message.show()
             self._style_labels()
             return

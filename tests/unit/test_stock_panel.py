@@ -384,3 +384,24 @@ def test_widget_refreshes_during_market_and_once_after_close(qapp, stock, monkey
     panel.close()
     panel.deleteLater()
 
+
+
+def test_settings_list_every_account_and_remove_one(qapp, stock, monkeypatch):
+    from PyQt6.QtWidgets import QLabel, QMessageBox, QPushButton
+    with sp._lock:
+        data = sp._load()
+        data["linked"] = [{"app_key": "K2", "app_secret": "S2", "number": "11100000001", "mode": "real", "broker": "toss"}]
+        sp._save(data)
+    monkeypatch.setattr(stock_panel.lumi_dialog, "question", lambda *a: QMessageBox.StandardButton.Yes)
+    dlg = stock_panel.StockAccountDialog()
+    labels = [w.text() for w in dlg.findChildren(QLabel)]
+    assert any("주 계좌" in t and "모의" in t for t in labels) and any("토스증권" in t for t in labels)
+    removes = [b for b in dlg.findChildren(QPushButton) if b.text() == "연결 해제"]
+    assert len(removes) == 2 and any(b.text() == "계좌 추가" for b in dlg.findChildren(QPushButton))
+    removes[1].click()
+    assert [a["label"] for a in sp.account_status()["accounts"]] == ["한국투자증권 모의 계좌 ****4501"] and sp.account_status()["order_enabled"]
+
+
+def test_add_mode_shows_connect_form_while_connected(qapp, stock):
+    dlg = stock_panel.StockAccountDialog(add_mode=True)
+    assert dlg.key_input is not None and dlg.windowTitle() != ""

@@ -227,8 +227,35 @@ def test_failed_read_reports_error_not_stale_numbers(connected, monkeypatch):
     def down(*a, **k):
         raise requests.ConnectionError(f"secret {KEY}")
     monkeypatch.setattr(sp.requests, "request", down)
+    def no_quote(code):
+        raise sp.StockError("시세를 받지 못했어요.")
+    monkeypatch.setattr(sp, "market_quote", no_quote)
     text = sp.get_stock_briefing()
     assert text.startswith("⚠️") and KEY not in text and "원" not in text.replace("증권사", "")
+
+
+def test_unreachable_broker_falls_back_to_public_prices_of_last_holdings(connected, monkeypatch):
+    def down(*a, **k):
+        raise requests.ConnectionError(f"secret {KEY}")
+    monkeypatch.setattr(sp.requests, "request", down)
+    monkeypatch.setattr(sp, "market_quote", lambda code: {"code": code, "name": "삼성전자", "date": "2026-11-07", "close": 80000,
+                                                          "change": 0, "rate": 0.0})
+    p = sp.fetch_portfolio()
+    assert "연결 실패(공공데이터 시세)" in p["account"] and p["holdings"][0]["price"] == 80000 and p["fetched_at"] == "2026-11-07 종가"
+    assert KEY not in sp.get_stock_briefing()
+
+
+def test_nothing_reachable_shows_public_market_overview(connected, monkeypatch):
+    monkeypatch.setattr(sp, "_fetch_portfolio", lambda *a: (_ for _ in ()).throw(sp.StockError("증권사 응답을 받지 못했어요.")))
+    with sp._lock:
+        data = sp._load()
+        data["last"] = []
+        sp._save(data)
+    monkeypatch.setattr(sp, "market_overview", lambda: [{"code": "005930", "name": "삼성전자", "date": "2026-11-07", "close": 1,
+                                                         "change": 0, "rate": 0.0}])
+    p = sp.fetch_portfolio()
+    assert p["market"][0]["name"] == "삼성전자" and "주요 종목" in p["notice"]
+    assert "주요 종목" in sp.get_stock_briefing()
 
 
 def test_open_order_tool_only_opens_window(connected):
@@ -829,8 +856,11 @@ def test_manual_failure_gives_error_not_old_numbers(market):
 
 
 def test_connected_account_takes_priority_over_manual_and_public_prices(connected, monkeypatch):
+    monkeypatch.setattr(sp, "market_quote", lambda code: {"code": code, "name": "삼성전자", "date": "2026-11-07", "close": 1,
+                                                          "change": 0, "rate": 0.0})
     sp.add_manual_holding("x", "삼성전자", 1, 1)
-    assert "모의 계좌" in sp.fetch_portfolio()["account"]
+    p = sp.fetch_portfolio()
+    assert "합산" in p["account"] and p["mode"] == "demo"   # 직접 입력도 함께 더한다
     monkeypatch.setattr(sp, "get_price_bars", lambda code: "broker")
     monkeypatch.setattr(sp, "market_bars", lambda code: "public")
     assert sp.price_bars("005930") == "broker"
@@ -1446,6 +1476,26 @@ def test_toss_token_failure_says_why(broker_env, error, hint):
     with pytest.raises(sp.StockError, match=hint) as e:
         broker_env("toss", _toss_routes(), token_body={"error": error, "error_description": f"bad {KEY}"})
     assert KEY not in str(e.value) and not sp.account_status()["connected"]
+
+
+def test_several_brokers_are_listed_merged_and_removed_one_by_one(broker_env):
+    fake = broker_env("toss", {**_toss_routes(), **_ls_routes()})
+    reply = sp.connect_account("LSKEY", "LSSECRET", "", "real", "ls")
+    assert "추가로 연결" in reply and "토스증권" in reply
+    status = sp.account_status()
+    assert [a["primary"] for a in status["accounts"]] == [True, False] and "LS" in status["accounts"][1]["label"]
+    assert status["order_enabled"]   # 보기용 계좌를 더해도 주 계좌 주문 설정은 그대로
+    p = sp.fetch_portfolio()
+    row = p["holdings"][0]
+    assert "2곳" in p["account"] and row["qty"] == 12 and row["sellable"] == 10   # LS 쪽은 주문 대상이 아니다
+    assert row["avg_price"] == pytest.approx((600000 + 120000) / 12)
+    sp.connect_account("LSKEY", "LSSECRET", "", "real", "ls")   # 같은 계좌를 다시 넣으면 늘지 않는다
+    assert len(sp.account_status()["accounts"]) == 2
+    sp.disconnect_account(status["accounts"][0]["id"])   # 주 계좌를 지우면 다음 계좌가 주 계좌, 주문은 꺼짐
+    status = sp.account_status()
+    assert len(status["accounts"]) == 1 and "LS" in status["account"] and not status["order_enabled"]
+    sp.disconnect_account()
+    assert not sp.account_status()["connected"] and sp.account_status()["accounts"] == []
 
 
 def test_auto_rule_runs_through_new_broker(broker_env):

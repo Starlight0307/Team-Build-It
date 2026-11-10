@@ -100,7 +100,8 @@ def _path(user_id: str = None) -> str:
 
 
 def _defaults() -> dict:
-    return {"version": 1, "account": None, "token": None, "token_expires": "",
+    # account는 주문·자동매매를 하는 주 계좌, linked는 보기만 하는 추가 계좌(각자 token·token_expires·last를 가진다)
+    return {"version": 1, "account": None, "token": None, "token_expires": "", "linked": [], "last": [],
             "order_enabled": False, "order_limit": DEFAULT_ORDER_LIMIT, "orders": [],
             "manual": {"broker": "카카오페이증권", "items": []}, "favorites": [], "drawings": {},
             "auto": {"enabled": False, "max_order": 0, "max_daily_amount": 0, "max_daily_count": 0,
@@ -880,25 +881,62 @@ def connect_account(app_key: str, app_secret: str, account_no: str, mode: str = 
         _split_account(account_no)
     account = {"app_key": app_key, "app_secret": app_secret, "number": (account_no or "").strip(), "mode": mode, "broker": broker}
     with _lock:
-        data = _load()
-        data.update(account=None, token=None, token_expires="")
+        saved = _load()
+    data = {"account": None, "token": None, "token_expires": ""}   # 새 계좌의 토큰 — 저장된 계좌 토큰을 건드리지 않는다
     adapter = _broker(data, account)
     if adapter:
         account["number"] = adapter.connect(account["number"]) or ("키 연결" if broker not in ("kiwoom", "toss", "nh", "n2") else "")
         if not account["number"]:
             raise StockError(f"{BROKER_NAMES[broker]}에서 계좌번호를 받지 못했어요. 앱 키를 발급한 계좌를 확인해 주세요.")
-    _fetch_portfolio(data, account)
+    last = _snapshot(_fetch_portfolio(data, account))
+    label = mask_account(account["number"], mode, broker)
     with _lock:
-        data.update(account=account, order_enabled=False)   # 계좌가 바뀌면 주문은 다시 켜야 한다
-        data["auto"]["enabled"] = False
-        _save(data)
-    return f"{mask_account(account['number'], mode, broker)}를 연결했어요."
+        saved = _load()
+        new_id = _account_id(account)
+        if saved["account"] and _account_id(saved["account"]) != new_id:   # 주 계좌는 그대로, 보기용으로 더한다
+            saved["linked"] = [a for a in saved["linked"] if _account_id(a) != new_id] + [
+                dict(account, token=data["token"], token_expires=data["token_expires"], last=last)]
+            _save(saved)
+            return f"{label}를 추가로 연결했어요. 주문과 자동매매는 주 계좌({_label(saved['account'])})로만 나가요."
+        saved["linked"] = [a for a in saved["linked"] if _account_id(a) != new_id]
+        saved.update(account=account, token=data["token"], token_expires=data["token_expires"], last=last,
+                     order_enabled=False)   # 계좌가 바뀌면 주문은 다시 켜야 한다
+        saved["auto"]["enabled"] = False
+        _save(saved)
+    return f"{label}를 연결했어요."
 
 
-def disconnect_account():
+def _account_id(account: dict) -> str:
+    return f"{account.get('broker') or 'kis'}:{re.sub(r'[^0-9A-Za-z]', '', account.get('number') or '')}"
+
+
+def _label(account: dict) -> str:
+    """여러 계좌를 늘어놓을 때 쓴다 — broker가 없는 옛 계좌는 한국투자증권이다."""
+    return ("" if account.get("broker") else f"{BROKER_NAMES['kis']} ") + mask_account(account["number"], _mode(account), account.get("broker"))
+
+
+def _snapshot(portfolio: dict) -> list:
+    """증권사에 못 붙을 때 공공데이터 시세로 다시 계산할 수 있게 종목·수량·평균 단가만 남긴다."""
+    return [{"code": h["code"], "name": h["name"], "qty": h["qty"], "avg": round(h["avg_price"])} for h in portfolio["holdings"]]
+
+
+def disconnect_account(account_id: str = None):
+    """account_id가 없으면 모든 계좌를 지운다. 주 계좌를 지우면 다음 계좌가 주 계좌가 되고, 주문·자동매매는 꺼진다."""
     with _lock:
         data = _load()
-        data.update(account=None, token=None, token_expires="", order_enabled=False)
+        if account_id and data["account"] and _account_id(data["account"]) != account_id:
+            data["linked"] = [a for a in data["linked"] if _account_id(a) != account_id]
+            _save(data)
+            return
+        rest = [] if not account_id else data["linked"]
+        if rest:
+            first = rest[0]
+            data.update(account={k: v for k, v in first.items() if k not in ("token", "token_expires", "last")},
+                        token=first.get("token"), token_expires=first.get("token_expires", ""), last=first.get("last", []))
+            data["linked"] = rest[1:]
+        else:
+            data.update(account=None, token=None, token_expires="", last=[], linked=[])
+        data["order_enabled"] = False
         data["auto"]["enabled"] = False
         _save(data)
 
@@ -907,7 +945,10 @@ def account_status() -> dict:
     data = _load() if logged_in() else _defaults()
     number = (data["account"] or {}).get("number")
     mode = _mode(data["account"])
+    accounts = [{"id": _account_id(a), "label": _label(a), "primary": i == 0}
+                for i, a in enumerate(([data["account"]] if number else []) + data["linked"])]
     return {"logged_in": logged_in(), "connected": bool(number), "account": mask_account(number, mode, data["account"].get("broker")) if number else "",
+            "accounts": accounts,
             "mode": mode, "order_enabled": data["order_enabled"], "order_limit": data["order_limit"],
             "has_manual": bool(data["manual"]["items"]), "has_market_key": bool(_market_key())}
 
@@ -922,6 +963,8 @@ def set_order_settings(enabled: bool, limit: int):
 
 
 def fetch_portfolio() -> dict:
+    """연결한 계좌와 직접 입력을 합친다. 증권사에 못 붙은 계좌는 마지막으로 받은 종목을 공공데이터 시세로 계산하고,
+    아무것도 못 받으면 주요 종목 시세({"market": ...})를 돌려준다."""
     if logged_in():
         with _lock:
             data = _load()
@@ -929,9 +972,75 @@ def fetch_portfolio() -> dict:
             return _manual_portfolio(data["manual"])
     with _lock:
         data = _require_account()
-    portfolio = _fetch_portfolio(data)
-    _store_token(data)
+    parts, failed, error = [], [], None
+    for holder in [data] + data["linked"]:   # 추가 계좌는 자기 토큰을 자기 안에 둔다
+        account = holder["account"] if holder is data else holder
+        try:
+            part = _fetch_portfolio(holder, account)
+            holder["last"] = _snapshot(part)
+        except StockError as e:
+            error = error or e
+            failed.append(_label(account))
+            if not holder.get("last"):
+                continue
+            try:
+                part = _manual_portfolio({"broker": _label(account), "items": holder["last"]})
+            except StockError:
+                continue
+        if holder is not data:
+            for h in part["holdings"]:
+                h["sellable"] = 0   # 주문은 주 계좌로만 나간다
+        parts.append(part)
+    if data["manual"]["items"]:
+        try:
+            parts.append(_manual_portfolio(data["manual"]))
+        except StockError as e:
+            error = error or e
+    _store_tokens(data)
+    if not parts:
+        try:
+            return {"market": market_overview(), "notice": f"{error} 대신 주요 종목 시세를 보여 드려요."}
+        except StockError:
+            raise error
+    portfolio = parts[0] if len(parts) == 1 else _merge_portfolios(parts)
+    if failed:
+        portfolio["account"] += f" · {', '.join(failed)} 연결 실패(공공데이터 시세)"
     return portfolio
+
+
+def _merge_portfolios(parts: list) -> dict:
+    """같은 종목은 한 줄로 합친다 — 수량·매입·평가를 더하고 평균 단가와 수익률은 다시 계산한다."""
+    merged = {}
+    for part in parts:
+        for h in part["holdings"]:
+            buy = h.get("buy") or h["avg_price"] * h["qty"]
+            row = merged.setdefault(h["code"], dict(h, qty=0, value=0.0, pl=0.0, buy=0.0, sellable=0))
+            row.update(qty=row["qty"] + h["qty"], value=row["value"] + h["value"], pl=row["pl"] + h["pl"],
+                       buy=row["buy"] + buy, sellable=row["sellable"] + h["sellable"], price=h["price"] or row["price"])
+    holdings = list(merged.values())
+    for h in holdings:
+        h["avg_price"], h["rate"] = h["buy"] / h["qty"], (h["pl"] / h["buy"] * 100 if h["buy"] else 0.0)
+    pl, buy = sum(h["pl"] for h in holdings), sum(h["buy"] for h in holdings)
+    return {"holdings": holdings, "total_pl": pl, "total_buy": buy, "total_value": sum(h["value"] for h in holdings),
+            "total_rate": pl / buy * 100 if buy else 0.0, "fetched_at": parts[0]["fetched_at"],
+            "account": f"계좌 {len(parts)}곳 합산", "mode": parts[0]["mode"]}
+
+
+def _store_tokens(data: dict):
+    """주 계좌 토큰과 함께 추가 계좌의 토큰·마지막 종목도 바뀐 것만 쓴다."""
+    _store_token(data)
+    with _lock:
+        latest = _load()
+        changed = latest.get("last") != data.get("last")
+        latest["last"] = data.get("last", [])
+        fresh = {_account_id(a): a for a in data["linked"]}
+        for a in latest["linked"]:
+            new = fresh.get(_account_id(a))
+            if new and any(a.get(k) != new.get(k) for k in ("token", "token_expires", "last")):
+                a.update(token=new.get("token"), token_expires=new.get("token_expires", ""), last=new.get("last", []))
+                changed = True
+        if changed:
+            _save(latest)
 
 
 def _store_token(data: dict):
@@ -1716,6 +1825,10 @@ def get_stock_briefing() -> str:
         p = fetch_portfolio()
     except StockError as e:
         return f"⚠️ {e}"
+    if "market" in p:
+        quotes = p["market"]
+        return "\n".join([f"⚠️ {p['notice']}", f"[주요 종목 · {quotes[0]['date']} 종가 · {market_source()}]"] + [
+            f"- {q['name']}: {q['close']:,}원 ({q['change']:+,}원, {q['rate']:+.2f}%)" for q in quotes])
     if not p["holdings"]:
         return f"[{p['account']}] 지금 보유한 종목이 없어요. ({p['fetched_at']} 기준)"
     lines = [f"[{p['account']}] 총 평가손익 {p['total_pl']:+,.0f}원 ({p['total_rate']:+.2f}%), "
