@@ -1441,6 +1441,13 @@ def test_failed_token_saves_nothing_and_never_echoes_key(broker_env, broker, rou
     assert not sp.account_status()["connected"]
 
 
+@pytest.mark.parametrize("error,hint", [("invalid_client", "다시 복사"), ("access_denied", "허용 IP"), ("invalid_request", "형식")])
+def test_toss_token_failure_says_why(broker_env, error, hint):
+    with pytest.raises(sp.StockError, match=hint) as e:
+        broker_env("toss", _toss_routes(), token_body={"error": error, "error_description": f"bad {KEY}"})
+    assert KEY not in str(e.value) and not sp.account_status()["connected"]
+
+
 def test_auto_rule_runs_through_new_broker(broker_env):
     fake = broker_env("ls", _ls_routes())
     fake.routes["/stock/market-data"] = {"rsp_cd": "00000", "t1102OutBlock": {"price": 70500}}

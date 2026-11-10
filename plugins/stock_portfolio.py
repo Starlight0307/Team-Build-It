@@ -40,7 +40,8 @@ BROKER_GUIDES = {"kis": KIS_GUIDE_URL, "kiwoom": "https://openapi.kiwoom.com/mai
 DEMO_BROKERS = ("kis", "kiwoom", "nh", "n2")   # 나머지는 모의 서버가 없거나, 주소가 같아 키가 모의인지 가릴 수 없어 실전으로 다룬다
 ACCOUNT_CHOICE_BROKERS = ("nh", "n2", "toss")   # 한 키에 계좌가 여럿일 수 있다
 BROKER_NOTES = {"kiwoom": "포털에 이 컴퓨터의 IP도 등록해 주세요.", "ls": "모의 키를 넣어도 루미는 실전처럼 금액 재입력을 요구해요.",
-                "db": "모의 키를 넣어도 루미는 실전처럼 금액 재입력을 요구해요.", "meritz": "증권사 규정상 이 컴퓨터의 MAC 주소를 함께 보내요."}
+                "db": "모의 키를 넣어도 루미는 실전처럼 금액 재입력을 요구해요.", "meritz": "증권사 규정상 이 컴퓨터의 MAC 주소를 함께 보내요.",
+                "toss": "앱 키에는 클라이언트 ID(tsck_로 시작)를, 앱 시크릿에는 시크릿을 넣어 주세요. 허용 IP를 켰다면 이 컴퓨터의 IP도 등록해 주세요."}
 MASTER_URL = "https://new.real.download.dws.co.kr/common/master/{}_code.mst.zip"
 MASTER_TAIL = {"kospi": 228, "kosdaq": 222, "konex": 184}   # 공식 예제 kis_*_code_mst.py의 뒤쪽 고정 길이 — 그 앞이 코드·이름
 TR_BALANCE = {"demo": "VTTC8434R", "real": "TTTC8434R"}
@@ -367,6 +368,13 @@ class _Kiwoom(_Broker):
         return str(result.get("ord_no", ""))
 
 
+_TOSS_TOKEN_ERRORS = {   # https://openapi.tossinvest.com/openapi-docs/latest/openapi.json 의 /oauth2/token 응답
+    "invalid_client": "클라이언트 ID나 시크릿이 맞지 않거나 키가 비활성 상태예요. 토스증권 WTS의 Open API 화면에서 두 값을 다시 복사해 넣어 주세요.",
+    "access_denied": "이 컴퓨터의 IP가 허용 목록에 없어요. 토스증권 WTS 설정 > Open API > 허용 IP 관리에서 지금 쓰는 IP를 등록해 주세요.",
+    "invalid_request": "키 형식이 올바르지 않아요. 앞뒤 공백 없이 클라이언트 ID와 시크릿을 다시 넣어 주세요.",
+}
+
+
 class _Toss(_Broker):
     """공개 명세 https://openapi.tossinvest.com/openapi-docs/latest/openapi.json — API 모의 서버는 없다."""
     url = "https://openapi.tossinvest.com"
@@ -375,6 +383,9 @@ class _Toss(_Broker):
         body = self._post_token(url=self.url + "/oauth2/token", headers={"Content-Type": "application/x-www-form-urlencoded"},
                                 data={"grant_type": "client_credentials", "client_id": self.account["app_key"],
                                       "client_secret": self.account["app_secret"]})
+        reason = _TOSS_TOKEN_ERRORS.get(body.get("error"))   # 증권사 문구에는 입력값이 담길 수 있어 오류 코드만 쓴다
+        if not body.get("access_token") and reason:
+            raise StockError(f"토스증권 인증에 실패했어요. {reason}")
         return self._store(body.get("access_token"), body.get("expires_in"))
 
     def send(self, method: str, path: str, params: dict = None, body: dict = None):
