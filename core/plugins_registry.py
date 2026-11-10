@@ -384,11 +384,12 @@ AVAILABLE_PLUGINS = [
     },
     {
         "name": "회의 녹음 요약",
-        "desc": "회의를 녹음해 이 컴퓨터 안에서 받아쓰고 요약·결정 사항·할 일을 정리(소리는 밖으로 나가지 않음, 음성 구성요소 필요, 로그인 필요)",
-        "func_names": ["start_meeting_recording", "stop_meeting_recording", "list_meetings", "show_meeting", "delete_meeting"],
+        "desc": "회의를 녹음하거나 녹음 파일을 불러와 이 컴퓨터 안에서 받아쓰고 안건·결정 사항·할 일(담당·기한)을 회의록으로 정리, .md 파일로 내보내기(소리는 밖으로 나가지 않음, 음성 구성요소 필요, 로그인 필요)",
+        "func_names": ["start_meeting_recording", "stop_meeting_recording", "list_meetings", "show_meeting", "delete_meeting",
+                       "summarize_meeting_file", "export_meeting"],
         "module_name": "meeting_notes",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/meeting_notes.py",
-        "sha256": "0baa52e42fb2db66bd6c4b0caa41129f99b500622c69530081c78f1de7e937eb",
+        "sha256": "c3841b823beaef635d1c96a288e26edc683b3c6ca1697f970ca3dedf71b8943d",
         "dependencies": []
     },
     {

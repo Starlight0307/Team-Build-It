@@ -456,6 +456,14 @@ TOOL_METADATA: dict = {
         name="show_meeting", module="meeting_notes", category="meeting_notes",
         risk_level="safe", read_only=True, llm_exposed=True,
     ),
+    "summarize_meeting_file": ToolMetadata(
+        name="summarize_meeting_file", module="meeting_notes", category="meeting_notes",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
+    "export_meeting": ToolMetadata(
+        name="export_meeting", module="meeting_notes", category="meeting_notes",
+        risk_level="safe", read_only=False, llm_exposed=True,
+    ),
     "delete_meeting": ToolMetadata(
         name="delete_meeting", module="meeting_notes", category="meeting_notes",
         risk_level="safe", read_only=False, llm_exposed=True,

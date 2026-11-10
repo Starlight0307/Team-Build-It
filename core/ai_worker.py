@@ -893,8 +893,9 @@ _TOOL_CATEGORIES = {
         ("add_note", "list_notes", "search_note", "delete_note", "update_note"),
     ),
     "meeting_notes": (
-        ("회의 녹음", "회의녹음", "회의록", "녹음 시작", "녹음 끝", "녹음 그만", "녹음해줘"),
-        ("start_meeting_recording", "stop_meeting_recording", "list_meetings", "show_meeting", "delete_meeting"),
+        ("회의 녹음", "회의녹음", "회의록", "녹음 시작", "녹음 끝", "녹음 그만", "녹음해줘", "녹음 파일", "녹음파일"),
+        ("start_meeting_recording", "stop_meeting_recording", "list_meetings", "show_meeting", "delete_meeting",
+         "summarize_meeting_file", "export_meeting"),
     ),
     "text_tools": (
         # 2026-09-29 문서/텍스트 요약·번역 — 다른 카테고리 키워드와 안 겹치는
@@ -5813,6 +5814,8 @@ TOOL_STATUS_NAMES = {
     "list_meetings":             "📝  회의록 목록 조회 중",
     "show_meeting":              "📝  회의록 여는 중",
     "delete_meeting":            "📝  회의록 삭제 중",
+    "summarize_meeting_file":    "🎙️  녹음 파일 받아쓰는 중",
+    "export_meeting":            "📄  회의록 파일로 저장 중",
     "add_note":                  "📝  메모 저장 중",
     "list_notes":                "📝  메모 목록 조회 중",
     "search_note":                "📝  메모 검색 중",

@@ -6,13 +6,17 @@
 - 녹음은 사용자가 시작을 말했을 때만 켜진다. 녹음 파일은 받아쓴 뒤 지우고, 글과 요약만 암호화해 저장한다.
 - 호출어는 녹음 중에 반응하지 않는다 (core.voice.MIC_RESERVED) — 회의 중 "루미야"에 루미가 말하면 안 된다.
 - 요약에 실패해도 받아쓴 글은 남긴다 — 회의는 다시 할 수 없다.
+- 휴대폰·줌으로 녹음한 파일도 불러와 같은 방식으로 정리하고(원본 파일은 건드리지 않음),
+  회의록을 문서 폴더에 .md 파일로 내보낼 수 있다(내보낸 파일은 암호화되지 않음 — 공유용).
 """
 import json
 import os
+import re
 import threading
 import time
 import wave
 from datetime import datetime
+from pathlib import Path
 
 from data.secure_store import secure_open
 from settings.config import OLLAMA_MODEL, OLLAMA_NUM_CTX, OLLAMA_THINK
@@ -24,7 +28,13 @@ SAMPLE_RATE = 16000
 MAX_SECONDS = 3 * 60 * 60     # 끄는 것을 잊어도 디스크를 채우지 않게
 _CHUNK_CHARS = 6000           # 요약 한 번에 넣는 글자 수 (OLLAMA_NUM_CTX 안에 들어가게)
 _MAX_LISTED = 30
-_SUMMARY_FORMAT = "다음 형식으로만 쓰세요:\n요약: 3~5문장\n결정 사항: 항목별로, 없으면 '없음'\n할 일: 담당자와 함께 항목별로, 없으면 '없음'"
+_SUMMARY_FORMAT = ("다음 회의록 형식으로만 쓰세요. 항목 제목은 그대로 두고, 글에 없는 항목은 '없음'으로 쓰세요.\n"
+                   "회의 개요: 무엇을 위한 회의였는지 1~2문장\n"
+                   "안건별 논의:\n- 안건 이름: 나온 의견과 논의 내용\n"
+                   "결정 사항:\n- 항목별로\n"
+                   "할 일:\n- 할 일 (담당: 이름, 기한: 날짜) — 말하지 않은 담당자·기한은 '미정'\n"
+                   "다음 회의: 날짜와 안건")
+_AUDIO_TYPES = (".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".webm", ".mp4", ".mov", ".aiff", ".aif", ".amr", ".3gp")
 
 _current_user_id = "guest"
 _recording = None
@@ -100,12 +110,32 @@ def _reserve_mic(on: bool):
         pass
 
 
-def _transcribe(path: str) -> str:
+def _decode(path: str):
+    """녹음 파일을 16kHz 모노 float32로 읽는다. 루미가 쓴 wav는 바로 읽고, 다른 형식은 av로 푼다."""
     import numpy as np
+    try:
+        with wave.open(path, "rb") as f:
+            if (f.getnchannels(), f.getsampwidth(), f.getframerate()) == (1, 2, SAMPLE_RATE):
+                return np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+    except (wave.Error, EOFError):
+        pass
+    # faster-whisper의 decode_audio는 av 19에서 없어진 인자(metadata_errors)를 넘겨 실패한다 — 같은 일을 직접 한다
+    import av
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+    parts = []
+    with av.open(path) as container:
+        for frame in container.decode(audio=0):
+            parts += [f.to_ndarray().reshape(-1) for f in resampler.resample(frame)]
+    parts += [f.to_ndarray().reshape(-1) for f in resampler.resample(None)]
+    return np.concatenate(parts).astype(np.float32) / 32768.0 if parts else np.zeros(0, np.float32)
+
+
+def _transcribe(path: str) -> str:
+    return _transcribe_audio(_decode(path))
+
+
+def _transcribe_audio(audio) -> str:
     from core.voice import VoiceListener
-    # 파일 경로를 넘기면 faster-whisper가 av로 푸는데, 최신 av(19)와 맞지 않아 실패한다. 형식을 아는 녹음이라 직접 읽는다
-    with wave.open(path, "rb") as f:
-        audio = np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
     segments, _ = VoiceListener._load_model().transcribe(audio, language="ko", beam_size=5, vad_filter=True,
                                                          condition_on_previous_text=False)
     return " ".join(s.text.strip() for s in segments if not (s.no_speech_prob > 0.6 and s.avg_logprob < -1.0)).strip()
@@ -169,20 +199,55 @@ def stop_meeting_recording() -> str:
     if not text:
         os.remove(recording.path)
         return "🎙️ 녹음에서 말소리를 찾지 못했어요. 마이크 입력을 확인해 주세요."
+    reply = _save_meeting(recording.title, seconds, text)
+    os.remove(recording.path)   # 글을 저장한 뒤에만 지운다
+    return reply
+
+
+def _save_meeting(title: str, seconds: float, text: str) -> str:
     try:
         summary = _summarize(text)
     except Exception as e:
         print(f"[회의 녹음] 요약 실패: {type(e).__name__}")
         summary = ""
     data = _load()
-    item = {"seq": data["next_seq"], "title": recording.title, "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    item = {"seq": data["next_seq"], "title": title, "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "minutes": max(1, round(seconds / 60)), "summary": summary, "transcript": text}
     data["next_seq"] += 1
     data["items"].append(item)
     _save(data)
-    os.remove(recording.path)   # 글을 저장한 뒤에만 지운다
     head = f"📝 '{item['title']}' ({item['minutes']}분) 회의록을 저장했어요. (#{item['seq']})\n\n"
     return head + (summary or "요약은 만들지 못했어요. Ollama가 켜져 있는지 확인해 주세요. 받아쓴 글은 저장했어요.")
+
+
+def summarize_meeting_file(path: str, title: str = "") -> str:
+    """이미 녹음된 파일(휴대폰·줌 녹음 등)을 받아쓰고 회의록으로 정리한다. 원본 파일은 지우지 않는다."""
+    if _current_user_id == "guest":
+        return "❌ 회의록은 로그인한 사용자만 만들 수 있어요. 먼저 로그인해주세요."
+    name = str(path or "").strip().strip('"\'')
+    file = Path(os.path.expanduser(name))
+    if not file.is_file() and not file.is_absolute():   # "회의.m4a"처럼 이름만 말하면 자주 쓰는 폴더에서 찾는다
+        # 모델이 "다운로드에 있는 회의.m4a"처럼 문장째 넘기기도 한다 — 소리 파일 이름만 떼어 낸다
+        found = re.findall(r"[^\s\"'/\\]+(?:" + "|".join(re.escape(t) for t in _AUDIO_TYPES) + r")\b", name, re.IGNORECASE)
+        name = found[-1] if found else name
+        file = next((d / name for d in (Path.home() / "Downloads", Path.home() / "Documents", Path.home() / "Desktop")
+                     if (d / name).is_file()), file)
+    file = file.resolve()
+    if not name or not file.is_file():
+        return f"'{path}' 파일을 찾지 못했어요. 파일 위치를 다시 확인해 주세요."
+    if file.suffix.lower() not in _AUDIO_TYPES:
+        return f"❌ 소리 파일이 아니에요. 이런 형식을 읽을 수 있어요: {', '.join(t[1:] for t in _AUDIO_TYPES)}"
+    try:
+        audio = _decode(str(file))
+        text = _transcribe_audio(audio)
+    except ImportError:
+        return "❌ 받아쓰기 구성요소가 아직 없어요. 가운데 오브를 눌러 음성 대화를 먼저 설치해 주세요."
+    except Exception as e:
+        print(f"[회의 녹음] 파일 받아쓰기 실패: {type(e).__name__}")
+        return "❌ 이 파일을 받아쓰지 못했어요. 파일이 손상되지 않았는지 확인해 주세요."
+    if not text:
+        return "🎙️ 이 파일에서 말소리를 찾지 못했어요."
+    return _save_meeting((title or "").strip()[:60] or file.stem[:60], len(audio) / SAMPLE_RATE, text)
 
 
 def list_meetings() -> str:
@@ -195,13 +260,11 @@ def list_meetings() -> str:
 
 
 def _find(data: dict, item):
-    try:
-        seq = int(str(item).strip().lstrip("#"))
-        return next((i for i in data["items"] if i["seq"] == seq), None)
-    except ValueError:
-        word = str(item or "").strip()
-        found = [i for i in data["items"] if word and word in i["title"]]
-        return found[-1] if found else None
+    number = re.match(r"\s*#?\s*(\d+)\s*번?", str(item or ""))   # 모델이 "1번 회의록"처럼 넘기기도 한다
+    by_number = next((i for i in data["items"] if number and i["seq"] == int(number.group(1))), None)
+    word = str(item or "").strip()
+    found = [i for i in data["items"] if word and word in i["title"]]   # "2026 전략회의"처럼 숫자로 시작하는 제목
+    return by_number or (found[-1] if found else None)
 
 
 def show_meeting(item: str, with_transcript: bool = False) -> str:
@@ -214,6 +277,25 @@ def show_meeting(item: str, with_transcript: bool = False) -> str:
     if with_transcript or not meeting["summary"]:
         text += f"\n\n[받아쓴 글]\n{meeting['transcript']}"
     return text
+
+
+def export_meeting(item: str) -> str:
+    """회의록을 문서 폴더의 '루미 회의록'에 .md 파일로 내보낸다 — 팀에 보내거나 다른 프로그램에서 열 수 있다."""
+    if _current_user_id == "guest":
+        return "❌ 회의록은 로그인한 사용자만 내보낼 수 있어요."
+    meeting = _find(_load(), item)
+    if not meeting:
+        return f"'{item}' 회의록을 찾지 못했어요. '회의록 목록 보여줘'로 번호를 확인해 주세요."
+    docs = Path.home() / "Documents"
+    folder = (docs if docs.is_dir() else Path.home()) / "루미 회의록"
+    folder.mkdir(exist_ok=True)
+    name = "".join(c if c.isalnum() or c in " -_" else "_" for c in meeting["title"]).strip() or "회의록"
+    file = folder / f"{meeting['created'][:10]} {name}.md"
+    body = (f"# {meeting['title']}\n\n- 일시: {meeting['created']}\n- 길이: {meeting['minutes']}분\n\n"
+            f"## 회의록\n\n{meeting['summary'] or '요약 없음'}\n\n## 받아쓴 글\n\n{meeting['transcript']}\n")
+    with open(file, "w", encoding="utf-8") as f:
+        f.write(body)
+    return f"📄 '{meeting['title']}' 회의록을 파일로 저장했어요: {file}\n이 파일은 암호화되지 않으니 공유할 때만 쓰세요."
 
 
 def delete_meeting(item: str) -> str:
@@ -241,5 +323,10 @@ TOOL_SCHEMAS = {
     "list_meetings": _tool("list_meetings", "저장된 회의록 목록을 보여준다."),
     "show_meeting": _tool("show_meeting", "저장된 회의록의 요약을 보여준다. 전체 글을 원하면 with_transcript를 true로 한다.",
                           {**_ITEM, "with_transcript": {"type": "boolean"}}, ["item"]),
+    "summarize_meeting_file": _tool("summarize_meeting_file", "이미 녹음된 소리 파일(m4a, mp3, wav 등)을 받아쓰고 회의록으로 정리한다.",
+                                    {"path": {"type": "string", "description": "소리 파일 경로"},
+                                     "title": {"type": "string", "description": "회의 제목 (말하지 않았으면 비움)"}}, ["path"]),
+    "export_meeting": _tool("export_meeting", "저장된 회의록을 .md 파일로 내보낸다. 사용자가 파일로 저장·내보내기를 원할 때 쓴다.",
+                            _ITEM, ["item"]),
     "delete_meeting": _tool("delete_meeting", "저장된 회의록을 지운다. 사용자가 지우라고 분명히 말했을 때만 쓴다.", _ITEM, ["item"]),
 }
