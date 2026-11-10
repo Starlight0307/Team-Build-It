@@ -899,6 +899,23 @@ def _voice_checks():
             dev = "입력 장치 없음"
         return "PASS", f"마이크: {dev}"
 
+    @check("회의 녹음 파일 읽기 (m4a를 만들어 16kHz로 풀기)")
+    def _voice_meeting_file():
+        import tempfile
+        import av
+        import numpy as np
+        from plugins import meeting_notes
+        path = os.path.join(tempfile.mkdtemp(), "회의.m4a")   # 한글 경로까지 같이 본다
+        with av.open(path, "w") as out:
+            stream = out.add_stream("aac", rate=44100, layout="stereo")
+            frame = av.AudioFrame.from_ndarray(np.zeros((1, 44100 * 2), np.float32), format="flt", layout="stereo")
+            frame.rate = 44100
+            for packet in list(stream.encode(frame)) + list(stream.encode(None)):
+                out.mux(packet)
+        audio = meeting_notes._decode(path)
+        ok = audio.dtype == np.float32 and abs(len(audio) - 16000) < 3200
+        return ("PASS" if ok else "FAIL"), f"av {av.__version__}, {len(audio)}개 샘플"
+
     @check("호출어 감지기 불러오기 (sherpa-onnx, 모델 확인 후 빈 소리 인식)")
     def _voice_wake():
         from core import wake_detector
