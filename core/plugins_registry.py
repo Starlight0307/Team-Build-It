@@ -204,11 +204,11 @@ AVAILABLE_PLUGINS = [
         "func_names": [
             "check_update_status", "scan_shared_folders", "get_login_failures", "check_security_settings",
             "get_system_security_report", "check_ransomware_readiness",
-            "restrict_shared_folder_permission",
+            "restrict_shared_folder_permission", "open_settings",
         ],
         "module_name": "system_security",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_security.py",
-        "sha256": "af554c753347e1a175e16fc07866d3fe09a7c06ae9482933bb4aefb0e9de7a0e",
+        "sha256": "ef188c581cef424723ccc2e0749aaca4e68d687b1803b020fd351c51853b18f1",
         "dependencies": []
     },
     {

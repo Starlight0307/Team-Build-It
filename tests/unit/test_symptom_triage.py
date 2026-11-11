@@ -88,12 +88,13 @@ def test_existing_paths_still_decide_their_own_phrases():
 def test_all_ok_has_no_assertive_wording_and_counts():
     for sid in SYMPTOMS:
         reply = run_triage(sid, _ok_map())
-        assert "확인한 범위에서 문제가 보이지 않았어요" in reply
-        assert "안전합니다" not in reply and "안전해요" not in reply and "문제없습니다" not in reply
-        assert "✅" not in reply
         n = len([c for c in SYMPTOMS[sid]["checks"] if c not in ("get_top_cpu_processes", "get_system_info")])
-        assert f"({n}/{n}개 확인)" in reply
-        assert "다만 루미가 보지 않는 부분은 알 수 없어요" in reply
+        first = reply.splitlines()[0]
+        assert first.startswith("📋 ") and "· 이상 없음 (" in first and first.endswith(f"({n}/{n}개 확인)")
+        assert "안전합니다" not in reply and "안전해요" not in reply and "문제없습니다" not in reply
+        assert "※" not in reply and "⚠️" not in reply and "🚨" not in reply and "❔" not in reply
+        assert "✅ 이상 없음 — " in reply          # '확인한 범위'만 말한다
+        assert "제가 보지 않는 부분은 알 수 없음" in reply
 
 
 def test_failures_and_unreadable_stay_unknown():
@@ -106,12 +107,12 @@ def test_failures_and_unreadable_stay_unknown():
     m["check_wifi_security"] = lambda: "판정 정보 없는 글"        # 개수 속성 없음
     del m["get_network_connections"]
     reply = run_triage("network", m)
-    assert "확인하지 못한 것:" in reply
+    assert "확인 못 함 4건" in reply.splitlines()[0] and reply.splitlines()[0].endswith("(1/5개 확인)")
     for label in ("DNS 설정", "웹 연결 경로", "와이파이 보안", "네트워크 연결"):
-        assert label in reply
-    assert "(확인한 점검 1/5개)" in reply            # 방화벽만 확인됨
-    assert "문제가 없다는 뜻이 아니에요" in reply
-    assert "확인한 범위에서 문제가 보이지 않았어요(" not in reply   # 못 읽은 게 있으면 총평 문장 없음
+        assert f"❔ {label}" in reply
+    assert "(1/5개 확인)" in reply            # 방화벽만 확인됨
+    assert "(확인 못 한 것은 문제가 없다는 뜻이 아니에요)" in reply
+    assert "ℹ️ 범위" not in reply and "이상 없음" not in reply.splitlines()[0]   # 못 읽은 게 있으면 총평 없음
     assert "secret" not in reply and "token" not in reply
 
 
@@ -126,16 +127,17 @@ def test_deferred_check_included_only_when_present():
     assert "브라우저" not in reply and "scan_browser_extensions" not in reply
     base["scan_browser_extensions"] = lambda: CR("확장 이상", warning=1, summary="모르는 확장 1개")
     reply2 = run_triage("popup", base)
-    assert "모르는 확장 1개" in reply2 and "[주의] 브라우저 확장·알림" in reply2 and "scan_browser_extensions" not in reply2
-    assert "(확인한 점검 5/5개)" in reply
-    assert "(확인한 점검 6/6개)" in reply2
+    assert "모르는 확장 1개" in reply2 and "⚠️ 브라우저 확장·알림" in reply2 and "scan_browser_extensions" not in reply2
+    assert "(5/5개 확인)" in reply
+    assert "(6/6개 확인)" in reply2
 
 
 def test_never_changes_anything_only_guides():
     m = _ok_map()
     m["detect_suspicious_processes"] = lambda: CR("의심", critical=1, summary="xmrig")
     reply = run_triage("hacked", m)
-    assert "확인창이 떠요" in reply and "아무것도 바꾸지 않았어요" in reply
+    assert reply.splitlines()[-1].startswith("👉 ") and "더 자세히 보여 드릴까요?" in reply
+    assert "확인창" not in reply and "막아줘" not in reply and "종료해줘" not in reply   # 바꾸는 조치는 여기서 제안하지 않는다
 
 
 # ── 원인 후보 ──
@@ -145,7 +147,7 @@ def test_cause_suspicious_process_plus_cpu_high():
     m["get_top_cpu_processes"] = lambda: "x\n1. miner.exe (점유율: 55.0%)\n"
     reply = run_triage("slow", m)
     assert "백그라운드에서 CPU를 많이 쓰는 프로그램" in reply
-    assert "miner.exe" in reply and "근거:" in reply
+    assert "miner.exe" in reply and "ℹ️ 추정 원인" in reply
     assert "%의 확률" not in reply and "가능성 높" not in reply
 
 
@@ -153,7 +155,7 @@ def test_cause_dns_and_memory_and_disk():
     m = _ok_map()
     m["check_dns_settings"] = lambda: CR("DNS", warning=1)
     r = run_triage("network", m)
-    assert "DNS 설정이 평소와 다를 수 있어요" in r and "[주의] DNS 설정" in r
+    assert "⚠️ DNS 설정 — 확인 필요" in r and "확인 필요 1건" in r.splitlines()[0]
     m = _ok_map()
     m["get_system_info"] = lambda: "- 메모리(RAM): 총 16.0GB 중 15.0GB 사용 중\n- 디스크(Disk): 총 500.0GB 중 20.0GB 여유 공간"
     r = run_triage("slow", m)
@@ -162,14 +164,14 @@ def test_cause_dns_and_memory_and_disk():
 
 def test_no_cause_when_all_ok_is_honest():
     r = run_triage("slow", _ok_map())
-    assert "뚜렷한 원인 후보가 보이지 않았어요" in r
+    assert "추정 원인" not in r and "원인 후보" not in r
 
 
 def test_partial_unknown_inside_problem_is_flagged():
     m = _ok_map()
     m["check_defender_status"] = lambda: CR("x", critical=1, unknown=1, summary="보호가 꺼짐")
     r = run_triage("safe", m)
-    assert "[위험] 백신 상태" in r and "일부는 확인하지 못했어요" in r
+    assert "🚨 백신 상태 — 보호가 꺼짐(일부 확인 못 함)" in r and "위험 1건" in r.splitlines()[0]
 
 
 # ── 구성 점검 ──
@@ -235,7 +237,7 @@ def test_cause_request_regex_and_slow_hint():
     assert not CAUSE_REQUEST.search("컴퓨터가느려요")
     src = inspect.getsource(ai_worker)
     assert "_CAUSE_REQUEST.search(text_lower.replace" in src
-    assert "컴퓨터 느린 원인 점검해줘" in ai_worker._SLOW_TRIAGE_HINT
+    assert "점검해줘" not in ai_worker._SLOW_TRIAGE_HINT and "말해" not in ai_worker._SLOW_TRIAGE_HINT   # 실행할 수 없는 제안·지시 문구 금지
     # 기존 카드 답변 함수 자체는 그대로(안내 줄은 호출부에서만 붙인다)
     raw = "x\n1. chrome.exe (점유율: 35.0%)\n"
     assert "원인 점검해줘" not in ai_worker._slow_pc_reply(raw, True, cpu=10, ram=10)
@@ -246,9 +248,9 @@ def test_login_failure_record_below_threshold_is_shown_not_hidden():
     m = _ok_map()
     m["get_login_failures"] = lambda: CR("x", summary="최근 24시간 동안 로그인 실패가 3번 있었어요.")
     r = run_triage("login", m)
-    assert "기록은 있지만 위험이나 주의로 볼 정도는 아니었던 것" in r
-    assert "로그인 실패가 3번 있었어요" in r
-    assert "확인한 범위에서 문제가 보이지 않았어요(" not in r
+    assert "ℹ️ 로그인 실패 기록 — " in r        # 위험·주의는 아니지만 기록은 숨기지 않는다
+    assert "로그인 실패가 3번 있었음" in r
+    assert "ℹ️ 범위" not in r
     assert "로그인 실패 기록(실패 기록 없음)" not in r
 
 
@@ -258,7 +260,7 @@ def test_login_failure_none_is_distinguished_from_unknown():
     assert "로그인 실패 기록(실패 기록 없음)" in run_triage("login", m)
     m["get_login_failures"] = lambda: CR("x", unknown=1, summary="관리자 권한이 없어 확인하지 못했어요.")
     r = run_triage("login", m)
-    assert "확인하지 못한 것:" in r and "관리자 권한이 없어" in r and "(실패 기록 없음)" not in r
+    assert "❔ 로그인 실패 기록 — 확인 못 함(관리자 권한 필요)" in r and "(실패 기록 없음)" not in r
 
 
 # ── 취소·진행·예외 ──
@@ -287,7 +289,7 @@ def test_ai_worker_branch_has_error_guard_and_stop_wiring():
     src = inspect.getsource(ai_worker)
     i = src.index("triage_symptom = _match_symptom(text_lower)")
     block = src[i:i + 2500]
-    assert "점검 중 문제가 생겨 끝내지 못했어요" in block and "type(e).__name__" in block
+    assert "점검 중 문제가 생겨 지금은 끝내지 못했어요" in block and "type(e).__name__" in block
     assert "should_stop=self._should_stop" in block and "if triage_reply is None" in block
     assert "확인 중:" in block
 
@@ -298,10 +300,10 @@ def test_unparsable_info_results_become_unknown():
     m["get_top_cpu_processes"] = lambda: "형식이 바뀐 알 수 없는 글"
     m["get_system_info"] = lambda: "역시 알 수 없는 글"
     r = run_triage("slow", m)
-    assert "확인하지 못한 것:" in r
-    assert "CPU를 많이 쓰는 프로그램: 결과를 읽지 못했어요" in r and "CPU·메모리·디스크 상태: 결과를 읽지 못했어요" in r
+    assert "❔ CPU를 많이 쓰는 프로그램 — 확인 못 함(결과를 읽지 못함)" in r
+    assert "❔ CPU·메모리·디스크 상태 — 확인 못 함(결과를 읽지 못함)" in r
     m["get_top_cpu_processes"] = lambda: "현재 CPU를 사용 중인 프로세스가 없습니다."
-    assert "CPU를 많이 쓰는 프로그램: 결과를 읽지 못했어요" not in run_triage("slow", m)
+    assert "❔ CPU를 많이 쓰는 프로그램" not in run_triage("slow", m)
 
 
 # ── 2차 검수: 코퍼스(앞으로의 회귀 방지) ──
@@ -380,8 +382,8 @@ def test_problem_shows_reason_lines_with_filename_only():
     m = _ok_map()
     m["scan_startup_items"] = lambda: CR(_STARTUP_RAW, critical=1)
     out = run_triage("hacked", m)
-    assert "[위험] 시작프로그램" in out
-    assert "[시작프로그램 설정(내 계정용)] 「BingWallpaperDaemon → UnInstDaemon.exe」 — 임시/다운로드 폴더에서 실행 — 의심스러움" in out
+    assert "위험 1건" in out.splitlines()[0]
+    assert "🚨 BingWallpaperDaemon → UnInstDaemon.exe — 임시/다운로드 폴더에서 실행" in out      # 이름과 핵심 이유는 한 줄에
     assert "Users" not in out and "Ollama" not in out     # 경로는 파일 이름만, 전체 목록은 안 보인다
 
 
@@ -398,7 +400,7 @@ def test_details_drops_sensitive_and_falls_back_quietly():
     assert _details(None) == [] and _details("그냥 글") == []
     m = _ok_map()
     m["scan_startup_items"] = lambda: CR("모양을 알 수 없는 글", warning=1)
-    assert "[주의] 시작프로그램: 위험 0개, 주의 1개" in run_triage("hacked", m)
+    assert "⚠️ 시작프로그램 — 확인 필요" in run_triage("hacked", m)
 
 
 def test_details_bare_marker_lines_format():

@@ -26,6 +26,8 @@ _CASUAL = re.compile(r"반말\s*(로|해|써|하자|좀)|말\s*(놓|편하게)")
 _PERSONAL = re.compile(r"(^|\s)(내|제|나는?|저는?|난|전|우리)\s|내가|제가|기억해|좋아하|좋아해|싫어|이름")
 # 이런 말이 든 문장은 모델에 보내지도, 저장하지도 않는다
 _SECRET = re.compile(r"비밀\s*번호|비번|패스워드|password|계좌|카드\s*번호|주민|인증\s*번호|토큰|token|api\s*key|시크릿|secret|앱\s*키|\d{6,}", re.I)
+# 파일 경로가 든 문장은 요청이지 기억할 사실이 아니고, 사용자 이름·폴더 구조가 모델 분석 단계로 가지 않게 거른다
+_PATH = re.compile(r"(?<![A-Za-z])[A-Za-z]:[\\/]|\\\\[^\s\\]+\\|(?<![\w.])/(?:Users|home|etc|var|tmp|mnt|opt|root|usr)/|(?<![\w.])~/|%[A-Za-z_]+%", re.I)
 _EXTRACT_PROMPT = (
     "사용자의 말에서 오래 기억할 만한 사실만 JSON 객체로 뽑으세요. 키는 짧은 항목 이름(이름, 호칭, 직업, 사는 곳, "
     "취미, 좋아하는 것, 싫어하는 것), 값은 사용자가 한 말 그대로 씁니다. 그날의 기분, 요청, 질문은 빼세요. "
@@ -41,6 +43,50 @@ def _member() -> bool:
 
 def is_casual() -> bool:
     return get_pref(STYLE, SPEECH_KEY) == "반말"
+
+
+_CASUAL_SUBS = (
+    (re.compile(r"말씀\s*(?:드릴게요|드려요)"), "말할게"), (re.compile(r"말씀해\s*주세요"), "말해 줘"), (re.compile(r"말씀하세요"), "말해"),
+    (re.compile(r"주세요"), "줘"), (re.compile(r"드릴까요"), "줄까"), (re.compile(r"드릴게요|드려요"), "줄게"), (re.compile(r"드리(?=[고며면는])"), "주"),
+    (re.compile(r"주시(?=[면고])"), "주"), (re.compile(r"하시면"), "하면"), (re.compile(r"하셔야"), "해야"),
+    (re.compile(r"하세요"), "해"), (re.compile(r"보세요"), "봐"), (re.compile(r"(있|없)나요"), r"\1어"),
+)
+# 선행 글자가 이 어미 글자일 때만 ~요를 뗀다("필요 없어요"의 "필요"는 건드리지 않는다)
+_CASUAL_END = re.compile(r"([어아여해워와봐줘돼되네죠지까나데군게걸래가져겨쳐셔켜펴려혀])요(?=[.!?~…\s'\")(]|$)")
+_COPULA = re.compile(r"([가-힣])(이에요|예요|에요)")
+# 따옴표·백틱 안, 경로/슬래시 덩어리, 확장자 있는 파일명은 바꾸지 않는다
+_KEEP = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"|「[^」\n]*」|`[^`\n]*`|\S{0,100}[\\/]\S{0,100}|[\w가-힣\-]{1,60}\.[A-Za-z0-9]{1,5}(?![A-Za-z0-9])")
+
+
+def _copula(m) -> str:
+    prev, kind = m.group(1), m.group(2)
+    final = (ord(prev) - 0xAC00) % 28 != 0     # 받침 있음
+    return prev + ("이야" if final else "야")
+
+
+def _casual_piece(piece: str) -> str:
+    for pat, rep in _CASUAL_SUBS:
+        piece = pat.sub(rep, piece)
+    piece = _COPULA.sub(_copula, piece)
+    return _CASUAL_END.sub(lambda m: m.group(1), piece)
+
+
+def casual_text(text: str) -> str:
+    """고정 답변의 존댓말 어미(~요, ~주세요)를 반말로 바꾼다. 반말이 켜진 사용자에게만 부른다.
+    ~니다 같은 보고서체와 따옴표·경로·파일명 안은 그대로 둔다(모델 호출 없이 어미만 치환)."""
+    text = text or ""
+    out, pos = [], 0
+    for m in _KEEP.finditer(text):
+        out.append(_casual_piece(text[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_casual_piece(text[pos:]))
+    return "".join(out)
+
+
+def speak(text: str) -> str:
+    """반말이 켜져 있으면 casual_text, 아니면 그대로."""
+    return casual_text(text) if is_casual() else text
 
 
 def note_message(text: str) -> str:
@@ -76,7 +122,7 @@ def _valid_facts(body, text: str) -> dict:
 def learn(text: str) -> dict:
     """사용자 말 하나에서 사실을 뽑아 저장하고 저장한 것을 돌려준다. 실패해도 대화에는 영향이 없다."""
     text = (text or "").strip()
-    if not _member() or not _PERSONAL.search(text) or _SECRET.search(text) or text.endswith("?"):
+    if not _member() or not _PERSONAL.search(text) or _SECRET.search(text) or _PATH.search(text) or text.endswith("?"):
         return {}
     try:
         from core.ai_worker import _ollama_chat, OLLAMA_MODEL, OLLAMA_THINK

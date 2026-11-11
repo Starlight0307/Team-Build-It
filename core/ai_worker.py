@@ -74,13 +74,17 @@ def _fit_history_to_budget(messages: list, tools) -> list:
 from calendar_feature import calendar_preference
 from core.preference_memory import get_pref, list_all, save_pref
 from core.symptom_triage import (match_symptom as _match_symptom, run_triage as _run_symptom_triage,
+                                 run_triage_with_offers as _run_symptom_triage_offers,
                                  CAUSE_REQUEST as _CAUSE_REQUEST)
 from core import security_faq as _security_faq
 
-# CPU 카드 답변 끝에 붙이는 안내 — "원인 점검" 표현은 증상 점검(2.6c)으로 이어진다
-_SLOW_TRIAGE_HINT = "원인을 더 찾으려면 '컴퓨터 느린 원인 점검해줘'라고 말해 보세요."
+# CPU 카드 답변 끝에 붙이는 안내 — 실행할 수 없는 제안 문구는 쓰지 않는다(CPU 카드 응답에는 제안 등록이 없다).
+# 사용자에게 말을 시키지 않고, 이 목록이 어디까지 본 것인지만 밝힌다.
+_SLOW_TRIAGE_HINT = "이 목록은 CPU 사용량만 본 것이고, 메모리·디스크·시작프로그램 같은 다른 원인은 아직 살펴보지 않았어요."
 
 from core import small_talk, user_memory
+from core import reply_actions as _reply_actions
+from core import security_session as _security_session
 
 # 실제 호출하는 Ollama 모델 — 이 파일 안에 7곳 넘게 문자열로 직접 박혀
 # 있던 것을 상수 하나로 통합했다(ChatGPT 검수 지적, 2026-09-23): Agent
@@ -737,9 +741,21 @@ _TOOL_CATEGORIES = {
          # PC 응급실: 브라우저 확장·알림 점검, 받은 파일 점검. "받은 파일"/"다운로드한 파일"은 file_search의
          # "받은"/"다운로드"와도 겹쳐 search_files가 함께 노출된다(키워드 포함 관계라 피할 수 없음 — 둘 다 읽기 전용).
          # "브라우저 확장"은 calendar의 "브라우저"와 겹쳐서 넣지 않았다.
-         "확장 프로그램", "확장프로그램", "알림 권한", "스팸 알림", "팝업", "광고",
+         # 일상 문장("광고 봤어", "오늘 받은 택배")이 도구 모드로 가지 않게 점검·증상 구절로만 넣는다.
+         "확장 프로그램 점검", "확장 프로그램 확인", "확장 프로그램 검사", "확장 프로그램 목록",
+         "확장프로그램 점검", "확장프로그램 확인", "확장프로그램 검사", "확장프로그램 목록",
+         "알림 권한", "스팸 알림",
+         "팝업 차단", "팝업이 계속", "팝업이 자꾸", "이상한 팝업", "광고가 계속", "광고가 자꾸", "이상한 광고",
+         "광고 팝업", "광고창",
          "알림을 허용", "알림 허용", "허용한 사이트",
-         "다운로드한 파일", "받은 파일", "파일 검사", "파일 점검"),
+         "다운로드한 파일 검사", "다운로드한 파일 점검", "다운로드한 파일 확인", "다운로드한 파일 목록",
+         "받은 파일 검사", "받은 파일 점검", "받은 파일 확인", "받은 파일 목록", "방금 받은 파일",
+         # 증상·안전 문의("받은 파일이 이상해요", "다운로드한 파일 안전해?")
+         "받은 파일이 이상", "받은 파일이 수상", "받은 파일이 의심", "받은 파일 안전",
+         "다운로드한 파일이 이상", "다운로드한 파일이 수상", "다운로드한 파일이 의심", "다운로드한 파일 안전",
+         "확장 프로그램이 이상", "확장 프로그램이 수상", "확장 프로그램이 의심", "확장 프로그램 안전",
+         "확장프로그램이 이상", "확장프로그램이 수상", "확장프로그램이 의심",
+         "파일 검사", "파일 점검"),
         ("detect_suspicious_processes", "scan_startup_items", "scan_suspicious_services", "get_malware_report",
          "block_suspicious_process", "check_defender_status", "scan_scheduled_tasks",
          # trust_security_item은 _DANGEROUS_FUNCS에 있어 확인창 없이는 실행되지 않는다
@@ -761,7 +777,7 @@ _TOOL_CATEGORIES = {
         # 등록되어 있어 확인창 없이는 실행되지 않는다 — 위 network_security와 동일한 원칙.
         ("check_update_status", "scan_shared_folders", "get_login_failures",
          "get_system_security_report", "restrict_shared_folder_permission", "check_security_settings",
-         "check_ransomware_readiness"),
+         "check_ransomware_readiness", "open_settings"),
     ),
     "realtime_monitor": (
         ("실시간", "감시", "모니터링", "백그라운드"),
@@ -1272,6 +1288,7 @@ _REPORT_DETAIL_TARGETS = {
     "macOS 업데이트": "check_update_status",
     "공유 폴더": "scan_shared_folders",
     "로그인 실패 이력": "get_login_failures",
+    "보안 설정": "check_security_settings",   # 시스템 종합 리포트의 UAC·원격 데스크톱·SMBv1·드라이브 암호화 항목
 }
 
 
@@ -1655,38 +1672,65 @@ def _security_closing(score_label: str, score, risky: list, has_unknown: bool) -
         first = f"{status}루미가 확인한 항목만 다루고, 백신 검사나 전문 보안 점검을 대신하지는 않아요."
     if not risky:
         return [first]
-    lead = f"확인이 필요한 항목이 {len(risky)}개 있어요. " if len(risky) > 1 else ""
-    return [first.strip(), f"{lead}먼저 {risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?"]
+    return [first.strip(), f"먼저 {risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?"]      # 질문 한 문장(개수는 제목 줄이 말한다)
 
 
 def build_overall_security_reply(reports: list, overall_score=None):
-    """"내 PC 안전해?"(전체 보안 점검) — 네트워크·악성코드·시스템 리포트를 영역별로 묶어 한 답변으로 쓴다.
-    2026-10-19 사용자 피드백: 세 리포트 원본("항목별 상태:", "※ 상세 내용이 필요한 항목은…")을 그대로 이어 붙여 보여줘
-    개발자용 같았다. 형식을 못 읽는 리포트가 하나라도 있으면 None(호출부가 예전 방식으로 보여준다)."""
-    areas, risky, unknown_count, total = [], [], 0, 0
+    """"내 PC 안전해?"(전체 보안 점검) — 네트워크·악성코드·시스템 리포트를 보고서 하나로 쓴다(core/report_style.py 서식).
+    제목 줄(위험·확인 필요·확인 못 함 건수 + 종합 점수 + 확인 개수) → 항목 한 줄씩 → `✅ 이상 없음 — …` → 범위 괄호 한 줄 →
+    (빈 줄) → 마지막 줄만 비서의 말(👉 먼저 ○○를 자세히 봐드릴까요? — _REPORT_DETAIL_OFFER가 읽는 형식).
+    영역별 리포트에서 항목은 report_style.extract_items(reply_* 모듈)로 얻고, 못 알아보면 카테고리 줄에서 이름+요약 첫 절로
+    한 줄을 만든다. 같은 이름은 merge_items로 하나만. 형식을 못 읽는 리포트가 하나라도 있으면 None(호출부가 예전 방식으로 보여준다)."""
+    from core import report_style as rs
+    from core.symptom_triage import _noun, _first_sentence, _unknown_reason, _drop_orders
+    items, ok_names, risky, total, unknown_count = [], [], [], 0, 0
     for raw in reports:
         if _SCORE_REPORT_MARKER not in raw:
             return None
-        title_match = _SCORE_REPORT_TITLE_LINE.search(raw)
-        title = title_match.group(1).replace("종합 리포트", "").strip() if title_match else "보안 점검"
-        lines = []
-        for marker, line in _SCORE_REPORT_CATEGORY_LINE.findall(raw):
+        cats = _SCORE_REPORT_CATEGORY_LINE.findall(raw)
+        if not cats:
+            return None
+        total += len(cats)
+        got = rs.extract_items(raw)
+        got_ok = rs.extract_ok_names(raw)
+        for marker, line in cats:
             name, _, summary = line.partition(_SCORE_ITEM_SUMMARY_SEP)
-            name = name.strip()
-            lines.append(f"{marker} {name}: {summary.strip()}" if summary.strip() else f"{marker} {name}")
+            name, summary = name.strip(), _drop_orders(summary.strip())
             if marker in ('🚨', '⚠️'):
                 risky.append(name)
             elif marker == '❔':
                 unknown_count += 1
-        if not lines:
-            return None
-        total += len(lines)
-        areas.append(f"{title} ({len(lines)}가지)\n" + "\n".join(lines))
-
-    out = [f"PC 보안을 {len(areas)}가지 영역에서 모두 {total}가지 확인했어요.", ""]
-    out += ["\n\n".join(areas), ""]
-    out += _security_closing("종합 점수", overall_score, risky, unknown_count > 0)
-    return "\n".join(out)
+            if got is not None:
+                continue
+            if marker == '✅':
+                if name not in ok_names:
+                    ok_names.append(name)
+            elif marker == '❔':
+                items.append(rs.Item('❔', name, "확인 못 함", _unknown_reason(summary or "읽지 못했어요")))
+            else:
+                items.append(rs.Item(marker, name, _noun(_first_sentence(summary)) if summary else "확인 필요"))
+        if got is not None:
+            items += list(got)
+            ok_names += [n for n in (got_ok or []) if n not in ok_names]
+    items = rs.merge_items(items)
+    flagged = {" ".join(it.name.split()).lower() for it in items}
+    ok_names = [n for n in ok_names if " ".join(n.split()).lower() not in flagged]
+    sev = {"🚨": 0, "⚠️": 1, "❔": 2, "ℹ️": 3}
+    items.sort(key=lambda it: sev.get(it.mark, 9))
+    shown = items if len(items) <= 6 else items[:5]
+    body = rs.render_report("PC 종합 점검", shown, ok_names=ok_names).split("\n")
+    score = f" · 점수 {int(overall_score)}/100" if overall_score is not None else ""
+    body[0] = f"{rs.TITLE_MARK} PC 종합 점검{rs.header_counts(items)}{score} ({total - unknown_count}/{total}개 확인)"
+    if len(items) > len(shown):
+        body.insert(1 + len(shown), f"ℹ️ 외 {len(items) - len(shown)}건 — " + "·".join(it.name for it in items[len(shown):]))
+    risky = list(dict.fromkeys(risky))
+    scope = "확인한 항목만 계산" + (", 못 본 항목은 뺐고 문제 없음이란 뜻은 아니에요" if unknown_count else "")
+    body.append(f"({scope}, 백신 검사는 아니에요)" if overall_score is not None
+                else f"(확인한 항목만 다룸{', 못 본 항목은 문제 없음이란 뜻이 아니에요' if unknown_count else ''}, 백신 검사는 아니에요)")
+    text = "\n".join(body)
+    if risky:
+        text += f"\n\n👉 먼저 {risky[0]}{_eul_reul(risky[0])} 자세히 봐드릴까요?"      # 맺음말은 질문 한 문장
+    return text
 
 
 _SCORE_REPORT_HISTORY_LINE = re.compile(
@@ -2790,6 +2834,21 @@ _SUSPICIOUS_PROC_TRUSTED = re.compile(
 )
 
 
+_SAFE_PROC_NAME = re.compile(r"[\w.\-]{1,60}(?: [\w.\-]{1,30}){0,2}")
+
+
+def _add_reply_offers(offers) -> None:
+    """빌더가 직접 만든 제안을 이번 응답의 제안 목록에 합쳐 등록한다(offer_context 안에서만 — 아니면 아무 일도 안 한다)."""
+    ctx = getattr(_OFFER_LOCAL, "ctx", None)
+    if not offers or ctx is None:
+        return
+    have = {(o.func, repr(sorted(o.args.items()))) for o in ctx["offers"]}
+    for o in offers:
+        if (o.func, repr(sorted(o.args.items()))) not in have:
+            ctx["offers"].append(o)
+    _reply_actions.register(ctx["offers"], sid=ctx["sid"], user=ctx["user"])
+
+
 def _build_suspicious_process_reply(raw_results: str):
     """2026-09-14 malware_detection 재검증(대화 품질 라운드)에서 발견한
     버그: "의심스러운 프로세스 있으면 찾아서 막아줘"에
@@ -2845,7 +2904,19 @@ def _build_suspicious_process_reply(raw_results: str):
         result_lines.append(f"- {name} (실행 번호: {pid}) — {reason}")
     if unverified_note:
         result_lines.append(unverified_note.strip())
-    result_lines.append("종료하고 싶은 프로그램의 이름이나 번호를 말씀해주시면 바로 종료해드릴게요.")
+    # 사용자에게 이름·번호를 말하게 하지 않고 선택지로 제안한다 — 목록에서 읽은 안전한 이름만, 위험 도구라 확인창을 거친다
+    safe_names = []
+    for name, _pid in names:
+        name = name.strip()
+        if _SAFE_PROC_NAME.fullmatch(name) and name not in safe_names:
+            safe_names.append(name)
+    safe_names = safe_names[:3]
+    if len(safe_names) == 1:
+        result_lines.append(f"'{safe_names[0]}' 프로그램을 종료해 드릴까요?")
+    elif safe_names:
+        result_lines.append("어떤 걸 종료해 드릴까요? " + _reply_actions.render_choices(safe_names))
+    _add_reply_offers([_reply_actions.Offer(label=f"{n} 종료", func="kill_process",
+                                            args={"process_name_or_number": n}) for n in safe_names])
     return "\n".join(result_lines)
 
 
@@ -4616,6 +4687,132 @@ _DETERMINISTIC_REPLY_BUILDERS = (
 )
 
 
+# 보안 점검 답변을 쉬운 말로 다시 쓰는 빌더(2026-11-09) — 영역별 모듈(core/reply_network.py, reply_malware.py,
+# reply_system.py)의 BUILDERS를 맨 앞에 끼워서 기존 빌더보다 먼저 자기 도구의 결과를 알아보게 한다.
+# 각 빌더는 자기 도구의 결과가 아니면 None을 돌려줘야 한다. 모듈이 없으면 건너뛴다(기존 동작 그대로).
+def _friendly_security_builders() -> tuple:
+    import importlib
+    found = []
+    for name in ("reply_network", "reply_malware", "reply_system"):
+        try:
+            found.extend(getattr(importlib.import_module(f"core.{name}"), "BUILDERS", ()))
+        except ImportError:
+            pass
+    return tuple(found)
+
+
+_DETERMINISTIC_REPLY_BUILDERS = _friendly_security_builders() + _DETERMINISTIC_REPLY_BUILDERS
+
+
+# 제안→응→실행 인프라(core/reply_actions.py) 연결: AIWorker.run()이 돌아가는 동안만 켜지고,
+# 결정론적 답변이 만들어질 때마다 그 원문에서 제안 선택지를 모아 등록한다(한 응답의 여러 섹션은 합쳐 등록).
+# 컨텍스트는 스레드마다 따로 둔다 — '대답 멈추기'로 손 뗀 워커가 아직 도는 중에 새 워커가 시작해도 서로 덮어쓰거나
+# 끄지 않는다. 컨텍스트가 없는 스레드(예: 일반 호출)는 제안을 등록하지 않는다.
+_OFFER_LOCAL = threading.local()
+
+
+def offer_owner() -> str:
+    return MOCK_USER.get("name") if MOCK_USER.get("logged_in") else "guest"
+
+
+_security_session.set_user_provider(offer_owner)
+
+
+class offer_context:
+    """with offer_context(sid, user): 안에서 만들어진 결정론적 답변의 제안 선택지를 이 스레드의 컨텍스트에 모아 등록한다.
+    AIWorker.run()과 UI 스레드의 '확인 후 실행 결과 표시'가 같은 방식으로 쓴다. 자기 스레드의 컨텍스트만 켜고 끈다."""
+
+    def __init__(self, sid, user):
+        self._ctx = {"sid": sid, "user": user, "offers": []}
+        self._prev = None
+
+    def __enter__(self):
+        self._prev = getattr(_OFFER_LOCAL, "ctx", None)
+        _OFFER_LOCAL.ctx = self._ctx
+        return self
+
+    def __exit__(self, *exc):
+        _OFFER_LOCAL.ctx = self._prev
+        return False
+
+
+def _note_reply_offers(raw_result: str) -> None:
+    ctx = getattr(_OFFER_LOCAL, "ctx", None)
+    if ctx is None:
+        return
+    try:
+        new = _reply_actions.extract_offers(raw_result)
+        if not new:
+            return
+        have = {(o.func, repr(sorted(o.args.items()))) for o in ctx["offers"]}
+        for o in new:
+            if (o.func, repr(sorted(o.args.items()))) not in have:
+                ctx["offers"].append(o)
+        _reply_actions.register(ctx["offers"], sid=ctx["sid"], user=ctx["user"])
+    except Exception as e:
+        print(f"[제안 등록 오류] {e}")
+
+
+def _detail_offer_from_text(text: str):
+    """보고서 맺음말 "먼저 ○○를 자세히 봐드릴까요?"를 Offer로 바꾼다(없으면 None). 앱의 종합 점검처럼 대화 기록을 거치지 않는 경로가
+    '응'을 이어 받게 하려는 것 — 같은 문장을 대화 기록에서 읽는 기존 텍스트 후속(_REPORT_DETAIL_OFFER)은 AIWorker 경로의 것이다."""
+    for line in reversed(str(text or "").splitlines()):
+        m = _REPORT_DETAIL_OFFER.search(line.strip())
+        if m and _REPORT_DETAIL_TARGETS.get(m.group("name").strip()):
+            name = m.group("name").strip()
+            return _reply_actions.Offer(label=f"{name}{_eul_reul(name)} 자세히 봐드릴까요?",
+                                        func=_REPORT_DETAIL_TARGETS[name], args={})
+    return None
+
+
+def emit_security_text(text: str, *, sid, user, detail=False, reused=False, speak=False, emit=None) -> str:
+    """보안 답변을 내보내는 공통 절차(AIWorker와 UI 스레드가 같이 쓴다): 이미 알린 발견 접기 -> 표시(emit) -> 기록 -> 제안 등록.
+    반환값은 실제로 표시한 글. 접기·기록·등록은 부가 기능이라 실패해도 원문은 반드시 표시한다.
+    제안 등록은 이 스레드의 offer_context 안에서 하며(없으면 여기서 열었다 닫는다), 앞선 빌더가 이미 제안을 등록했으면 덮어쓰지 않는다."""
+    folded, collapsed = text, []
+    try:
+        folded, collapsed = _security_session.ledger.collapse_reply(
+            text, sid=sid, user=user, detail_request=detail, reused=reused)
+        if reused:
+            folded = _security_session.append_end(folded, _security_session.REUSE_NOTE)
+    except Exception as e:
+        print(f"[발견 접기 오류] {type(e).__name__}")
+        folded, collapsed = text, []
+    try:
+        shown = user_memory.speak(folded) if speak else folded
+    except Exception:
+        shown = folded
+    if emit is not None:
+        emit(f"🤖 로컬 비서: {shown}")
+    try:
+        _security_session.ledger.record(folded, sid=sid, user=user, level="detail" if detail else "summary",
+                                        collapsed=collapsed)
+    except Exception as e:
+        print(f"[발견 기록 오류] {type(e).__name__}")
+    try:
+        offer = _detail_offer_from_text(folded)
+        if offer is not None:
+            ctx = getattr(_OFFER_LOCAL, "ctx", None)
+            if ctx is not None and ctx["offers"]:
+                pass
+            else:
+                with (offer_context(sid, user) if ctx is None else _NullContext()) as _c:
+                    cur = ctx if ctx is not None else getattr(_OFFER_LOCAL, "ctx")
+                    cur["offers"].append(offer)
+                    _reply_actions.register(cur["offers"], sid=sid, user=user)
+    except Exception as e:
+        print(f"[제안 등록 오류] {type(e).__name__}")
+    return shown
+
+
+class _NullContext:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 def _build_deterministic_reply(raw_result: str):
     """단일 도구 결과 하나를 위 결정론적 빌더들에 순서대로 통과시켜 본다 —
     전부 고정 구조를 못 찾으면 None."""
@@ -4627,6 +4824,7 @@ def _build_deterministic_reply(raw_result: str):
     for builder in _DETERMINISTIC_REPLY_BUILDERS:
         reply = builder(raw_result)
         if reply is not None:
+            _note_reply_offers(raw_result)
             return reply + "".join(f"\n{n[2:].strip()}" for n in notices)
     return None
 
@@ -4868,6 +5066,16 @@ _SECURITY_SINGLE_CHECKS = (
     (("백신 상태", "백신 확인", "백신 켜져 있", "디펜더 상태", "defender 상태", "xprotect", "게이트키퍼", "gatekeeper",
       "파일볼트", "filevault", "mac 기본 보안"), "check_defender_status"),
     (("시작프로그램", "시작 프로그램"), "scan_startup_items"),
+    # PC 응급실 새 점검 — 이름을 콕 집어 말하면 증상 점검(2.6c) 묶음 전체가 아니라 그 점검 하나만 돈다.
+    # "랜섬웨어 걱정돼요"는 여기 없어 그대로 증상 점검으로 간다.
+    (("랜섬웨어 대비 상태", "랜섬웨어 대비 점검", "랜섬웨어 대비 확인", "랜섬웨어 대비 준비", "랜섬웨어 준비 상태",
+      "랜섬웨어 준비 점검", "랜섬웨어 준비 확인", "랜섬웨어 상태", "랜섬웨어 점검", "랜섬웨어 대비 어때"),
+     "check_ransomware_readiness"),
+    (("브라우저 확장 점검", "브라우저 확장 확인", "브라우저 확장 검사", "브라우저 확장 목록", "확장 프로그램 점검",
+      "확장 프로그램 확인", "확장 프로그램 검사", "확장 프로그램 목록", "확장프로그램 점검", "확장프로그램 확인"),
+     "scan_browser_extensions"),
+    (("받은 파일 목록", "다운로드한 파일 목록", "받은 파일 점검", "받은 파일 검사", "다운로드한 파일 점검"),
+     "find_recent_downloads"),
 )
 # 바꾸는 요청(막기·켜기·끄기·지우기·신뢰 등)은 확인창을 거쳐야 하므로 여기서 가로채지 않고 평소 경로로 보낸다.
 # 종합 점검이나 "하지 마/말고"도 제외한다.
@@ -5881,6 +6089,7 @@ TOOL_STATUS_NAMES = {
     "scan_file_with_defender":   "🛡️  Defender로 파일 검사 중",
     "check_update_status":       "🔄  업데이트 상태 확인 중",
     "scan_shared_folders":       "📁  공유 폴더 점검 중",
+    "open_settings":             "⚙️  설정 화면 여는 중",
     "restrict_shared_folder_permission": "📁  공유 폴더 권한 제한 중",
     "get_login_failures":        "🔑  로그인 실패 이력 조회 중",
     "get_system_security_report":"📊  시스템 보안 리포트 생성 중",
@@ -6984,9 +7193,163 @@ class AIWorker(QThread):
         if self._learn_text:
             user_memory.learn_later(self._learn_text)
 
+    def _offer_owner(self) -> str:
+        return offer_owner()
+
+    def _run_check(self, name, func, *, allow_startup_reuse=False):
+        """읽기 점검 하나를 돌린다 -> (결과, 재사용 여부). 항상 실제로 돌리는 게 원칙이고, 재사용은 앱 시작 알림이
+        방금(60초 안) 돌린 같은 점검을 첫 후속("응"/자세히)이 쓸 때뿐이다. "다시/새로" 같은 말이 있으면 항상 새로 돌린다."""
+        if allow_startup_reuse:
+            hit = _security_session.reuse_startup(name, force=_security_session.wants_refresh(self.user_text),
+                                                  user=self._offer_owner())
+            if hit is not None:
+                return hit[0], True
+        _security_session.discard_startup(name, user=self._offer_owner())   # 직접 새로 돌리니 시작 때 기억한 옛 결과는 버린다
+        return func(), False
+
+    @staticmethod
+    def _check_short_label(name):
+        """재사용 표기에 쓸 점검 이름(시작 알림 줄 이름과 같다: 업데이트·방화벽·열린 포트)."""
+        try:
+            from core.startup_security import STARTUP_CHECKS
+            for fn, label in STARTUP_CHECKS:
+                if fn == name:
+                    return label.replace("Windows ", "").replace("macOS ", "").replace("Mac ", "")
+        except Exception:
+            pass
+        return name
+
+    def _fold_security(self, reply, *, detail, reused=False):
+        """이미 알려 준 발견 접기 -> (새 글, 접힌 항목). 실패하면 원문 그대로(접기는 부가 기능)."""
+        try:
+            return _security_session.ledger.collapse_reply(
+                reply, sid=self.current_session_id, user=self._offer_owner(), detail_request=detail, reused=reused)
+        except Exception as e:
+            print(f"[발견 접기 오류] {type(e).__name__}")
+            return reply, []
+
+    def _record_security(self, shown, *, detail, collapsed=()):
+        """응답이 나간 직후, 사용자에게 보여 준 항목을 기록한다."""
+        try:
+            _security_session.ledger.record(shown, sid=self.current_session_id, user=self._offer_owner(),
+                                            level="detail" if detail else "summary", collapsed=collapsed)
+        except Exception as e:
+            print(f"[발견 기록 오류] {type(e).__name__}")
+
+    def _emit_security_reply(self, reply, *, detail, reused=False, speak=False):
+        emit_security_text(reply, sid=self.current_session_id, user=self._offer_owner(), detail=detail,
+                           reused=reused, speak=speak, emit=self.response_ready.emit)
+
+    def _handle_offer_reply(self) -> bool:
+        """직전 답변의 제안 선택지에 대한 "응"/"2번"/"아니"를 알아듣고 바로 잇는다(core/reply_actions.py).
+        처리했으면 True. 위험 도구는 기존 확인창(confirm_required)을 거치고, 안전 도구는 바로 실행한다."""
+        res = _reply_actions.consume(self.user_text, sid=self.current_session_id, user=self._offer_owner())
+        if res is None:
+            return False
+        func_map = {f.__name__: f for f in self.installed_tools}
+        self.chat_history.append({'role': 'user', 'content': self.user_text})
+
+        def _say(text: str):
+            text = user_memory.speak(text)   # 반말 설정이면 고정 문구에도 적용
+            self.chat_history.append({'role': 'assistant', 'content': text})
+            self.response_ready.emit(f"🤖 로컬 비서: {text}")
+
+        if res.kind == "ask_which":
+            _say(res.prompt)
+            return True
+        if res.kind == "decline":
+            _say(res.reply)
+            return True
+        if res.kind == "execute_all":
+            self._run_read_only_checks(res.offers, func_map, _say)
+            return True
+        offer = res.offer
+        name, args = offer.func, dict(offer.args or {})
+        if name not in func_map:
+            _say("지금은 그 기능을 쓸 수 없어요.")
+            return True
+        if name in _DANGEROUS_FUNCS:
+            if self._looks_like_bogus_dangerous_action(name, args, func_map):
+                _say("어떤 항목인지 확실하지 않아서 실행하지 않았어요. 다시 한 번 알려 주시겠어요?")
+                return True
+            self.confirm_required.emit({
+                'func_name': name, 'args': args,
+                'description': _DANGEROUS_FUNCS[name](args, func_map),
+            })
+            self.chat_history.append({'role': 'assistant', 'content': f'{offer.label} 실행 확인을 요청했습니다.'})
+            return True
+        try:
+            if name in _reply_actions.READ_ONLY_CHECKS and not args:
+                result, reused = self._run_check(name, func_map[name], allow_startup_reuse=True)
+            else:
+                result, reused = func_map[name](**args), False
+        except Exception as e:
+            print(f"[제안 실행 오류] {name}: {e}")
+            _say("실행하는 중에 문제가 생겨서 끝내지 못했어요.")
+            return True
+        # 평소 답변과 같은 문장으로 다듬는다(읽기 점검 원문을 그대로 내지 않는다). 이 호출은 run()의 컨텍스트 안이라
+        # 결과에서 새 제안이 나오면 등록된다(읽기 점검 → 결과 → 새 제안 → "응" 연쇄).
+        shown = _build_deterministic_reply(str(result)) or str(result)
+        collapsed = []
+        is_check = name in _reply_actions.READ_ONLY_CHECKS
+        if is_check:
+            shown, collapsed = self._fold_security(shown, detail=True, reused=reused)
+            if reused:
+                shown = _security_session.append_end(shown, _security_session.REUSE_NOTE)
+        _say("네, 바로 해 드릴게요.\n" + shown)
+        if is_check:
+            self._record_security(shown, detail=True, collapsed=collapsed)
+        return True
+
+    def _run_read_only_checks(self, offers, func_map, say) -> None:
+        """"응" 한마디로 읽기 전용 점검 여러 개를 순서대로 실행해 한 응답으로 낸다. 새 제안은 마지막 결과 것만 등록한다."""
+        ctx = getattr(_OFFER_LOCAL, "ctx", None)
+        self.status_update.emit("🔍  점검 중")
+        parts = []
+        reused_labels = []
+        all_collapsed = []
+        for offer in offers:
+            if self._should_stop():
+                return          # '대답 멈추기' — 조용히 끝낸다
+            if ctx is not None:
+                ctx["offers"].clear()      # 마지막 점검의 제안만 남긴다
+            fn = func_map.get(offer.func)
+            if fn is None:
+                parts.append("지금은 이 점검 기능을 쓸 수 없어서 건너뛰었어요.")
+                continue
+            try:
+                result, reused = self._run_check(offer.func, fn, allow_startup_reuse=True)
+            except Exception as e:
+                print(f"[제안 점검 오류] {offer.func}: {type(e).__name__}")
+                parts.append("지금은 읽지 못했어요.")
+                if ctx is not None:
+                    ctx["offers"].clear()
+                continue
+            part = _build_deterministic_reply(str(result)) or str(result)
+            part, collapsed = self._fold_security(part, detail=True, reused=reused)   # 같은 응답 안 앞 점검 항목은 기록 전이라 접히지 않는다
+            if reused:
+                reused_labels.append(self._check_short_label(offer.func))
+            all_collapsed.extend(collapsed)
+            parts.append(part)
+        if ctx is not None:
+            _reply_actions.register(ctx["offers"], sid=ctx["sid"], user=ctx["user"])   # 비어 있으면 등록 해제
+        final = "\n\n".join(parts)
+        note = _security_session.reuse_note(reused_labels, len(offers))   # 일부만 재사용했으면 대상을 적는다
+        if note:
+            final = _security_session.append_end(final, note)
+        say(final)
+        self._record_security(final, detail=True, collapsed=all_collapsed)
+
     def run(self):
+        with offer_context(self.current_session_id, self._offer_owner()):
+            self._run_inner()
+
+    def _run_inner(self):
         _ollama_local.client = self._ollama_client
         try:
+            # ── 직전 답변의 제안("꺼드릴까요?")에 대한 짧은 응답은 LLM 없이 바로 잇는다 ──
+            if self._handle_offer_reply():
+                return
             import sys
             self.user_text = small_talk.strip_name(self.user_text)
             speech_reply = user_memory.note_message(self.user_text)
@@ -7382,7 +7745,7 @@ class AIWorker(QThread):
                         return
                     except Exception as e:
                         print(f"[AI 워커] CPU 프로세스 조회 오류: {e}")
-                        self.response_ready.emit("⚠️ 실행 중인 프로그램 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.")
+                        self.response_ready.emit("⚠️ 지금은 실행 중인 프로그램 정보를 확인하지 못했어요.")
                         return
 
             # "시스템 상태" 키워드 → 전체 시스템 정보
@@ -7516,12 +7879,12 @@ class AIWorker(QThread):
                     # 원인을 하나로 단정하지 않는 문구로 바꿨다.
                     self.response_ready.emit(
                         "🤖 로컬 비서: 지금은 점검 결과를 가져오지 못했어요. "
-                        "마켓플레이스에서 시스템/보안 관련 플러그인이 설치되어 있는지 "
-                        "확인하거나, 잠시 후 다시 시도해주세요."
+                        "마켓플레이스에 시스템/보안 관련 플러그인이 설치돼 있는지부터 확인이 필요해요. "
+                        "설치돼 있다면 조금 뒤에 다시 확인해 볼 수 있어요."
                     )
                     return
 
-                self.response_ready.emit(f"🤖 로컬 비서: {health_report}")
+                self._emit_security_reply(health_report, detail=False)      # 다른 보안 응답과 같게: 이미 알린 발견 접기·기록
                 return
 
             # ── 빠른 감지 2.6a: 시작 보안 점검 관련 질문(뭐야/왜/자세히) → 고정 답변 (core/security_faq.py) ──
@@ -7538,6 +7901,8 @@ class AIWorker(QThread):
                     faq_funcs = {f.__name__: f for f in self.installed_tools}
                     todo = [(fn, display_label(fl)) for fn, fl in STARTUP_CHECKS if faq_funcs.get(fn)]
                     sections = []
+                    faq_reused_labels = []
+                    faq_collapsed = []
                     for n, (fname, flabel) in enumerate(todo, 1):
                         if self._should_stop():     # '대답 멈추기' — 조용히 중단, 결과를 내보내지 않는다
                             return
@@ -7545,8 +7910,14 @@ class AIWorker(QThread):
                         try:
                             # 시작 알림처럼 Mac 관리자 암호 창을 띄우지 않는다
                             with _mac_sec.no_admin_prompt():
-                                raw = str(faq_funcs[fname]())
-                            sections.append((flabel, _build_deterministic_reply(raw) or raw))
+                                res_obj, was_reused = self._run_check(fname, faq_funcs[fname], allow_startup_reuse=True)
+                            raw = str(res_obj)
+                            if was_reused:
+                                faq_reused_labels.append(self._check_short_label(fname))
+                            sec_text, sec_col = self._fold_security(_build_deterministic_reply(raw) or raw,
+                                                                    detail=True, reused=was_reused)
+                            faq_collapsed.extend(sec_col)
+                            sections.append((flabel, sec_text))
                         except Exception as e:
                             sys.stderr.write(f"[시작 보안 FAQ 점검 오류] {type(e).__name__}"
                                              + chr(10))
@@ -7554,7 +7925,20 @@ class AIWorker(QThread):
                     if self._should_stop():
                         return
                     faq_context = {"sections": sections, "missing": len(todo) < len(STARTUP_CHECKS)}
-                self.response_ready.emit(f"🤖 로컬 비서: {_security_faq.answer(faq_id, faq_context)}")
+                faq_text = _security_faq.answer(faq_id, faq_context)
+                if faq_id == "startup_detail" and faq_reused_labels:
+                    faq_text = _security_session.append_end(
+                        faq_text, _security_session.reuse_note(faq_reused_labels, len(faq_context["sections"])))
+                self.response_ready.emit(f"🤖 로컬 비서: {user_memory.speak(faq_text)}")
+                if faq_id == "startup_detail":
+                    self._record_security("\n\n".join(t for _, t in faq_context["sections"]), detail=True,
+                                          collapsed=faq_collapsed)
+                try:    # 답변 끝의 "~해 드릴까요?"에 "응"이 오면 바로 잇도록 제안을 등록한다
+                    faq_offers = _security_faq.offers_for(faq_id)
+                    if faq_offers:     # 제안이 없는 답(자세히 보기 등)은 그 답을 만들며 등록된 제안을 건드리지 않는다
+                        _reply_actions.register(faq_offers, sid=self.current_session_id, user=self._offer_owner())
+                except Exception as e:
+                    print(f"[FAQ 제안 등록 오류] {e}")
                 return
 
             # ── 빠른 감지 2.6b: 보안 점검 하나(열린 포트/방화벽/백신/시작프로그램) 직접 실행 ──
@@ -7565,13 +7949,14 @@ class AIWorker(QThread):
                 sys.stderr.flush()
                 self.status_update.emit("🛡️  보안 점검 중")
                 try:
-                    raw = str(security_func())
+                    _security_session.discard_startup(security_func_name, user=self._offer_owner())   # 시작 때 기억한 옛 결과는 버린다
+                    raw = str(security_func())     # 개별 점검 요청은 항상 실제로 돌린다(재사용 없음)
                 except Exception as e:
                     sys.stderr.write(f"[보안 점검 직접 호출 오류] {e}\n")
-                    self.response_ready.emit("🤖 로컬 비서: 점검 중에 문제가 생겨 확인하지 못했어요. 잠시 후 다시 시도해주세요.")
+                    self.response_ready.emit("🤖 로컬 비서: 점검 중에 문제가 생겨 지금은 확인하지 못했어요. 조금 뒤에 다시 확인해 볼 수 있어요.")
                     return
                 reply = _build_deterministic_reply(raw) or raw
-                self.response_ready.emit(f"🤖 로컬 비서: {reply}")
+                self._emit_security_reply(reply, detail=True)
                 return
 
             # ── 빠른 감지 2.6c: 증상 말하기("인터넷이 이상해요" 등) → 증상별 점검 묶음 (core/symptom_triage.py) ──
@@ -7583,26 +7968,31 @@ class AIWorker(QThread):
             if triage_symptom:
                 sys.stderr.write(f"\n🎯 증상 점검 직접 호출: {triage_symptom}\n")
                 sys.stderr.flush()
-                func_map = {f.__name__: f for f in self.installed_tools}
+                # 한 번의 증상 점검 안에서만 같은 점검을 한 번만 돌린다(요청 사이 재사용 없음)
+                func_map = _security_session.run_memo_map({f.__name__: f for f in self.installed_tools})
                 self.status_update.emit("🩺  증상에 맞는 점검 중")
                 try:
-                    triage_reply = _run_symptom_triage(
+                    triage_reply, triage_offer_list = _run_symptom_triage_offers(
                         triage_symptom, func_map,
                         progress=lambda i, n, label: self.status_update.emit(f"🩺  {i}/{n} 확인 중: {label}"),
                         should_stop=self._should_stop)
                 except Exception as e:
                     sys.stderr.write(f"[증상 점검 오류] {type(e).__name__}\n")   # 종류만 남긴다
-                    self.response_ready.emit("🤖 로컬 비서: 점검 중 문제가 생겨 끝내지 못했어요. 잠시 후 다시 시도해주세요.")
+                    self.response_ready.emit("🤖 로컬 비서: 점검 중 문제가 생겨 지금은 끝내지 못했어요. 조금 뒤에 다시 확인해 볼 수 있어요.")
                     return
                 if triage_reply is None:    # '대답 멈추기'로 중단 — 결과를 내보내지 않는다
                     return
                 if not triage_reply:
                     self.response_ready.emit(
                         "🤖 로컬 비서: 지금은 이 증상에 맞는 점검 기능을 찾지 못했어요. "
-                        "마켓플레이스에서 시스템/보안 관련 플러그인이 설치되어 있는지 확인해주세요."
+                        "마켓플레이스에 시스템/보안 관련 플러그인이 설치돼 있는지부터 확인이 필요해요."
                     )
                     return
-                self.response_ready.emit(f"🤖 로컬 비서: {triage_reply}")
+                self._emit_security_reply(triage_reply, detail=False, speak=True)
+                try:    # "👉 …더 자세히 보여 드릴까요?"에 "응"/번호가 오면 그 점검을 바로 보여 준다
+                    _reply_actions.register(triage_offer_list, sid=self.current_session_id, user=self._offer_owner())
+                except Exception as e:
+                    print(f"[증상 점검 제안 등록 오류] {e}")
                 return
 
             # ── 빠른 감지 2.7: 캘린더+파일 검색 연계 요청 직접 감지 ──
@@ -7648,8 +8038,8 @@ class AIWorker(QThread):
                 if not cleanup_report:
                     self.response_ready.emit(
                         "🤖 로컬 비서: 지금은 정리 후보를 확인하지 못했어요. "
-                        "마켓플레이스에서 PC 최적화 관련 플러그인이 설치되어 있는지 "
-                        "확인하거나, 잠시 후 다시 시도해주세요."
+                        "마켓플레이스에 PC 최적화 관련 플러그인이 설치돼 있는지부터 확인이 필요해요. "
+                        "설치돼 있다면 조금 뒤에 다시 확인해 볼 수 있어요."
                     )
                     return
 
@@ -7673,7 +8063,7 @@ class AIWorker(QThread):
                     result = func_map['get_login_status']()
                 except Exception as e:
                     print(f"[AI 워커] 로그인 상태 확인 오류: {e}")
-                    result = "❌ 로그인 상태를 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
+                    result = "❌ 지금은 로그인 상태를 확인하지 못했어요. 조금 뒤에 다시 확인해 볼 수 있어요."
                 self.chat_history.append({'role': 'user', 'content': self.user_text})
                 self.chat_history.append({'role': 'assistant', 'content': result})
                 self.response_ready.emit(f"🤖 로컬 비서: {result}")

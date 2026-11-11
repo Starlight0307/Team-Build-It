@@ -512,6 +512,10 @@ TOOL_METADATA: dict = {
         name="open_email_draft", module="text_tools", category="text_tools",
         risk_level="safe", read_only=True, llm_exposed=True,
     ),
+    "open_settings": ToolMetadata(
+        name="open_settings", module="system_security", category="system_security",
+        risk_level="safe", read_only=True, llm_exposed=True,
+    ),
     "open_file_location": ToolMetadata(
         name="open_file_location", module="file_explorer", category="file_explorer",
         risk_level="safe", read_only=True, llm_exposed=True,

@@ -27,12 +27,15 @@ import inspect
 import re
 import unicodedata
 
+from core import reply_actions, report_style
+from core.reply_actions import Offer, render_choices
+
 # ─────────────────────────────────────────────
 # 점검 정보표 — 이름 → (사람이 읽는 이름, 걸렸을 때 원인 후보 문장, 자세히 볼 때 할 말)
 # 함수 이름은 plugins/*.py에 실제로 있는 것만 쓴다(없으면 func_map에 안 들어와서 "확인 못 함"으로 보인다).
 # ─────────────────────────────────────────────
 CHECK_INFO = {
-    "detect_suspicious_processes": ("의심스러운 프로세스", "루미가 의심 조건에 맞다고 본 프로그램이 실행 중일 수 있어요",
+    "detect_suspicious_processes": ("의심스러운 프로세스", "의심 조건에 맞는 프로그램이 실행 중일 수 있어요",
                                     "'의심스러운 프로세스 보여줘'"),
     "scan_startup_items": ("시작프로그램", "컴퓨터를 켤 때 자동으로 실행되는 프로그램 중에 확인이 필요한 것이 있어요",
                            "'시작프로그램 보여줘'"),
@@ -101,9 +104,14 @@ SYMPTOMS = {
         "title": "랜섬웨어가 걱정돼요",
         "patterns": (r"랜섬웨어.{0,12}(?:걱정|무서|무섭|불안|대비|걸릴|걸리|감염|혹시|같|안전|괜찮|대처|겁|일까|일지|인가|인지|아닐까)",
                      r"(?:걱정|무서|무섭|불안|혹시).{0,12}랜섬웨어"),
+        # 겹침 정리(2026-11): 업데이트·공유 폴더는 check_ransomware_readiness가 안에 품고 있는 점검이다. 한 번만 돌려
+        # (_REUSABLE로 readiness에 넘김) 결과를 재사용하고, 걸렸을 때 '걸린 것'에는 readiness 한 줄 안에서만 말한다
+        # (absorbed_by — 같은 발견이 단독 항목과 요약 안에 두 번 나오지 않게). 문제 없을 때는 '문제가 보이지 않은 것'에 그대로 오르고,
+        # readiness를 읽지 못했거나 걸리지 않았으면 단독 항목으로 보여 준다(숨기지 않는다).
         "checks": ("check_defender_status", "check_update_status", "check_firewall_status", "scan_shared_folders",
                    "detect_suspicious_processes", "scan_startup_items"),
         "deferred_checks": ("check_ransomware_readiness",),
+        "absorbed_by": {"check_ransomware_readiness": ("check_update_status", "scan_shared_folders")},
     },
     "login": {
         "title": "누가 내 PC에 로그인하려는 것 같아요",
@@ -120,6 +128,8 @@ SYMPTOMS = {
                    "check_security_settings", "get_network_connections"),
         "deferred_checks": (),
     },
+    # hacked·popup이 겹쳐 쓰는 detect_suspicious_processes·scan_startup_items는 spec을 그대로 둔다 —
+    # 증상마다 해당 점검이 필요하고, 같은 발견이 대화 안에서 되풀이되는 것은 security_session의 '이미 알려 드린 것' 접기가 맡는다.
     "popup": {
         "title": "이상한 팝업·광고가 떠요",
         "patterns": (
@@ -146,8 +156,9 @@ SYMPTOMS = {
         "patterns": (
             _PC + _GAP + r"(?:느려|느리|느린|버벅|렉|끊겨|무거워|답답|멈춰|멈췄|멈추|먹통)",
         ),
+        # 윈도우 업데이트 지연은 '느려짐'의 원인으로 약하다(업데이트 얘기는 시작 알림·개별 점검이 맡는다) — 뺐다.
         "checks": ("get_top_cpu_processes", "get_system_info", "detect_suspicious_processes", "scan_startup_items",
-                   "scan_scheduled_tasks", "scan_suspicious_services", "check_update_status"),
+                   "scan_scheduled_tasks", "scan_suspicious_services"),
         "deferred_checks": (),
     },
     "safe": {
@@ -221,6 +232,12 @@ YIELD_TO_EXISTING = (
     "열린포트", "열려있는포트", "방화벽상태", "방화벽확인", "방화벽켜져있", "방화벽꺼져있",
     "백신상태", "백신확인", "백신켜져있", "디펜더상태", "defender상태", "xprotect", "게이트키퍼", "gatekeeper",
     "파일볼트", "filevault", "mac기본보안", "시작프로그램",
+    # PC 응급실 새 점검(ai_worker 2.6b) — 이름을 콕 집은 요청은 그 점검 하나만
+    "랜섬웨어대비상태", "랜섬웨어대비점검", "랜섬웨어대비확인", "랜섬웨어대비준비", "랜섬웨어준비상태", "랜섬웨어준비점검",
+    "랜섬웨어준비확인", "랜섬웨어상태", "랜섬웨어점검", "랜섬웨어대비어때",
+    "브라우저확장점검", "브라우저확장확인", "브라우저확장검사", "브라우저확장목록", "확장프로그램점검", "확장프로그램확인",
+    "확장프로그램검사", "확장프로그램목록", "받은파일목록", "다운로드한파일목록", "받은파일점검", "받은파일검사",
+    "다운로드한파일점검",
 )
 
 
@@ -279,6 +296,35 @@ def _summary(result) -> str:
     except Exception:
         return ""
     return s.strip() if isinstance(s, str) else ""
+
+
+# 플러그인 요약 끝에 붙은 "~해 주세요 / ~라고 하면 ~ / '○○ 보여줘'" 같은 사용자에게 시키는 문장은 보여 주지 않는다.
+# (비서는 사용자에게 행동·발화를 시키지 않는다 — 사실 문장과 판정 개수는 그대로 둔다)
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?。])\s+")
+_ORDER_SENTENCE = re.compile(
+    # 명령·부탁 어미(…세요/…십시오/…주세요/…바랍니다 — 해 주세요·눌러 주세요·꺼 주세요·열어 주세요·실행해 주세요·
+    # 입력해 주세요·설정해 주세요·확인하세요·지우지 마세요·호출하세요 …을 모두 포함), 발화를 시키는 말, 클릭 안내, 따옴표 명령
+    r"세요|십시오|바랍니다|주시기|해\s?보|말해|말씀|라고\s?(?:하면|말)|직접\s|우클릭|클릭|눌러|누르|"
+    r"'[^']*(?:줘|해줘|보여줘|알려줘|해 줘)'|\"[^\"]*(?:줘|해줘|보여줘|알려줘)\"|확인해\s?봐")
+_CLAUSE_SPLIT = re.compile(r"\s+—\s+")
+
+
+def _drop_orders(text):
+    """요약에서 사용자에게 시키는 문장만 문장 단위로 빼고, 제3자 '루미가'는 '제가'로. 전부 빠지면 ''.
+    한 문장 안에서 ' — '로 이어진 앞쪽이 사실이고 뒤쪽만 지시이면 사실 부분은 남긴다."""
+    if not isinstance(text, str) or not text:
+        return ""
+    kept = []
+    for s in _SENTENCE_SPLIT.split(text.strip()):
+        if not s:
+            continue
+        if not _ORDER_SENTENCE.search(s):
+            kept.append(s)
+            continue
+        parts = [p for p in _CLAUSE_SPLIT.split(s) if p and not _ORDER_SENTENCE.search(p)]
+        if len(parts) > 0 and len(_CLAUSE_SPLIT.split(s)) > 1:
+            kept.append(" — ".join(parts).rstrip(" ,;") + ("" if parts[-1].endswith((".", "!", "?")) else "."))
+    return " ".join(kept).replace("루미가 ", "제가 ").replace("루미는 ", "제가 ").strip()
 
 
 _TOP_CPU = re.compile(r"1\. (?P<name>.+?) \(점유율: (?P<pct>[\d.]+)%\)")
@@ -499,7 +545,8 @@ def _run_one(name, func_map, reuse=None):
         return {"name": name, "label": label, "status": "unknown", "reason": "점검하는 중에 문제가 생겼어요",
                 "critical": 0, "warning": 0, "unknown": 0, "summary": "", "raw": ""}
     raw = result if isinstance(result, str) else ""
-    base = {"name": name, "label": label, "raw": raw, "summary": _summary(result), "reason": "", "obj": result}
+    raw_summary = _summary(result)
+    base = {"name": name, "label": label, "raw": raw, "summary": _drop_orders(raw_summary), "reason": "", "obj": result}
     if name in INFO_CHECKS:
         if not _info_readable(name, raw):
             return {**base, "status": "unknown", "reason": "결과를 읽지 못했어요", "critical": 0, "warning": 0, "unknown": 0}
@@ -514,7 +561,7 @@ def _run_one(name, func_map, reuse=None):
     if unk:
         return {**base, "status": "unknown", "reason": base["summary"] or "읽지 못한 부분이 있어요",
                 "critical": 0, "warning": 0, "unknown": unk}
-    note = bool(base["summary"] and _HAS_RECORD.search(base["summary"]))
+    note = bool(raw_summary and _HAS_RECORD.search(raw_summary))      # 기록 유무는 걸러내기 전 원문으로 본다
     return {**base, "status": "ok", "note": note, "critical": 0, "warning": 0, "unknown": 0}
 
 
@@ -581,61 +628,163 @@ def _safe_call(fn, *args):
 
 
 def run_triage(symptom_id, func_map, progress=None, should_stop=None):
-    """증상 id에 맞는 점검들을 돌려 답변 문장을 만든다. 점검 도구가 하나도 없으면 ""(호출한 쪽이 안내 문구를 쓴다).
-    조치는 하지 않는다.
-    progress(번호, 전체, 이름): 점검 하나를 시작하기 전에 부른다(진행 문구용). should_stop(): True면 중단하고
-    None을 돌려준다(결과를 내보내지 않는다). 둘 다 선택이고, 콜백 오류는 점검을 멈추지 않는다."""
-    spec = SYMPTOMS.get(symptom_id)
-    if not spec or not isinstance(func_map, dict):
-        return ""
-    names = list(spec["checks"]) + [d for d in spec.get("deferred_checks", ()) if d in func_map]
-    if not any(n in func_map for n in names):
-        return ""
-    results = []
-    done = {}    # 이미 돌린 점검 결과 — check_ransomware_readiness가 같은 점검을 다시 돌리지 않게 넘긴다
-    for i, n in enumerate(names, 1):
-        if _safe_call(should_stop):
-            return None
-        _safe_call(progress, i, len(names), CHECK_INFO.get(n, (n,))[0])
-        r = _run_one(n, func_map, reuse=done if n == "check_ransomware_readiness" else None)
-        results.append(r)
-        if r.get("obj") is not None and n in _REUSABLE:
-            done[n] = r["obj"]
-    if _safe_call(should_stop):
-        return None
+    """문장만 돌려주는 순수 래퍼 — 제안 선택지(Offer)까지 필요하면 run_triage_with_offers를 쓴다."""
+    return run_triage_with_offers(symptom_id, func_map, progress, should_stop)[0]
 
-    verdict = [r for r in results if r["status"] != "info"]
-    checked = [r for r in verdict if r["status"] in ("ok", "problem")]
-    problems = [r for r in results if r["status"] == "problem"]
-    oks = [r for r in results if r["status"] == "ok" and not r.get("note")]
-    notes = [r for r in results if r["status"] == "ok" and r.get("note")]
-    unknowns = [r for r in results if r["status"] == "unknown"]
-    total = len(verdict)
 
-    lines = [f"'{spec['title']}' 증상이라면 이런 점을 확인해 볼 수 있어요. 점검을 돌려 봤어요 (확인한 점검 {len(checked)}/{total}개)."]
+_MAX_OFFERS = 3
 
-    if problems:
-        lines.append("\n걸린 것:")
-        for r in problems:
-            sev = "[위험]" if r["critical"] else "[주의]"
-            text = f"- {sev} {r['label']}: 위험 {r['critical']}개, 주의 {r['warning']}개"
-            if r["summary"]:
-                text += f" — {r['summary']}"
-            if r["unknown"]:
-                text += " (일부는 확인하지 못했어요)"
-            lines.append(text)
-            for d in _details(r["raw"]):
-                lines.append(f"    · {d}")
-    if notes:
-        lines.append("\n기록은 있지만 위험이나 주의로 볼 정도는 아니었던 것:")
-        for r in notes:
-            lines.append(f"- {r['label']}: {r['summary']}")
-    if oks:
-        lines.append("\n확인한 범위에서 문제가 보이지 않은 것:")
-        lines.append("- " + ", ".join(_ok_text(r) for r in oks))
-    if not problems and not notes and oks and not unknowns:
-        lines.append(f"\n확인한 범위에서 문제가 보이지 않았어요({len(checked)}/{total}개 확인). "
-                     "다만 루미가 보지 않는 부분은 알 수 없어요.")
+
+def all_read_only(funcs) -> bool:
+    """제안 도구가 전부 읽기 전용 점검이면 True — 그러면 '응' 한 번에 전부 보여 주므로 한 번에 묻는 문장을 쓴다.
+    읽기 전용 목록(reply_actions.READ_ONLY_CHECKS)이 없거나 하나라도 거기 없으면 False(번호 선택지 형식 유지)."""
+    ro = getattr(reply_actions, "READ_ONLY_CHECKS", None)
+    funcs = list(funcs)
+    return bool(ro) and len(funcs) >= 2 and all(fn in ro for fn in funcs)
+
+
+def _batchim(word: str) -> bool:
+    ch = str(word or "")[-1:]
+    return "가" <= ch <= "힣" and (ord(ch) - 0xAC00) % 28 != 0
+
+
+def join_names(names) -> str:
+    """이름 나열 — 2개면 'A와/과 B', 3개 이상이면 'A·B·C'."""
+    names = list(names)
+    if len(names) == 2:
+        return f"{names[0]}{'과' if _batchim(names[0]) else '와'} {names[1]}"
+    return "·".join(names)
+
+
+def obj_josa(word: str) -> str:
+    """목적격 조사('을'/'를')."""
+    return "을" if _batchim(word) else "를"
+
+
+def triage_offers(results, func_map):
+    """점검 결과 목록에서 '더 자세히 보여 드릴까요?' 제안(Offer)을 만든다. 걸린 점검(없으면 못 읽은 점검)의
+    읽기 도구만 가리키고 인자는 없다. 바꾸는 조치(차단·종료)는 여기서 제안하지 않는다 — 자세히 본 결과가 한다."""
+    if not isinstance(func_map, dict):
+        return []
+    def pick(status):
+        return [r for r in results if r["status"] == status and r["name"] in CHECK_INFO and r["name"] in func_map][:_MAX_OFFERS]
+    chosen = pick("problem")
+    verb = "자세히 보기"
+    if not chosen:
+        chosen, verb = pick("unknown"), "다시 확인하기"
+    return [Offer(label=f"{r['label']} {verb}", func=r["name"], args={}) for r in chosen]
+
+
+_ENDINGS = (
+    (re.compile(r"있을 수 있어요$"), "있을 가능성"), (re.compile(r"일 수 있어요$"), "일 가능성"),
+    (re.compile(r" 수 있어요$"), " 수 있음"), (re.compile(r"있어요$"), "있음"), (re.compile(r"없어요$"), "없음"),
+    (re.compile(r"있었어요$"), "있었음"), (re.compile(r"했어요$"), "함"), (re.compile(r"나왔어요$"), "나옴"), (re.compile(r"못했어요$"), "못 함"), (re.compile(r"않았어요$"), "않음"),
+    (re.compile(r"(?:이에요|예요)$"), ""), (re.compile(r"해요$"), "함"),
+)
+
+
+def _noun(text) -> str:
+    """서술형 한 문장을 보고서용 명사구로(어미만 바꾸고 의미는 그대로 — 못 바꾸면 원문 그대로)."""
+    from core.startup_security import _nominal
+    t = _nominal(re.sub(r"\s+", " ", str(text or "")).strip())
+    for pat, rep in _ENDINGS:
+        if pat.search(t):
+            return pat.sub(rep, t).strip()
+    return t
+
+
+def _first_sentence(text) -> str:
+    return _SENTENCE_SPLIT.split(str(text or "").strip(), maxsplit=1)[0].strip().rstrip(".。")
+
+
+def _unknown_reason(reason) -> str:
+    r = str(reason or "")
+    if "설치되어 있지 않" in r:
+        return "점검 기능 미설치"
+    if "관리자 권한" in r:
+        return "관리자 권한 필요"
+    if "문제가 생겼" in r:
+        return "점검 중 오류"
+    if "판정하지 못" in r or "읽지 못" in r:
+        return "결과를 읽지 못함"
+    return report_style._clip(_noun(_first_sentence(_drop_orders(r))), 25)
+
+
+def _cause_note(text, why):
+    """원인 후보 → ('추정 원인' 한 줄). 점검 표에 이미 있는 항목별 원인은 항목 줄이 말하므로 빼고 수치 기반만 쓴다."""
+    m = re.search(r"(\S+?)이\(가\) CPU를 ([\d.]+)% 쓰고", why)
+    detail = f"{m.group(1)} CPU {m.group(2)}%" if m else ""
+    line = _noun(text)
+    return f"ℹ️ 추정 원인 — {line}" + (f"({detail})" if detail else "")
+
+
+_MAX_ITEMS = 6
+REPORT_TITLES = {"hacked": "해킹 의심 점검", "ransomware": "랜섬웨어 점검", "login": "로그인 시도 점검", "popup": "광고·팝업 점검",
+                 "network": "인터넷 이상 점검", "slow": "느림 점검", "safe": "PC 종합 점검"}
+_JUNK_OK_NAME = re.compile(r"^\d|나머지|^외 ")
+
+
+def _fallback_item(r, mark):
+    """영역 모듈이 못 알아본 원문 — 이름과 핵심 상태만 한 줄로(상세 줄 없음, 단어 경계에서만 자름)."""
+    if mark == "❔":
+        return report_style.Item("❔", r["label"], "확인 못 함", _unknown_reason(r["reason"] or "읽지 못했어요"))
+    for d in _details(r.get("raw")):      # 걸린 항목의 이름과 핵심 이유(예: 「프로그램.exe」 — 임시 폴더에서 실행)는 숨기지 않는다
+        d = re.sub(r"^\[[^\]]*\]\s*", "", _drop_orders(d)).strip()
+        parts = [p.strip() for p in d.split(" — ") if p.strip()]
+        if len(parts) >= 2:
+            target = parts[0].strip("「」")
+            return report_style.Item(mark, target, "·".join(_noun(p) for p in parts[1:3]))
+        break
+    summary = _noun(_first_sentence(r["summary"])) if r.get("summary") else ""
+    if r["name"] == "check_ransomware_readiness" and not summary:
+        summary = "대비 상태에 살펴볼 항목 있음"
+    status = summary or ("위험 항목 있음" if mark == "🚨" else "확인 필요")
+    reason = "일부 확인 못 함" if r.get("unknown") else ""
+    return report_style.Item(mark, r["label"], status, reason)
+
+
+def _items_for(r, mark):
+    """점검 하나의 보고서 항목 — 영역 모듈(extract_items)이 알아보면 그 한 줄 항목들, 아니면 보수적인 한 줄."""
+    got = report_style.extract_items(r["raw"]) if r.get("raw") else None
+    if got:
+        return list(got)
+    return [_fallback_item(r, mark)]
+
+
+def _build_report(spec, results, problems, notes, oks, unknowns, checked, total, offers, absorbed_inner):
+    sid = next((k for k, v in SYMPTOMS.items() if v is spec), "")
+    title = REPORT_TITLES.get(sid, f"{spec['title']} 점검")
+    items = []
+    for r in problems:
+        items += _items_for(r, "🚨" if r["critical"] else "⚠️")
+    for r in notes:
+        got = report_style.extract_items(r["raw"]) if r.get("raw") else None
+        items += list(got) if got else [_fallback_item({**r, "summary": r["summary"]}, "ℹ️")]
+    for r in unknowns:
+        items += _items_for(r, "❔")
+    items = report_style.merge_items(items)
+    items.sort(key=lambda it: report_style._ORDER.get(it.mark, 9))
+    flagged = {" ".join(it.name.split()).lower() for it in items}
+    ok_names = []
+    for r in list(oks) + list(problems):
+        names = report_style.extract_ok_names(r["raw"]) if r.get("raw") else None
+        names = [n for n in (names or []) if not _JUNK_OK_NAME.search(n)]
+        if r in oks and not names:
+            names = [_ok_text(r)]
+        for n in names:
+            if " ".join(n.split()).lower() not in flagged and n not in ok_names:
+                ok_names.append(n)
+    if len(items) <= _MAX_ITEMS:
+        shown = items
+    else:      # 줄일 때는 위험 > 주의 > 확인 못 함 > 참고 순으로 남긴다(확인 못 한 것이 '외'로 숨지 않게)
+        sev = {"🚨": 0, "⚠️": 1, "❔": 2, "ℹ️": 3}
+        shown = sorted(items, key=lambda it: sev.get(it.mark, 9))[:5]
+        items = shown + [it for it in items if it not in shown]
+    body = report_style.render_report(title, shown, ok_names=ok_names).split("\n")
+    body[0] = f"{report_style.TITLE_MARK} {title}{report_style.header_counts(items)} ({len(checked)}/{total}개 확인)"
+    if len(items) > len(shown):
+        rest = items[len(shown):]
+        body.insert(1 + len(shown), f"ℹ️ 외 {len(rest)}건 — " + "·".join(it.name for it in rest))
     info_parts = []
     for r in results:
         if r["status"] != "info":
@@ -643,7 +792,7 @@ def run_triage(symptom_id, func_map, progress=None, should_stop=None):
         if r["name"] == "get_top_cpu_processes":
             top = _top_cpu(r["raw"])
             if top:
-                info_parts.append(f"CPU 사용량 1위는 {top[0]}({top[1]:g}%)")
+                info_parts.append(f"CPU 1위 {top[0]} {top[1]:g}%")
         elif r["name"] == "get_system_info":
             ram, free = _ram_percent(r["raw"]), _disk_free_percent(r["raw"])
             if ram is not None:
@@ -651,34 +800,81 @@ def run_triage(symptom_id, func_map, progress=None, should_stop=None):
             if free is not None:
                 info_parts.append(f"디스크 여유 {free:.0f}%")
     if info_parts:
-        lines.append("\n참고: " + ", ".join(info_parts))
-    if unknowns:
-        lines.append("\n확인하지 못한 것:")
-        for r in unknowns:
-            lines.append(f"- {r['label']}: {r['reason'] or '읽지 못했어요'}")
-        lines.append("확인하지 못한 부분은 문제가 없다는 뜻이 아니에요.")
+        body.append("ℹ️ 참고 — " + "·".join(info_parts))
+    known = {v[1] for v in CHECK_INFO.values()}
+    causes = [(t, w) for t, w in _causes([r for r in results if not r.get("absorbed")])
+              if t not in known and not t.endswith("나왔어요")]
+    for t, w in causes[:2]:
+        body.append(_cause_note(t, w))
+    if not items and not problems and not notes and oks and not unknowns:
+        body.append("ℹ️ 범위 — 확인한 항목 기준, 제가 보지 않는 부분은 알 수 없음")
+    text = "\n".join(body)
+    if any(it.mark == "❔" for it in items):
+        text += "\n(확인 못 한 것은 문제가 없다는 뜻이 아니에요)"
+    closing = _closing(results, problems, offers)
+    return f"{text}\n\n{closing}" if closing else text
 
-    causes = _causes(results)
-    lines.append("\n원인 후보:")
-    if causes:
-        for text, why in causes[:4]:
-            lines.append(f"- {text} (근거: {why})")
-    else:
-        lines.append("- 지금 확인한 범위에서는 뚜렷한 원인 후보가 보이지 않았어요."
-                     + (" 확인하지 못한 항목이 원인일 수 있어요." if unknowns else ""))
 
-    lines.append("\n다음에 할 일:")
-    steps = []
-    for r in problems[:4]:
-        hint = CHECK_INFO.get(r["name"], ("", "", ""))[2]
-        if hint:
-            steps.append(f"- {r['label']}: 자세히 보려면 루미에게 {hint}라고 말해 보세요.")
-    if not problems and unknowns:
-        steps.append("- 잠시 뒤 같은 말을 다시 해 보세요. 확인하지 못한 항목을 다시 읽어 볼게요.")
-    if problems:
-        steps.append("- 수상한 프로그램이나 설정을 바꾸고 싶으면 '○○ 막아줘', '○○ 종료해줘'처럼 말하세요. "
-                     "바꾸기 전에 확인창이 떠요. 이 답변에서는 아무것도 바꾸지 않았어요.")
-    if not steps:
-        steps.append("- 지금 바로 할 일은 보이지 않아요. 증상이 계속되면 어떤 때 그런지 알려 주세요.")
-    lines.extend(steps)
-    return "\n".join(lines)
+def _closing(results, problems, offers) -> str:
+    """맺음말 — 비서의 대화체 한 줄(제안이 없으면 생략)."""
+    if not offers:
+        return ""
+    what = "더 자세히 보여 드릴까요?" if problems else "다시 읽어 볼까요?"
+    label_of = {r["name"]: r["label"] for r in results}
+    shown = [label_of[o.func] for o in offers]
+    if len(offers) == 1:
+        return (f"👉 제가 {shown[0]} 점검 결과를 {what}" if problems else f"👉 확인하지 못한 {shown[0]} 점검을 {what}")
+    if all_read_only(o.func for o in offers):      # "응" 한 번에 전부 보여 주므로 번호 없이 한 번에 묻는다
+        names = join_names(shown)
+        return (f"👉 {names}{obj_josa(shown[-1])} 모두 {what}" if problems
+                else f"👉 확인하지 못한 {names} 점검을 모두 {what}")
+    # 읽기 전용이 아닌 것이 섞이면 번호로 나열하지 않고 가장 먼저 볼 것 하나만 묻는다(offers도 첫 항목 하나)
+    return (f"👉 제가 {shown[0]} 점검 결과를 {what}" if problems else f"👉 확인하지 못한 {shown[0]} 점검을 {what}")
+
+
+def run_triage_with_offers(symptom_id, func_map, progress=None, should_stop=None):
+    """(답변 문장, 제안 Offer 목록)을 돌려준다. 문장 규칙은 run_triage와 같다 — 점검 도구가 없으면 ("", []),
+    중단되면 (None, []). 이 함수 자체는 아무것도 등록하지 않는다(등록은 호출한 쪽이 한다).
+    증상 id에 맞는 점검들을 돌려 답변 문장을 만든다. 점검 도구가 하나도 없으면 ""(호출한 쪽이 안내 문구를 쓴다).
+    조치는 하지 않는다.
+    progress(번호, 전체, 이름): 점검 하나를 시작하기 전에 부른다(진행 문구용). should_stop(): True면 중단하고
+    None을 돌려준다(결과를 내보내지 않는다). 둘 다 선택이고, 콜백 오류는 점검을 멈추지 않는다."""
+    spec = SYMPTOMS.get(symptom_id)
+    if not spec or not isinstance(func_map, dict):
+        return "", []
+    names = list(spec["checks"]) + [d for d in spec.get("deferred_checks", ()) if d in func_map]
+    if not any(n in func_map for n in names):
+        return "", []
+    results = []
+    done = {}    # 이미 돌린 점검 결과 — check_ransomware_readiness가 같은 점검을 다시 돌리지 않게 넘긴다
+    for i, n in enumerate(names, 1):
+        if _safe_call(should_stop):
+            return None, []
+        _safe_call(progress, i, len(names), CHECK_INFO.get(n, (n,))[0])
+        r = _run_one(n, func_map, reuse=done if n == "check_ransomware_readiness" else None)
+        results.append(r)
+        if r.get("obj") is not None and n in _REUSABLE:
+            done[n] = r["obj"]
+    if _safe_call(should_stop):
+        return None, []
+
+    # (D) 다른 점검이 안에 품은 점검의 '걸림'은 품은 쪽 한 줄에서만 말한다(품은 쪽도 걸렸을 때만 — 못 읽었으면 단독으로 보여 준다)
+    status_of = {r["name"]: r["status"] for r in results}
+    hidden = set()
+    for absorber, inner in spec.get("absorbed_by", {}).items():
+        if status_of.get(absorber) == "problem":
+            hidden.update(inner)
+    for r in results:
+        r["absorbed"] = r["name"] in hidden and r["status"] == "problem"
+    verdict = [r for r in results if r["status"] != "info"]
+    checked = [r for r in verdict if r["status"] in ("ok", "problem")]
+    problems = [r for r in results if r["status"] == "problem" and not r["absorbed"]]
+    oks = [r for r in results if r["status"] == "ok" and not r.get("note")]
+    notes = [r for r in results if r["status"] == "ok" and r.get("note")]
+    unknowns = [r for r in results if r["status"] == "unknown"]
+    total = len(verdict)
+
+    offers = triage_offers([r for r in results if not r.get("absorbed")], func_map)
+    if len(offers) > 1 and not all_read_only(o.func for o in offers):
+        offers = offers[:1]      # 맺음말이 하나만 묻는 경우(위 _closing)와 맞춘다
+    return _build_report(spec, results, problems, notes, oks, unknowns, checked, total, offers, None), offers

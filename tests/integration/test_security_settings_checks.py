@@ -348,5 +348,5 @@ def test_wifi_netsh_failure_is_unknown_not_no_connection():
 def test_new_checks_reply_verbatim():
     from core.ai_worker import _build_deterministic_reply
     reply = _build_deterministic_reply(_web("203.0.113.5 www.kbstar.com\n"))
-    assert reply.startswith("hosts 파일과 프록시 설정을 확인해봤어요:") and "203.0.113.5" in reply
-    assert _build_deterministic_reply(_settings()).startswith("Windows 보안 설정을 확인해봤어요:")
+    assert reply.startswith("웹 접속 경로를 확인해 봤어요.") and "🚨" in reply and "203.0.113.5" in reply
+    assert _build_deterministic_reply(_settings()).startswith("Windows 보안 설정을 확인해 봤어요.")

@@ -53,6 +53,14 @@ _app_usage._GUEST_GOALS_FILE = _app_usage.GOALS_FILE = os.path.join(_TEST_HOME, 
 from plugins import calendar_tool as _calendar_tool
 _calendar_tool.BUNDLED_CLIENT_FILE = os.path.join(_TEST_HOME, "no_google_client.json")
 _calendar_tool.CREDENTIALS_FILE = os.path.join(_TEST_HOME, "no_credentials.json")
+# 대화 기억(core/preference_memory.json)·알림 루틴(plugins/reminder/*)도 같은 문제 — 매 실행마다 테스트 키가 달라
+# 다음 실행이 이전 파일을 못 읽고 .corrupt로 옮기거나 사용자의 실제 파일을 덮어쓴다. 처음부터 임시 경로로.
+from core import preference_memory as _pref_memory
+_pref_memory._GUEST_FILE = _pref_memory._FILE = os.path.join(_TEST_HOME, "preference_memory.json")
+from plugins import reminder as _reminder
+_reminder._GUEST_ROUTINES_FILE = _reminder.ROUTINES_FILE = os.path.join(_TEST_HOME, "routines.json")
+_reminder._GUEST_CONDITIONS_FILE = _reminder.CONDITIONS_FILE = os.path.join(_TEST_HOME, "conditions.json")
+_reminder._GUEST_ACTION_LOG_FILE = _reminder.ACTION_LOG_FILE = os.path.join(_TEST_HOME, "action_log.jsonl")
 import webbrowser as _webbrowser
 _webbrowser.open = _webbrowser.open_new = _webbrowser.open_new_tab = lambda *a, **k: False
 
@@ -293,3 +301,15 @@ def _isolate_security_history(request, tmp_path, monkeypatch):
         return
     import core.security_records as sr
     monkeypatch.setattr(sr, "record_report", lambda *a, **k: "")
+
+
+@pytest.fixture(autouse=True)
+def _reset_security_session():
+    """보안 점검 재사용·'이미 알려 드린 것' 기록은 프로세스 전역이라 테스트끼리 새지 않게 매번 비운다."""
+    try:
+        from core import security_session
+        security_session.clear()
+        yield
+        security_session.clear()
+    except ImportError:
+        yield

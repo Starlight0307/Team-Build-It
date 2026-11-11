@@ -119,6 +119,27 @@ TOOL_SCHEMAS = {
                 "required": ["share_name"]
             }
         }
+    },
+    "open_settings": {
+        "type": "function",
+        "function": {
+            "name": "open_settings",
+            "description": (
+                "Windows 설정 화면을 열어 줍니다(업데이트, Windows 보안 등). 설정을 바꾸지는 않고 화면만 엽니다. "
+                "사용자가 '업데이트 화면 열어줘', 'Windows 보안 열어줘' 같은 제안에 응했을 때 호출하세요."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "page": {
+                        "type": "string",
+                        "enum": ["windowsupdate", "windowsdefender", "security", "startup", "privacy", "firewall"],
+                        "description": "열 설정 화면 이름"
+                    }
+                },
+                "required": ["page"]
+            }
+        }
     }
 }
 
@@ -285,6 +306,32 @@ def scan_shared_folders() -> str:
 # 쓰는 공유라, 실수로라도 여기에 Everyone 권한 변경을 시도하면 원격 관리/네트워크
 # 기능이 깨질 수 있다 — scan_shared_folders()가 애초에 이런 공유는 결과에서
 # 제외하는 것과 동일한 이유로, 이 함수도 이름 자체로 한 번 더 방어한다.
+# 열 수 있는 설정 화면 — 고정 매핑만 쓴다(주소를 문자열로 이어 붙이지 않는다)
+_SETTINGS_PAGES = {
+    "windowsupdate": "ms-settings:windowsupdate",
+    "windowsdefender": "windowsdefender:",
+    "security": "windowsdefender:",
+    "startup": "ms-settings:startupapps",
+    "privacy": "ms-settings:privacy",
+    "firewall": "windowsdefender://network/",
+}
+
+
+def open_settings(page: str) -> str:
+    if platform.system() != "Windows":
+        return "⚠️ 이 기능은 Windows 전용입니다."
+    key = str(page or "").strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+    uri = _SETTINGS_PAGES.get(key)
+    if uri is None:
+        return "⚠️ 열 수 없는 화면이에요."
+    try:
+        os.startfile(uri)
+    except Exception as e:
+        print(f"[시스템 보안] 설정 화면 열기 실패: {e}")
+        return "⚠️ 설정 화면을 열지 못했어요."
+    return "✅ 설정 화면을 열었어요."
+
+
 def restrict_shared_folder_permission(share_name: str) -> str:
     print(f"\n[시스템 보안] 공유 폴더 '{share_name}' 권한 제한 중...")
     if platform.system() != "Windows":

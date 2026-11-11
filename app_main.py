@@ -142,6 +142,8 @@ from core.voice import (VoiceListener, Speaker, VoiceInstallWorker, OptionalInst
                         retry_optional_packages,
                         missing_voice_packages, is_stop_phrase, VOICE_MODELS, current_voice_model)
 from core import app_launcher, kakao_send, screen_agent, web_launcher, skills
+from core import reply_actions
+from core import security_session
 from core.skill_agent import SkillAgentWorker
 from widget.skills_widget import SkillsPage
 from widget import lumi_dialog   # 앱 공통 루미 팝업(QMessageBox/QInputDialog 대신)
@@ -690,6 +692,17 @@ class AssistantApp(QWidget):
         # 점검할 플러그인이 하나도 없으면 빈 글 — 아무것도 띄우지 않는다
         if result and result.strip():
             self.display_ai_response(f"🤖 로컬 비서: {result}")
+            try:    # 알림에 나온 항목을 기록 — 이후 같은 항목이 같은 상태로 또 걸리면 한 줄로 묶인다(알림 자체는 접지 않는다)
+                from core.ai_worker import offer_owner
+                security_session.ledger.record(result, sid=self.current_session_id, user=offer_owner(), level="summary")
+            except Exception as e:
+                print(f"[시작 알림 기록 오류] {type(e).__name__}")
+            try:    # 알림 끝의 "자세히 보여 드릴까요?"에 "응"이 오면 바로 그 점검을 보여 주도록 제안을 등록한다
+                from core.startup_security import startup_offers
+                reply_actions.register(startup_offers(result), sid=self.current_session_id,
+                                       user=MOCK_USER.get("name") if MOCK_USER.get("logged_in") else "guest")
+            except Exception as e:
+                print(f"[시작 알림 제안 등록 오류] {e}")
 
     # ─────────────────────────────────────────────
     # 🔔 실시간 감시 알림 — 새 알림이 생겼을 때만 비침습적 토스트로 표시
@@ -1915,6 +1928,8 @@ class AssistantApp(QWidget):
         self._pending_steps = []
         self.current_session_id = None
         self.current_session_title = None
+        reply_actions.clear()   # 새 대화로 넘어가면 직전 제안 선택지는 버린다
+        security_session.clear()   # 이미 알려 준 발견·시작 알림 결과도 새 대화에서는 처음부터
         self.welcome_widget.show()
 
     def _export_conversation(self):
@@ -2925,6 +2940,8 @@ class AssistantApp(QWidget):
         """계정이 바뀐 직후, 그 계정의 환경설정을 화면에 다시 반영한다
         (테마 / 음성 답변 / 날씨 지역 / 홈 위젯 배치 / 스킬 목록 / 앱 사용 기록 이어가기).
         화면에 남은 이전 계정의 대화 내용도 함께 비운다(다른 계정에게 보이면 안 되므로)."""
+        reply_actions.clear()   # 이전 계정에게 건넨 제안 선택지가 다음 계정의 "응"에 걸리면 안 된다
+        security_session.clear()   # 이전 계정에게 알린 발견·점검 결과를 다음 계정이 이어받으면 안 된다
         if self._confirm_worker is not None:   # 이전 계정의 검사 결과가 새 계정 화면에 새면 안 된다
             self._confirm_worker.silent = True   # 새 계정 화면에는 '멈춘 검사가 끝났어요' 토스트도 띄우지 않는다
             self._abandon_worker(self._confirm_worker)
@@ -3120,6 +3137,17 @@ class AssistantApp(QWidget):
             self.send_message(cmd)
 
     def send_message(self, text_to_send=None):
+        # AIWorker(또는 그 앞의 판단 워커)로 가지 않고 로컬에서 끝난 메시지는 직전 제안 선택지를 비운다 —
+        # 그대로 두면 10분 안의 "응"이 옛 제안을 실행할 수 있다. AIWorker로 가는 메시지는 워커가 직접 소비한다.
+        before = getattr(self, "_ai_dispatch_count", 0)
+        self._offer_msg_accepted = False
+        try:
+            return self._send_message_impl(text_to_send)
+        finally:
+            if self._offer_msg_accepted and getattr(self, "_ai_dispatch_count", 0) == before:
+                reply_actions.clear()
+
+    def _send_message_impl(self, text_to_send=None):
         txt = text_to_send if text_to_send else self.input_field.text()
         if not txt:
             return
@@ -3139,6 +3167,7 @@ class AssistantApp(QWidget):
             self._show_toast("⏳ 아직 이전 요청을 처리하고 있어요. 잠시만 기다려주세요.")
             return
 
+        self._offer_msg_accepted = True
         self.welcome_widget.hide()
         self.session_panel.count_command()
 
@@ -3287,6 +3316,7 @@ class AssistantApp(QWidget):
         self._start_ai_worker(txt)
 
     def _start_ai_worker(self, txt: str):
+        self._ai_dispatch_count = getattr(self, "_ai_dispatch_count", 0) + 1   # send_message가 로컬 처리 여부를 가른다
         # 워커에는 대화 기록 사본을 준다 — '대답 멈추기'로 손 뗀 워커가 늦게 기록을 덧붙여
         # 다음 질문의 기록에 끼어들지 않게, 멈추지 않은 워커의 기록만 받아 온다(_adopt_history).
         history = self.chat_history
@@ -3382,9 +3412,11 @@ class AssistantApp(QWidget):
             if func_name in func_map:
                 try:
                     result = func_map[func_name](**args)
+                    security_session.invalidate()   # 상태를 바꾼 조치 뒤 — 시작 알림 때 읽은 옛 결과는 버린다
                     # 확인 후 실행한 결과도 평소 답변과 같은 문장으로(플러그인 원문 "[🗑️ … 삭제 완료]"가 그대로 보였다)
-                    from core.ai_worker import _build_deterministic_reply
-                    reply = _build_deterministic_reply(str(result)) or result
+                    from core.ai_worker import _build_deterministic_reply, offer_context, offer_owner
+                    with offer_context(self.current_session_id, offer_owner()):
+                        reply = _build_deterministic_reply(str(result)) or result
                     self.display_ai_response(f"🤖 로컬 비서: {reply}")
                     self._remember_kill_confirmation(func_name, args)
                 except Exception as e:
@@ -3448,6 +3480,7 @@ class AssistantApp(QWidget):
         if worker is not self._confirm_worker:   # 새 워커로 교체됐거나 정리된 뒤 늦게 온 결과는 버린다
             return
         self._confirm_worker = None
+        security_session.invalidate()   # 확인 후 실행이 끝났다 — 시작 알림 때 읽은 옛 결과는 버린다
         if getattr(worker, "origin", None) != (self.current_session_id, MOCK_USER.get("name")):
             # 검사 도중 세션/계정이 바뀌었다 — 다른 대화에 결과를 표시·저장하지 않고 입력만 푼다
             self._hide_typing_indicator()
@@ -3456,8 +3489,9 @@ class AssistantApp(QWidget):
             return
         if ok:
             try:
-                from core.ai_worker import _build_deterministic_reply
-                reply = _build_deterministic_reply(text) or text
+                from core.ai_worker import _build_deterministic_reply, offer_context, offer_owner
+                with offer_context(self.current_session_id, offer_owner()):
+                    reply = _build_deterministic_reply(text) or text
                 self.display_ai_response(f"🤖 로컬 비서: {reply}")
                 self._remember_kill_confirmation(func_name, args)
             except Exception as e:
@@ -3566,7 +3600,15 @@ class AssistantApp(QWidget):
         missing = getattr(self, '_overall_missing', [])
         if missing:
             text += f"\n\n※ 미설치 항목: {', '.join(missing)} (마켓플레이스에서 설치하면 함께 점검됩니다)"
-        self.display_ai_response(f"🤖 로컬 비서: {text}")
+        # 다른 보안 답변과 같은 절차: 이미 알린 발견 접기 -> 표시 -> 기록 -> 제안 등록, 반말 설정 적용
+        try:
+            from core.ai_worker import emit_security_text, offer_owner
+        except Exception as e:
+            print(f"[종합 점검 표시 오류] {type(e).__name__}")
+            self.display_ai_response(f"🤖 로컬 비서: {text}")
+            return
+        emit_security_text(text, sid=self.current_session_id, user=offer_owner(), detail=False, speak=True,
+                           emit=self.display_ai_response)
 
     # "A 하고 B 해줘" 복합 문장을 순차 단계로 나눌 때 쓰는 명시적 연결어
     _STEP_SPLIT_MARKERS = (
@@ -4206,6 +4248,7 @@ class AssistantApp(QWidget):
         return self._screen_worker is not None and self._screen_worker.isRunning()
 
     def _start_route_worker(self, txt: str):
+        self._ai_dispatch_count = getattr(self, "_ai_dispatch_count", 0) + 1   # 판단 뒤 AIWorker로 이어질 수 있다
         """다른 프로그램을 직접 조작해야 하는 요청인지 루미가 판단 → 화면 조작 또는 평소 처리."""
         self._on_status_update("🤔 어떻게 처리할지 생각 중")
         worker = screen_agent.RouteWorker(txt, self)

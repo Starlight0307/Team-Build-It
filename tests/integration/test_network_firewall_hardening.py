@@ -416,7 +416,9 @@ def test_startup_notice_plain_string_is_unknown_and_empty_when_no_plugins():
     assert build_startup_notice({}) == ""
     out = build_startup_notice({"check_update_status": lambda: "[t]\n그냥 글"})
     assert out.startswith("🛡️ 시작 보안 점검 · 모두 확인 못 함")
-    assert "열린 포트 보여줘" not in out and "시작 보안 점검 자세히 알려줘" in out
+    # 점검을 못 읽은 알림도 비서가 선택지를 묻는 문장으로 끝난다(사용자에게 말을 시키는 안내 없음)
+    assert out.rstrip().endswith("자세히 보여 드릴까요?")
+    assert "열린 포트 보여줘" not in out and "라고 말" not in out and "알려줘" not in out
 
 
 # ── 4단계: 방화벽 규칙 원문 판정 + 열린 포트의 방화벽 기준 판정 ─────────

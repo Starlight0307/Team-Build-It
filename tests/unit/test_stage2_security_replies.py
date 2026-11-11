@@ -31,7 +31,13 @@ def test_defender_reply_keeps_every_line_with_severity_words():
 
 
 def test_defender_reply_is_used_by_dispatcher():
-    assert _build_deterministic_reply(DEFENDER).startswith("백신(Windows 보안) 상태를 확인해봤어요:")
+    # 2026-11-09: 사용자에게는 쉬운 말 빌더(core/reply_malware.py)가 먼저 답한다 — 위험·주의·확인 못 함이 모두 보여야 한다
+    reply = _build_deterministic_reply(DEFENDER)
+    assert reply.startswith("📋 백신 상태 점검 · 위험 1건 · 확인 필요 1건 · 확인 못 함 1건")
+    assert "🚨 실시간 보호 — 꺼짐(파일을 열 때 검사 안 함)" in reply and "⚠️ 변조 방지 — 꺼짐" in reply
+    assert "❔ 탐지 기록 — 최근 30일 기록 확인 못 함" in reply
+    assert "✅ 이상 없음 — 백신 정의 최신" in reply and "ℹ️ 빠른 검사 — 마지막 검사 3일 전" in reply
+    assert reply.splitlines()[-1] == "👉 제가 Windows 보안 화면을 열어 드릴까요?"
 
 
 TASKS = (

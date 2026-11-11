@@ -5,13 +5,17 @@
 각 점검은 플러그인 함수가 하고, 여기서는 결과(CheckResult의 개수·요약)만 읽어 합친다 — 플러그인이 설치돼 있지
 않으면 그 줄은 빠진다. 점검 하나가 실패해도 나머지는 그대로 보여준다(그 줄은 ❔).
 (2026-11 개정) 설명이 너무 길다는 피드백 — 확인이 필요한 항목(⚠️/🚨/❔)만 요약의 첫 문장으로 한 줄씩(보고서체) 보여주고,
-정상 항목은 한 줄로 묶는다. 자세한 설명은 '시작 보안 점검 자세히 알려줘'(core/security_faq.py)로 물어보게 한다.
+정상 항목은 한 줄로 묶는다. 자세한 설명은 마지막 줄의 제안("자세히 보여 드릴까요?")에 사용자가 응하면 이어 보여 준다 —
+그 제안은 startup_offers(notice)가 만든 Offer를 app_main이 reply_actions에 등록해 처리한다.
 """
 
 import re
 import unicodedata
 
 from core import mac_security
+from core import security_session
+from core.reply_actions import Offer, render_choices
+from core.symptom_triage import all_read_only, join_names, obj_josa
 from core.symptom_triage import _strip_ctrl, _looks_like_instruction, _HIDDEN
 
 # (함수 이름, 줄 이름) — 보여주는 순서
@@ -22,7 +26,7 @@ STARTUP_CHECKS = (
 )
 
 _SENTENCE_END = re.compile(r"(?<=[.!?。])\s+")
-GUIDE_LINE = "'시작 보안 점검 자세히 알려줘'라고 말하면 더 알려 드려요."
+GUIDE_LINE = "자세히 보여 드릴까요?"      # 확인이 필요한 항목이 1개일 때의 마지막 줄(2개 이상이면 선택지 형태)
 
 
 _LINE_MAX = 120
@@ -173,10 +177,30 @@ def _windows_update_basis(labels) -> bool:
     return not mac_security.is_mac() and any(x.endswith("업데이트") for x in labels)
 
 
+_MARK_LINE = re.compile(r"^(🚨|⚠️|❔) (?P<label>.+?) — ")
+
+
+def startup_offers(notice) -> list:
+    """시작 알림 글에서 확인이 필요한 줄(🚨/⚠️/❔)마다 그 점검의 읽기 도구 Offer를 만든다(알림의 줄 순서 그대로 =
+    마지막 줄 질문의 항목 순서). 점검 도구가 아닌 줄·정상 줄은 건너뛴다. 인자 없음, 아무것도 바꾸지 않는다."""
+    by_label = {display_label(lb): (fn, lb) for fn, lb in STARTUP_CHECKS}
+    out = []
+    for ln in str(notice or "").splitlines():
+        m = _MARK_LINE.match(ln.strip())
+        hit = by_label.get(m.group("label")) if m else None
+        if hit:
+            short = m.group("label").replace("Windows ", "").replace("macOS ", "").replace("Mac ", "")
+            out.append(Offer(label=f"{short} 자세히 보기", func=hit[0], args={}))
+    if len(out) > 1 and not all_read_only(o.func for o in out):
+        out = out[:1]      # 알림 끝 질문이 첫 항목 하나만 묻는 경우와 맞춘다
+    return out
+
+
 def build_startup_notice(func_map) -> str:
     """설치된 점검 함수를 순서대로 실행해 시작 알림 글을 만든다(보고서체). 실행할 점검이 하나도 없으면 ''.
     확인이 필요한 항목(⚠️/🚨/❔)만 항목별 한 줄로, 정상 항목은 한 줄로 묶어 보여준다."""
     rows = []
+    flagged = []        # 확인이 필요한 (함수 이름, 짧은 이름) — 마지막 줄 제안의 선택지
     ok_labels = []
     all_labels = []
     n = {"🚨": 0, "⚠️": 0, "❔": 0}
@@ -191,9 +215,12 @@ def build_startup_notice(func_map) -> str:
             # 앱 시작 알림은 사용자가 요청한 점검이 아니다 — Mac 관리자 암호 창을 띄우지 않는다
             with mac_security.no_admin_prompt():
                 result = func()
+            # 이 결과는 알림 직후 60초 안의 첫 후속("응"/자세히)만 다시 쓸 수 있다(그 밖의 요청은 항상 새로 점검)
+            security_session.remember_startup(func_name, result)
         except Exception as e:
             print(f"[시작 보안 알림] {func_name} 오류: {e}")
             rows.append(f"❔ {label} — 확인 못 함")
+            flagged.append((func_name, short))
             n["❔"] += 1
             continue
         mark = _mark(_counts(result))
@@ -201,6 +228,7 @@ def build_startup_notice(func_map) -> str:
             ok_labels.append(short)
             continue
         n[mark] += 1
+        flagged.append((func_name, short))
         if mark == "❔":
             rows.append(f"❔ {label} — 확인 못 함")      # 못 읽은 것은 정상과 구분한다
             continue
@@ -230,5 +258,13 @@ def build_startup_notice(func_map) -> str:
     if len(others) != len(ok_labels):      # 업데이트는 '설치 기록' 기준이라 근거 범위를 밝힌다
         upd = next(x for x in ok_labels if x.endswith("업데이트"))
         lines.append(f"✅ {upd} — 이상 없음" + (" (설치 기록 기준)" if _windows_update_basis(all_labels) else ""))
-    lines.append(GUIDE_LINE)
+    from core import user_memory     # 안내 한 줄만 반말 설정을 따른다(보고서체 나머지는 그대로)
+    if len(flagged) == 1:
+        lines.append(user_memory.speak(GUIDE_LINE))
+    elif all_read_only(fn for fn, _ in flagged):      # "응" 한 번에 전부 보여 주므로 번호 없이 한 번에 묻는다
+        shown = [s for _, s in flagged]
+        lines.append(user_memory.speak(f"{join_names(shown)}{obj_josa(shown[-1])} 모두 자세히 보여 드릴까요?"))
+    else:
+        first = flagged[0][1]      # 읽기 전용이 아닌 것이 섞이면 나열하지 않고 첫 항목 하나만 묻는다
+        lines.append(user_memory.speak(f"{first}{obj_josa(first)} 자세히 보여 드릴까요?"))
     return "\n".join(clean_line(ln, 140) for ln in lines)

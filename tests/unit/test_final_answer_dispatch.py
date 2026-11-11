@@ -43,7 +43,7 @@ def test_single_verdict_result_never_calls_llm(monkeypatch):
     raw = "[🔑 로그인 실패 이력] (최근 24시간)\n✅ 로그인 실패 기록이 없습니다."
     result = ai_worker._summarize_tool_results([], raw)
     assert calls == []
-    assert "로그인 실패 기록이 없습니다" in result
+    assert "로그인" in result and "실패" in result and "기록은 없었" in result
 
 
 def test_multiple_recognizable_results_never_calls_llm(monkeypatch):

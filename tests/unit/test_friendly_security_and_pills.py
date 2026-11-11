@@ -13,13 +13,19 @@ SYS = ("[🖥️ 시스템 보안 종합 리포트]\n점수: 92/100 (🟢 안전
 
 
 def test_overall_reply_groups_items_by_area():
+    from core import report_style
     reply = build_overall_security_reply([NET, SYS], 96)
-    assert reply.startswith("PC 보안을 2가지 영역에서 모두 4가지 확인했어요.")
-    assert "🌐 네트워크 보안 (2가지)\n✅ 방화벽 상태: 방화벽이 모든 네트워크에서 켜져 있어요." in reply
-    assert "🖥️ 시스템 보안 (2가지)\n🚨 Windows 업데이트: 마지막 업데이트가 238일 전이에요." in reply
-    assert "종합 점수는 96/100점이에요. 루미가 확인한 항목만으로 계산했고(확인하지 못한 항목은 뺐어요)" in reply
-    assert reply.count("루미가 확인한 항목만") == 1 and reply.count("Windows 업데이트를") == 1   # 같은 말 반복 없이
-    assert reply.endswith("Windows 업데이트를 자세히 봐드릴까요?")
+    lines = reply.split("\n")
+    assert lines[0] == "📋 PC 종합 점검 · 위험 1건 · 확인 못 함 1건 · 점수 96/100 (3/4개 확인)"      # 개수·점수·확인 개수
+    assert report_style.lint_report(reply) == []
+    assert "🚨 Windows 업데이트 — 마지막 업데이트 238일 전" in lines          # 이름·핵심 값 유지, 한 줄
+    assert any(ln.startswith("❔ Wi-Fi 보안 — 확인 못 함") for ln in lines)     # 못 읽은 건 ✅로 단정하지 않는다
+    assert "✅ 이상 없음 — 방화벽 상태·공유 폴더" in lines
+    assert "(확인한 항목만 계산, 못 본 항목은 뺐고 문제 없음이란 뜻은 아니에요, 백신 검사는 아니에요)" in lines
+    assert sum(1 for ln in lines if ln.startswith(("🚨", "⚠️", "❔", "ℹ️")) and "Windows 업데이트" in ln.split(" — ")[0]) == 1      # 같은 이름은 한 번만
+    assert "안전합니다" not in reply and "※" not in reply and len(reply) <= 450
+    assert lines[-1] == "👉 먼저 Windows 업데이트를 자세히 봐드릴까요?" and lines[-2] == ""
+    assert ai_worker._REPORT_DETAIL_OFFER.search(lines[-1])            # '응 자세히 봐줘' 후속 질문이 읽는 형식
 
 
 def test_overall_reply_falls_back_when_a_report_is_unreadable():
@@ -144,6 +150,24 @@ def test_feature_overview_is_fixed_text_without_ai(monkeypatch):
 
 def test_update_status_and_top_cpu_results_pass_through():
     upd = "[🔄 Windows 업데이트 상태]\n마지막 업데이트 설치일: 2026-02-23 (238일 전)\n🚨 238일 동안 업데이트가 없었습니다."
-    assert ai_worker._build_deterministic_reply(upd).startswith("마지막 업데이트 설치일")
+    upd_reply = ai_worker._build_deterministic_reply(upd)
+    assert upd_reply.startswith("Windows 업데이트를 확인해 봤어요.") and "238일" in upd_reply and "🚨" in upd_reply
     cpu = "다음은 CPU를 가장 많이 사용하는 상위 5개 프로그램입니다:\n1. a.exe (점유율: 3.5%)"
     assert ai_worker._build_deterministic_reply(cpu) == cpu
+
+
+def test_overall_reply_is_collapsible_and_clean_without_risky_items():
+    from core import report_style
+    from core.security_session import FindingsLedger
+    ok_net = NET.replace("❔ Wi-Fi 보안 — 무선 랜 정보를 확인하지 못했어요.", "✅ Wi-Fi 보안 — 안전한 방식이에요.")
+    ok_sys = SYS.replace("🚨 Windows 업데이트 — 마지막 업데이트가 238일 전이에요.", "✅ Windows 업데이트 — 최신이에요.")
+    reply = build_overall_security_reply([ok_net, ok_sys], 98)
+    assert reply.splitlines()[0] == "📋 PC 종합 점검 · 이상 없음 · 점수 98/100 (4/4개 확인)"
+    assert report_style.lint_report(reply) == [] and "👉" not in reply        # 위험 항목이 없으면 맺음말 생략
+    assert report_style.parse_header(reply.splitlines()[0])["score"] == "점수 98/100"
+    text, _folded = FindingsLedger().collapse_reply(build_overall_security_reply([NET, SYS], 96), sid="s", user="guest")
+    assert isinstance(text, str) and text
+    many = "\n".join(f"  ⚠️ 항목{i} — 확인이 필요해요." for i in range(8))
+    big = build_overall_security_reply([f"[🖥️ 시스템 보안 종합 리포트]\n점수: 50/100\n\n항목별 상태:\n{many}\n"], 50)
+    assert big.splitlines()[0].startswith("📋 PC 종합 점검 · 확인 필요 8건") and "ℹ️ 외 3건 — 항목5·항목6·항목7" in big
+    assert report_style.lint_report(big) == []
