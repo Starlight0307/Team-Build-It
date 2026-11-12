@@ -27,6 +27,46 @@ PROBLEM = (
     "죄송해요, 지금은 확인이 잘 되지 않았어요. 잠시 뒤에 다시 확인해 드릴까요?",
     "확인하다가 막혔어요. 조금 있다가 다시 해 드릴까요?",
 )
+# AI 모델이 도중에 꺼졌을 때(메모리 부족 의심) — 같은 질문을 다시 처리하는 제안(Offer)과 함께 낸다
+MODEL_DIED = (
+    "AI 모델이 갑자기 꺼졌어요. 컴퓨터 메모리가 부족했을 수 있어요. 다시 시도해 드릴까요?",
+    "죄송해요, AI 모델이 도중에 꺼져 버렸어요. 컴퓨터 메모리가 모자랐을 수 있어요. 다시 시도해 드릴까요?",
+    "AI 모델이 갑자기 멈췄어요. 메모리가 부족했을 수 있으니 다시 시도해 드릴까요?",
+)
+# 같은 질문을 처음부터 다시 처리해 달라는 제안의 가짜 도구 이름(core/ai_worker.py가 알아듣는다)
+RETRY_QUESTION_FUNC = "__retry_question__"
+# 도구 결과는 얻었는데 모델이 꺼져서 정리하지 못했을 때 결과 뒤에 붙이는 한 줄
+SUMMARY_SKIPPED = "AI 모델이 꺼져서 정리는 못 했어요."
+# 도구 결과 중 오류 흔적이 있는 줄을 대신하는 문구(예외 이름·파일 경로·이모지 노출 금지)
+RESULT_LINE_PROBLEM = (
+    "일부는 확인하는 중에 문제가 생겨서 결과를 가져오지 못했어요.",
+    "일부는 확인하다가 막혀서 결과를 얻지 못했어요.",
+)
+_ERROR_TRACE = re.compile(r'❌|실행 중 오류|Traceback|File "|\w+(?:Error|Exception)|0x[0-9a-fA-F]{6,}')
+
+
+def scrub_error_lines(raw, *, rng=None) -> str:
+    """도구 결과에서 오류 흔적이 있는 줄은 일반 문구로 바꾸고(연속된 줄은 한 번만) 정상 줄은 그대로 둔다."""
+    out, replaced = [], False
+    for line in str(raw or "").splitlines():
+        if _ERROR_TRACE.search(line):
+            if not replaced:
+                out.append(pick(RESULT_LINE_PROBLEM, rng=rng))
+            replaced = True
+        else:
+            out.append(line)
+            replaced = False
+    return "\n".join(out)
+
+
+def model_died_offer(question):
+    """꺼진 모델 때문에 못 푼 질문을 그대로 다시 처리하는 제안. 질문이 비어 있으면 없다."""
+    q = str(question or "").strip()
+    if not q:
+        return []
+    return [Offer(label="같은 질문을 다시 시도해 드릴까요?", func=RETRY_QUESTION_FUNC, args={"text": q})]
+
+
 # 쓰기 도구는 다시 실행해 드릴까요라고 묻지 않는다(재실행이 중복 반영될 수 있어서) — 안내만
 PROBLEM_NO_RETRY = (
     "확인하는 중에 문제가 생겨서 끝내지 못했어요. 어떻게 됐는지 다시 확인해 보시겠어요?",

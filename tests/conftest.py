@@ -313,3 +313,14 @@ def _reset_security_session():
         security_session.clear()
     except ImportError:
         yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_ollama_state():
+    """모델 오류 상태(마지막으로 죽은 시각)와 질문 시작 시각은 모듈·스레드 전역이라 시험 사이에 남지 않게 매번 비운다."""
+    yield
+    import sys
+    mod = sys.modules.get("core.ai_worker")
+    if mod is not None:
+        mod._ollama_state["crash_at"] = None
+        mod._ollama_local.question_started = None

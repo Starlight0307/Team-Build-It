@@ -362,6 +362,10 @@ def _report_for_speech(t: str, max_chars: int):
     lines = [ln.strip() for ln in t.strip().splitlines() if ln.strip()]
     mark = next((i for i, ln in enumerate(lines) if ln.startswith("📋")), None)
     if mark is not None and len(lines) >= 2 and lines[-1].startswith("👉") and mark < len(lines) - 1:
+        body = lines[mark + 1:-1]
+        if len(body) <= 6 and len(t.strip()) <= 400:   # 짧은 보고서는 항목 줄도 모두 읽는다(음성 브리핑에서 내용이 사라지지 않게)
+            keep = [ln for ln in lines if not ln.startswith(("ℹ", "❔"))]   # 참고·확인 못 함 줄은 화면에만 둔다
+            return chr(10).join(keep), 400
         pre = lines[:mark]      # 보고서 위의 결론 줄이 있으면 그것을, 없으면 머리줄 요약을 읽는다
         head = " ".join(pre) if pre else lines[mark].lstrip("📋").strip().replace(" · ", ", ") + "."
         return f"{head} {lines[-1]}", max(max_chars, 400)

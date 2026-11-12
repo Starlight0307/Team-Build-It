@@ -130,7 +130,10 @@ _TRAIL = re.compile(r"[\s!.~?…ㅠㅜ^]+$")
 _CASUAL_ENDINGS = (
     (r"드릴게요", "줄게"), (r"드릴까요", "줄까"), (r"이에요", "이야"), (r"예요", "야"), (r"해요", "해"), (r"네요", "네"),
     (r"([가-힣])까요", r"\1까"), (r"([가-힣])게요", r"\1게"), (r"([가-힣])어요", r"\1어"), (r"([가-힣])아요", r"\1아"),
+    (r"돼요", "돼"),   # "연결돼요/유지돼요" (2026-11-12)
 )
+# 문장 맨 앞 대답 — "아니요, …"/"네, …"는 반말에서 "아니, …"/"응, …"
+_CASUAL_LEADS = ((re.compile(r"^(\s*)아니요(?=[,.!]|\s|$)"), r"\1아니"), (re.compile(r"^(\s*)네(?=,)"), r"\1응"))
 
 
 # 평서문은 모델에게 문장을 쓰게 하지 않고 종류만 고르게 한다. 분류는 정확하지만("도구 선택 96%") 잡담 문장은 자주
@@ -271,6 +274,8 @@ def to_casual(text: str) -> str:
         if not line.startswith("👉") and _is_report_fact_line(line):
             out.append(line)
             continue
+        for pattern, repl in _CASUAL_LEADS:
+            line = pattern.sub(repl, line, count=1)
         for pattern, repl in _CASUAL_ENDINGS:
             line = re.sub(pattern + r"(?=[.!?,…\s)]|$)", repl, line)
         out.append(line)

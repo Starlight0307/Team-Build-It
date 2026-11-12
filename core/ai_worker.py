@@ -25,23 +25,149 @@ _ollama_local = threading.local()
 _ORIGINAL_OLLAMA_CHAT = ollama.chat
 
 
+# ── 모델이 죽거나 멈췄을 때의 대처 (2026-11-12) ──
+# 2026-11-12 실측: llama-server가 7일에 13번 죽었고(메모리 부족 의심), 죽은 뒤 질문마다 240초 넘게 응답이 없었다.
+# 원인: ollama.Client()를 시간 제한 없이 만들어(timeout=None) 응답이 영영 안 오면 끝없이 기다렸다.
+OLLAMA_TIMEOUT_LOADED_S = 90          # 모델이 이미 올라와 있을 때 응답을 기다리는 기본 상한(초)
+OLLAMA_TIMEOUT_COLD_S = 180           # 모델을 처음 올리는 중일 때(첫 로딩은 오래 걸릴 수 있다)
+# 스트리밍을 쓰지 않아 read 시간 제한은 '프롬프트 처리 + 답 전체 생성' 시간이다. 이 PC 실측으로 긴 답(1024토큰)이 약 50초라
+# 기본 90초면 대부분 넉넉하지만, 입력이 길수록 처리 시간이 늘어 정상 응답이 잘릴 수 있다 — 입력 글자 1,000자당 5초를 더하되 최대치를 둔다.
+OLLAMA_TIMEOUT_PER_1K_CHARS_S = 5
+OLLAMA_TIMEOUT_LOADED_MAX_S = 150
+OLLAMA_TIMEOUT_COLD_MAX_S = 240
+# 호출 하나(재시도 포함)의 전체 마감, 질문 하나(모델을 여러 번 부를 수 있다)의 예산. 예산이 바닥나도 호출마다 최소 시간은 준다.
+# 최악 합계: 호출 하나는 TOTAL_BUDGET(240초)을 넘지 않는다. 질문 하나는 도구 선택 1회 + 요약 1회(+ 요약 재시도 1회) = 최대 3번
+# 호출이라 예산(240초)이 바닥나기 전까지는 240초, 이후 남은 호출은 MIN_CALL(30초)씩만 받아 최악 약 240 + 30 + 30 = 300초.
+OLLAMA_TOTAL_BUDGET_S = 240
+OLLAMA_QUESTION_BUDGET_S = 240
+OLLAMA_MIN_CALL_S = 30
+OLLAMA_MIN_RETRY_S = 10          # 마감까지 이만큼도 안 남았으면 재시도하지 않는다
+OLLAMA_RETRY_WAIT_S = 1.5        # 실패 뒤 다시 시도하기 전 잠깐 기다리는 시간
+OLLAMA_MAX_RETRIES = 1           # 호출 하나당 자동 재시도는 정확히 1번(시간 초과 뒤에는 하지 않는다)
+_OLLAMA_CRASH_COOLDOWN_S = 300   # 이 시간 안에 모델이 또 죽으면 '연달아 죽음'으로 보고 재시도하지 않는다
+_ollama_state = {"crash_at": None}   # 마지막으로 모델이 죽은 시각(time.monotonic) — 호출이 성공하면 비운다
+
+
+def _is_model_failure(e: Exception) -> bool:
+    """모델 프로세스 종료/연결 끊김/500/타임아웃 종류의 실패인가(사용자 안내·요약 대체에 쓴다)."""
+    if isinstance(e, ConnectionError):
+        return True
+    if isinstance(e, httpx.TransportError):      # 시간 초과·연결 끊김·읽기 실패 모두
+        return True
+    if isinstance(e, ollama.ResponseError):
+        return (getattr(e, "status_code", 0) or 0) >= 500
+    return False
+
+
+def _is_model_crash(e: Exception) -> bool:
+    """실행 중이던 모델이 갑자기 꺼진 것으로 보이는 실패(시간 초과·서버 꺼짐은 제외)."""
+    if isinstance(e, (ConnectionError, httpx.TimeoutException, httpx.ConnectError)):
+        return False
+    return _is_model_failure(e)
+
+
+def _recently_crashed() -> bool:
+    t = _ollama_state["crash_at"]
+    return t is not None and time.monotonic() - t < _OLLAMA_CRASH_COOLDOWN_S
+
+
+def _probe_server(client):
+    """서버 상태를 한 번에 본다(GET /api/ps). 연결 거부면 None, 닿으면 올라와 있는 모델 이름 집합.
+    느리거나 알 수 없는 오류(가짜 연결 등)는 빈 집합 — 살아 있는지 모르니 평소 호출로 진행한다."""
+    try:
+        client._client.timeout = httpx.Timeout(3.0)
+        resp = client.ps()
+        return {getattr(m, "model", None) or getattr(m, "name", None) or "" for m in (getattr(resp, "models", None) or [])}
+    except (ConnectionError, httpx.ConnectError):
+        return None
+    except Exception:
+        return set()
+
+
+def _model_loaded(names) -> bool:
+    return any(n == OLLAMA_MODEL or n.startswith(OLLAMA_MODEL + ":") for n in (names or ()))
+
+
+def _prompt_chars(kwargs) -> int:
+    import json as _json
+    total = sum(len(str(m.get("content") or "")) for m in (kwargs.get("messages") or []) if isinstance(m, dict))
+    if kwargs.get("tools"):
+        try:
+            total += len(_json.dumps(kwargs["tools"], ensure_ascii=False))
+        except Exception:
+            pass
+    return total
+
+
+def _attempt_timeout(loaded: bool, chars: int) -> float:
+    extra = OLLAMA_TIMEOUT_PER_1K_CHARS_S * chars / 1000
+    if loaded:
+        return min(OLLAMA_TIMEOUT_LOADED_MAX_S, OLLAMA_TIMEOUT_LOADED_S + extra)
+    return min(OLLAMA_TIMEOUT_COLD_MAX_S, OLLAMA_TIMEOUT_COLD_S + extra)
+
+
+def _set_call_timeout(client, seconds: float) -> None:
+    try:
+        client._client.timeout = httpx.Timeout(max(1.0, seconds), connect=5.0)
+    except Exception:
+        pass
+
+
+def _call_deadline(start: float) -> float:
+    """이 호출의 마감 시각: 호출당 총 예산, 그리고 질문 하나의 남은 예산(최소 OLLAMA_MIN_CALL_S) 중 짧은 쪽."""
+    budget = OLLAMA_TOTAL_BUDGET_S
+    q_start = getattr(_ollama_local, "question_started", None)
+    if q_start is not None:
+        budget = min(budget, max(OLLAMA_QUESTION_BUDGET_S - (start - q_start), OLLAMA_MIN_CALL_S))
+    return start + budget
+
+
 def _ollama_chat(**kwargs):
     kwargs["options"] = {"num_ctx": OLLAMA_NUM_CTX} | (kwargs.get("options") or {})
     client = getattr(_ollama_local, "client", None)
     use_client = client is not None and ollama.chat is _ORIGINAL_OLLAMA_CHAT   # 테스트가 ollama.chat을 바꿨으면 그쪽
     call = client.chat if use_client else ollama.chat
+    start = time.monotonic()
+    deadline = _call_deadline(start)
+    chars = _prompt_chars(kwargs)
+    if use_client:
+        names = _probe_server(client)
+        if names is None:
+            raise ConnectionError("Ollama 서버에 연결되지 않음")      # 연결 거부 — 기다려도 소용없다
+        _set_call_timeout(client, min(_attempt_timeout(_model_loaded(names), chars), deadline - time.monotonic()))
     try:
-        return call(**kwargs)
-    except ollama.ResponseError as e:
-        # Ollama 실행기(llama-server)가 처리 중 죽은 경우 — 2026-10-19 이 PC(Intel Arc 내장 그래픽)에서 같은 요청도
-        # 됐다 안 됐다 했다(약 3,000토큰 9/9 성공, 4,000토큰 3/4, 6,000토큰 0/3). Ollama가 실행기를 새로 띄우므로
-        # 한 번만 다시 묻는다. '대답 멈추기'로 연결을 끊은 경우는 다시 묻지 않는다.
-        crashed = e.status_code == 500 and any(
-            s in str(e) for s in ("forcibly closed", "llama-server", "terminated", "wsarecv"))
-        if not crashed or (use_client and client._client.is_closed):
+        result = call(**kwargs)
+        _ollama_state["crash_at"] = None
+        return result
+    except Exception as e:
+        # '대답 멈추기'로 연결을 끊은 경우와 모델 실패가 아닌 오류는 다시 묻지 않는다
+        if not _is_model_failure(e) or (use_client and client._client.is_closed):
             raise
-        print(f"[AI 워커] AI 엔진이 처리 중 멈춰서 한 번 더 요청합니다: {str(e)[:80]}")
-        return call(**kwargs)
+        print(f"[AI 워커] 모델 호출 실패({type(e).__name__}): {str(e)[:120]}")   # 상세는 콘솔에만
+        # 시간 초과·연결 거부는 다시 해도 같다. 재시도는 500/연결 끊김처럼 빠르게 실패한 경우만.
+        if not _is_model_crash(e):
+            raise
+        crashed_again = _recently_crashed()
+        _ollama_state["crash_at"] = time.monotonic()
+        if crashed_again:
+            raise      # 방금 전에도 죽었다 — 메모리가 모자란 상태일 가능성이 커서 또 시도하지 않는다
+        left = deadline - time.monotonic() - OLLAMA_RETRY_WAIT_S
+        if left < OLLAMA_MIN_RETRY_S:
+            raise
+        if use_client and _probe_server(client) is None:
+            raise      # 서버까지 꺼졌다
+        time.sleep(OLLAMA_RETRY_WAIT_S)
+        print("[AI 워커] 모델을 다시 켜서 한 번 더 요청합니다")
+        if use_client:      # 죽었다 다시 뜨는 중이라 첫 로딩만큼 기다리되 남은 시간을 넘지 않는다
+            _set_call_timeout(client, min(_attempt_timeout(False, chars), left))
+        try:
+            result = call(**kwargs)
+            _ollama_state["crash_at"] = None
+            return result
+        except Exception as e2:
+            if _is_model_crash(e2) and not (use_client and client._client.is_closed):
+                _ollama_state["crash_at"] = time.monotonic()
+            raise
 
 
 # 한 요청의 토큰 상한(추정) — 2026-10-19 이 PC(Intel Arc 내장 그래픽, Vulkan)에서 순수 글로 잰 결과: 약 4,000토큰은
@@ -88,6 +214,10 @@ from core import reply_appusage as _reply_appusage
 from core import reply_fallback as _reply_fallback
 from core import reply_files as _reply_files
 from core import reply_quiet as _reply_quiet
+from core import reply_battery as _reply_battery
+from core import reply_briefing as _reply_briefing
+from core import reply_login as _reply_login
+from core import reply_temp as _reply_temp
 from core import reply_programs as _reply_programs
 from core import reply_status as _reply_status
 from core import reply_trend as _reply_trend
@@ -142,6 +272,11 @@ def _diagnose_error(e: Exception) -> str:
         return (
             "AI 답변이 너무 오래 걸려서 멈췄어요. 컴퓨터가 바쁠 수 있으니 잠시 뒤에 다시 물어봐 주시겠어요?"
         )
+    if _is_model_crash(e):
+        # 상세(예외 종류·코드)는 콘솔/로그에만 — 사용자에게는 상황과 다음 행동 하나만
+        print(f"[AI 모델 꺼짐] {type(e).__name__}: {str(e)[:120]}")
+        _add_reply_offers(_reply_fallback.model_died_offer(getattr(_QUESTION_LOCAL, "text", "")))
+        return _reply_fallback.pick(_reply_fallback.MODEL_DIED)
     if isinstance(e, ollama.ResponseError):
         text = (getattr(e, 'error', '') or str(e)).lower()
         if 'model' in text and ('not found' in text or 'pull' in text):
@@ -1099,6 +1234,82 @@ def _ground_reminder_label(args, user_text: str):
             and re.search(r"[가-힣]$", phrase) and not phrase.endswith(("기", "것")):
         phrase += "기"
     return dict(args, label=phrase)
+
+# ── 파일 검색 인자 근거 판정 (2026-11-12) ──
+# 실제 모델이 "이번주에 받은 파일 찾아줘"에 사용자가 말하지 않은 종류='pdf'를 지어내 "찾지 못했어요(16047개 확인)"가 나왔다.
+# 종류는 사용자 문장에 그 낱말(또는 같은 종류의 낱말)이 있을 때만, 키워드는 문장에 그대로 있을 때만 남긴다. 기간·기준은 건드리지 않는다.
+# 종류 묶음: (이 종류를 가리키는 모델 값들, 사용자 문장에 있으면 근거가 되는 낱말들). 영어 별칭도 같은 묶음으로 본다.
+_FILE_KIND_GROUPS = (
+    (("pdf",), ("pdf", "피디에프")),
+    (("문서", "document", "documents", "doc", "docx", "hwp", "hwpx", "한글", "워드", "word", "txt", "text", "텍스트", "rtf", "md", "pdf"),
+     ("문서", "document", "서류", "워드", "word", "docx", "doc", "한글", "hwp", "hwpx", "텍스트", "txt", "text")),
+    (("이미지", "image", "images", "photo", "photos", "picture", "pictures", "사진", "그림", "스크린샷", "캡처", "screenshot",
+      "jpg", "jpeg", "png", "gif", "bmp", "webp", "heic"),
+     ("이미지", "사진", "그림", "스크린샷", "캡처", "image", "photo", "picture", "screenshot", "jpg", "jpeg", "png", "gif", "webp", "heic")),
+    (("동영상", "영상", "video", "videos", "비디오", "mp4", "mkv", "avi", "mov", "wmv", "webm"),
+     ("동영상", "영상", "비디오", "video", "mp4", "mkv", "avi", "mov", "wmv", "webm")),
+    (("음악", "audio", "music", "노래", "음원", "오디오", "mp3", "wav", "flac", "m4a", "aac"),
+     ("음악", "노래", "음원", "오디오", "audio", "music", "mp3", "wav", "flac", "m4a", "aac")),
+    (("압축", "archive", "archives", "zip", "rar", "7z", "tar", "gz"),
+     ("압축", "archive", "zip", "rar", "7z", "tar")),
+    (("엑셀", "excel", "xls", "xlsx", "csv", "스프레드시트", "spreadsheet", "표"),
+     ("엑셀", "excel", "xls", "xlsx", "csv", "스프레드시트", "spreadsheet", "표파일")),
+    (("ppt", "pptx", "파워포인트", "발표", "프레젠테이션", "presentation", "슬라이드"),
+     ("ppt", "pptx", "파워포인트", "발표", "프레젠테이션", "presentation", "슬라이드")),
+    (("코드", "code", "source", "소스", "py", "python", "파이썬", "js", "javascript", "자바스크립트", "ts", "java", "자바",
+      "html", "css", "cpp", "script", "스크립트"),
+     ("코드", "code", "source", "소스", "py", "python", "파이썬", "js", "javascript", "자바스크립트", "ts", "java", "자바",
+      "html", "css", "cpp", "script", "스크립트")),
+    (("설치파일", "installer", "exe", "msi", "인스톨러", "설치"),
+     ("설치파일", "설치", "installer", "exe", "msi", "인스톨러")),
+)
+_FILE_KIND_ARGS = ("file_type", "kind", "extension", "ext")
+
+
+def _loose(text) -> str:
+    return re.sub(r"[\s_\-.]+", "", str(text or "").lower())
+
+
+def _has_word(word: str, loose_text: str, spaced: str) -> bool:
+    """한글 낱말은 부분 문자열, 영문 낱말은 단어 경계로 찾는다("movie"의 mov, "zipcode"의 zip 오탐 방지)."""
+    w = _loose(word)
+    if not w:
+        return False
+    if w.isascii():
+        return re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", spaced) is not None
+    return w in loose_text
+
+
+def _ground_file_search_args(args, user_text: str):
+    """모델이 준 종류(file_type 등)·키워드가 사용자 문장에 근거가 없으면 버린다(결과가 조용히 0건이 되는 것을 막는다).
+    종류: 값과 같은 묶음(_FILE_KIND_GROUPS)의 낱말이 문장에 있으면 유지 — "문서"라고만 했는데 모델이 pdf를 준 것도 유지.
+    종류 낱말이 아예 없으면("받은 파일 찾아줘") 제거. 영문 별칭(images/photo/video…)도 같은 묶음으로 본다.
+    키워드: 낱말마다 문장에 그대로(공백·_·-·대소문자만 무시) 있으면 유지, 없는 낱말은 버린다."""
+    if not isinstance(args, dict):
+        return args
+    text = _loose(user_text)
+    spaced = str(user_text or "").lower()
+    fixed = dict(args)
+    for key in _FILE_KIND_ARGS:
+        raw = fixed.get(key)
+        if raw in (None, ""):
+            continue
+        value = _loose(raw).lstrip(".")
+        evidence = {value}
+        for values, words in _FILE_KIND_GROUPS:
+            if value in {_loose(v) for v in values}:
+                evidence.update(words)
+        if not value or not any(_has_word(e, text, spaced) for e in evidence):
+            fixed.pop(key, None)
+    kw = fixed.get("keyword")
+    if kw:
+        kept = [t for t in str(kw).split() if _loose(t) and _loose(t) in text]
+        if kept:
+            fixed["keyword"] = " ".join(kept)
+        else:
+            fixed.pop("keyword", None)
+    return fixed
+
 
 # 키워드가 다른 단어의 일부로 우연히 들어 있는 경우 — "메모리"의 "메모"가 notes 카테고리에,
 # "사용량"의 "용량"이 저장공간(pc_optimizer/system) 카테고리에 걸려서 "메모리 사용량 확인해줘"에
@@ -2202,13 +2413,17 @@ def _build_local_daily_briefing_reply(raw_results: str):
         cut = re.search(r"\n+(?=[^\s\d])", rest)
         events_part, extra = (rest[:cut.start()], rest[cut.end():]) if cut else (rest, "")
     extra = extra.strip("\n")
+    # 시각·날짜는 읽기 쉽게 풀어 쓴다(2026-11-12): "지금은 오후 8시 38분이고, 오늘(11월 12일 목요일) …". 못 풀면 원문 표기.
+    clock = _reply_briefing.clock_ko(time_now)
+    day = _reply_briefing.date_ko(date) or date
+    now_part = f"지금은 {clock}이고, {label}({day})" if clock else f"지금 {time_now}인데, {label}({day})"
     if not events_part:
-        lines = [f"지금 {time_now}인데, {label}({date}) 일정은 없어요."]
+        lines = [f"{now_part} 등록된 일정은 없어요."]
     else:
         events = _parse_local_event_blocks(events_part)
         if events is None or not events:
             return None
-        lines = [f"지금 {time_now}인데, {label}({date}) 일정이 {len(events)}건 있어요."]
+        lines = [f"{now_part} 일정이 {len(events)}건 있어요."]
         lines.extend(_format_local_events_lines(events))
     if extra:
         lines += ["", extra]
@@ -4473,6 +4688,56 @@ def _build_quiet_hours_reply(raw_results: str):
         return None
 
 
+# 합성 답(PC 정리·종합 점검·하루 브리핑)이 구간별로 빌더를 부르는 동안에는 질문·제안을 붙이는 새 빌더(임시 파일·로그인 상태)를
+# 쓰지 않는다 — 구간 출력은 이전 그대로이고, 질문/Offer 는 단일 도구 직접 질문에서만 나온다(2026-11-12).
+_COMPOSITE = threading.local()
+
+
+def _composite_section(fn):
+    def wrapper(*a, **k):
+        prev = getattr(_COMPOSITE, "on", False)
+        _COMPOSITE.on = True
+        try:
+            return fn(*a, **k)
+        finally:
+            _COMPOSITE.on = prev
+    wrapper.__name__ = fn.__name__
+    wrapper.__doc__ = fn.__doc__
+    return wrapper
+
+
+# 임시 파일 점검(scan_temp_files) — 5000개 상한 정직 표기 + 정리 제안(core/reply_temp.py)
+def _build_temp_files_reply(raw_results: str):
+    if getattr(_COMPOSITE, "on", False):
+        return None
+    try:
+        built = _reply_temp.build(raw_results)
+        if built is None:
+            return None
+        text, offers = built
+        _add_reply_offers(offers)
+        return text
+    except Exception as e:
+        print(f"[임시 파일 답변 오류] {type(e).__name__}: {e}")
+        return None
+
+
+# 로그인 상태(get_login_status) — 내부 용어를 숨기고 해요체로(core/reply_login.py)
+def _build_login_status_reply(raw_results: str):
+    if getattr(_COMPOSITE, "on", False):
+        return None
+    try:
+        built = _reply_login.build(raw_results)
+        if built is None:
+            return None
+        text, offers = built
+        _add_reply_offers(offers)
+        return text
+    except Exception as e:
+        print(f"[로그인 상태 답변 오류] {type(e).__name__}: {e}")
+        return None
+
+
 def _build_file_search_reply(raw_results: str):
     """search_files() 결과("일치 N개, 표시 M개" + 파일 목록)를 LLM에게 맡기면 경로를 손상시키거나
     파일을 누락/지어낼 위험이 있다 — 선언된 표시 개수와 실제 파싱된 항목 수가 일치할 때만 문장을
@@ -4558,6 +4823,8 @@ _GOOGLE_MINUTES_LINE = re.compile(r"^- 남은 시간: 약 (\d+)분", re.MULTILIN
 
 
 def _build_calendar_login_status_reply(raw_results: str):
+    # 참고(2026-11-12): 구글 로그인 상태 원문은 목록 앞쪽의 _build_login_status_reply(core/reply_login.py)가 먼저 처리해서
+    # 이 함수의 구글 분기는 지금 닿지 않는다(애플·"[🔐 구글 캘린더 …" 안내만 여기로 온다). 팀원 파일 충돌을 줄이려고 지우지 않았다.
     text = raw_results.strip()
     if text.startswith("[🔐 구글 캘린더"):   # 연결 필요/만료/권한 필요 안내 — 이미 사용자용 문장이다
         return "\n".join(text.split("\n")[1:]).strip() or None
@@ -4745,6 +5012,7 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_calendar_confirmation_reply,
     _build_recurring_calendar_confirmation_reply,
     _build_calendar_empty_reply,
+    _build_login_status_reply,
     _build_calendar_login_status_reply,
     _build_calendar_list_reply,
     _build_calendar_delete_reply,
@@ -4770,6 +5038,7 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_goal_status_reply,
     _build_file_search_summary,
     _build_quiet_hours_reply,
+    _build_temp_files_reply,
     _build_file_search_reply,
     _build_todo_list_reply,
     _build_note_list_reply,
@@ -4995,6 +5264,7 @@ def _is_daily_summary_request(text_lower: str) -> bool:
     return any(kw in text_lower for kw in _DAILY_SUMMARY_KEYWORDS)
 
 
+@_composite_section
 def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
     """하루 통합 브리핑 — 일정/보안/지출/화면사용시간을 각자 도구로 조회한 뒤,
     이미 검증된 개별 결정론적 빌더(_build_deterministic_reply)로 각 섹션을
@@ -5025,6 +5295,7 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
       실제로 get_daily_briefing/local_get_daily_briefing/get_system_security_report
       모두 이미 전용 빌더가 있어 이 경로를 안 탄다(단위 테스트로 확인)."""
     sections = []
+    titles = []   # 보고서 틀에서 소제목 없는 섹션에 붙일 이름(sections 와 같은 순서)
 
     # 1) 일정 — 활성 캘린더 백엔드에 맞는 함수를 고른다(구조적 필터,
     # 이 파일의 다른 곳들과 동일한 원칙 — 안 쓰는 백엔드 함수는 아예 안 건드림).
@@ -5062,6 +5333,7 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
             # 헤더 없이 정확히 이 문자열 하나만 반환한다.
             if built and not raw.startswith('❌ 내부 캘린더는 로그인한 사용자만'):
                 sections.append(built)
+                titles.append("일정")
         except Exception as e:
             print(f"[AI 워커] 브리핑 - 일정 조회 오류: {e}")
 
@@ -5072,6 +5344,7 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
             built = _build_deterministic_reply(raw)
             if built:
                 sections.append(built)
+                titles.append("보안")
         except Exception as e:
             print(f"[AI 워커] 브리핑 - 보안 조회 오류: {e}")
 
@@ -5084,6 +5357,7 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
             built = _build_deterministic_reply(raw)
             if built and '로그인' not in raw and '구매 기록이 없습니다' not in raw:
                 sections.append(built)
+                titles.append("지출")
         except Exception as e:
             print(f"[AI 워커] 브리핑 - 지출 조회 오류: {e}")
 
@@ -5095,6 +5369,7 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
             built = _build_deterministic_reply(raw)
             if built and '아직 기록이 없어요' not in raw:
                 sections.append(built)
+                titles.append("화면 사용 시간")
         except Exception as e:
             print(f"[AI 워커] 브리핑 - 사용시간 조회 오류: {e}")
 
@@ -5112,6 +5387,7 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
             built = _build_deterministic_reply(raw)
             if built and '로그인' not in raw and '아직 설정된 예산이 없어요' not in raw:
                 sections.append(built)
+                titles.append("예산")
         except Exception as e:
             print(f"[AI 워커] 브리핑 - 예산 조회 오류: {e}")
 
@@ -5122,6 +5398,7 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
             built = _build_deterministic_reply(raw)
             if built and '아직 설정된 목표가 없어요' not in raw:
                 sections.append(built)
+                titles.append("사용 목표")
         except Exception as e:
             print(f"[AI 워커] 브리핑 - 사용 목표 조회 오류: {e}")
 
@@ -5129,7 +5406,7 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
         return ""
 
     intro = "안녕하세요! 오늘 하루를 정리해드릴게요."
-    return f"{intro}\n\n" + "\n\n".join(sections)
+    return _reply_briefing.wrap(sections, intro, titles)   # 섹션 3개 이상이면 보고서 틀(2026-11-12)
 
 
 # ─────────────────────────────────────────────
@@ -5296,6 +5573,7 @@ def _calm_health_section(text: str):
     return "\n".join(body), notes, closings
 
 
+@_composite_section
 def _build_pc_health_check(func_map: dict) -> str:
     """PC 종합 점검 — 시스템 정보/보안/악성코드/네트워크 네 리포트를 각자
     도구로 조회한 뒤, 이미 검증된 개별 결정론적 빌더(_build_deterministic_reply)로
@@ -5568,6 +5846,7 @@ def _is_pc_cleanup_request(text_lower: str) -> bool:
     return True
 
 
+@_composite_section
 def _build_pc_cleanup(func_map: dict) -> str:
     """PC 정리 후보 — 디스크(시스템 정보)/대용량 파일/중복 파일/임시 파일
     네 가지를 각자 조회 전용 도구로 확인한 뒤, 이미 검증된 개별 결정론적
@@ -6121,6 +6400,7 @@ def _summarize_tool_results(chat_history: list, tool_results) -> str:
 
     output_parts = []
     pending_leftover = []
+    model_down = []      # 결과 정리 중 모델이 꺼졌는지(비어 있지 않으면 꺼짐)
 
     def _flush_pending():
         if pending_leftover:
@@ -6134,7 +6414,22 @@ def _summarize_tool_results(chat_history: list, tool_results) -> str:
                 batch_raw = "\n\n".join(
                     f"[도구 결과 {i+1}]\n{raw}" for i, raw in enumerate(pending_leftover)
                 )
-            summary = _summarize_tool_results_llm(chat_history, batch_raw)
+            if model_down:      # 앞에서 모델이 꺼졌으면 또 기다리지 않고 받은 결과를 그대로 보여 준다
+                output_parts.append(f"확인된 내용은 다음과 같아요:\n\n{_reply_fallback.scrub_error_lines(batch_raw)}")
+                pending_leftover.clear()
+                return
+            try:
+                summary = _summarize_tool_results_llm(chat_history, batch_raw)
+            except Exception as e:
+                client = getattr(_ollama_local, "client", None)
+                if not _is_model_failure(e) or (client is not None and client._client.is_closed):
+                    raise
+                print(f"[AI 워커] 결과 정리 중 모델 오류({type(e).__name__}) — 도구 결과를 그대로 보여 줍니다")
+                _log_error_trace(e)
+                model_down.append(True)
+                output_parts.append(f"확인된 내용은 다음과 같아요:\n\n{_reply_fallback.scrub_error_lines(batch_raw)}")
+                pending_leftover.clear()
+                return
             # 로컬 LLM이 자유롭게 요약하면 '무엇을 확인하지 못했는지·기록에 실패했는지' 같은 안내를 빼먹을 수 있다 —
             # 그런 안내 줄은 요약 뒤에 원문 그대로 다시 붙인다(2026-10-13, 사용자 지적: 모르는 걸 두루뭉술하게 넘기지 말 것)
             output_parts.append(summary + _must_keep_notices(batch_raw, summary))
@@ -6152,6 +6447,9 @@ def _summarize_tool_results(chat_history: list, tool_results) -> str:
         else:
             pending_leftover.append(raw)
     _flush_pending()
+
+    if model_down:
+        output_parts.append(_reply_fallback.SUMMARY_SKIPPED)
 
     return "\n\n".join(output_parts)
 
@@ -7446,6 +7744,56 @@ class AIWorker(QThread):
         self.response_ready.emit(f"🤖 로컬 비서: {shown}")
         return True
 
+    # "방해금지 상태 알려줘" — 실제 모델이 도구를 못 골라 일반 실패 문구가 나왔다(2026-11-12). 읽기(상태) 질문만 가로챈다.
+    _QUIET_SUBJECT = re.compile(r"방해금지|묵음")
+    _QUIET_WRITE = re.compile(r"해제|취소|꺼줘|꺼주|꺼봐|켜줘|켜주|바꿔|바꾸|변경|설정해|설정하|등록|걸어|시작|부터|까지|\d시|오전|오후|아침|새벽|저녁|밤|면|할때|일때|을때|때는|해줘|해주|해봐|하자")
+    # 소리 관련 묵음(볼륨 묵음 등)은 방해금지 시간대가 아니고, 다른 요청이 섞이면 뒷 요청이 버려지므로 모델에 맡긴다
+    _QUIET_SOUND = re.compile(r"볼륨|소리|스피커|음량|마이크|사운드|음소거|오디오|알림음|무음")
+    _QUIET_MIXED = re.compile(r"주고|하고|그리고|랑|도알려|도보여|도확인|일정|날씨|타이머|메모|할일|파일|그다음|그뒤|또|및|함께")
+    _QUIET_STATUS = re.compile(r"상태|알려|보여|확인|설정(?:돼|된|되어)|켜져|꺼져|켜있|꺼있|있어|있나|어때|어떻게돼|어떻게되")
+
+    def _fast_quiet_status(self) -> bool:
+        """"방해금지 상태 알려줘"처럼 상태를 묻는 짧은 질문이면 모델 없이 get_quiet_hours_status를 직접 실행한다.
+        설정·해제·시간 지정이 섞이거나 조건문이면 가로채지 않는다."""
+        compact = re.sub(r"[\s!.?~]+", "", self.user_text)
+        if len(compact) > 25 or not self._QUIET_SUBJECT.search(compact):
+            return False
+        if self._QUIET_SOUND.search(compact) or self._QUIET_MIXED.search(compact):
+            return False
+        check = re.sub(r"확인해(?:줘|주세요|봐)", "확인", compact)
+        if self._QUIET_WRITE.search(check) or not self._QUIET_STATUS.search(check):
+            return False
+        func_map = {f.__name__: f for f in self.installed_tools}
+        if "get_quiet_hours_status" not in func_map:
+            return False
+        self.status_update.emit("🔕  방해금지 상태 확인 중")
+        try:
+            raw = str(func_map["get_quiet_hours_status"]())
+            shown = _build_deterministic_reply(raw) or raw
+        except Exception as e:
+            print(f"[AI 워커] 방해금지 상태 조회 오류: {type(e).__name__}")
+            shown, offers = _reply_fallback.failure("get_quiet_hours_status", {}, e)
+            _add_reply_offers(offers)
+        self.chat_history.append({'role': 'user', 'content': self.user_text})
+        self.chat_history.append({'role': 'assistant', 'content': shown})
+        self.response_ready.emit(f"🤖 로컬 비서: {shown}")
+        return True
+
+    def _fast_battery(self) -> bool:
+        """"배터리 몇 퍼센트야"처럼 이 컴퓨터 배터리를 묻는 짧은 질문이면 모델 없이 psutil 로 읽어 답한다(모델이 숫자를 지어냈다)."""
+        if not _reply_battery.is_battery_question(self.user_text):
+            return False
+        self.status_update.emit("🔋  배터리 확인 중")
+        reply = _reply_battery.answer(self.user_text, _reply_battery.read_battery())
+        if not reply:
+            return False
+        if user_memory.is_casual():
+            reply = small_talk.to_casual(reply)
+        self.chat_history.append({'role': 'user', 'content': self.user_text})
+        self.chat_history.append({'role': 'assistant', 'content': reply})
+        self.response_ready.emit(f"🤖 로컬 비서: {reply}")
+        return True
+
     def _offer_owner(self) -> str:
         return offer_owner()
 
@@ -7538,6 +7886,18 @@ class AIWorker(QThread):
             return True
         offer = res.offer
         name, args = offer.func, dict(offer.args or {})
+        if name == _reply_fallback.RETRY_QUESTION_FUNC:
+            # 모델이 꺼져 못 푼 질문을 처음부터 다시 처리한다 — 방금 붙인 "응"은 기록에서 빼고 질문을 되살린다
+            question = str(args.get("text") or "").strip()
+            self.chat_history.pop()
+            if not question:
+                _say("어떤 질문이었는지 잊어버렸어요. 한 번만 더 물어봐 주시겠어요?")
+                return True
+            if self.chat_history and self.chat_history[-1].get('role') == 'user' and self.chat_history[-1].get('content') == question:
+                self.chat_history.pop()
+            self.user_text = question
+            _QUESTION_LOCAL.text = question
+            return False
         if name not in func_map:
             _say("지금은 그 기능을 쓸 수 없어요.")
             return True
@@ -7632,6 +7992,7 @@ class AIWorker(QThread):
 
     def _run_inner(self):
         _ollama_local.client = self._ollama_client
+        _ollama_local.question_started = time.monotonic()      # 질문 하나의 모델 대기 예산 시작(_call_deadline)
         try:
             # ── 직전 답변의 제안("꺼드릴까요?")에 대한 짧은 응답은 LLM 없이 바로 잇는다 ──
             if self._handle_offer_reply():
@@ -7916,6 +8277,14 @@ class AIWorker(QThread):
             # ── 빠른 감지 1.73: "오늘/내일/모레/어제 일정 알려줘" — 모델 없이 그 날 일정을 바로 조회 ──
             # 모델이 날짜 인자를 비워 호출해 실패하던 질문(2026-11-12 앱 시연). 쓰기 요청("추가/삭제")과 조건문은 가로채지 않는다.
             if self._fast_events_by_date():
+                return
+
+            # ── 빠른 감지 1.735: "방해금지 상태 알려줘" — 모델 없이 상태를 바로 조회 ──
+            if self._fast_quiet_status():
+                return
+
+            # ── 빠른 감지 1.736: "배터리 몇 퍼센트야" — 모델 없이 psutil 로 직접 읽어 답한다 ──
+            if self._fast_battery():
                 return
 
             # ── 빠른 감지 1.74: "좋아/응/고마워"처럼 맞장구만 할 때 ──
@@ -8388,6 +8757,7 @@ class AIWorker(QThread):
                 except Exception as e:
                     print(f"[AI 워커] 로그인 상태 확인 오류: {e}")
                     result = "❌ 지금은 로그인 상태를 확인하지 못했어요. 조금 뒤에 다시 확인해 볼 수 있어요."
+                result = _build_deterministic_reply(str(result)) or result   # 2026-11-12: 원문(사용자: guest …) 대신 해요체
                 self.chat_history.append({'role': 'user', 'content': self.user_text})
                 self.chat_history.append({'role': 'assistant', 'content': result})
                 self.response_ready.emit(f"🤖 로컬 비서: {result}")
@@ -8934,6 +9304,8 @@ class AIWorker(QThread):
                             args['price'] = resolved_price
 
                     # ── 파일 검색: 조건은 LLM 대신 사용자 문장에서 결정론적으로 추출 ──
+                    if func_name in ('search_files', 'find_large_files'):
+                        args = _ground_file_search_args(args, self.user_text)   # 사용자가 말하지 않은 종류·키워드는 버린다
                     if func_name == 'search_files':
                         for _k in ('min_size_mb', 'max_size_mb', 'recent_days'):
                             args.pop(_k, None)  # 숫자 조건은 사용자 문장에서 뽑힌 값만 인정

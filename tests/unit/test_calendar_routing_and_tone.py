@@ -166,7 +166,7 @@ def test_google_briefing_with_tail_is_code_built():
            "✅ 내일 마감인 할 일 1개:\n  - 보고서\n\n☔ 내일 비 올 확률이 71%예요 — 우산을 챙기세요.\n\n"
            "📝 내일 '알바' 일정이 있어요 — 준비할 게 있으면 할 일로 추가해드릴까요?")
     reply = _build_local_daily_briefing_reply(raw)
-    assert reply.startswith("지금 04:30인데, 내일(2026-10-12) 일정이 1건 있어요.")
+    assert reply.startswith("지금은 오전 4시 30분이고, 내일(10월 12일 월요일) 일정이 1건 있어요.")
     assert "- 알바:" in reply and "우산을 챙기세요" in reply and "할 일로 추가해드릴까요?" in reply
 
 
