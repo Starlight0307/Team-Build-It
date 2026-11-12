@@ -29,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+from calendar import monthrange
 from collections import deque
 
 from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
@@ -350,15 +351,28 @@ class OptionalInstallWorker(QThread):
 # ─────────────────────────────────────────────
 _EMOJI = re.compile(
     "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U00002B00-\U00002BFF"
-    "\U0000FE00-\U0000FE0F\U0000200D\U000020E3]"
+    "\U0000FE00-\U0000FE0F\U0000200D\U000020E3\U00002139\U00002300-\U000023FF\U00002934\U00002935"
+    "\U000000A9\U000000AE\U00002122]"
 )
 _BOX = re.compile(r"[─━═│┃║╔╗╚╝╠╣╦╩╬┌┐└┘├┤┬┴┼■□▶▷►●○◆◇★☆•·※→←↑↓]")
+
+
+def _report_for_speech(t: str, max_chars: int):
+    """보고서(📋 머리줄 … 👉 맺음말)는 항목 줄을 화면에 맡기고 '머리줄 요약 + 👉 줄'만 읽는다(맺음말 질문이 잘리지 않게)."""
+    lines = [ln.strip() for ln in t.strip().splitlines() if ln.strip()]
+    mark = next((i for i, ln in enumerate(lines) if ln.startswith("📋")), None)
+    if mark is not None and len(lines) >= 2 and lines[-1].startswith("👉") and mark < len(lines) - 1:
+        pre = lines[:mark]      # 보고서 위의 결론 줄이 있으면 그것을, 없으면 머리줄 요약을 읽는다
+        head = " ".join(pre) if pre else lines[mark].lstrip("📋").strip().replace(" · ", ", ") + "."
+        return f"{head} {lines[-1]}", max(max_chars, 400)
+    return t, max_chars
 
 
 def to_speech_text(text: str, max_chars: int = 220) -> str:
     """채팅 답변을 소리 내어 읽기 좋게 정리. 긴 답변은 앞부분만 읽고
     나머지는 화면을 보라고 안내한다 (자비스처럼 짧게 말하는 게 자연스럽다)."""
     t = re.sub(r"^\s*🤖\s*로컬 비서\s*:\s*", "", text or "")
+    t, max_chars = _report_for_speech(t, max_chars)
     t = re.sub(r"https?://\S+", "", t)
     t = _EMOJI.sub("", t)
     t = _BOX.sub(" ", t)
@@ -1021,10 +1035,138 @@ _WORD_RE = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(map(re.escape, _TTS_WORDS)
 _UNIT_RE = re.compile(r"(?<=\d)\s*(" + "|".join(_TTS_UNITS) + r")(?![A-Za-z])")
 
 
-def normalize_for_tts(text: str) -> str:
-    """고품질 목소리로 읽기 전에 영문 약어/단위/단축키/퍼센트를 한글 발음으로 바꾼다."""
+# 날짜·시각 기호도 그대로 읽으면 깨진다 (왕복 확인, 2026-11-11: "오후 3:05" → "오후 3-5",
+# "15:30" → "15, 3시", "11/12(목)" → "CGT목"). 숫자는 그대로 두고 "시/분/월/일"만 붙여 풀어 쓴다.
+_TTS_WEEKDAYS = {"월": "월요일", "화": "화요일", "수": "수요일", "목": "목요일",
+                 "금": "금요일", "토": "토요일", "일": "일요일",
+                 "mon": "월요일", "tue": "화요일", "wed": "수요일", "thu": "목요일",
+                 "fri": "금요일", "sat": "토요일", "sun": "일요일"}
+_TIME_PREFIX = r"(?:오전|오후|밤|낮|새벽|아침|저녁)"
+_AM_PREFIXES = ("오전", "새벽", "아침")
+_EN_WEEKDAY = (r"mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?"
+               r"|fri(?:day)?|sat(?:urday)?|sun(?:day)?")
+
+
+def _time_pattern(n: str) -> str:
+    return (rf"(?:(?P<p{n}>{_TIME_PREFIX})\s*)?(?P<h{n}>\d{{1,2}}):(?P<m{n}>\d{{2}})"
+            rf"(?::(?P<s{n}>\d{{2}}))?"
+            rf"(?:\s*(?P<a{n}>[AaPp]\.[Mm]\.|[AaPp][Mm])(?![A-Za-z]))?"
+            rf"(?![\d:,])(?!\.\d)(?!\s*[A-Za-z])(?!\s*(?:{'|'.join(_TTS_UNITS.values())}))")
+
+
+_TIME_LEAD = r"(?<![\d:.,+A-Za-z])"
+_TIME_RE = re.compile(_TIME_LEAD + _time_pattern("1"))
+_TIME_RANGE_RE = re.compile(_TIME_LEAD + _time_pattern("1") + r"\s*[~\-–—]\s*" + _time_pattern("2")
+                            + r"(?P<end>까지)?")
+_DATE_BEFORE_RE = re.compile(r"(?:\d{1,2}일|요일) ?$")    # 날짜 바로 뒤의 H:MM:SS 는 길이가 아니라 시각
+_TIME_BEFORE_RE = re.compile(_TIME_PREFIX + r"\s*\d{1,2}시(?:\s*\d{1,2}분)?\s*$")
+_WEEKDAY_PAREN = r"(?:\s*\((?P<wd>[월화수목금토일]|(?i:" + _EN_WEEKDAY + r"))\))?"
+_DATE_FULL_RE = re.compile(r"(?<![0-9A-Za-z.\-/:])(?P<y>\d{4})(?P<sep>[-./])(?P<mo>\d{1,2})(?P=sep)(?P<d>\d{1,2})"
+                           r"(?![\d])(?![-./]\d)" + _WEEKDAY_PAREN + r"(?P<t>T(?=\d{1,2}:\d{2}))?")
+_DATE_SHORT_RE = re.compile(r"(?<![0-9A-Za-z.\-/:])(?P<mo>\d{1,2})(?P<sep>[/.])(?P<d>\d{1,2})"
+                            r"(?![\d])(?![-./:]\d)" + _WEEKDAY_PAREN)
+_TIME_AFTER_RE = re.compile(r"\s*(?:" + _TIME_PREFIX + r"\s*)?\d{1,2}:\d{2}")
+_SLASH_UNIT_AFTER = re.compile(r"\s*(?:점|%|퍼센트|원|번|건|위|승|패|골|표|분기|대|배|개|명|층|시간|인치|분의)")
+_SLASH_LABEL_BEFORE = re.compile(r"(?:점수|스코어|점|진행|진도|성적|득점|달성|완료|정답|출석|횟수|순위|전적|평점|별점|라운드|세트)\s*$")
+
+
+def _say_time(prefix, h: str, m: str, s, ap=None) -> str | None:
+    hh, mm, ss = int(h), int(m), int(s) if s else 0
+    if hh > 24 or mm > 59 or ss > 59 or (hh == 24 and (mm or ss)):
+        return None
+    if ap:
+        if not 1 <= hh <= 12:
+            return None
+        prefix = prefix or ("오전" if ap[0] in "Aa" else "오후")
+        if hh == 12 and not mm and not ss and prefix in ("오전", "오후"):
+            prefix = "밤" if prefix == "오전" else "낮"
+    if prefix in _AM_PREFIXES and hh > 12:
+        return None                             # "오전 13:00" 같은 모순은 건드리지 않는다
+    clock = f"{hh % 12 or 12}시"
+    if mm or ss:
+        clock += f" {mm}분"
+    if ss:
+        clock += f" {ss}초"
+    if prefix:
+        return f"{prefix} {clock}"
+    if hh in (0, 24) and not mm and not ss:
+        return f"밤 {clock}"
+    if hh == 12 and not mm and not ss:
+        return f"낮 {clock}"
+    return f"{'오전' if hh < 12 or hh == 24 else '오후'} {clock}"
+
+
+def _say_duration(h: str, m: str, s: str) -> str | None:
+    hh, mm, ss = int(h), int(m), int(s)
+    if mm > 59 or ss > 59:
+        return None
+    parts = [f"{v}{u}" for v, u in ((hh, "시간"), (mm, "분"), (ss, "초")) if v]
+    return " ".join(parts) or "0초"
+
+
+def _time_sub(m):
+    before = m.string[max(0, m.start() - 24):m.start()]       # 바로 앞 몇십 자만 본다 (긴 글에서 느려지지 않게)
+    if _TIME_BEFORE_RE.search(before):
+        return m.group(0)                       # "오후 3시 15:30" 처럼 앞에 이미 시각 접두어가 있다
+    if (m.group("s1") and not m.group("p1") and not m.group("a1")
+            and not _DATE_BEFORE_RE.search(before)):
+        return _say_duration(m.group("h1"), m.group("m1"), m.group("s1")) or m.group(0)   # H:MM:SS 는 길이
+    return _say_time(m.group("p1"), m.group("h1"), m.group("m1"), m.group("s1"), m.group("a1")) or m.group(0)
+
+
+def _time_range_sub(m):
+    if (m.group("s1") or m.group("s2")) and not (m.group("p1") or m.group("a1")):
+        return m.group(0)                       # 초가 있는 범위는 길이일 수 있어 각각 따로 읽는다
+    p1, p2 = m.group("p1"), m.group("p2")
+    if not p2 and not m.group("a2") and int(m.group("h2")) <= 12:
+        p2 = p1                                 # "오후 4:00~5:30" → 뒤도 오후
+    if not p1 and not m.group("a1") and (p2 or m.group("a2")) and int(m.group("h1")) <= min(12, int(m.group("h2"))):
+        p1 = p2 or ("오전" if m.group("a2")[0] in "Aa" else "오후")   # "3:00~5:00 PM" → 앞도 오후
+    a = _say_time(p1, m.group("h1"), m.group("m1"), m.group("s1"), m.group("a1"))
+    b = _say_time(p2, m.group("h2"), m.group("m2"), m.group("s2"), m.group("a2"))
+    if a is None or b is None:
+        return m.group(0)
+    return f"{a}부터 {b}까지"
+
+
+def _date_sub(m):
+    mo, d = int(m.group("mo")), int(m.group("d"))
+    y = int(m.group("y")) if "y" in m.groupdict() else None
+    wd = m.group("wd")
+    if not 1 <= mo <= 12 or not 1 <= d <= monthrange(y or 2024, mo)[1]:
+        return m.group(0)
+    if y is not None and not 1900 <= y <= 2199:
+        return m.group(0)
+    if y is None:
+        strong = wd is not None or (m.group("sep") == "/" and _TIME_AFTER_RE.match(m.string, m.end()))
+        if m.group("sep") != "/" and wd is None:
+            return m.group(0)                   # 3.5 같은 소수는 요일이 붙어야만 날짜로 본다
+        if not strong:
+            if len(m.group("mo")) < 2 and len(m.group("d")) < 2:
+                return m.group(0)               # 1/2, 3/4 같은 분수
+            if _SLASH_UNIT_AFTER.match(m.string, m.end()) or _SLASH_LABEL_BEFORE.search(m.string[max(0, m.start() - 20):m.start()]):
+                return m.group(0)               # "10/20 점수", "점수 3/10" 같은 수량
+    out = (f"{y}년 " if y else "") + f"{mo}월 {d}일"
+    if wd:
+        out += f" {_TTS_WEEKDAYS[wd.lower()[:3] if wd.isascii() else wd]}"
+    if y is not None and m.group("t"):
+        out += " "                              # ISO 형식 "…T10:00" 의 T
+    return out
+
+
+def normalize_datetime_for_tts(text: str) -> str:
+    """날짜(2026-11-11, 11/12(목))와 시각(15:30, 오후 3:05, 3:30 PM, 10:00~11:00), 길이(1:30:45)를 한글 읽기로 풀어 쓴다."""
     t = text or ""
-    t = re.sub(r"(\d(?:[\d,]*\.\d+|[\d,]*))\s*%", r"\1퍼센트", t)
+    t = _DATE_FULL_RE.sub(_date_sub, t)
+    t = _DATE_SHORT_RE.sub(_date_sub, t)
+    t = _TIME_RANGE_RE.sub(_time_range_sub, t)
+    return _TIME_RE.sub(_time_sub, t)
+
+
+def normalize_for_tts(text: str) -> str:
+    """고품질 목소리로 읽기 전에 영문 약어/단위/단축키/퍼센트/날짜·시각을 한글 발음으로 바꾼다."""
+    t = normalize_datetime_for_tts(text)
+    t = re.sub(r"(?<!\d)(?<!\d,)(\d[\d,]*(?:\.\d+)?)\s*%", r"\1퍼센트", t)
     t = _KEY_COMBO.sub(lambda m: " ".join(
         _TTS_KEYS.get(k.strip().lower(), k.strip()) for k in m.group(0).split("+")), t)
     t = _UNIT_RE.sub(lambda m: _TTS_UNITS[m.group(1)], t)
@@ -1363,6 +1505,10 @@ class Speaker(QObject):
         if self._neural_ready_now():
             self._start_job(text)
             return
+        try:
+            text = normalize_datetime_for_tts(text)      # OS 음성도 날짜·시각은 같은 한글 읽기로 (약어 치환은 하지 않는다)
+        except Exception:
+            pass                                         # 변환이 실패하면 원문 그대로 읽는다
         if self._command is None:       # 기본 음성도 없으면(한국어 음성 없음 등) 이 글은 건너뛴다
             self._next()
             return

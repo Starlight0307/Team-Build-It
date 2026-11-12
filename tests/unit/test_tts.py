@@ -43,6 +43,106 @@ def test_normalize_for_tts(text, expected):
     assert voice.normalize_for_tts(text) == expected
 
 
+@pytest.mark.parametrize("text, expected", [
+    ("지금 시각은 15:30이에요.", "지금 시각은 오후 3시 30분이에요."),
+    ("오후 3:05", "오후 3시 5분"),
+    ("오후 3:00", "오후 3시"),
+    ("오후 15:05", "오후 3시 5분"),                                   # 접두어 중복 방지
+    ("09:00", "오전 9시"),                                            # 정각은 분 생략
+    ("9:07", "오전 9시 7분"),
+    ("오전 10:00:05", "오전 10시 0분 5초"),
+    ("1:30:45 영상", "1시간 30분 45초 영상"),
+    ("0:05:30", "5분 30초"),
+    ("10:00:05", "10시간 5초"),                                      # 접두어·날짜 없는 3단 숫자는 모호하지만 길이로 읽기로 했다
+    ("2026-11-11 15:30:20", "2026년 11월 11일 오후 3시 30분 20초"),   # 날짜 바로 뒤면 시각
+    ("2026-11-11(수) 09:05:07", "2026년 11월 11일 수요일 오전 9시 5분 7초"),
+    ("11월 12일 15:30:20", "11월 12일 오후 3시 30분 20초"),
+    ("0:00:00", "0초"),
+    ("9:30am", "오전 9시 30분"),
+    ("3:30 PM에 만나요", "오후 3시 30분에 만나요"),
+    ("9:30 AM", "오전 9시 30분"),
+    ("3:30 p.m.", "오후 3시 30분"),
+    ("12:00 AM", "밤 12시"),
+    ("12:00 pm", "낮 12시"),
+    ("12:30 AM", "오전 12시 30분"),
+    ("3:00~5:00 PM", "오후 3시부터 오후 5시까지"),
+    ("11/12(Thu) 14:00", "11월 12일 목요일 오후 2시"),
+    ("11/12(thursday)", "11월 12일 목요일"),
+    ("2026-11-11T10:00", "2026년 11월 11일 오전 10시"),
+    ("5/20 14:00", "5월 20일 오후 2시"),
+    ("5/20 회의", "5월 20일 회의"),
+    ("10:00~11:00", "오전 10시부터 오전 11시까지"),
+    ("10:00-11:00까지", "오전 10시부터 오전 11시까지"),
+    ("오후 4:00~5:30", "오후 4시부터 오후 5시 30분까지"),
+    ("09:00부터 11:00까지", "오전 9시부터 오전 11시까지"),
+    ("2026-11-11", "2026년 11월 11일"),
+    ("2026.11.11.", "2026년 11월 11일."),
+    ("2026/11/11 (수)", "2026년 11월 11일 수요일"),
+    ("11/12(목)", "11월 12일 목요일"),
+    ("11.12(월)", "11월 12일 월요일"),
+    ("5/20", "5월 20일"),
+    ("2026-11-11 10:00부터 11:00까지", "2026년 11월 11일 오전 10시부터 오전 11시까지"),
+])
+def test_normalize_datetime(text, expected):
+    assert voice.normalize_for_tts(text) == expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("00:00", "밤 12시"), ("24:00", "밤 12시"), ("12:00", "낮 12시"),
+    ("00:30", "오전 12시 30분"), ("12:30", "오후 12시 30분"), ("23:59", "오후 11시 59분"),
+])
+def test_normalize_datetime_midnight_noon(text, expected):
+    assert voice.normalize_for_tts(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "버전 1.3.9", "3.5배", "192.168.0.1", "1:2", "3:1 승리", "1,234원", "13/45", "1/2컵", "3/4",
+    "12/24시간", "25:00", "10:75", "2026-13-45", "3.5", "010-1234-5678", "11월 12일 목요일",
+    "2026년 11월 11일 오전 9시 30분", "C:/2026-11-11",
+    "1,10:30", "(Thu)", "오전 13:00", "오후 3시 15:30", "13:00 PM",
+    "10/20 점수", "점수 10/20", "스코어 3/10", "진행 3/10", "7/20 승", "5/20개",
+])
+def test_normalize_datetime_leaves_non_dates_alone(text):
+    assert voice.normalize_for_tts(text) == text
+
+
+@pytest.mark.parametrize("text", ["15:30", "오후 3:05", "10:00~11:00", "2026-11-11 10:00", "11/12(목)", "00:00", "1:30:45", "3:30 PM", "11/12(Thu) 14:00", "2026-11-11T10:00"])
+def test_normalize_datetime_is_idempotent(text):
+    once = voice.normalize_for_tts(text)
+    assert voice.normalize_for_tts(once) == once
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("3:30 GB", "3:30기가바이트"), ("Ctrl+3:30", "컨트롤 3:30"), ("10/20%", "10/20퍼센트"),
+])
+def test_normalize_keeps_time_like_numbers_next_to_units(text, expected):
+    assert voice.normalize_for_tts(text) == expected            # 단위·단축키 옆 숫자는 시각/날짜로 읽지 않는다
+
+
+def test_percent_regex_is_linear_time():
+    for text in ("12345" * 20000, "1," * 50000, "9" * 100000 + "%", "3:30 " * 20000, "1:30 PM " * 12000,
+                 "10/20 " * 16000, "2026-11-11 15:30:20 " * 5000, "오후 3시 " * 20000):
+        t = time.monotonic()
+        voice.normalize_for_tts(text)
+        assert time.monotonic() - t < 2.0
+    assert voice.normalize_for_tts("1,234.5% a,5% 3.5.5%") == "1,234.5퍼센트 a,5퍼센트 3.5.5퍼센트"
+
+
+def test_speaker_survives_datetime_normalize_failure(monkeypatch):
+    from PyQt6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(voice, "neural_tts_enabled", lambda: False)
+    monkeypatch.setattr(voice, "normalize_datetime_for_tts", lambda t: 1 / 0)
+    spoken = []
+    monkeypatch.setattr(voice.subprocess, "Popen", lambda cmd, **kw: spoken.append((cmd, kw)) or types.SimpleNamespace(
+        stdin=types.SimpleNamespace(write=lambda b: spoken.append(b), close=lambda: None), poll=lambda: 0))
+    speaker = voice.Speaker()
+    speaker._command = ["fake"]
+    speaker._queue = ["15:30 회의"]
+    speaker._next()
+    assert spoken                                               # 변환이 터져도 원문 그대로 읽기를 시작한다
+
+
 def test_neural_threads_is_bounded(monkeypatch):
     monkeypatch.setattr(voice.os, "cpu_count", lambda: 18)
     assert voice.tts_threads() == 4
