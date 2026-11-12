@@ -16,6 +16,7 @@
 """
 
 import os
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -187,6 +188,10 @@ def _walk_files(roots: list, deadline: float, skipped_dirs: list = None):
     yield "DONE", None, scanned
 
 
+# 검색한 스레드마다 따로 가진 마지막 결과: .cond(조건 글), .matches([(시각, 크기, 경로)…]) — 다른 스레드에서는 속성이 없다
+_last_search = threading.local()
+
+
 def search_files(keyword: str = "", file_type: str = "", period: str = "",
                  time_basis: str = "modified", folder: str = "",
                  min_size_mb: float = 0, max_size_mb: float = 0, recent_days: int = 0) -> str:
@@ -276,6 +281,8 @@ def search_files(keyword: str = "", file_type: str = "", period: str = "",
                     f"조건에 맞는 파일을 찾지 못했어요. (파일 {scanned}개 확인){note}{skip_note}")
 
         matches.sort(key=lambda m: m[0], reverse=True)
+        # 요약 보고서(core/reply_files.py)가 화면에 보이는 20개 말고 전체로 분류할 수 있게, 이 스레드의 마지막 결과를 남긴다
+        _last_search.cond, _last_search.matches = cond_text, matches
         shown = matches[:_MAX_RESULTS_SHOWN]
         lines = [f"[🔎 파일 검색 결과] (조건: {cond_text}, 일치 {len(matches)}개, 표시 {len(shown)}개, 파일 {scanned}개 확인)"]
         for ts, size, path in shown:
@@ -288,3 +295,6 @@ def search_files(keyword: str = "", file_type: str = "", period: str = "",
     except Exception as e:
         print(f"[파일 검색] 오류: {e}")
         return "❌ 파일을 검색하지 못했습니다. 잠시 후 다시 시도해주세요."
+
+
+search_files.last = _last_search

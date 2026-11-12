@@ -141,3 +141,42 @@ def test_unrecognized_raw_format_is_dropped_not_shown_raw():
 
     assert report == ""
     assert "internal debug" not in report
+
+
+# ── 이모지 과다 방지 (2026-11-12): 큰 주제(머리줄·구간 제목·맺음말)에만 쓰고 항목 줄에는 쓰지 않는다 ──
+import re as _re
+
+_EMOJI = _re.compile("[\u2600-\u27BF\U0001F300-\U0001FAFF]")
+
+
+def _full_report():
+    func_map = {
+        "get_system_info": lambda: _SYSTEM_INFO,
+        "get_system_security_report": lambda: _SECURITY_REPORT,
+        "get_malware_report": lambda: _MALWARE_REPORT,
+        "get_network_security_report": lambda: _NETWORK_REPORT,
+    }
+    return _build_pc_health_check(func_map)
+
+
+def test_emoji_total_is_capped_by_section_count():
+    report = _full_report()
+    sections = 4
+    # 머리줄 1 + 구간 제목 4 + 맺음말 1 이하
+    assert len(_EMOJI.findall(report)) <= sections + 2
+
+
+def test_item_lines_have_no_emoji_but_facts_remain():
+    report = _full_report()
+    for ln in report.split("\n"):
+        if " — " in ln and not ln.startswith(("📋", "👉")):
+            assert not _EMOJI.search(ln), ln
+    assert "CPU — 18.0%" in report and "메모리 — 17.3GB 사용 / 총 31.1GB" in report
+    assert "의심 프로세스" in report and "바로 확인 필요" in report      # 위험 항목은 말로 남는다
+    assert "🚨 종합 상태" in report
+
+
+def test_only_one_closing_question_and_blank_line_between_sections():
+    report = _full_report()
+    assert report.count("👉") <= 1
+    assert report.count("📋") >= 1 and "\n\n📋 시스템 상태" in report

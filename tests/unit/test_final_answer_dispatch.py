@@ -93,9 +93,9 @@ def test_system_trend_week_result_never_calls_llm_and_preserves_direction(monkey
     assert calls == []
     # 방향이 원본 그대로 보존되는지(반전 방지) — CPU는 증가, 디스크는 감소.
     assert "60.0%→60.0%" not in result  # 우연한 안전핀(값 뒤섞임 대조)
-    assert "30.0%→60.0%(증가)" in result
-    assert "40.0%(변화 없음)" in result
-    assert "70.0%→60.0%(감소, 여유 있는 방향)" in result
+    assert "⚠️ CPU — 30.0% → 60.0% (많이 늘었어요)" in result
+    assert "• 메모리 — 40.0% (변화 없어요)" in result
+    assert "⚠️ 디스크 여유 — 70.0% → 60.0%" in result and "여유가 많이 줄었어요" in result
 
 
 def test_system_trend_today_result_includes_low_sample_caveat_and_skips_llm(monkeypatch):
@@ -110,11 +110,11 @@ def test_system_trend_today_result_includes_low_sample_caveat_and_skips_llm(monk
     )
     result = ai_worker._summarize_tool_results([], raw)
     assert calls == []
-    assert "20.0%→60.0%(증가)" in result
+    assert "⚠️ CPU — 20.0% → 60.0% (많이 늘었어요)" in result
     assert "참고" in result  # today 캐비엇이 최종 문장에도 반영돼야 함
 
 
-def test_system_trend_no_data_message_still_uses_single_verdict_builder(monkeypatch):
+def test_system_trend_no_data_message_uses_trend_report_builder(monkeypatch):
     """헤더+본문 한 줄뿐인 "비교할 기록이 없어요" 메시지는 새 전용 빌더가
     아니라 기존 _build_single_verdict_reply가 처리해야 한다(줄 수가 안 맞으면
     새 빌더는 None을 반환해 정상적으로 넘겨줘야 함)."""
@@ -122,7 +122,7 @@ def test_system_trend_no_data_message_still_uses_single_verdict_builder(monkeypa
     raw = "[📊 PC 상태 추이] (최근 7일 vs 그 이전)\n비교할 기록이 없어요. 안내 문구."
     result = ai_worker._summarize_tool_results([], raw)
     assert calls == []
-    assert "비교할 기록이 없어요" in result
+    assert "기록이 아직 부족해요" in result
 
 
 # ── list_todos 결과(2026-09-29 "할 일 목록") — 다른 목록형 함수와 같은

@@ -178,6 +178,8 @@ def test_device_control_needs_an_on_off_word():
 
 
 def test_tool_not_offered_this_turn_never_runs_even_if_called(qapp, monkeypatch):
+    from settings.config import TOOL_SCHEMAS
+    monkeypatch.delitem(TOOL_SCHEMAS, "delete_room", raising=False)   # 다른 테스트(플러그인 로드)가 남긴 전역 스키마와 격리
     ran = []
 
     def delete_room(room_name=""):

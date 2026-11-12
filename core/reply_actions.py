@@ -34,6 +34,9 @@ READ_ONLY_CHECKS = frozenset({
     "check_ransomware_readiness", "scan_browser_extensions", "check_dns_settings", "check_web_redirection",
     "check_wifi_security", "find_recent_downloads", "get_top_cpu_processes",
 })
+# 보안 점검이 아닌 읽기 전용 정보 도구(날씨·오늘 일정 브리핑) — 인사 뒤 "날씨나 일정 알려 드릴까요?"의 "응"을 받는다.
+# 인자 없이(기본값) 부르는 것만 해당하고, 점검 결과 접기·재사용 같은 보안 전용 처리는 거치지 않는다.
+READ_ONLY_INFO = frozenset({"get_current_weather", "local_get_daily_briefing", "get_daily_briefing"})
 _MAX_EXECUTE_ALL = 3
 
 DECLINE_REPLY = "알겠어요, 그대로 둘게요."
@@ -47,6 +50,8 @@ class Offer:
     args: dict = field(default_factory=dict)     # 도구 인자
     aliases: tuple = ()                          # 열린 질문 모드에서 사용자가 부를 수 있는 이름들(예: "10th.zip", "10th")
     which: str = ""                              # 열린 질문 모드: "응"만 왔을 때 되묻는 한 문장(첫 Offer 것을 쓴다)
+    batch: bool = False                          # 실패한 읽기 도구 재확인 묶음 — 제안이 여러 개여도 "응" 한마디로 모두(최대 3) 다시 실행한다
+    by_name: bool = False                        # 열린 질문 모드: 이름으로만 고른다("3번" 같은 번호 선택은 받지 않고 되묻는다)
 
 
 @dataclass
@@ -213,6 +218,9 @@ def _consume_open(text, cur):
         return Result(kind="ask_which", prompt=offers[0].which)
     if len(norm) <= _MAX_NAME_INPUT:
         m = _PICK_LOOSE.search(norm) if not _NO.match(norm) else None
+        if m and len(norm) <= 12 and offers[0].by_name:       # 보이지 않는 순서라 번호는 받지 않고 이름을 되묻는다
+            cur.ts = _now()
+            return Result(kind="ask_which", prompt=offers[0].which)
         if m and len(norm) <= 12:
             n = (int(m.group("d")) if m.group("d") else _CIRCLED.index(m.group("c")) + 1 if m.group("c")
                  else _ORDINALS[m.group("o") or m.group("o2")])
@@ -265,7 +273,7 @@ def consume(text, *, sid, user):
         if kind == "yes" and len(offers) == 1:
             LAST_OFFER = None
             return Result(kind="execute", offer=offers[0])
-        if kind == "yes" and len(offers) > 1 and all(o.func in READ_ONLY_CHECKS and not o.args for o in offers):
+        if kind == "yes" and len(offers) > 1 and all(o.batch or ((o.func in READ_ONLY_CHECKS or o.func in READ_ONLY_INFO) and not o.args) for o in offers):
             LAST_OFFER = None
             return Result(kind="execute_all", offers=list(offers[:_MAX_EXECUTE_ALL]))
         # 선택지가 여럿인데 번호 없이 "응"만 왔거나, 없는 번호 — 되묻고 등록은 유지

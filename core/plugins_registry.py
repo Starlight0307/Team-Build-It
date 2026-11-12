@@ -332,7 +332,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["search_files"],
         "module_name": "file_search",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/file_search.py",
-        "sha256": "305dbabfd91ab24d7a81d7fffc41a87ea45a52b5e11425ce18b657ede5802df7",
+        "sha256": "2518b7d72ca608741e3cefdb90218c0187428d870fb657ed44d5958006be4e57",
         "dependencies": []
     },
     {

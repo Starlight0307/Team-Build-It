@@ -84,6 +84,14 @@ _TABLE = [
 ]
 _WEEKDAYS = "월화수목금토일"
 _ASKS_DATE = re.compile(r"(?:오늘\s*(?:은|이)?\s*)?(?:며칠|몇\s*월\s*며칠|몇\s*일|날짜가?\s*뭐|무슨\s*요일)(?:이야|이에요|이지|이니|예요)?")
+# "지금 몇 시야", "지금 시간 알려줘" — 모델은 시각을 모른다고 답하므로 코드가 시계를 읽어 답한다. 전체가 시각 질문일 때만(fullmatch).
+_TIME_ASK = r"(?:알려\s*(?:줘|주세요|줄래|줄래요|주라|주십시오)|뭐(?:야|예요|에요|지|죠)?|몇\s*시(?:야|예요|에요|지|죠)?|어떻게\s*(?:돼|되|됐|돼요|되나요))"
+_ASKS_TIME = re.compile(
+    r"(?:(?:지금|현재)\s*)?(?:"
+    r"몇\s*시\s*(?:쯤\s*)?(?:야|예요|에요|이야|이에요|이지|지|죠|니|냐고?|인가요|입니까|됐어요?|됐니|됐지)"
+    r"|몇\s*시인지\s*알려\s*(?:줘|주세요|줄래요?|주라)"
+    r"|(?:시간|시각)(?:이|은|는)?\s*(?:좀\s*)?" + _TIME_ASK +
+    r")|(?:지금|현재)\s*(?:시간|시각)(?:은|는)?")
 # 모델이 명절 날짜를 자주 틀린다("추석은 9월 9일", "설날은 1월 1일"). 음력 명절은 양력 날짜를 직접 적어 둔다.
 # shortcut: 음력 명절은 2028년까지만, 그 뒤 해가 오면 표에 더한다(없으면 모델 답으로 넘어간다)
 _HOLIDAYS = {"신정": "01-01", "삼일절": "03-01", "어린이날": "05-05", "현충일": "06-06", "광복절": "08-15",
@@ -237,12 +245,36 @@ def statement_reply(text: str, casual: bool, ask, recent=()):
     return random.choice(fresh)
 
 
+def _time_reply(now, casual: bool) -> str:
+    """"지금은 오후 3시 30분이에요." 0시는 오전 12시, 12시는 오후 12시, 정각은 "3시 정각"."""
+    hour = now.hour % 12 or 12
+    clock = f"{'오전' if now.hour < 12 else '오후'} {hour}시" + (f" {now.minute}분" if now.minute else " 정각")
+    return f"지금은 {clock}이야." if casual else f"지금은 {clock}이에요."
+
+
+_REPORT_LINE_MARKS = ("📋", "⚠️", "🚨", "ℹ️", "❔", "✅", "•", "💾", "🆕", "🧩")
+
+
+def _is_report_fact_line(line: str) -> bool:
+    """보고서의 사실 줄 — 항목 줄("라벨 — 값", • 글머리)과 📋 머리줄("제목 · 건수")만. 이모지로 시작해도 문장 줄은 아니다."""
+    if line.startswith("•") or " — " in line:
+        return True
+    return line.startswith(("📋", "🛡️")) and " · " in line
+
+
 def to_casual(text: str) -> str:
     """코드가 만든 해요체 답(도구 결과 등)을 문장 끝만 반말로 바꾼다. "버튼을 누르세요" 같은 명령형은 어색해지니 두고,
-    shortcut: 흔한 끝맺음만 바꾼다, 사용자가 불편해하면 도구 문구를 말투별로 나눈다."""
-    for pattern, repl in _CASUAL_ENDINGS:
-        text = re.sub(pattern + r"(?=[.!?,…\s)]|$)", repl, text)
-    return text
+    shortcut: 흔한 끝맺음만 바꾼다, 사용자가 불편해하면 도구 문구를 말투별로 나눈다.
+    보고서의 항목 줄(이모지/글머리로 시작하고 " — "가 있는 줄, 📋 제목 줄)은 사실 표기라 그대로 두고, 맺음말(👉)과 일반 문장만 바꾼다."""
+    out = []
+    for line in text.split("\n"):
+        if not line.startswith("👉") and _is_report_fact_line(line):
+            out.append(line)
+            continue
+        for pattern, repl in _CASUAL_ENDINGS:
+            line = re.sub(pattern + r"(?=[.!?,…\s)]|$)", repl, line)
+        out.append(line)
+    return "\n".join(out)
 
 
 def strip_name(text: str) -> str:
@@ -272,7 +304,69 @@ def reply(text: str, casual: bool = False):
         now = datetime.now()
         day = f"{now.month}월 {now.day}일 {_WEEKDAYS[now.weekday()]}요일"
         return f"오늘은 {day}이야." if casual else f"오늘은 {day}이에요."
+    if _ASKS_TIME.fullmatch(body):   # 모델은 "시간을 알 수 없다"고 답한다
+        return _time_reply(datetime.now(), casual)
     for pattern, polite, banmal in _COMPILED:
         if pattern.fullmatch(body):
             return random.choice(banmal if casual else polite)
     return None
+
+
+# ── 인사 뒤 이어가는 말 (2026-11-12) ──
+# 표의 "안녕" 답이 한 줄로 끊겨 대화가 이어지지 않았다. 시간대·요일에 맞춘 한마디 + 질문 하나로 잇는다.
+# reply()는 순수 함수라 그대로 두고, 이어가는 말과 Offer 등록은 AIWorker가 is_greeting()으로 가려서 한다.
+_GREETING = re.compile(r"안녕(?:하세요)?|하이|헬로|ㅎㅇ|반가워요?|반갑습니다")
+GREETING_MORNING = (5, 11)      # 5시 이상 11시 미만 아침
+GREETING_EVENING = (18, 22)     # 18시 이상 22시 미만 저녁, 그 밖(22~5시)은 밤
+_DAY_TAG = {0: ("한 주의 시작이네요.", "한 주의 시작이야."), 4: ("벌써 금요일이에요.", "벌써 금요일이야."),
+            5: ("편안한 주말이에요.", "편안한 주말이야."), 6: ("편안한 주말이에요.", "편안한 주말이야.")}
+# 슬롯: (존댓말들, 반말들) — 문장 끝에 질문이 붙는다
+_GREETING_OPENERS = {
+    "morning": (("좋은 아침이에요!", "좋은 아침이에요! 반가워요."), ("좋은 아침!", "좋은 아침! 반가워.")),
+    "day": (("안녕하세요! 반가워요.", "안녕하세요! 오늘도 반가워요."), ("안녕! 반가워.", "안녕! 오늘도 반가워.")),
+    "evening": (("안녕하세요! 오늘 하루 고생 많으셨어요.", "안녕하세요! 오늘 하루도 수고 많으셨어요."),
+                ("안녕! 오늘 하루 고생 많았어.", "안녕! 오늘 하루도 수고 많았어.")),
+    "night": (("안녕하세요! 늦은 시간이네요.", "안녕하세요! 아직 안 주무셨네요."), ("안녕! 늦은 시간이네.", "안녕! 아직 안 잤구나.")),
+}
+_last_greeting = None
+
+
+def is_greeting(text: str) -> bool:
+    """reply()가 인사 줄로 답할 말인지(이름을 부르거나 문장부호가 붙어도 같다)."""
+    body = _TRAIL.sub("", _NAME.sub("", _TRAIL.sub("", (text or "").strip()))).strip()
+    return bool(_GREETING.fullmatch(body))
+
+
+def greeting_slot(now) -> str:
+    h = now.hour
+    if GREETING_MORNING[0] <= h < GREETING_MORNING[1]:
+        return "morning"
+    if GREETING_MORNING[1] <= h < GREETING_EVENING[0]:
+        return "day"
+    if GREETING_EVENING[0] <= h < GREETING_EVENING[1]:
+        return "evening"
+    return "night"
+
+
+def greeting_reply(casual: bool = False, *, weather: bool = True, events: bool = True, now=None) -> str:
+    """시간대·요일에 맞춘 인사 + 할 수 있는 일을 가볍게 곁들인 질문 하나. weather/events는 지금 제안할 수 있는 읽기 기능.
+    같은 문장이 연달아 나오지 않게 직전 인사는 피한다."""
+    global _last_greeting
+    now = now or datetime.now()
+    polite, banmal = _GREETING_OPENERS[greeting_slot(now)]
+    options = list(banmal if casual else polite)
+    tag = _DAY_TAG.get(now.weekday())
+    if tag and greeting_slot(now) in ("morning", "day"):
+        options.append(f"{options[0]} {tag[1] if casual else tag[0]}")
+    if weather and events:
+        ask = "오늘 날씨나 일정 알려 줄까?" if casual else "오늘 날씨나 일정을 알려 드릴까요?"
+    elif weather:
+        ask = "오늘 날씨 알려 줄까?" if casual else "오늘 날씨를 알려 드릴까요?"
+    elif events:
+        ask = "오늘 일정 알려 줄까?" if casual else "오늘 일정을 알려 드릴까요?"
+    else:
+        ask = "오늘은 어떤 걸 도와줄까?" if casual else "오늘은 어떤 걸 도와드릴까요?"
+    fresh = [o for o in options if f"{o} {ask}" != _last_greeting] or options
+    text = f"{random.choice(fresh)} {ask}"
+    _last_greeting = text
+    return text

@@ -84,6 +84,14 @@ _SLOW_TRIAGE_HINT = "이 목록은 CPU 사용량만 본 것이고, 메모리·�
 
 from core import small_talk, user_memory
 from core import reply_actions as _reply_actions
+from core import reply_appusage as _reply_appusage
+from core import reply_fallback as _reply_fallback
+from core import reply_files as _reply_files
+from core import reply_quiet as _reply_quiet
+from core import reply_programs as _reply_programs
+from core import reply_status as _reply_status
+from core import reply_trend as _reply_trend
+from core import reply_weather as _reply_weather
 from core import security_session as _security_session
 
 # 실제 호출하는 Ollama 모델 — 이 파일 안에 7곳 넘게 문자열로 직접 박혀
@@ -128,24 +136,19 @@ def _diagnose_error(e: Exception) -> str:
     _log_error_trace(e)
     if isinstance(e, ConnectionError):
         return (
-            "⚠️ AI 모델(Ollama)에 연결하지 못했습니다.\n\n"
-            "컴퓨터에서 'Ollama' 프로그램이 켜져 있는지 확인해주세요. "
-            "꺼져 있다면 Ollama 앱을 실행한 뒤 다시 시도해주세요."
+            "AI 모델에 연결하지 못했어요. Ollama가 켜져 있는지 확인해 주시겠어요?"
         )
     if isinstance(e, httpx.TimeoutException):
         return (
-            "⚠️ AI 응답을 기다리는 시간이 너무 길어져 중단했습니다.\n\n"
-            "컴퓨터 성능이나 요청 내용에 따라 시간이 걸릴 수 있어요. 잠시 후 다시 시도해주세요."
+            "AI 답변이 너무 오래 걸려서 멈췄어요. 컴퓨터가 바쁠 수 있으니 잠시 뒤에 다시 물어봐 주시겠어요?"
         )
     if isinstance(e, ollama.ResponseError):
         text = (getattr(e, 'error', '') or str(e)).lower()
         if 'model' in text and ('not found' in text or 'pull' in text):
-            return (
-                f"⚠️ AI 모델({OLLAMA_MODEL})이 설치되어 있지 않습니다.\n\n"
-                f"터미널에서 'ollama pull {OLLAMA_MODEL}' 명령을 실행해 모델을 내려받은 뒤 다시 시도해주세요."
-            )
-        return "⚠️ AI 모델 서버에서 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
-    return "⚠️ 요청을 처리하는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요."
+            print(f"[AI 모델 없음] 모델 '{OLLAMA_MODEL}'을 내려받아야 해요: ollama pull {OLLAMA_MODEL}")   # 상세는 콘솔에만
+            return "AI 모델이 아직 준비되지 않았어요. 설정에서 모델 상태를 확인해 주시겠어요?"
+        return "AI 모델 쪽에 문제가 생겼어요. 잠시 뒤에 다시 물어봐 주시겠어요?"
+    return "요청을 처리하는 중에 문제가 생겼어요. 한 번만 더 말씀해 주시겠어요?"
 
 
 _PRICE_SEARCH_TTL_DAYS = 90   # 이보다 오래된 검색 이력은 "재검색"으로 치지 않음
@@ -1129,6 +1132,9 @@ _CONDITION_SETTERS = frozenset(("set_usage_condition", "set_spending_condition",
 # 묵음 시간대 — 나중에 추가되면서 아래 묶음 어디에도 안 들어가 타이머·매일 알림 요청에도 늘 섞여 나갔다(2026-10-19)
 _QUIET_FUNCS = frozenset(("set_quiet_hours", "cancel_quiet_hours", "get_quiet_hours_status"))
 _REMINDER_FUNCS = _TIMER_FUNCS | _DAILY_FUNCS | _CONDITION_COMMON_FUNCS | _CONDITION_SETTERS | _QUIET_FUNCS
+
+# 날짜(date_str)가 꼭 필요한 일정 조회 — 비어 있으면 실행 전에 사용자 문장에서 채운다
+_DATE_REQUIRED_FUNCS = frozenset(("get_events_by_date", "local_get_events_by_date"))
 
 # 하루가 아니라 기간을 묻는 표현 — "오늘부터 3일", "금요일까지", "일주일 동안" (날짜 하나로 바꾸면 안 됨)
 _DATE_RANGE_WORDS = re.compile(r"부터|까지|동안|앞으로|일간|며칠|\d+\s*일\s*치|이번\s*주|다음\s*주\s*(일정|약속|스케줄)|주간")
@@ -4432,6 +4438,41 @@ _FILE_SEARCH_ITEM = re.compile(
 _FILE_SEARCH_NOTE = re.compile(r"^※ (?P<note>.+)$")
 
 
+# 파일 검색 결과가 6개 이상이면 20줄 목록 대신 요약 보고서(core/reply_files.py). 전체 일치 목록은 search_files가 같은 스레드에 남겨 둔다.
+# 5개 이하·개수/정렬을 지정한 요청·전체 목록을 못 얻은 경우는 None -> 아래 기존 _build_file_search_reply가 이어서 본다.
+def _build_file_search_summary(raw_results: str):
+    try:
+        fn = (getattr(_QUESTION_LOCAL, "tools", None) or {}).get("search_files")
+        last = getattr(fn, "last", None)
+        m = _reply_files._HEADER.match(str(raw_results).strip())
+        if m is None or last is None or getattr(last, "cond", None) != m.group("cond"):
+            return None
+        built = _reply_files.build(raw_results, getattr(last, "matches", None),
+                                   getattr(_QUESTION_LOCAL, "text", "") or "")
+        if built is None:
+            return None
+        text, offers = built
+        _add_reply_offers(offers)
+        return text
+    except Exception as e:
+        print(f"[파일 검색 요약 오류] {type(e).__name__}: {e}")
+        return None
+
+
+# 방해금지(묵음) 시간대 상태 — 플러그인 문구("…라고 말씀해주시면 설정해드려요")를 두 용어를 함께 쓴 해요체로 바꾸고 제안(Offer)으로 잇는다(core/reply_quiet.py).
+def _build_quiet_hours_reply(raw_results: str):
+    try:
+        built = _reply_quiet.build(raw_results)
+        if built is None:
+            return None
+        text, offers = built
+        _add_reply_offers(offers)
+        return text
+    except Exception as e:
+        print(f"[방해금지 답변 오류] {type(e).__name__}: {e}")
+        return None
+
+
 def _build_file_search_reply(raw_results: str):
     """search_files() 결과("일치 N개, 표시 M개" + 파일 목록)를 LLM에게 맡기면 경로를 손상시키거나
     파일을 누락/지어낼 위험이 있다 — 선언된 표시 개수와 실제 파싱된 항목 수가 일치할 때만 문장을
@@ -4606,6 +4647,80 @@ def _build_current_weather_reply(raw_results: str):
             f"(체감 {m.group('feels')}°C). 습도는 {m.group('hum')}%, 바람은 {m.group('wind')}m/s로 불고 있어요.")
 
 
+# 날씨 예보 — 도구 원문 "- 2026-11-13: ☁️ 흐림, 7~17°C, 강수확률 5%" 한 줄만 나오던 것을 대화체(1~2일)/보고서(3일 이상)로
+# 바꾼다(2026-11-12). 비 질문인지는 이번 턴 사용자 말(_QUESTION_LOCAL, AIWorker.run이 둔다)로 가른다. 로직은 core/reply_weather.py.
+_QUESTION_LOCAL = threading.local()
+
+
+def _build_weather_forecast_reply(raw_results: str):
+    return _reply_weather.build(raw_results, getattr(_QUESTION_LOCAL, "text", "") or "")
+
+
+# PC 상태 추이 — 글머리 보고서(core/reply_trend.py). 기록 부족은 짧은 대화체. 형식이 다르면 None -> 기존 _build_system_trend_reply가 본다.
+def _build_system_trend_report(raw_results: str):
+    try:
+        built = _reply_trend.build(raw_results)
+        if built is None:
+            return None
+        text, offers = built
+        _add_reply_offers(offers)
+        return text
+    except Exception as e:
+        print(f"[추이 보고서 오류] {type(e).__name__}: {e}")
+        return None
+
+
+# 앱 사용 시간 — 3개 이상이면 보고서, 기록 없음은 정직한 대화체(+기록 시작 제안). 1~2개·특정 앱은 None -> 기존 _build_app_usage_reply.
+def _build_app_usage_report(raw_results: str):
+    try:
+        built = _reply_appusage.build(raw_results)
+        if built is None:
+            return None
+        text, offers = built
+        _add_reply_offers(offers)
+        return text
+    except Exception as e:
+        print(f"[앱 사용 보고서 오류] {type(e).__name__}: {e}")
+        return None
+
+
+# 설치된 프로그램 — 이름순 30줄 대신 요약 보고서(core/reply_programs.py). 일부만 돌려받았으면 같은 읽기 전용 도구로 전체를 다시 읽는다.
+# 5개 이하·형식 불명·실패면 None -> 아래 기존 _build_installed_programs_reply가 이어서 본다.
+def _build_installed_programs_summary(raw_results: str):
+    try:
+        funcs = getattr(_QUESTION_LOCAL, "tools", None) or {}
+        fetch = None
+        if funcs.get("list_installed_programs"):
+            fetch = lambda n: funcs["list_installed_programs"](sort_by="name", top_n=n)
+        built = _reply_programs.build(raw_results, fetch)
+        if built is None:
+            return None
+        text, offers = built
+        _add_reply_offers(offers)
+        return text
+    except Exception as e:
+        print(f"[설치 프로그램 요약 오류] {type(e).__name__}: {e}")
+        return None
+
+
+# 컴퓨터 상태 직접 질문 — 보고서 형식(core/reply_status.py). 종합 점검/PC 정리는 위의 대화체 _build_system_info_reply를 그대로 쓴다.
+def _build_system_status_report(raw_results: str):
+    """직접 질문용: 좁은 질문이면 그 항목만 한 줄 대화체, 아니면 보고서. 실패하면 기존 대화체 빌더로 되돌아간다."""
+    try:
+        narrow = _reply_status.build_narrow(raw_results, getattr(_QUESTION_LOCAL, "text", "") or "")
+        if narrow is not None:
+            return narrow
+        built = _reply_status.build(raw_results)
+        if built is None:
+            return None
+        text, offers = built
+        _add_reply_offers(offers)
+        return text
+    except Exception as e:
+        print(f"[컴퓨터 상태 보고서 오류] {type(e).__name__}: {e}")
+        return _build_system_info_reply(raw_results)
+
+
 # 캘린더 연결이 필요/만료 — 2026-10-13 실제 앱 점검: "내일 일정 있어?"에 LLM이 이 안내를
 # "👋 사용자의 요청을 확인했어요. … 애플 연 동하기 …"처럼 이상하게 고쳐 썼다. 정해진 안내라 그대로 보여준다.
 _CONNECTION_NEEDED = re.compile(r"연결이 필요해요|연결 시간\(1시간\)이 지났어요")
@@ -4623,6 +4738,7 @@ def _build_connection_needed_reply(raw_results: str):
 _DETERMINISTIC_REPLY_BUILDERS = (
     _build_connection_needed_reply,
     _build_current_weather_reply,
+    _build_weather_forecast_reply,
     _build_score_report_reply,
     _build_realtime_status_reply,
     _build_realtime_stop_reply,
@@ -4641,6 +4757,7 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_duplicate_files_reply,
     _build_large_files_reply,
     _build_startup_impact_reply,
+    _build_installed_programs_summary,
     _build_installed_programs_reply,
     _build_timer_list_reply,
     _build_daily_reminder_list_reply,
@@ -4648,8 +4765,11 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_purchase_list_reply,
     _build_spending_summary_reply,
     _build_budget_status_reply,
+    _build_app_usage_report,
     _build_app_usage_reply,
     _build_goal_status_reply,
+    _build_file_search_summary,
+    _build_quiet_hours_reply,
     _build_file_search_reply,
     _build_todo_list_reply,
     _build_note_list_reply,
@@ -4674,6 +4794,7 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_mac_check_reply,
     _build_firewall_tool_reply,
     _build_system_info_reply,
+    _build_system_trend_report,
     _build_system_trend_reply,
     _build_price_search_reply,
     # _build_single_verdict_reply는 맨 마지막에 둔다 — "헤더 한 줄 + 본문 한 줄"이면
@@ -5116,6 +5237,65 @@ def _single_security_check_request(text_lower: str):
     return None
 
 
+# 종합 점검은 구간이 여러 개라 줄마다 이모지를 붙이면 정신없다(2026-11-12 사용자 지적).
+# 이모지는 큰 주제 — 머리줄(종합 상태 1개), 구간 제목(📋), 맺음말(👉)에만 쓰고 항목 줄에서는 뗀다.
+# 뗀 상태 표시는 말로 옮긴다("확인 필요, …"). 구간별로 따로 달린 안내 주석·맺음말은 하나로 합친다(질문은 하나만).
+_HEALTH_ITEM_LINE = re.compile(r"^(?P<mark>🚨|⚠️|ℹ️|❔|✅) (?P<rest>\S.* — \S.*)$")
+_HEALTH_ITEM_TAG = {"🚨": "바로 확인 필요, ", "⚠️": "확인 필요, ", "ℹ️": "", "❔": "", "✅": ""}
+
+
+def _health_system_section(raw: str):
+    """시스템 정보 원문을 항목 줄 구간으로 — 숫자가 많아 대화체 문단 대신 `라벨 — 값` 줄로 보인다. 형식이 다르면 None."""
+    m = _SYSINFO_HEADER.match(str(raw).strip())
+    if not m:
+        return None
+    g = m.groupdict()
+    try:
+        ram_pct = f" ({float(g['ram_used']) / float(g['ram_total']) * 100:.0f}%)"
+    except (ValueError, ZeroDivisionError):
+        ram_pct = ""
+    lines = ["📋 시스템 상태",
+             f"운영체제 — {g['os']}",
+             f"CPU — {g['cpu_pct']}% ({g['cores']}코어)",
+             f"메모리 — {g['ram_used']}GB 사용 / 총 {g['ram_total']}GB{ram_pct}",
+             f"디스크 — {g['disk_free']}GB 남음 / 총 {g['disk_total']}GB"]
+    cpu_ok, gpu_ok = g['cpu_temp'] != _SYSINFO_UNAVAILABLE, not (g['gpu'] == _SYSINFO_GPU_UNAVAILABLE and g['gpu_temp'] == _SYSINFO_UNAVAILABLE)
+    if cpu_ok:
+        lines.append(f"CPU 온도 — {g['cpu_temp']}")
+    if gpu_ok:
+        lines.append(f"GPU — {g['gpu']} (온도 {g['gpu_temp']})")
+    if not cpu_ok and not gpu_ok:
+        lines.append("온도·GPU — 이 컴퓨터에서는 측정할 수 없었어요")
+    elif not cpu_ok:
+        lines.append("CPU 온도 — 이 컴퓨터에서는 측정할 수 없었어요")
+    elif not gpu_ok:
+        lines.append("GPU — 이 컴퓨터에서는 측정할 수 없었어요")
+    return "\n".join(lines)
+
+
+def _calm_health_section(text: str):
+    """보고서 구간에서 항목 줄 이모지를 떼고 -> (본문, 안내 주석들, 맺음말들). 알아보지 못하는 줄은 그대로 둔다."""
+    body, notes, closings = [], [], []
+    for ln in str(text).split("\n"):
+        mi = _HEALTH_ITEM_LINE.match(ln)
+        if mi:
+            mark, rest = mi.group("mark"), mi.group("rest")
+            if mark == "✅":
+                body.append(rest)
+            else:
+                name, _, status = rest.partition(" — ")
+                body.append(f"{name} — {_HEALTH_ITEM_TAG[mark]}{status}")
+        elif ln.startswith("👉"):
+            closings.append(ln)
+        elif ln.startswith("(") and ln.endswith(")"):
+            notes.append(ln)
+        else:
+            body.append(ln)
+    while body and not body[-1].strip():
+        body.pop()
+    return "\n".join(body), notes, closings
+
+
 def _build_pc_health_check(func_map: dict) -> str:
     """PC 종합 점검 — 시스템 정보/보안/악성코드/네트워크 네 리포트를 각자
     도구로 조회한 뒤, 이미 검증된 개별 결정론적 빌더(_build_deterministic_reply)로
@@ -5134,11 +5314,13 @@ def _build_pc_health_check(func_map: dict) -> str:
     평균 내면 근거 없는 가짜 정밀도가 됨)은 그대로 지키면서, "이미 원본에
     찍혀 있는 마커의 유무"만 집계한다."""
     sections = []
+    notes, closings = [], []        # closings: [(심각도, 맺음말)] — 가장 심각한 구간의 제안을 쓴다
     has_critical = False
     has_warning = False
+    has_unknown = False             # 구간 조회가 실패했거나 "확인 못 함"이 있다 -> 안전하다고 단정하지 않는다
 
     def _run_section(func_name: str, label: str):
-        nonlocal has_critical, has_warning
+        nonlocal has_critical, has_warning, has_unknown
         if func_name not in func_map:
             return
         # ChatGPT 검수(2026-09-22) 지적 반영: 4개를 순차 동기 호출하는 구조라
@@ -5155,15 +5337,26 @@ def _build_pc_health_check(func_map: dict) -> str:
             raw = func_map[func_name]()
         except Exception as e:
             print(f"[AI 워커] PC 종합 점검 - {label} 조회 오류: {e}")
+            has_unknown = True
             return
         finally:
             print(f"[AI 워커] PC 종합 점검 - {label} 소요 시간: {time.monotonic() - start:.2f}초")
+        severity = 0
         if "🚨" in raw:
             has_critical = True
+            severity = 3
         elif "⚠️" in raw:
             has_warning = True
-        built = _build_deterministic_reply(raw)
+            severity = 2
+        if "❔" in raw or str(raw).lstrip().startswith("❌") or "확인 못" in raw:
+            has_unknown = True
+            severity = severity or 1
+        built = (_health_system_section(raw) if func_name == 'get_system_info' else None) or _build_deterministic_reply(raw)
         if built:
+            if func_name != 'get_system_info':
+                built, section_notes, section_closings = _calm_health_section(built)
+                notes.extend(section_notes)
+                closings.extend((severity, c) for c in section_closings)
             sections.append(built)
 
     # 1) 시스템 정보(CPU/메모리/디스크) — 점수 리포트 형식이 아니라 고정
@@ -5184,11 +5377,19 @@ def _build_pc_health_check(func_map: dict) -> str:
         overall = "🚨 종합 상태: 조치가 필요한 항목이 있어요."
     elif has_warning:
         overall = "⚠️ 종합 상태: 일부 항목에 주의가 필요해요."
+    elif has_unknown:
+        overall = "❔ 종합 상태: 확인한 범위에서는 조치할 항목이 없어요. (일부는 확인하지 못했어요)"
     else:
         overall = "✅ 종합 상태: 특별히 조치할 항목은 없어요."
 
     intro = "네, PC 상태를 전체적으로 점검해드릴게요."
-    return f"{intro}\n\n{overall}\n\n" + "\n\n".join(sections)
+    text = f"{intro}\n\n{overall}\n\n" + "\n\n".join(sections)
+    tail = []
+    if notes:
+        tail.append(max(notes, key=len))      # 구간마다 달린 안내 주석은 가장 자세한 하나만
+    if closings:
+        tail.append(max(closings, key=lambda sc: sc[0])[1])    # 맺음말(질문)은 하나만 — 가장 심각한 구간의 것(같으면 앞 구간)
+    return text + ("\n\n" + "\n".join(tail) if tail else "")
 
 
 # ─────────────────────────────────────────────
@@ -5758,6 +5959,17 @@ def _function_rules_text(sent_funcs: set) -> str:
             + "".join(f"{i}. {text}\n" for i, text in enumerate(rules, 1)))
 
 
+# 내용 없는 완료 보고("명령을 수행하였습니다" 등)는 사용자에게 아무것도 알려 주지 못한다 — 숫자·고유명사가 없는 짧은 문장일 때만
+_EMPTY_COMPLETION = re.compile(
+    r"^(?:(?:명령|요청|작업|지시|도구)(?:을|를|이|가|은|는)?\s*)?(?:모두\s*|정상적으로\s*|성공적으로\s*|잘\s*)*"
+    r"(?:수행|실행|완료|처리|진행)(?:하였|했|되었|됐|해\s?드렸|을\s?마쳤)(?:습니다|어요|음)[\s.!~]*$")
+
+
+def _is_empty_completion(text: str) -> bool:
+    t = (text or "").strip()
+    return 0 < len(t) <= 40 and not re.search(r"\d", t) and bool(_EMPTY_COMPLETION.match(t))
+
+
 def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
     """자유형 LLM 요약 — _summarize_tool_results가 결정론적 처리로 못 거른
     나머지 결과에 대해서만 이 함수를 호출한다. 원래 이 로직 전체가
@@ -5848,6 +6060,9 @@ def _summarize_tool_results_llm(chat_history: list, raw_results: str) -> str:
     final_response = _ollama_chat(model=OLLAMA_MODEL, think=OLLAMA_THINK, messages=summary_messages, options=_SUMMARY_OPTIONS)
     result = final_response['message']['content'].strip()
 
+    if _is_empty_completion(result):
+        return f"결과를 자연스러운 문장으로 정리하진 못했지만, 확인된 내용은 다음과 같아요:\n\n{raw_results}"
+
     if _looks_like_repetition_loop(result):
         # 반복 루프는 같은 프롬프트로 다시 요청해도 또 반복될 가능성이 높아
         # (이미 느린 로컬 모델을 두 번 기다리게 하는 대신) 재시도 없이 바로
@@ -5926,7 +6141,11 @@ def _summarize_tool_results(chat_history: list, tool_results) -> str:
             pending_leftover.clear()
 
     for raw in tool_results:
-        deterministic_reply = _build_deterministic_reply(raw)
+        deterministic_reply = None
+        if len(tool_results) == 1:      # 컴퓨터 상태를 단독으로 물은 답만 보고서(여러 도구 답에 섞이면 대화체 그대로)
+            deterministic_reply = _build_system_status_report(raw)
+        if deterministic_reply is None:
+            deterministic_reply = _build_deterministic_reply(raw)
         if deterministic_reply is not None:
             _flush_pending()
             output_parts.append(deterministic_reply)
@@ -6354,7 +6573,7 @@ class AIWorker(QThread):
         return fmt(start), fmt(end)
 
     # 상대 날짜 표현 → 오늘 기준 며칠 뒤인지
-    _RELATIVE_DAY_OFFSETS = {"오늘": 0, "내일": 1, "모레": 2, "글피": 3}
+    _RELATIVE_DAY_OFFSETS = {"오늘": 0, "내일": 1, "모레": 2, "글피": 3, "어제": -1, "그저께": -2, "엊그제": -2}
     # 요일 이름 → weekday() 값(월=0 ~ 일=6)
     _WEEKDAY_NAME_TO_INDEX = {
         "월요일": 0, "화요일": 1, "수요일": 2, "목요일": 3,
@@ -6657,7 +6876,8 @@ class AIWorker(QThread):
                 from datetime import timedelta
                 days_ahead = (target_weekday - now.weekday()) % 7
                 if "다음주" in text.replace(" ", ""):
-                    days_ahead += 7
+                    # 다음 주(월~일) 안의 그 요일 — 오늘보다 앞 요일에 한 주를 더 밀지 않는다
+                    days_ahead = 7 - now.weekday() + target_weekday
                 return (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
         m = re.search(r'(\d{1,2})월\s*(\d{1,2})일', text)
         if m:
@@ -7193,8 +7413,61 @@ class AIWorker(QThread):
         if self._learn_text:
             user_memory.learn_later(self._learn_text)
 
+    _FAST_EVENTS_DAYS = {"어제": -1, "오늘": 0, "내일": 1, "모레": 2}
+    _FAST_EVENTS = re.compile(
+        r"(?P<day>어제|오늘|내일|모레)\s*(?:의\s*)?(?:일정|스케줄|약속)\s*(?:을\s*|이\s*|좀\s*)?"
+        r"(?:알려\s*(?:줘|주세요|줄래요?|주라)|보여\s*(?:줘|주세요|줄래요?|주라)|확인해\s*(?:줘|주세요)|"
+        r"뭐\s*(?:있어요?|있지|있나요|있니|야|예요)|있어요?|있나요|있니|어떻게\s*(?:돼요?|되나요)|어때요?)")
+
+    def _fast_events_by_date(self) -> bool:
+        """"내일 일정 뭐 있어?"처럼 하루의 일정을 묻는 단순 질문이면 모델을 거치지 않고 그 날짜 조회를 직접 실행한다.
+        구글/내부 캘린더는 앱이 평소 쓰는 기준(_effective_calendar)을 따르고, 로그인이 필요하면 도구의 로그인 안내가 그대로 나온다."""
+        text = re.sub(r"[\s!.?~]+$", "", self.user_text.strip())
+        m = self._FAST_EVENTS.fullmatch(text)
+        if not m:
+            return False
+        func_map = {f.__name__: f for f in self.installed_tools}
+        name = "local_get_events_by_date" if _effective_calendar() == "local" else "get_events_by_date"
+        if name not in func_map:
+            return False
+        from datetime import datetime as _dt, timedelta as _td
+        day = (_dt.now() + _td(days=self._FAST_EVENTS_DAYS[m.group("day")])).strftime("%Y-%m-%d")
+        self.status_update.emit("📋  날짜별 일정 조회 중")
+        try:
+            raw = str(func_map[name](date_str=day))
+        except Exception as e:
+            print(f"[AI 워커] 빠른 일정 조회 오류: {type(e).__name__}")
+            note, offers = _reply_fallback.failure(name, {"date_str": day}, e)
+            _add_reply_offers(offers)
+            raw = None
+        shown = note if raw is None else (_build_deterministic_reply(raw) or raw)
+        self.chat_history.append({'role': 'user', 'content': self.user_text})
+        self.chat_history.append({'role': 'assistant', 'content': shown})
+        self.response_ready.emit(f"🤖 로컬 비서: {shown}")
+        return True
+
     def _offer_owner(self) -> str:
         return offer_owner()
+
+    def _greeting_with_offers(self, fallback: str) -> str:
+        """인사에 이어가는 말을 붙이고, "응"으로 바로 이어지게 읽기 전용 제안(오늘 날씨·오늘 일정)을 등록한다.
+        일정은 로그인한 때만 제안한다(비로그인이면 로그인 안내만 나오므로). 쓸 수 있는 도구가 없으면 열린 질문만."""
+        try:
+            names = {f.__name__ for f in self.installed_tools}
+            offers = []
+            if "get_current_weather" in names:
+                offers.append(_reply_actions.Offer(label="오늘 날씨를 알려 드릴까요?", func="get_current_weather", args={}))
+            if MOCK_USER.get("logged_in"):
+                cal = "local_get_daily_briefing" if _effective_calendar() == "local" else "get_daily_briefing"
+                if cal in names:
+                    offers.append(_reply_actions.Offer(label="오늘 일정을 알려 드릴까요?", func=cal, args={}))
+            text = small_talk.greeting_reply(user_memory.is_casual(), weather=any(o.func == "get_current_weather" for o in offers),
+                                             events=any(o.func != "get_current_weather" for o in offers))
+            _add_reply_offers(offers)
+            return text
+        except Exception as e:
+            print(f"[인사 이어가기 오류] {type(e).__name__}")
+            return fallback
 
     def _run_check(self, name, func, *, allow_startup_reuse=False):
         """읽기 점검 하나를 돌린다 -> (결과, 재사용 여부). 항상 실제로 돌리는 게 원칙이고, 재사용은 앱 시작 알림이
@@ -7318,7 +7591,10 @@ class AIWorker(QThread):
                 parts.append("지금은 이 점검 기능을 쓸 수 없어서 건너뛰었어요.")
                 continue
             try:
-                result, reused = self._run_check(offer.func, fn, allow_startup_reuse=True)
+                if offer.func in _reply_actions.READ_ONLY_INFO or offer.batch:   # 날씨·일정 브리핑, 실패 재확인 — 보안 점검 재사용 대상이 아니다
+                    result, reused = fn(**dict(offer.args or {})), False
+                else:
+                    result, reused = self._run_check(offer.func, fn, allow_startup_reuse=True)
             except Exception as e:
                 print(f"[제안 점검 오류] {offer.func}: {type(e).__name__}")
                 parts.append("지금은 읽지 못했어요.")
@@ -7326,6 +7602,10 @@ class AIWorker(QThread):
                     ctx["offers"].clear()
                 continue
             part = _build_deterministic_reply(str(result)) or str(result)
+            if offer.func in _reply_actions.READ_ONLY_INFO or offer.batch:
+                heading = {"get_current_weather": "오늘 날씨"}.get(offer.func, "오늘 일정" if offer.func in _reply_actions.READ_ONLY_INFO else "")
+                parts.append((heading + chr(10) + part) if heading else part)
+                continue
             part, collapsed = self._fold_security(part, detail=True, reused=reused)   # 같은 응답 안 앞 점검 항목은 기록 전이라 접히지 않는다
             if reused:
                 reused_labels.append(self._check_short_label(offer.func))
@@ -7341,8 +7621,14 @@ class AIWorker(QThread):
         self._record_security(final, detail=True, collapsed=all_collapsed)
 
     def run(self):
-        with offer_context(self.current_session_id, self._offer_owner()):
-            self._run_inner()
+        _QUESTION_LOCAL.text = getattr(self, "user_text", "") or ""
+        _QUESTION_LOCAL.tools = {f.__name__: f for f in (getattr(self, "installed_tools", None) or [])}
+        try:
+            with offer_context(self.current_session_id, self._offer_owner()):
+                self._run_inner()
+        finally:
+            _QUESTION_LOCAL.text = ""      # 다음 질문에 이번 질문이 남지 않게(예외에도)
+            _QUESTION_LOCAL.tools = {}
 
     def _run_inner(self):
         _ollama_local.client = self._ollama_client
@@ -7383,6 +7669,37 @@ class AIWorker(QThread):
                 self.response_ready.emit(f"🤖 로컬 비서: {location_reply}")
                 return
 
+            # ── 빠른 감지 0.9: "지금 CPU 얼마나 써" 같은 시스템 사용량 질문 — 가격 검색으로 보내지 않는다 ──
+            if _reply_status.is_usage_question(self.user_text):
+                _usage_map = {f.__name__: f for f in self.installed_tools}
+                if 'get_system_info' in _usage_map:
+                    try:
+                        self.status_update.emit("💻  시스템 정보 수집 중")
+                        _usage_raw = str(_usage_map['get_system_info']())
+                        _usage_reply = _build_system_status_report(_usage_raw)
+                        if _usage_reply is not None:
+                            self.response_ready.emit(f"🤖 로컬 비서: {_usage_reply}")
+                            return
+                    except Exception as e:
+                        print(f"[AI 워커] 시스템 사용량 조회 오류: {e}")
+                        self.response_ready.emit(_diagnose_error(e))
+                        return
+
+            # ── 빠른 감지 0.95: "오늘 앱 사용시간 알려줘" — 모델이 도구를 못 골라 내용 없는 답이 나오지 않게 직접 조회 ──
+            if _reply_appusage.is_plain_usage_question(self.user_text):
+                _au_map = {f.__name__: f for f in self.installed_tools}
+                if 'get_usage_report' in _au_map:
+                    try:
+                        self.status_update.emit("⏳  앱 사용 시간 확인 중")
+                        _au_period = self._resolve_usage_period(self.user_text) or 'today'
+                        _au_raw = str(_au_map['get_usage_report'](period=_au_period))
+                        self.response_ready.emit(f"🤖 로컬 비서: {_build_deterministic_reply(_au_raw) or _au_raw}")
+                    except Exception as e:
+                        print(f"[AI 워커] 앱 사용 시간 조회 오류: {e}")
+                        _add_reply_offers([_reply_appusage.retry_offer()])
+                        self.response_ready.emit(f"🤖 로컬 비서: {_reply_appusage.FAIL_REPLY}")
+                    return
+
             # ── 빠른 감지 1: 제품 가격 검색 요청을 정규식으로 직접 감지 ──
             import re
             text_lower = self.user_text.lower()
@@ -7399,7 +7716,7 @@ class AIWorker(QThread):
             has_price = any(kw in text_lower for kw in price_keywords)
 
             # 제품 + 가격 키워드가 함께 있으면 직접 search_product_price 호출
-            if has_product and has_price:
+            if has_product and has_price and not _reply_status.is_usage_question(self.user_text):
                 sys.stderr.write(f"\n🎯 제품 가격 검색 직접 호출 (정규식 감지)\n")
                 sys.stderr.flush()
 
@@ -7596,6 +7913,11 @@ class AIWorker(QThread):
                         self.response_ready.emit(_diagnose_error(e))
                     return
 
+            # ── 빠른 감지 1.73: "오늘/내일/모레/어제 일정 알려줘" — 모델 없이 그 날 일정을 바로 조회 ──
+            # 모델이 날짜 인자를 비워 호출해 실패하던 질문(2026-11-12 앱 시연). 쓰기 요청("추가/삭제")과 조건문은 가로채지 않는다.
+            if self._fast_events_by_date():
+                return
+
             # ── 빠른 감지 1.74: "좋아/응/고마워"처럼 맞장구만 할 때 ──
             # 직전 답이 질문·제안이 아니면 할 일이 없으므로 정해진 짧은 대답을 한다.
             # 2026-10-13 실제 앱 점검: LLM에 맡기면 "그럼 다른 일어나 볼게요!" 같은 어색한 문장이 나왔다.
@@ -7607,6 +7929,8 @@ class AIWorker(QThread):
                       else small_talk.reply(self.user_text, user_memory.is_casual()))
             if _ASKS_REPEAT.fullmatch(self.user_text.strip().rstrip("?!. ")):   # 모델은 앞말을 되풀이하지 못하고 지어낸다
                 canned = prev_reply or ("아직 한 말이 없어. 뭐든 말해 봐." if user_memory.is_casual() else "아직 드린 말씀이 없어요. 편하게 말씀해 주세요.")
+            if canned and small_talk.is_greeting(self.user_text):
+                canned = self._greeting_with_offers(canned)
             if canned:
                 self.chat_history.append({'role': 'user', 'content': self.user_text})
                 self.chat_history.append({'role': 'assistant', 'content': canned})
@@ -7780,7 +8104,7 @@ class AIWorker(QThread):
                         # 있으면 물어봐줘"라는 지시 자체가 근거 없는 판단을 유도하는
                         # 원인이었다. 다른 경로들과 동일하게 결정론적 빌더를 먼저
                         # 시도한다.
-                        deterministic_reply = _build_system_info_reply(tool_result)
+                        deterministic_reply = _build_system_status_report(tool_result)
                         if deterministic_reply is not None:
                             self.response_ready.emit(f"🤖 로컬 비서: {deterministic_reply}")
                             return
@@ -8302,6 +8626,8 @@ class AIWorker(QThread):
 
             if response.get('message', {}).get('tool_calls'):
                 tool_results = []
+                failure_notes = []        # 도구 실행 오류를 알리는 문구 — 모델 요약에 섞지 않고 그대로 낸다
+                failures, ok_funcs = [], []   # 실패한 (도구, 인자, 예외)와 성공한 도구 — 문구는 한 번만 만든다
                 # 이번 턴에서 확인이 필요한 위험한 동작을 전부 모아뒀다가 한꺼번에
                 # 확인 요청을 보낸다 — 예전엔 첫 번째 위험한 동작에서 바로
                 # emit+return 했는데, 그러면 같은 턴에 함께 요청된 다른 위험한
@@ -8353,6 +8679,12 @@ class AIWorker(QThread):
                     args      = _coerce_arg_types(func_name, args)
                     if func_name in _LABELED_REMINDER_FUNCS:
                         args = _ground_reminder_label(args, self.user_text)
+                    # 날짜가 필수인 일정 조회인데 모델이 날짜를 비웠으면 사용자 문장의 오늘/내일/모레/요일로 채운다
+                    # (못 찾으면 실행 단계에서 "어느 날의 일정을 확인할까요?" 한 가지만 묻는다)
+                    if func_name in _DATE_REQUIRED_FUNCS and not str((args or {}).get('date_str') or '').strip():
+                        _filled = self._resolve_event_date(self.user_text)
+                        if _filled:
+                            args = {**(args or {}), 'date_str': _filled}
 
                     # ── 파일 조건 라우팅 계약을 실행 단계에서도 강제 (2026-09-28 ChatGPT 2라운드) ──
                     # 노출 함수 제한(_allowed_category_funcs)만으로는 LLM이 노출 안 된 함수를 지어내
@@ -8750,7 +9082,10 @@ class AIWorker(QThread):
                             tool_result = func_map[func_name](**args)
                         except Exception as tool_err:
                             print(f"[AI 워커] '{func_name}' 실행 오류: {tool_err}")
-                            tool_result = "❌ 요청하신 작업을 처리하지 못했습니다. 잠시 후 다시 시도해주세요."
+                            # 예외 문구·함수 이름은 보이지 않고, 상황(정보 부족/실제 오류)에 맞는 말과 재확인 제안을 낸다
+                            failures.append((func_name, args, tool_err))
+                            continue
+                        ok_funcs.append(func_name)
                         tool_result_clean = str(tool_result).encode('utf-8', errors='ignore').decode('utf-8')
 
                         # 가격 검색 결과는 원본(잘리지 않은 전체)을 별도 시그널로 전달 —
@@ -8783,14 +9118,22 @@ class AIWorker(QThread):
                                 pass
                     else:
                         print(f"[AI 워커] 알 수 없는 함수 호출 시도: {func_name}")
-                        tool_results.append("❌ 이 기능을 사용하려면 관련 플러그인이 설치되어 있는지 확인해주세요.")
+                        failure_notes.append(_reply_fallback.pick(_reply_fallback.UNAVAILABLE))
 
                 # ── 3단계: 안전한 도구 결과가 있으면 모델에게 다시 보내 자연어로 정리 ──
                 self.status_update.emit("📋  결과 정리 중")
+                if failures:
+                    _fail_text, _fail_offers = _reply_fallback.combine(failures, ok_funcs)
+                    failure_notes.append(_fail_text)
+                    _add_reply_offers(_fail_offers)
                 if tool_results:
                     safe_reply = _summarize_tool_results(self.chat_history, tool_results)
+                    if failure_notes:
+                        safe_reply = safe_reply + "\n\n" + "\n".join(failure_notes)
+                elif failure_notes:
+                    safe_reply = "\n".join(failure_notes)
                 elif not pending_dangerous:
-                    safe_reply = "명령을 수행했습니다."
+                    safe_reply = _reply_fallback.not_understood()
                 else:
                     # 안전하게 실행된 결과는 없고 확인 대기 중인 위험한 동작만 있는
                     # 경우 — "명령을 수행했습니다"라고 하면 거짓이므로 이 경우엔

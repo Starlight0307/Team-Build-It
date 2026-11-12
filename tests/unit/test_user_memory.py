@@ -358,3 +358,62 @@ def test_filler_words_are_never_used_as_topic():
     reply = small_talk.statement_reply("망한 것 같아", False, lambda s, t: json.dumps({"kind": "bad", "topic": "것"}))
     assert reply and not reply.startswith("것")
 
+
+
+def _at(monkeypatch, hour, minute):
+    from datetime import datetime as real
+    from core import small_talk
+
+    class Fixed(real):
+        @classmethod
+        def now(cls, tz=None):
+            return real(2026, 11, 11, hour, minute)
+    monkeypatch.setattr(small_talk, "datetime", Fixed)
+    return small_talk
+
+
+@pytest.mark.parametrize("text", ["지금 몇 시야", "지금 몇 시예요?", "몇 시야", "몇 시지", "지금 시간 알려줘", "지금 시간 알려줄래", "현재 시간 알려주세요",
+                                  "시간 알려줘", "지금 시각 알려줘", "지금 시간 뭐야", "현재 시각이 어떻게 돼", "지금 몇시야", "루미야 지금 몇 시야?"])
+def test_time_question_is_answered_by_the_clock(monkeypatch, text):
+    st = _at(monkeypatch, 15, 30)
+    assert st.reply(text) == "지금은 오후 3시 30분이에요."
+    assert st.reply(text, casual=True) == "지금은 오후 3시 30분이야."
+
+
+@pytest.mark.parametrize("text", ["몇 시간 했어?", "회의 시간 알려줘", "게임 몇 시간 했어", "오늘 일정 시간 알려줘", "내일 몇 시에 회의야"])
+def test_time_question_does_not_take_other_requests(monkeypatch, text):
+    assert _at(monkeypatch, 15, 30).reply(text) is None
+
+
+@pytest.mark.parametrize("hour,minute,expected", [(15, 0, "지금은 오후 3시 정각이에요."), (0, 5, "지금은 오전 12시 5분이에요."),
+                                                   (12, 0, "지금은 오후 12시 정각이에요."), (9, 7, "지금은 오전 9시 7분이에요.")])
+def test_time_reply_edges(monkeypatch, hour, minute, expected):
+    assert _at(monkeypatch, hour, minute).reply("지금 몇 시야") == expected
+
+
+@pytest.mark.parametrize("text", ["현재 시각", "현재 시간은?", "현재 시간은", "지금 시간 좀 알려줘", "시간 좀 알려줘", "지금 몇 시쯤이야", "몇 시인지 알려줘", "지금 몇 시인지 알려줘",
+                                  "몇 시인지 알려줄래", "몇 시냐", "지금 몇 시냐고", "지금 몇 시 됐어", "몇 시 됐어"])
+def test_time_question_wider_wordings(monkeypatch, text):
+    assert _at(monkeypatch, 15, 30).reply(text) == "지금은 오후 3시 30분이에요."
+
+
+@pytest.mark.parametrize("text", ["몇 시간 했어", "회의 시간 알려줘", "영업 시간 알려줘", "영업시간 알려줘", "운영 시간 알려줘", "수면 시간 알려줘", "게임 시간 알려줘", "배송 시간 알려줘",
+                                  "도착 시간 알려줘", "내일 몇 시에 회의야", "몇 시에 일어나야 해", "미국 시간 알려줘", "도쿄 시간 알려줘", "런던 시간 알려줘", "뉴욕 시간 알려줘",
+                                  "한국 시간 알려줘", "도쿄 지금 몇 시야", "지금 시간 설정해줘", "알람 시간 바꿔줘", "영화 몇 시야", "회의 몇 시야", "수업 몇 시야", "버스 몇 시야",
+                                  "지금 몇 시에 끝나", "지금 몇 시에 만나", "회의 현재 시각"])
+def test_time_question_wider_wordings_keep_false_positives_out(monkeypatch, text):
+    assert _at(monkeypatch, 15, 30).reply(text) is None
+
+
+@pytest.mark.parametrize("hour,minute,expected", [(23, 59, "지금은 오후 11시 59분이에요."), (12, 30, "지금은 오후 12시 30분이에요.")])
+def test_time_reply_more_edges(monkeypatch, hour, minute, expected):
+    assert _at(monkeypatch, hour, minute).reply("현재 시각") == expected
+
+
+def test_time_regex_is_fast_on_long_input():
+    import time
+    from core.small_talk import _ASKS_TIME
+    for bad in ("지금 " + " " * 100000 + "x", "몇" + " " * 100000, "몇 시" + " " * 100000 + "x", "시간" + " " * 100000, "지금 몇 시 " * 20000):
+        t = time.perf_counter()
+        _ASKS_TIME.fullmatch(bad)
+        assert time.perf_counter() - t < 0.1
