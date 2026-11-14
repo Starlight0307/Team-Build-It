@@ -17,7 +17,7 @@ search_files()가 일치한 파일이 많을 때 20줄(날짜 시각 크기 전�
 5개 이하이거나 개수·정렬을 지정한 요청("가장 큰 3개")이거나 전체 목록을 못 얻으면 None — 호출한 쪽이 기존 목록 방식으로 간다.
 빌드·캐시 폴더 같은 개발 프로젝트가 만든 파일은 목록과 집계에서 빼고 개수만 밝힌다.
 """
-import os
+import ntpath  # 맥에서도 윈도우 경로(\)를 나누려고 os.path 대신 쓴다
 import re
 
 from core.reply_actions import Offer
@@ -79,7 +79,7 @@ def is_generated(path) -> bool:
 
 
 def _kind(path):
-    ext = os.path.splitext(path)[1].lower()
+    ext = ntpath.splitext(path)[1].lower()
     for label, exts in _KINDS:
         if ext in exts:
             return label
@@ -88,7 +88,7 @@ def _kind(path):
 
 def _place(path):
     """'위치' — 사용자 폴더 경로는 쓰지 않고 다운로드/문서/바탕화면 같은 폴더 이름 + 그 안의 최상위 하위 폴더 이름만."""
-    parts = [x for x in re.split(r"[\\/]+", os.path.dirname(path)) if x]
+    parts = [x for x in re.split(r"[\\/]+", ntpath.dirname(path)) if x]
     for i, part in enumerate(parts):
         base = _FOLDER_NAMES.get(part.lower())
         if base:
@@ -99,8 +99,8 @@ def _place(path):
 
 def _name(path):
     """화면에 보일 파일 이름: ESC·제어문자·꺾쇠 제거 + 40자 줄임(확장자 유지). 명백한 지시 문장이면 가린다."""
-    raw = _ESC_SEQ.sub("", os.path.basename(path)).replace("<", "").replace(">", "")
-    ext = os.path.splitext(raw)[1]
+    raw = _ESC_SEQ.sub("", ntpath.basename(path)).replace("<", "").replace(">", "")
+    ext = ntpath.splitext(raw)[1]
     if len(ext) > 8:
         ext = ""
     cleaned = _clean(raw, 10 ** 6, drop_injection=False)
@@ -146,8 +146,8 @@ def _title(cond):
 
 
 def _offer(path):
-    name = os.path.basename(path)
-    stem = os.path.splitext(name)[0]
+    name = ntpath.basename(path)
+    stem = ntpath.splitext(name)[0]
     o = Offer(label=f"'{_name(path)}' 위치를 열어 드릴까요?", func="open_file_location", args={"path": path})
     o.aliases = tuple(dict.fromkeys(x for x in (name, stem) if x))
     o.which = WHICH
@@ -158,7 +158,7 @@ def _offer(path):
 def _unique_by_name(rows, limit):
     seen, out = set(), []
     for r in rows:
-        key = os.path.basename(r[2]).lower()
+        key = ntpath.basename(r[2]).lower()
         if key not in seen and len(out) < limit:
             seen.add(key)
             out.append(r)
