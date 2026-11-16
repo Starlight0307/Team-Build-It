@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 
 OFFER_TTL_SECONDS = 600          # 제안 뒤 10분이 지나면 무효
 _MAX_CHOICES = 9                 # ①~⑨
+_MAX_NAME_CHOICES = 20           # 이름으로만 고르는 열린 질문 목록의 상한
 _MAX_REPLY_LEN = 20              # 공백 뺀 길이 — 이보다 길면 새 요청으로 본다
 
 # OFFER_BUILDERS를 제공하는 모듈들 — 없거나 불러올 수 없으면 조용히 건너뛴다
@@ -52,6 +53,7 @@ class Offer:
     which: str = ""                              # 열린 질문 모드: "응"만 왔을 때 되묻는 한 문장(첫 Offer 것을 쓴다)
     batch: bool = False                          # 실패한 읽기 도구 재확인 묶음 — 제안이 여러 개여도 "응" 한마디로 모두(최대 3) 다시 실행한다
     by_name: bool = False                        # 열린 질문 모드: 이름으로만 고른다("3번" 같은 번호 선택은 받지 않고 되묻는다)
+    strict_name: bool = False                    # 열린 질문 모드: 이름만(또는 "이름 + 사용 예 묻는 말") 말했을 때만 고른다 — 명령이 섞인 문장은 가로채지 않는다
 
 
 @dataclass
@@ -92,7 +94,8 @@ def _coerce(item):
 def register(offers, *, sid, user, intro: str = "") -> None:
     """방금 보인 답변에 달린 선택지를 등록한다(이전 등록은 덮어씀). 빈 리스트면 등록 해제."""
     global LAST_OFFER
-    clean = [o for o in (_coerce(x) for x in (offers or [])) if o is not None][:_MAX_CHOICES]
+    items = [o for o in (_coerce(x) for x in (offers or [])) if o is not None]
+    clean = items[:_MAX_NAME_CHOICES] if items and items[0].by_name else items[:_MAX_CHOICES]    # 이름으로 고르는 목록은 번호가 없어 더 길어도 된다
     with _lock:
         LAST_OFFER = _Registered(clean, _now(), sid, user, intro) if clean else None
 
@@ -166,6 +169,32 @@ _OPEN_NO = re.compile(r"^(?:없어요?|없는데요?|없네요?|없습니다|필
 _PICK_LOOSE = re.compile(r"(?:(?<![0-9])(?P<d>[1-9])번|(?P<c>[①-⑨])|(?P<o>첫|두|세|네|다섯)번째|(?P<o2>첫|둘|셋|넷)째)")
 _MAX_NAME_INPUT = 60
 _MIN_ALIAS_LEN = 3
+# 엄격 매칭(strict_name Offer 전용): 이름과 정확히 같거나, 이름 + (사용 예를 묻는 말 | 조사·어미 몇 글자)일 때만 고른다.
+# "일정 추가"·"타이머 10분"처럼 명령이 섞인 문장은 걸리지 않는다(그 명령은 일반 처리로 넘어가야 한다).
+_AMBIGUOUS_NAMES = frozenset({"기록", "파일", "기기", "보안", "상태", "알림", "폴더"})   # 이 낱말은 정확히 같을 때만
+_STRICT_ASK = re.compile(
+    r"(?:의|은|는|이|가|에대한|에대해|좀|도)?(?:사용예|사용법|예시|예문|예를들면|어떻게써|어떻게해|방법)"
+    r"(?:를|을|좀|도)?(?:알려줘|알려주세요|알려줄래|보여줘|보여주세요|가르쳐줘|궁금해|뭐야|뭐예요)?(?:요|야)?")
+_STRICT_SUFFIX = re.compile(r"(?:요|이요|이야|예요|이에요|은|는|을|를|만|부터|에대해|이랑|도정도|이|가|도)")
+
+
+def _match_strict(text, offers):
+    t = _norm(re.sub(r"[!.,~'\"]+", "", str(text or "")))
+    if not t or len(t) > _MAX_NAME_INPUT:
+        return []
+    hits = []
+    for i, o in enumerate(offers):
+        for f in {_norm(x) for x in list(o.aliases or ()) + [o.label] if _norm(x)}:
+            if t == f:
+                hits.append(i)
+                break
+            if f in _AMBIGUOUS_NAMES or not t.startswith(f):
+                continue
+            rest = t[len(f):]
+            if _STRICT_SUFFIX.fullmatch(rest) or _STRICT_ASK.fullmatch(rest):
+                hits.append(i)
+                break
+    return hits
 
 
 def _norm(t) -> str:
@@ -209,7 +238,7 @@ def _consume_open(text, cur):
     if "?" in raw or "？" in raw:
         return None
     norm = _norm(re.sub(r"[!.,~'\"]+", "", raw))
-    hits = _match_by_name(raw, offers)
+    hits = _match_strict(raw, offers) if offers[0].strict_name else _match_by_name(raw, offers)
     if len(hits) == 1:
         LAST_OFFER = None
         return Result(kind="execute", offer=offers[hits[0]])

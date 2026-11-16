@@ -145,7 +145,7 @@ def test_feature_overview_is_fixed_text_without_ai(monkeypatch):
     w = ai_worker.AIWorker("루미 기능 설명해줘", [], [lambda: None], None)
     w.response_ready.connect(out.append)
     w.run()
-    assert calls == [] and out and "\"10분 뒤에 알려줘\"" in out[0]
+    assert calls == [] and out and out[0].startswith("🤖 로컬 비서: 📋 루미가 도와드릴 수 있는 일 · 15가지")   # 2026-11-16 보고서 형식
 
 
 def test_update_status_and_top_cpu_results_pass_through():

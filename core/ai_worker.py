@@ -217,7 +217,9 @@ from core import reply_quiet as _reply_quiet
 from core import reply_battery as _reply_battery
 from core import reply_briefing as _reply_briefing
 from core import reply_login as _reply_login
+from core import reply_overview as _reply_overview
 from core import reply_temp as _reply_temp
+from core import reply_startup as _reply_startup
 from core import reply_programs as _reply_programs
 from core import reply_status as _reply_status
 from core import reply_trend as _reply_trend
@@ -1308,6 +1310,347 @@ def _ground_file_search_args(args, user_text: str):
             fixed["keyword"] = " ".join(kept)
         else:
             fixed.pop("keyword", None)
+    return fixed
+
+
+# ── 그 밖의 조회 도구 인자 근거 판정 (2026-11-16, 검수 반영) ──
+# 파일 검색과 같은 위험: 모델이 사용자가 말하지 않은 분류·상태·태그·앱 이름·키워드·기간을 지어내 결과가 조용히 비거나 바뀐다.
+# 모델이 이미 고른 도구의 "필터 인자"만 사용자 현재 문장과 대조한다. 원칙: 근거 있는데 지우거나 뒤집는 것이 가장 나쁘다 —
+#   모델 값이 맞으면 그대로 두고, 반대 근거가 분명할 때만 고치고, 근거가 전혀 없을 때만 지운다(도구 기본값 사용).
+# 규칙 표(도구 -> {인자: 판정 함수})에 한 줄을 더하면 새 도구도 같은 방식으로 정리된다. 판정 함수는 (값, 문장 정보) -> 남길 값 또는 None(제거).
+_EXPENSE_CATEGORY_GROUPS = (
+    ("식비", "식대", "밥", "음식", "식사", "외식", "점심", "저녁", "배달", "식당", "간식", "술", "커피", "카페", "음료", "먹는"),
+    ("교통", "교통비", "버스", "지하철", "택시", "기차"),
+    ("쇼핑", "옷", "의류", "패션"),
+    ("문화", "영화", "여가", "취미", "공연"),
+    ("생활", "생필품", "생활비"),
+    ("의료", "병원", "병원비", "약국", "약값", "진료"),
+    ("통신", "통신비", "휴대폰요금", "핸드폰요금", "요금제"),
+    ("주거", "월세", "집세", "관리비"),
+    ("구독", "정기결제"),
+    ("교육", "학원", "수업료", "강의"),
+    ("게임",),
+)
+
+# 할 일 상태: 낱말을 세 부류(끝낸 것/남은 것/전체)로 따로 찾고, "말고·빼고·제외"가 붙으면 반대 부류로(분명한 부정),
+# "없·않·못·안"이 붙으면 약한 반대 근거로 읽는다(약하면 모델 값을 그대로 둔다).
+_TODO_CUES = re.compile(
+    r"(?P<all>전부|모두|모든|전체|다보여|다알려|둘다|완료와미완료|미완료와완료|완료한거랑안한거|안한거랑한거|\ball\b)"
+    r"|(?P<pend>미완료|덜한|덜끝|덜했|안끝낸|안끝난|안끝나|안끝내|안끝|안한|안했|못한|못끝|못했|완료하지않|완료되지않|완료안|완료가아닌|완료못|"
+    r"끝내지않|끝내지못|끝나지않|끝나지못|하지않은|하지못한|되지않은|안된|남은|남아있|해야할|해야하는|해야될|pending|incomplete|unfinished)"
+    r"|(?P<weakp>아직|앞으로|진행중|todo|open)"
+    r"|(?P<done>완료|끝낸|끝난|끝냈|끝마친|마친|마무리|했었던|했던|(?<![못안덜])한일|(?<![못안덜])한것|(?<![못안덜])한거|(?<![못안덜])다한|"
+    r"이미한|해낸|처리한|해치운|완수한|체크한|체크된|done|completed|complete|finished)")
+_TODO_STRONG_FLIP = re.compile(r"^\w{0,2}(?:말고|빼고|제외|빼)")
+_TODO_WEAK_FLIP = re.compile(r"^\w{0,3}(?:없|않|못|안|아닌)")
+_TODO_VALUES = {"pending": "pending", "done": "done", "all": "all", "completed": "done", "complete": "done", "finished": "done",
+                "incomplete": "pending", "unfinished": "pending", "todo": "pending", "open": "pending"}
+
+
+def _todo_decision(text_norm: str):
+    """-> ("done"|"pending"|"all"|None, 약한 근거뿐인지)."""
+    kinds, weak = set(), set()
+    for m in _TODO_CUES.finditer(text_norm):
+        kind = m.lastgroup
+        tail = text_norm[m.end():m.end() + 7]
+        strong = bool(_TODO_STRONG_FLIP.match(tail))
+        weak_flip = bool(_TODO_WEAK_FLIP.match(tail))
+        if kind == "all":
+            if not strong:                                  # "전체 말고 완료한 것만" — 전체가 아니다
+                kinds.add("all")
+        elif kind == "pend":
+            kinds.add("done" if strong else "pending")
+        elif kind == "done":
+            if strong:
+                kinds.add("pending")
+            elif weak_flip:                                 # "한 일 없어?" — 끝낸 일이 없다는 뜻일 수 있다(약한 근거)
+                weak.add("pending")
+            else:
+                kinds.add("done")
+        elif kind == "weakp":
+            weak.add("pending")
+    if "all" in kinds or {"done", "pending"} <= kinds:
+        return "all", False
+    if kinds:
+        return next(iter(kinds)), False
+    if weak:
+        return "pending", True
+    return None, False
+
+
+def _keep_todo_status(value, ctx):
+    model = _TODO_VALUES.get(str(value or "").strip().lower())
+    decision, weak = _todo_decision(ctx[0])
+    if decision is None:
+        return None                                   # 근거가 전혀 없을 때만 제거
+    if model is None:
+        return decision
+    if model == decision:
+        return model                                  # (completed -> done 변환만)
+    if weak:
+        return model                                  # 근거가 약하면 모델 값 유지
+    return decision                                   # 반대 근거가 분명할 때만 교정
+
+
+# 앱 이름 근거: 프로그램(프로세스 이름·한글 별칭) 묶음과 plugins/app_usage.py 의 분류(_CATEGORIES) 를 연결한다.
+# 사용자가 분류어나 프로그램 별칭을 말하면, 모델이 준 값이 같은 분류 또는 그 분류의 프로그램일 때 근거로 본다.
+# 사용자가 분류어만 말했는데 모델이 그 분류의 프로그램 하나를 줬으면 분류 이름으로 고친다(분류 전체를 물었으므로).
+_APP_CATEGORY_WORDS = {
+    "게임": ("게임", "겜"), "브라우저": ("브라우저", "인터넷", "웹서핑", "웹"), "메신저": ("메신저", "채팅", "톡"),
+    "개발": ("개발", "코딩", "프로그래밍"), "영상/음악": ("영상", "음악", "노래", "동영상", "영상음악"),
+}
+# 분류어는 다른 명사와 붙여 쓰는 일이 많아("게임시간") 두 글자여도 부분 일치를 허용한다. 프로그램 별칭의 짧은 한글은 경계에서만.
+_APP_CATEGORY_SUBSTRING_WORDS = frozenset({"게임", "영상", "음악", "개발", "코딩", "노래", "채팅", "브라우저", "메신저", "인터넷"})
+# (분류, 값으로 인정할 이름들(소문자), 사용자가 부르는 말들) — "code" 같은 흔한 영어 낱말은 부르는 말에서 뺀다("code review")
+_APP_PROGRAMS = (
+    ("브라우저", ("chrome",), ("chrome", "크롬", "구글크롬")), ("브라우저", ("msedge", "edge"), ("msedge", "edge", "엣지", "마이크로소프트엣지")),
+    ("브라우저", ("firefox",), ("firefox", "파이어폭스")), ("브라우저", ("whale",), ("whale", "웨일")),
+    ("브라우저", ("brave",), ("brave", "브레이브")), ("브라우저", ("opera",), ("opera", "오페라")),
+    ("메신저", ("kakaotalk",), ("kakaotalk", "카카오톡", "카톡")), ("메신저", ("discord",), ("discord", "디스코드")),
+    ("메신저", ("slack",), ("slack", "슬랙")), ("메신저", ("telegram",), ("telegram", "텔레그램")),
+    ("메신저", ("line",), ("line.exe", "라인")), ("메신저", ("teams",), ("teams", "팀즈")),
+    ("게임", ("steam",), ("steam", "스팀")),
+    ("게임", ("leagueclient", "league of legends", "riotclient"), ("leagueclient", "league of legends", "riotclient", "롤", "리그오브레전드")),
+    ("게임", ("valorant",), ("valorant", "발로란트", "발로")), ("게임", ("overwatch",), ("overwatch", "오버워치")),
+    ("게임", ("minecraft",), ("minecraft", "마인크래프트", "마크")), ("게임", ("genshin",), ("genshin", "원신")),
+    ("게임", ("lostark",), ("lostark", "로스트아크", "로아")), ("게임", ("maplestory",), ("maplestory", "메이플", "메이플스토리")),
+    ("게임", ("battle.net", "battlenet"), ("battle.net", "배틀넷")), ("게임", ("epicgameslauncher", "epic"), ("epicgames", "에픽게임즈", "에픽")),
+    ("게임", ("pubg",), ("pubg", "배그", "배틀그라운드")),
+    ("개발", ("code", "vscode"), ("vscode", "vs code", "code.exe", "브이에스코드", "비주얼스튜디오코드")),
+    ("개발", ("pycharm",), ("pycharm", "파이참")), ("개발", ("idea64", "idea", "intellij"), ("idea64", "intellij", "인텔리제이")),
+    ("개발", ("devenv",), ("devenv", "비주얼스튜디오")), ("개발", ("sublime",), ("sublime", "서브라임")),
+    ("개발", ("notepad++",), ("notepad++", "메모장플러스")),
+    ("영상/음악", ("vlc",), ("vlc", "브이엘씨")), ("영상/음악", ("potplayer",), ("potplayer", "팟플레이어")),
+    ("영상/음악", ("spotify",), ("spotify", "스포티파이")), ("영상/음악", ("melon",), ("melon", "멜론")),
+    ("영상/음악", ("youtube",), ("youtube", "유튜브")),
+    ("", ("excel",), ("excel", "엑셀")), ("", ("winword", "word"), ("winword", "워드")),
+    ("", ("powerpnt", "powerpoint"), ("powerpnt", "powerpoint", "파워포인트", "피피티", "ppt")),
+    ("", ("notepad",), ("notepad", "메모장")), ("", ("notion",), ("notion", "노션")), ("", ("zoom",), ("zoom", "줌")),
+    ("", ("photoshop",), ("photoshop", "포토샵")), ("", ("unity",), ("unity", "유니티")), ("", ("netflix",), ("netflix", "넷플릭스")),
+    ("", ("onenote",), ("onenote", "원노트")),
+)
+_APP_ALL_WORDS = ("전체", "모두", "전부", "all")
+_SHORT_PARTICLES = "은|는|이|가|을|를|도|만|으로|로|에서|에|이랑|랑|과|와|의|하고|부터|까지"
+
+
+def _norm_evidence(text) -> str:
+    return re.sub(r"[\s_\-.#]+", "", str(text or "").lower())
+
+
+def _word_in(word, text_norm: str, spaced: str) -> bool:
+    w = _norm_evidence(word)
+    if not w:
+        return False
+    if w.isascii():
+        return re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", re.sub(r"[\s_\-.#]+", " ", spaced)) is not None \
+            or re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", text_norm) is not None
+    return w in text_norm
+
+
+def _build_app_said_index():
+    """앱 별칭을 한 번에 찾는 컴파일 정규식 3개와 {낱말: [(종류, 값)]} 색인을 만든다(문장 길이에 비례해 한 번만 훑는다)."""
+    index, ascii_words, long_words, short_words = {}, set(), set(), set()
+
+    def add(word, entry, substring_ok=False):
+        w = _norm_evidence(word)
+        if not w:
+            return
+        index.setdefault(w, []).append(entry)
+        if w.isascii():
+            ascii_words.add(w)
+        elif len(w) <= 2 and not substring_ok:
+            short_words.add(w)
+        else:
+            long_words.add(w)
+    for i, (_cat, _names, said) in enumerate(_APP_PROGRAMS):
+        for w in said:
+            add(w, ("p", i))
+    for cat, words in _APP_CATEGORY_WORDS.items():
+        for w in tuple(words) + (cat, *cat.split("/")):
+            add(w, ("c", cat), substring_ok=_norm_evidence(w) in _APP_CATEGORY_SUBSTRING_WORDS)
+
+    def alt(words):
+        return "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True))
+    r_ascii = re.compile(r"(?<![a-z0-9])(" + alt(ascii_words) + r")(?![a-z0-9])")
+    r_long = re.compile("(" + alt(long_words) + ")")
+    r_short = re.compile(r"(?<![가-힣a-z0-9])(" + alt(short_words) + r")(?=(?:" + _SHORT_PARTICLES + r")?(?![가-힣a-z0-9]))")
+    return index, r_ascii, r_long, r_short
+
+
+_APP_SAID_INDEX, _APP_RE_ASCII, _APP_RE_LONG, _APP_RE_SHORT = _build_app_said_index()
+
+
+def _app_said(text_norm: str, spaced: str):
+    """문장에서 사용자가 말한 (분류어 집합, 프로그램 번호 집합, 분류어로 말한 낱말 집합)."""
+    cats, progs, words = set(), set(), set()
+    hits = [m.group(1) for m in _APP_RE_ASCII.finditer(text_norm)] + [m.group(1) for m in _APP_RE_LONG.finditer(text_norm)] \
+        + [_norm_evidence(m.group(1)) for m in _APP_RE_SHORT.finditer(spaced)]
+    for h in hits:
+        for kind, val in _APP_SAID_INDEX.get(h, ()):
+            if kind == "c":
+                cats.add(val)
+                words.add(h)
+            else:
+                progs.add(val)
+    return cats, progs, words
+
+
+def _keep_expense_category(value, ctx):
+    v = _norm_evidence(value)
+    if not v or v in ("전체", "모두", "전부", "all"):
+        return None
+    words = {v}
+    for group in _EXPENSE_CATEGORY_GROUPS:
+        if v in {_norm_evidence(g) for g in group}:
+            words.update(_norm_evidence(g) for g in group)
+    return value if any(_word_in(w, ctx[0], ctx[1]) for w in words) else None
+
+
+def _keep_note_tag(value, ctx):
+    v = _norm_evidence(value)
+    return value if v and _word_in(v, ctx[0], ctx[1]) else None
+
+
+def _app_forms(value) -> set:
+    """모델이 준 앱 값의 비교용 형태 — 원본과 .exe 를 뗀 것 둘 다(소문자, 공백·_·- 제거)."""
+    raw = str(value or "").strip()
+    forms = {_norm_evidence(raw), _norm_evidence(re.sub(r"\.exe$", "", raw, flags=re.I))}
+    return {f for f in forms if f}
+
+
+def _program_matches(forms: set, names) -> bool:
+    ns = {_norm_evidence(re.sub(r"\.exe$", "", n)) for n in names} | {_norm_evidence(n) for n in names}
+    for f in forms:
+        for n in ns:
+            if f == n or (len(f) >= 4 and len(n) >= 4 and (f in n or n in f)):
+                return True
+    return False
+
+
+def _category_target(cat: str, said_words) -> str:
+    """분류 이름 -> 도구가 받는 target 값("영상/음악"은 한쪽만 말했으면 그쪽만)."""
+    if cat == "영상/음악":
+        video = bool(said_words & {"영상", "동영상"})
+        music = bool(said_words & {"음악", "노래"})
+        if video and not music:
+            return "영상"
+        if music and not video:
+            return "음악"
+    return cat
+
+
+def _keep_app_target(value, ctx):
+    forms = _app_forms(value)
+    if not forms or forms & {_norm_evidence(w) for w in _APP_ALL_WORDS}:
+        return None
+    text, spaced = ctx
+    said_cats, said_progs, said_words = _app_said(text, spaced)
+    prog_cats = {_APP_PROGRAMS[i][0] for i in said_progs if _APP_PROGRAMS[i][0]}
+    value_progs = {i for i, (_c, names, said) in enumerate(_APP_PROGRAMS) if _program_matches(forms, tuple(names) + tuple(said))}
+    value_cat = next((c for c in _APP_CATEGORY_WORDS if forms & ({_norm_evidence(c)} | {_norm_evidence(x) for x in c.split("/")})), None)
+    # (1) 값이 사용자가 말한 프로그램이다
+    if value_progs & said_progs:
+        return value
+    # (2) 값이 분류 이름이고, 사용자가 그 분류어나 그 분류의 프로그램을 말했다
+    if value_cat and (value_cat in said_cats or value_cat in prog_cats):
+        return value
+    # (3) 값이 어떤 분류의 프로그램인데 사용자는 분류어만 말했다 — 분류 전체를 물었으니 분류 이름으로 고친다
+    if value_progs and not said_progs:
+        for i in sorted(value_progs):
+            cat = _APP_PROGRAMS[i][0]
+            if cat and cat in said_cats:
+                return _category_target(cat, said_words)
+    # (4) 표에 없는 앱 이름은 사용자 문장에 그대로 있을 때만(표에 있는 값은 위에서 판정이 끝났다)
+    if not value_progs and not value_cat:
+        return value if any(_word_in(f, text, spaced) for f in forms) else None
+    return None
+
+
+# 도구·기능 이름 낱말은 검색어의 근거가 되지 못한다("일정 찾아줘"에 모델이 keyword="일정"을 준 경우).
+# 단, 검색어의 맨 앞·맨 뒤에서만 뗀다 — 가운데에 있으면 실제 제목의 일부일 수 있어("제품 일정 회의") 그대로 둔다.
+_SEARCH_TOOL_WORDS = frozenset(_norm_evidence(w) for w in (
+    "일정", "스케줄", "캘린더", "찾아줘", "찾아", "찾기", "검색", "검색해줘", "보여줘", "알려줘", "조회", "목록", "메모", "지출", "앱",
+    "사용시간", "사용", "시간", "할일", "있어", "있나", "뭐", "내", "나의"))
+_PARTICLE_TAIL = re.compile(r"(?:으로|에서|에게|이랑|하고|까지|부터|을|를|은|는|이|가|의|에|도|만|과|와)$")
+
+
+def _is_tool_word(tok: str) -> bool:
+    base = _PARTICLE_TAIL.sub("", tok) if len(tok) > 2 else tok
+    return _norm_evidence(tok) in _SEARCH_TOOL_WORDS or _norm_evidence(base) in _SEARCH_TOOL_WORDS
+
+
+def _keep_search_keyword(value, ctx):
+    if _norm_evidence(value) in _SEARCH_TOOL_WORDS:      # "할 일"처럼 띄어 쓴 도구 낱말
+        return None
+    toks = str(value or "").split()
+    while toks and _is_tool_word(toks[0]):
+        toks.pop(0)
+    while toks and _is_tool_word(toks[-1]):
+        toks.pop()
+    kept = []
+    for tok in toks:
+        base = _PARTICLE_TAIL.sub("", tok) if len(tok) > 2 else tok
+        if _norm_evidence(tok) and (_word_in(tok, ctx[0], ctx[1]) or (base and _word_in(base, ctx[0], ctx[1]))):
+            kept.append(tok)
+    return " ".join(kept) if kept else None
+
+
+_PERIOD_EVIDENCE = re.compile(
+    r"\d+\s*(?:일|주|달|개월|년|days?|weeks?|months?)|이번\s*(?:주|달|월|분기)|다음\s*(?:주|달|월)|지난\s*(?:주|달|월)|올해|내년|오늘|내일|모레|글피|"
+    r"한\s*달|두\s*달|일주일|이주일|한\s*주|두\s*주|보름|주일|앞으로|향후|[월화수목금토일]요일|\d{1,2}\s*월|연말|연초|올\s*한\s*해|"
+    r"한\s*해|상반기|하반기|주말|분기|내일모레|today|tomorrow|week|month|year", re.I)
+
+
+def _keep_days_range(value, ctx):
+    return value if _PERIOD_EVIDENCE.search(ctx[1]) else None
+
+
+_GROUND_FILTER_RULES = {
+    "get_spending_summary": {"category": _keep_expense_category},
+    "list_todos": {"status": _keep_todo_status},
+    "list_notes": {"tag": _keep_note_tag},
+    "get_usage_report": {"target": _keep_app_target},
+    "get_usage_trend": {"target": _keep_app_target},
+    "get_goal_status": {"target": _keep_app_target},
+    "search_events": {"keyword": _keep_search_keyword, "days_range": _keep_days_range},
+    "local_search_events": {"keyword": _keep_search_keyword, "days_range": _keep_days_range},
+    "get_upcoming_events": {"days": _keep_days_range},
+    "local_get_upcoming_events": {"days": _keep_days_range},
+}
+# 정리 뒤 비게 되면 도구를 부르지 않고 "무엇을 찾을지" 한 가지만 묻는 필수 인자(core/reply_fallback.py 의 정보 부족 질문)
+_GROUND_REQUIRED_ARGS = {"search_events": ("keyword",), "local_search_events": ("keyword",)}
+
+
+def _missing_required_after_grounding(func_name, args):
+    for key in _GROUND_REQUIRED_ARGS.get(func_name, ()):
+        if not str((args or {}).get(key) or "").strip():
+            return key
+    return None
+
+
+def _ground_filter_args(func_name, args, user_text: str):
+    """모델이 준 필터 인자를 사용자 현재 문장과 대조한다 — 근거 있으면 그대로, 반대 근거가 분명하면 교정(할 일 상태·앱 분류),
+    근거가 전혀 없으면 지운다(도구 기본값 사용). 기간(period)·날짜 같은 다른 인자는 건드리지 않는다.
+    지운·고친 인자는 도구·인자 이름만 로그에 남긴다(문장 원문은 남기지 않는다)."""
+    rules = _GROUND_FILTER_RULES.get(func_name)
+    if not rules or not isinstance(args, dict):
+        return args
+    ctx = (_norm_evidence(user_text), str(user_text or "").lower())
+    fixed = dict(args)
+    for key, keep in rules.items():
+        if key not in fixed or fixed[key] in (None, ""):
+            continue
+        try:
+            new = keep(fixed[key], ctx)
+        except Exception:
+            new = fixed[key]          # 판정이 실패하면 모델 값을 그대로 둔다(오제거 방지)
+        if new is None:
+            print(f"[AI 워커] 근거 없는 인자 제거: {func_name}.{key}")
+            fixed.pop(key, None)
+        else:
+            if new != fixed[key]:
+                print(f"[AI 워커] 인자 교정: {func_name}.{key}")
+            fixed[key] = new
     return fixed
 
 
@@ -4219,26 +4562,7 @@ def _slow_pc_reply(tool_result: str, asked_slow: bool, cpu: float = None, ram: f
             f"특정 프로그램이 느리다면 그 프로그램을 다시 켜 보세요.\n참고로 CPU를 많이 쓰는 프로그램을 보여드려요.{top_text} {card_hint}")
 
 
-# "루미 기능 설명해줘" — 전체 소개(예시 문장은 2026-10-19 실제 앱·점검 스크립트에서 동작을 확인한 것)
-_FEATURE_OVERVIEW = (
-    "루미가 할 수 있는 일을 소개할게요. 따옴표 안처럼 말하면 돼요.\n"
-    "- 일정·캘린더: \"내일 오후 3시 회의 잡아줘\", \"오늘 일정 알려줘\"\n"
-    "- 할 일: \"할 일에 우유 사기 추가해줘\"\n"
-    "- 메모: \"메모에 발표 준비 저장해줘\"\n"
-    "- 타이머·알림: \"10분 뒤에 알려줘\", \"매일 아침 9시에 물 마시라고 알려줘\"\n"
-    "- PC 상태: \"내 컴퓨터 상태 어때?\", \"이번주 컴퓨터 상태 추이 보여줘\"\n"
-    "- PC 정리: \"임시 파일 얼마나 있어?\", \"대용량 파일 찾아줘\"\n"
-    "- 보안 점검: \"내 PC 안전해?\", \"악성코드 검사해줘\", \"네트워크 보안 점검해줘\"\n"
-    "- 파일 찾기: \"지난주에 받은 PDF 찾아줘\", \"다운로드 폴더 열어줘\"\n"
-    "- 최저가 검색: \"아이폰 16 최저가 알려줘\"\n"
-    "- 가계부: \"커피 4500원에 샀어\", \"이번달 지출 보여줘\"\n"
-    "- 앱 사용 시간: \"앱 사용 기록 시작해줘\", \"오늘 앱 사용 시간 알려줘\"\n"
-    "- 실시간 감시: \"실시간 감시 시작해줘\"\n"
-    "- 스마트 기기: \"연결된 기기 뭐 있어?\", \"거실 전등 켜줘\"\n"
-    "- 요약·번역·메일 초안: \"이 글 요약해줘: (글)\", \"팀장님께 회의 늦는다는 메일 초안 써줘\"\n"
-    "- 데이터 백업·활동 기록: \"데이터 백업해줘\", \"최근 활동 이력 보여줘\"\n"
-    "특정 기능의 자세한 사용법은 \"타이머 사용법 알려줘\"처럼 기능 이름을 넣어 물어보세요."
-)
+# "루미 기능 설명해줘" — 전체 소개는 core/reply_overview.py 한 곳에서 만든다(보고서 + 기능별 사용 예 제안).
 
 
 _ACTIVITY_HEADER = re.compile(r"^\[🧾 활동 이력\] \(최근 (?P<n>\d+)건\)$")
@@ -4722,6 +5046,22 @@ def _build_temp_files_reply(raw_results: str):
         return None
 
 
+# 시작프로그램(analyze_startup_impact) — 이름을 다듬어 묶은 보고서 + 시작 앱 설정 제안(core/reply_startup.py). 합성 답 안에서는 쓰지 않는다.
+def _build_startup_report_reply(raw_results: str):
+    if getattr(_COMPOSITE, "on", False):
+        return None
+    try:
+        built = _reply_startup.build(raw_results)
+        if built is None:
+            return None
+        text, offers = built
+        _add_reply_offers(offers)
+        return text
+    except Exception as e:
+        print(f"[시작프로그램 답변 오류] {type(e).__name__}: {e}")
+        return None
+
+
 # 로그인 상태(get_login_status) — 내부 용어를 숨기고 해요체로(core/reply_login.py)
 def _build_login_status_reply(raw_results: str):
     if getattr(_COMPOSITE, "on", False):
@@ -5024,6 +5364,7 @@ _DETERMINISTIC_REPLY_BUILDERS = (
     _build_disable_risky_firewall_reply,
     _build_duplicate_files_reply,
     _build_large_files_reply,
+    _build_startup_report_reply,
     _build_startup_impact_reply,
     _build_installed_programs_summary,
     _build_installed_programs_reply,
@@ -7898,6 +8239,15 @@ class AIWorker(QThread):
             self.user_text = question
             _QUESTION_LOCAL.text = question
             return False
+        if name == _reply_overview.EXAMPLE_FUNC:
+            # 기능 소개 뒤 기능 이름 선택 — 도구를 실행하지 않고 고정 표의 사용 예만 말한다(모델 호출 없음)
+            example = _reply_overview.example_reply(args.get("name"))
+            if example:
+                _say(example)
+                _add_reply_offers(_reply_overview.offers())   # 다른 기능도 이어서 고를 수 있게 다시 등록
+            else:
+                _say("그 기능의 사용 예는 찾지 못했어요.")
+            return True
         if name not in func_map:
             _say("지금은 그 기능을 쓸 수 없어요.")
             return True
@@ -8806,8 +9156,10 @@ class AIWorker(QThread):
             # "악성코드를 제거할 수 있습니다"처럼 없는 기능을 덧붙였다. 예시 문장은 실제 앱에서 동작을 확인한 것들이다.
             if is_explanation and allowed_category_funcs is None:
                 self.chat_history.append({'role': 'user', 'content': self.user_text})
-                self.chat_history.append({'role': 'assistant', 'content': _FEATURE_OVERVIEW})
-                self.response_ready.emit(f"🤖 로컬 비서: {_FEATURE_OVERVIEW}")
+                overview, overview_offers = _reply_overview.build()
+                self.chat_history.append({'role': 'assistant', 'content': overview})
+                _add_reply_offers(overview_offers)   # 기능 이름을 말하면 사용 예를 보여 준다(모델·도구 없이)
+                self.response_ready.emit(f"🤖 로컬 비서: {overview}")
                 return
 
             # ── 단순 대화는 tool 없이 전송 (속도 대폭 향상) ──
@@ -9304,6 +9656,14 @@ class AIWorker(QThread):
                             args['price'] = resolved_price
 
                     # ── 파일 검색: 조건은 LLM 대신 사용자 문장에서 결정론적으로 추출 ──
+                    # ── 그 밖의 조회 도구: 사용자가 말하지 않은 필터 인자(분류·상태·태그·앱·키워드·기간)는 버린다 ──
+                    if func_name in _GROUND_FILTER_RULES:
+                        args = _ground_filter_args(func_name, args, self.user_text)
+                        _miss = _missing_required_after_grounding(func_name, args)
+                        if _miss:   # 정리 뒤 필수 인자(검색어)가 비면 도구를 부르지 않고 한 가지만 묻는다
+                            failures.append((func_name, args, TypeError(f"missing 1 required positional argument: '{_miss}'")))
+                            continue
+
                     if func_name in ('search_files', 'find_large_files'):
                         args = _ground_file_search_args(args, self.user_text)   # 사용자가 말하지 않은 종류·키워드는 버린다
                     if func_name == 'search_files':
