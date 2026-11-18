@@ -77,12 +77,20 @@ def build(raw):
 
 
 _FILLER = re.compile(r"오늘|어제|이번\s*주|이번\s*달|지금까지|앱|프로그램|사용\s*시간|화면\s*시간|알려\s*줘|알려|보여\s*줘|보여|뭐야|얼마야|어때|좀|줘|요|내|나의|[\s?.!]")
+# "내가 오늘 앱 얼마나 썼어"의 "내가/제가"를 먼저 먹는다. 한 글자 필러(쓴·써·것·거)는 앱 이름과 헷갈리지 않게 동사·어미 덩어리로만 먹는다
+_FILLER_USED = re.compile(r"내가|제가|저는|" + _FILLER.pattern +
+                          r"|무슨|어떤|어느|많이|제일|가장|자주|얼마나|(?:썼|쓴|써|사용했)\S*|거야|거예요|거지")
 _NOT_PLAIN = re.compile(r"목표|추이|늘었|늘어|줄었|줄어|보다|시작|꺼|켜|멈|중지|상태|설정|기록")
 
 
 def is_plain_usage_question(question: str) -> bool:
     """"오늘 앱 사용시간 알려줘"처럼 특정 앱·목표 없이 전체 사용 시간만 묻는 말."""
     q = question or ""
-    if not re.search(r"사용\s*시간|화면\s*시간", q) or _NOT_PLAIN.search(q):
+    if _NOT_PLAIN.search(q):
         return False
-    return _FILLER.sub("", q) == ""
+    if re.search(r"사용\s*시간|화면\s*시간", q):
+        return _FILLER.sub("", q) == ""
+    # "오늘 앱 얼마나 썼어?"·"오늘 무슨 앱 많이 썼어?" — 특정 앱 이름 없이 전체 사용량을 묻는 말도 같은 조회다
+    if re.search(r"(?:앱|프로그램)", q) and re.search(r"얼마나\s*(?:썼|쓴|사용했|써)|(?:무슨|어떤|어느)\s*(?:앱|프로그램).*(?:많이|제일|가장|자주)\s*(?:썼|쓴|사용했|써)", q):
+        return _FILLER_USED.sub("", q) == ""
+    return False

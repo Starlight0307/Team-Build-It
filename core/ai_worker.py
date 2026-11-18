@@ -5787,10 +5787,28 @@ def _must_keep_notices(raw: str, summary: str) -> str:
     return ("\n" + "\n".join(out)) if out else ""
 
 
+def _compile_keywords(keywords, *, tail=""):
+    """키워드 목록 -> 한 정규식(공용 판단 헬퍼). 글자 사이의 띄어쓰기는 있든 없든(탭·줄바꿈·전각 공백 포함) 같은 말로 본다.
+    영문·숫자 단어가 다른 영문·숫자에 붙은 것("mpc 정리")은 아니다. tail 은 키워드 바로 뒤에 와야 하는 정규식(단어 경계)."""
+    alts = []
+    for kw in keywords:
+        chars = [c for c in str(kw).lower() if not c.isspace()]
+        if chars:            # 글자 사이 띄어쓰기는 있든 없든 같은 말 — "총점검"도 "총 점검"도 잡는다
+            alts.append(r"\s*".join(re.escape(c) for c in chars))
+    return re.compile(r"(?<![a-z0-9])(?:" + "|".join(alts) + ")" + tail)
+
+
+def _contains_any_compact(text, matcher) -> bool:
+    return bool(matcher.search(str(text or "").lower()))
+
+
 _DAILY_SUMMARY_KEYWORDS = (
     '하루 브리핑', '오늘 브리핑', '데일리 브리핑', '모닝 브리핑',
-    '통합 브리핑', '전체 브리핑', '한번에 브리핑', '종합 브리핑',
+    '통합 브리핑', '전체 브리핑', '한번에 브리핑', '종합 브리핑', '아침 브리핑',
 )
+
+
+_DAILY_SUMMARY_RE = _compile_keywords(_DAILY_SUMMARY_KEYWORDS)
 
 
 def _is_daily_summary_request(text_lower: str) -> bool:
@@ -5810,7 +5828,7 @@ def _is_daily_summary_request(text_lower: str) -> bool:
     AIWorker.run() 전체를 구동하지 않고도(Ollama 없이) 이 판단 로직 하나만
     빠르게 회귀 테스트하기 위함 — 다른 fast-path 키워드 세트와 겹치는지가
     이 기능에서 가장 위험한 부분이라 직접 테스트가 필요했다."""
-    return any(kw in text_lower for kw in _DAILY_SUMMARY_KEYWORDS)
+    return _contains_any_compact(text_lower, _DAILY_SUMMARY_RE)
 
 
 # 합성 답(하루 브리핑·PC 종합 점검·PC 정리)은 맨 끝에 질문 한 줄만 남긴다 — 구간 원문 끝의 "제가 ~해 드릴까요?"와 👉 질문 줄은
@@ -6001,6 +6019,8 @@ _PC_HEALTH_CHECK_KEYWORDS = (
 
 
 _PC_HEALTH_CHECK_NEGATION_MARKERS = ('하지 마', '하지마', '하지 말', '말고', '필요 없', '필요없')
+_PC_HEALTH_CHECK_RE = _compile_keywords(_PC_HEALTH_CHECK_KEYWORDS)
+_NEGATION_RE = _compile_keywords(_PC_HEALTH_CHECK_NEGATION_MARKERS)
 
 # ChatGPT 검수(2026-09-22) 지적: 부분 문자열 매칭이라 "전체 점검 하지 마"나
 # "전체 점검 말고 네트워크만 봐줘"에도 "전체 점검"이 그대로 들어있어서
@@ -6016,9 +6036,9 @@ def _is_pc_health_check_request(text_lower: str) -> bool:
     가로채는 회귀가 생긴다 — 반드시 "종합/전체/다/한번에" 같은 "전부 다"를
     뜻하는 수식어 + "점검/진단"이 함께 있는, 명시적으로 다중 영역을 가리키는
     표현만 좁게 잡는다."""
-    if not any(kw in text_lower for kw in _PC_HEALTH_CHECK_KEYWORDS):
+    if not _contains_any_compact(text_lower, _PC_HEALTH_CHECK_RE):      # "pc 종합점검"처럼 띄어쓰기가 달라도 같은 말이다
         return False
-    if any(neg in text_lower for neg in _PC_HEALTH_CHECK_NEGATION_MARKERS):
+    if _contains_any_compact(text_lower, _NEGATION_RE):
         return False
     return True
 
@@ -6068,9 +6088,15 @@ _SECURITY_COMBOS = (
 )
 
 
+_SECURITY_SINGLE_EXCLUDE_RE = _compile_keywords(_SECURITY_SINGLE_EXCLUDE)
+# "포트 열려 있는지 봐줘"는 조회지만 "80번 포트 열려 있게 해줘"는 바꾸라는 말이다 — 조회 표현만 가로챈다
+_PORT_STATE_RE = _compile_keywords(("포트 열려 있", "포트 열려있", "포트가 열려"))
+_PORT_CHANGE_RE = re.compile(r"게\s*(?:해|만들|설정|바꿔|바꾸)|열어|열려\s*있게|열리게|열도록|열\s*수\s*있게|오픈|열게")
+
+
 def _single_security_check_request(text_lower: str):
     """보안 점검(또는 한 분야 리포트) 하나를 바로 실행할 요청이면 그 함수 이름, 아니면 None."""
-    if any(x in text_lower for x in _SECURITY_SINGLE_EXCLUDE):
+    if _contains_any_compact(text_lower, _SECURITY_SINGLE_EXCLUDE_RE):
         return None
     for keywords, func_name in _SECURITY_REPORTS:
         if any(k in text_lower for k in keywords):
@@ -6078,6 +6104,8 @@ def _single_security_check_request(text_lower: str):
     for words, func_name in _SECURITY_COMBOS:
         if all(w in text_lower for w in words):
             return func_name
+    if _contains_any_compact(text_lower, _PORT_STATE_RE) and not _PORT_CHANGE_RE.search(text_lower):
+        return "get_listening_ports"
     for keywords, func_name in _SECURITY_SINGLE_CHECKS:
         if any(k in text_lower for k in keywords):
             return func_name
@@ -6301,7 +6329,7 @@ def _is_calendar_file_search_request(text_lower: str) -> bool:
         return False
     if not any(kw in text_lower for kw in _CALENDAR_FILE_SEARCH_ACTION_KEYWORDS):
         return False
-    if any(neg in text_lower for neg in _CALENDAR_FILE_SEARCH_NEGATION_MARKERS):
+    if _contains_any_compact(text_lower, _NEGATION_RE):
         return False
     return True
 
@@ -6400,9 +6428,16 @@ def _build_calendar_file_search(func_map: dict, get_active_calendar) -> str:
 _PC_CLEANUP_KEYWORDS = (
     '디스크 정리', '저장공간 정리', '저장 공간 정리', '용량 정리',
     'pc 정리',  # AIWorker.run()이 text_lower = self.user_text.lower()로 비교하므로 소문자로 둔다
-    '컴퓨터 정리', '정리 후보', '정리할 거 있으면',
+    '컴퓨터 정리', '정리 후보', '정리할 거 있으면', '컴퓨터 청소', 'pc 청소', '피씨 정리', '피시 정리',
     '디스크가 부족한 이유', '용량을 많이 차지', '뭐가 용량을 차지', '무엇이 용량을 차지',
 )
+
+
+# 키워드 뒤에는 조사·어미·끝만 온다 — "컴퓨터 청소기 추천해줘"·"pc 청소 업체"·"컴퓨터 정리정돈"은 PC 정리가 아니다
+_PC_CLEANUP_RE = _compile_keywords(
+    _PC_CLEANUP_KEYWORDS,
+    tail=r"(?=$|[^가-힣a-z0-9]|(?:을|를|이|가|은|는|도|좀|해|하|할|했|합|줘|주|부탁|후보|가능|돼|되|뭐|어떻|있|없))"
+         r"(?!\s*(?:기|업체|업자|용품|도구|서비스|비용|가격|추천|대행|알바))")
 
 
 def _is_pc_cleanup_request(text_lower: str) -> bool:
@@ -6416,9 +6451,9 @@ def _is_pc_cleanup_request(text_lower: str) -> bool:
     진단형 표현만 포함한다. "임시 파일 정리해줘"처럼 이미 구체적인 대상이
     명시된 단일 의도 요청은 여기 걸리지 않고 기존 경로(개별 위험 동작 확인
     흐름)를 그대로 탄다."""
-    if not any(kw in text_lower for kw in _PC_CLEANUP_KEYWORDS):
+    if not _contains_any_compact(text_lower, _PC_CLEANUP_RE):          # "pc정리"처럼 띄어쓰기가 달라도 같은 말이다
         return False
-    if any(neg in text_lower for neg in _PC_HEALTH_CHECK_NEGATION_MARKERS):
+    if _contains_any_compact(text_lower, _NEGATION_RE):
         return False
     return True
 
@@ -8466,9 +8501,9 @@ class AIWorker(QThread):
 
     _FAST_EVENTS_DAYS = {"어제": -1, "오늘": 0, "내일": 1, "모레": 2}
     _FAST_EVENTS = re.compile(
-        r"(?P<day>어제|오늘|내일|모레)\s*(?:의\s*)?(?:일정|스케줄|약속)\s*(?:을\s*|이\s*|좀\s*)?"
-        r"(?:알려\s*(?:줘|주세요|줄래요?|주라)|보여\s*(?:줘|주세요|줄래요?|주라)|확인해\s*(?:줘|주세요)|"
-        r"뭐\s*(?:있어요?|있지|있나요|있니|야|예요)|있어요?|있나요|있니|어떻게\s*(?:돼요?|되나요)|어때요?)")
+        r"(?P<day>어제|오늘|내일|모레)\s*(?:의\s*)?(?:일정|스케줄|약속)"
+        r"(?:\s*(?:을\s*|이\s*|좀\s*)?(?:알려\s*(?:줘|주세요|줄래요?|주라)|보여\s*(?:줘|주세요|줄래요?|주라)|확인해\s*(?:줘|주세요)|"
+        r"뭐\s*(?:있어요?|있지|있나요|있니|야|예요)|있어요?|있나요|있니|어떻게\s*(?:돼요?|되나요)|어때요?))?")      # "내일 일정"만 허용 — "내일 일정을"·"일정 좀"은 조각이다
 
     def _fast_events_by_date(self) -> bool:
         """"내일 일정 뭐 있어?"처럼 하루의 일정을 묻는 단순 질문이면 모델을 거치지 않고 그 날짜 조회를 직접 실행한다.
@@ -8503,7 +8538,7 @@ class AIWorker(QThread):
     # 소리 관련 묵음(볼륨 묵음 등)은 방해금지 시간대가 아니고, 다른 요청이 섞이면 뒷 요청이 버려지므로 모델에 맡긴다
     _QUIET_SOUND = re.compile(r"볼륨|소리|스피커|음량|마이크|사운드|음소거|오디오|알림음|무음")
     _QUIET_MIXED = re.compile(r"주고|하고|그리고|랑|도알려|도보여|도확인|일정|날씨|타이머|메모|할일|파일|그다음|그뒤|또|및|함께")
-    _QUIET_STATUS = re.compile(r"상태|알려|보여|확인|설정(?:돼|된|되어)|켜져|꺼져|켜있|꺼있|있어|있나|어때|어떻게돼|어떻게되")
+    _QUIET_STATUS = re.compile(r"상태|알려|보여|확인|설정(?:돼|된|되어)|켜져|꺼져|켜있|꺼있|있어|있나|어때|어떻게돼|어떻게되|(?:방해금지|묵음)(?:야|니|인가|인지|인가요|이야|예요|이에요)$")
 
     def _fast_quiet_status(self) -> bool:
         """"방해금지 상태 알려줘"처럼 상태를 묻는 짧은 질문이면 모델 없이 get_quiet_hours_status를 직접 실행한다.

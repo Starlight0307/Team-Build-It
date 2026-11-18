@@ -66,12 +66,19 @@ _TEMP_WORD = re.compile(r"임시\s*파일|임시파일|temp\s*파일|tmp\s*파�
 _TEMP_ACTION = re.compile(r"지워|지우|삭제|정리|비워|비우|청소|치워|없애|제거|되돌|복구|복원|clean|delete|remove")
 _TEMP_OTHER = re.compile(r"어떻게|왜|뭐야|뭔데|어디|위치|경로|폴더|그리고|하고|그런데|근데|이랑|면\s")     # 방법·원인·위치·복합 요청은 모델 쪽 몫
 _TEMP_ASK = re.compile(r"얼마|몇|있어|있나|있니|있는지|있을까|용량|크기|많|확인|점검|보여|알려|조회|스캔|검사|얼만큼")
+# "임시 파일 정리할 거 있어?"·"정리할 임시 파일 있어?" — 정리하라는 말이 아니라 있는지 묻는 말이다(읽기 전용 확인으로 답하고, 정리는 그 뒤 제안으로 잇는다).
+# "정리할"류를 걷어 낸 뒤에도 정리·삭제 말이 남으면(예: "정리해줘") 아니다
+# 정리할 "것"을 묻는 말만이다 — "정리할 수 있어?"(가능 여부·정리 요청)는 정리 의도라 기존 경로가 맡는다
+_TEMP_CAN_DO = re.compile(r"(?:정리|삭제|청소)\s*할(?=\s*(?:거|것|게|건|걸|만한|임시|파일|tmp|temp))")
+_TEMP_HAS = re.compile(r"있어|있나|있니|있는지|있을까|있을지|남았|남아")
 
 
 def is_scan_question(text) -> bool:
     t = str(text or "").strip().lower()
     if not t or len(t) > 40 or not _TEMP_WORD.search(t):
         return False
+    if _TEMP_HAS.search(t):
+        t = _TEMP_CAN_DO.sub("", t)
     if _TEMP_ACTION.search(t) or _TEMP_OTHER.search(t):
         return False
     return bool(_TEMP_ASK.search(t)) or _TEMP_WORD.sub("", t).strip(" ?!.~") in ("", "가", "는", "은", "도")
