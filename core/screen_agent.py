@@ -1069,7 +1069,7 @@ class ScreenAgentWorker(QThread):
                     if wrong:
                         return self.finished_task.emit(
                             False, f"작업 결과를 확인하지 못했어요. 보고하려던 값({', '.join(wrong[:3])})이 화면과 달라요. "
-                                   "화면을 직접 확인해 주세요.", history)
+                                   "화면을 직접 확인해 보시면 돼요.", history)
                     act["summary"] = with_displayed_value(act.get("summary") or act.get("thought") or "", elements, self.task)
                 if act["action"] in ("done", "fail"):
                     self.step_started.emit(step, describe_action(act))
@@ -1093,7 +1093,7 @@ class ScreenAgentWorker(QThread):
                     if oversteps(a, self.task):
                         oversteps_seen += 1
                         if oversteps_seen >= 2:   # 결과가 보이는데 모델이 계속 열려고 한다 (실측: App Store) — 여기까지가 요청이다
-                            return self.finished_task.emit(True, "찾은 결과를 화면에 띄워 뒀어요. 더 진행할지는 직접 골라 주세요.", history)
+                            return self.finished_task.emit(True, "찾은 결과를 화면에 띄워 뒀어요. 더 진행할지는 직접 고르시면 돼요.", history)
                         self._notes.append(f"주의: 보거나 찾기만 하는 요청이라 '{a.get('target')}'을(를) 누르지 않았습니다. 목표가 보이면 done 하세요.")
                         break
                     if a["action"] in ("type", "key") and front_at_view and _front_path() != front_at_view:
@@ -1125,7 +1125,7 @@ class ScreenAgentWorker(QThread):
                             if stale_waits >= 3:
                                 return self.finished_task.emit(
                                     False, "기다려도 화면이 바뀌지 않아서 작업을 멈췄어요. "
-                                           "원하는 창을 앞에 띄운 뒤 다시 요청해 주세요.", history)
+                                           "원하는 창을 앞에 띄운 뒤 다시 요청하시면 돼요.", history)
                             self._notes.append("주의: 기다렸지만 화면이 전혀 바뀌지 않았습니다. 앞선 입력이 다른 창으로 "
                                                "갔을 수 있습니다. 다시 wait 하지 말고 목표 창을 click 하거나 다른 방법을 쓰세요.")
                         else:
@@ -1174,11 +1174,11 @@ class ScreenAgentWorker(QThread):
                 if stalls >= STALL_LIMIT:
                     return self.finished_task.emit(
                         False, f"{STALL_LIMIT}단계 동안 화면이 바뀌지 않아서 멈췄어요. "
-                               "원하는 창을 앞에 띄우거나 요청을 더 구체적으로 해 주세요.", history)
+                               "원하는 창을 앞에 띄우거나 요청을 더 구체적으로 알려 주시면 돼요.", history)
                 self.max_steps = next_budget(self.max_steps, step, progressing)
 
             self.finished_task.emit(False, f"{self.max_steps}단계 안에 끝내지 못해서 멈췄어요. "
-                                           "목표를 더 작게 나눠서 다시 요청해 주세요.", history)
+                                           "목표를 더 작게 나눠서 다시 요청하시면 돼요.", history)
         except Exception as e:
             self.finished_task.emit(False, _friendly_error(e), history)
         finally:
@@ -1406,5 +1406,5 @@ def _friendly_error(e: Exception) -> str:
     if "not found" in text and "model" in text:
         return f"화면 인식 모델({SCREEN_MODEL})이 설치돼 있지 않아요."
     if "connect" in text.lower() or "refused" in text.lower():
-        return "Ollama에 연결하지 못했어요. Ollama가 실행 중인지 확인해 주세요."
+        return "Ollama에 연결하지 못했어요. Ollama가 실행 중인지 확인해 보시면 돼요."
     return f"화면 작업 중 오류가 발생했어요: {text}"

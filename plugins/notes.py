@@ -89,7 +89,7 @@ def set_current_user(user_id: str):
 
 def _require_login() -> str | None:
     if _current_user_id == "guest":
-        return "❌ 메모장은 로그인한 사용자만 사용할 수 있어요. 먼저 로그인해주세요."
+        return "❌ 메모장은 로그인한 사용자만 사용할 수 있어요. 로그인하면 바로 쓸 수 있어요."
     return None
 
 
@@ -245,7 +245,7 @@ def add_note(text: str, tags: str = "") -> str:
     # 다시 말해달라고 한다. 개행도 동일한 이유(목록 출력이 줄 단위 파싱)로 제거.
     text = (text or "").strip().replace("\n", " ").replace("\r", " ")
     if not text:
-        return "⚠️ 어떤 내용을 메모할지 알려주세요."
+        return "⚠️ 어떤 내용을 메모할지 알려 주시겠어요?"
     if len(text) > _MAX_TEXT_LENGTH:
         return f"⚠️ 메모 내용이 너무 길어요({len(text)}자, 최대 {_MAX_TEXT_LENGTH}자) — 조금 줄여서 알려 주시면 저장할 수 있어요."
 
@@ -347,7 +347,7 @@ def search_note(keyword: str) -> str:
 
     keyword = (keyword or "").strip()
     if not keyword:
-        return "⚠️ 어떤 내용을 찾을지 알려주세요."
+        return "⚠️ 어떤 내용을 찾을지 알려 주시겠어요?"
 
     items = _load()["items"]
     matched = [t for t in items if keyword.lower() in t["text"].lower()]
@@ -370,13 +370,13 @@ def _find_note(items: list, item: str):
     무시하며 여러 개 걸리면 추측하지 않고 되묻는다."""
     item = (item or "").strip()
     if not item:
-        return None, "⚠️ 어떤 메모인지 번호나 내용을 알려주세요."
+        return None, "⚠️ 어떤 메모인지 번호나 내용을 알려 주시겠어요?"
 
     if item.isdigit():
         seq = int(item)
         found = next((t for t in items if t["seq"] == seq), None)
         if not found:
-            return None, f"⚠️ {seq}번 메모를 찾을 수 없어요. list_notes로 먼저 확인해주세요."
+            return None, f"⚠️ {seq}번 메모를 찾을 수 없어요. list_notes로 먼저 확인해 보시면 돼요."
         return found, None
 
     matches = [t for t in items if item.lower() in t["text"].lower()]
@@ -415,7 +415,7 @@ def update_note(item: str, new_text: str) -> str:
 
     new_text = (new_text or "").strip().replace("\n", " ").replace("\r", " ")
     if not new_text:
-        return "⚠️ 새 메모 내용을 알려주세요."
+        return "⚠️ 새 메모 내용을 알려 주시겠어요?"
     if len(new_text) > _MAX_TEXT_LENGTH:
         return f"⚠️ 메모 내용이 너무 길어요({len(new_text)}자, 최대 {_MAX_TEXT_LENGTH}자) — 조금 줄여서 알려 주시면 저장할 수 있어요."
 

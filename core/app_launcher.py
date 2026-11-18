@@ -185,7 +185,7 @@ def resolve(name: str, exact: bool = False):
             return shown, path
         if len(partial) > 1:
             raise AppNotFound(f"'{name}'에 맞는 앱이 여러 개예요: " + ", ".join(sorted(partial.values())[:5]))
-    raise AppNotFound(f"'{name}' 앱을 찾지 못했어요. 설치돼 있는지 확인해 주세요.")
+    raise AppNotFound(f"'{name}' 앱을 찾지 못했어요. 설치돼 있는지 확인해 보시면 돼요.")
 
 
 def _wait(check, seconds: float):

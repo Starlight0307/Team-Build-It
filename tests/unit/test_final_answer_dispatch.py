@@ -106,7 +106,7 @@ def test_system_trend_today_result_includes_low_sample_caveat_and_skips_llm(monk
         "- 메모리 평균: 📈 +5.0%p (50.0%p → 55.0%p)\n"
         "- 디스크 여유공간: ➡️ 변화 없음 (80.0%p)\n"
         "※ '오늘'은 아직 끝나지 않은 하루라 어제 하루 전체보다 표본이 적을 수 있어요 — "
-        "표본 수가 적으면 참고용으로만 봐주세요."
+        "표본 수가 적으면 참고용으로만 보시면 돼요."
     )
     result = ai_worker._summarize_tool_results([], raw)
     assert calls == []

@@ -58,7 +58,7 @@ def test_delete_ambiguous_text_asks_for_id(isolated_expense_tracker):
 
 
 def test_delete_empty_item_asks_for_specifics(isolated_expense_tracker):
-    assert "알려주세요" in delete_purchase("")
+    assert "알려 주시겠어요" in delete_purchase("")
 
 
 def test_deleting_one_entry_does_not_affect_others(isolated_expense_tracker):
@@ -108,7 +108,7 @@ def test_edit_without_any_new_value_is_rejected(isolated_expense_tracker):
     mark_as_purchased("이어폰", 50000)
     pid = _extract_id(list_purchases())
     result = edit_purchase(pid)
-    assert "알려주세요" in result
+    assert "알려 주시겠어요" in result
     assert "50,000원" in list_purchases()  # 바뀌지 않았어야 함
 
 

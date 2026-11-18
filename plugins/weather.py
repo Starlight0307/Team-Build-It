@@ -96,7 +96,7 @@ def _resolve_location(city: str):
         coords = tuple(saved_coords) if saved_coords else None
         return (coords[0] if coords else None), (coords[1] if coords else None), saved_city, None if coords else "USE_NAME"
     return None, None, None, (
-        "⚠️ 어느 지역 날씨인지 알려주세요(예: '서울 날씨 어때'). "
+        "⚠️ 어느 지역 날씨인지 알려 주시겠어요?(예: '서울 날씨 어때'). "
         "환경설정 > 날씨에서 기본 지역을 설정해두면 매번 말하지 않아도 돼요."
     )
 

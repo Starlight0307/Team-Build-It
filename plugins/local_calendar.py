@@ -40,7 +40,7 @@ def _require_login() -> str | None:
     내부 캘린더는 로그인한 사용자만 쓸 수 있음 — 로그인 안 하면 일정이
     "guest" 이름으로 저장돼서 다른 비로그인 사용자와 뒤섞일 수 있기 때문."""
     if _current_user_id == "guest":
-        return "❌ 내부 캘린더는 로그인한 사용자만 사용할 수 있어요. 먼저 로그인해주세요."
+        return "❌ 내부 캘린더는 로그인한 사용자만 사용할 수 있어요. 로그인하면 바로 쓸 수 있어요."
     return None
 
 
@@ -352,7 +352,7 @@ def local_create_event(
         return "날짜 형식이 잘못되었습니다. 예: '2025-07-20 14:00'"
     except Exception as e:
         print(f"[내부 캘린더] 일정 등록 오류: {e}")
-        return "❌ 일정 등록에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정 등록에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -440,7 +440,7 @@ def local_get_upcoming_events(days=7, max_results: int = 10) -> str:
         return result.strip()
     except Exception as e:
         print(f"[내부 캘린더] 일정 조회 오류: {e}")
-        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 def local_get_events_by_date(date_str: str) -> str:
@@ -474,10 +474,10 @@ def local_get_events_by_date(date_str: str) -> str:
             result += _format_event_line(i, ev)
         return result.strip()
     except ValueError:
-        return "날짜 형식이 맞지 않아요. '2025-07-20'처럼 알려주세요."
+        return "날짜 형식이 맞지 않아요. '2025-07-20'처럼 알려 주시겠어요?"
     except Exception as e:
         print(f"[내부 캘린더] 일정 조회 오류: {e}")
-        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 def local_search_events(keyword: str, days_range: int = 30) -> str:
@@ -495,7 +495,7 @@ def local_search_events(keyword: str, days_range: int = 30) -> str:
     for product in product_keywords:
         if product in keyword_lower:
             return (f"'{keyword}'는 제품명입니다. "
-                   f"가격을 검색하시려면 '얼마', '가격', '최저가' 등의 키워드와 함께 질문해주세요.")
+                   f"가격을 검색하시려면 '얼마', '가격', '최저가' 등의 키워드와 함께 질문하시면 돼요.")
 
     try:
         tz  = ZoneInfo(DEFAULT_TIMEZONE)
@@ -525,7 +525,7 @@ def local_search_events(keyword: str, days_range: int = 30) -> str:
         return result.strip()
     except Exception as e:
         print(f"[내부 캘린더] 일정 검색 오류: {e}")
-        return "❌ 일정을 검색하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정을 검색하지 못했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -548,7 +548,7 @@ def _find_event(events: list, event_id: str, series: bool = False):
         return matches[0], None
     if len(matches) > 1:
         return None, (f"❌ '{title}' 일정이 {len(matches)}개 있어서 어떤 건지 모르겠어요. "
-                      "먼저 일정을 검색한 뒤 어떤 일정인지 알려주세요.")
+                      "먼저 일정을 검색한 뒤 어떤 일정인지 알려 주시겠어요?")
     return None, None
 
 
@@ -604,7 +604,7 @@ def local_update_event(
         return "날짜 형식이 잘못되었습니다. 예: '2025-07-20 14:00'"
     except Exception as e:
         print(f"[내부 캘린더] 일정 수정 오류: {e}")
-        return "❌ 일정 수정에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정 수정에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -641,7 +641,7 @@ def local_delete_event(event_id: str) -> str:
         return f"[🗑️ 일정 삭제 완료 (내부 캘린더)]\n제목 '{event['title']}' 일정이 삭제되었습니다.{hint}"
     except Exception as e:
         print(f"[내부 캘린더] 일정 삭제 오류: {e}")
-        return "❌ 일정 삭제에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정 삭제에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 def local_delete_recurring_series(event_id: str) -> str:
@@ -674,7 +674,7 @@ def local_delete_recurring_series(event_id: str) -> str:
                 f"'{title}' 반복 일정 시리즈 전체({deleted_count}건)가 삭제되었습니다.")
     except Exception as e:
         print(f"[내부 캘린더] 반복 일정 시리즈 삭제 오류: {e}")
-        return "❌ 반복 일정 삭제에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 반복 일정 삭제에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -765,7 +765,7 @@ def local_create_recurring_event(
         return "날짜 형식이 잘못되었습니다. 예: '2025-07-20 14:00'"
     except Exception as e:
         print(f"[내부 캘린더] 반복 일정 등록 오류: {e}")
-        return "❌ 반복 일정 등록에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 반복 일정 등록에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -817,7 +817,7 @@ def local_get_schedule_summary(days: int = 30) -> str:
         )
     except Exception as e:
         print(f"[내부 캘린더] 통계 분석 오류: {e}")
-        return "❌ 일정 통계를 분석하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정 통계를 분석하지 못했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────

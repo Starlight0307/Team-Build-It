@@ -89,7 +89,7 @@ def _apple_call(fn: str, *args):
         return f"❌ {e}"
     except Exception as e:
         print(f"[애플 캘린더] {fn} 오류: {type(e).__name__}: {e}")
-        return [] if fn == "get_upcoming_events_titles" else "❌ 애플 캘린더 작업에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return [] if fn == "get_upcoming_events_titles" else "❌ 애플 캘린더 작업에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 def set_current_user(user_id: str):
@@ -478,7 +478,7 @@ def _get_service(user_id: str = None):
             if not os.path.exists(CREDENTIALS_FILE):
                 raise FileNotFoundError(
                     "credentials.json 파일이 없습니다.\n"
-                    f"'{CREDENTIALS_FILE}' 경로에 저장해주세요."
+                    f"'{CREDENTIALS_FILE}' 경로에 저장하시면 돼요."
                 )
             flow  = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
             creds = flow.run_local_server(port=0, timeout_seconds=_LEGACY_LOGIN_TIMEOUT)
@@ -559,7 +559,7 @@ def _connect_with_saved_token(client_file: str) -> tuple[bool, str]:
             f.write(creds.to_json())
     except Exception as e:
         print(f"[캘린더] 구글 연결 오류: {type(e).__name__}")
-        return False, "❌ 구글 캘린더를 연결하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return False, "❌ 구글 캘린더를 연결하지 못했어요. 잠시 후 다시 해 보시면 돼요."
     clear_google_access_token()
     return True, "✅ 구글 캘린더 연결 완료!\n연결 정보는 이 PC에 암호화해 저장돼서 앱을 다시 켜도 그대로 이어져요."
 
@@ -574,7 +574,7 @@ def connect_google_calendar(cancel_event=None) -> tuple[bool, str]:
                                            GoogleAlreadyLinkedElsewhere, LoginCancelled)
     from data import db
     if _current_user_id == "guest" or not db._current_uid():
-        return False, "❌ 구글 캘린더는 Lumi에 로그인한 뒤 연결할 수 있어요. 먼저 로그인해주세요."
+        return False, "❌ 구글 캘린더는 Lumi에 로그인한 뒤 연결할 수 있어요. 로그인하면 바로 쓸 수 있어요."
     owner = _current_user_id
     client_file = _oauth_client_file()
     if client_file:
@@ -590,20 +590,20 @@ def connect_google_calendar(cancel_event=None) -> tuple[bool, str]:
             access_token, _refresh, google_token = sign_in_with_google(cancel_event)
             if db._uid_from_token(access_token) != db._current_uid():
                 return False, ("❌ 지금 Lumi 계정에 연결된 구글 계정과 다른 계정이에요.\n"
-                               "연동해둔 구글 계정으로 다시 시도해주세요.")
+                               "연동해둔 구글 계정으로 다시 해 보시면 돼요.")
             done = "✅ 구글 캘린더 연결 완료!\n"
     except GoogleAlreadyLinkedElsewhere as e:
         return False, f"❌ {e}"
     except LoginCancelled:
         return False, "구글 연결을 취소했어요."
     except TimeoutError:
-        return False, "❌ 구글 로그인 대기 시간(1분)이 지났어요. 다시 시도해주세요."
+        return False, "❌ 구글 로그인 대기 시간(1분)이 지났어요. 다시 해 보시면 돼요."
     except Exception as e:
         print(f"[캘린더] 구글 연결 오류: {e}")
-        return False, "❌ 구글 계정 연결에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return False, "❌ 구글 계정 연결에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
     if not google_token:
-        return False, "❌ 구글 캘린더 권한을 받지 못했어요. 다시 시도해주세요."
+        return False, "❌ 구글 캘린더 권한을 받지 못했어요. 다시 해 보시면 돼요."
     set_google_access_token(owner, google_token)
     return True, done + "캘린더 연결은 앱을 끄거나 로그아웃할 때까지, 최대 1시간 유지돼요(이 PC에 저장하지 않아요)."
 
@@ -618,7 +618,7 @@ def setup_calendar_auth() -> str:
         return connect_google_calendar()[1]
 
     if not os.path.exists(CREDENTIALS_FILE):
-        return "❌ 구글 캘린더는 Lumi에 로그인한 뒤 연결할 수 있어요. 먼저 로그인해주세요."
+        return "❌ 구글 캘린더는 Lumi에 로그인한 뒤 연결할 수 있어요. 로그인하면 바로 쓸 수 있어요."
 
     try:
         _import_google()
@@ -635,7 +635,7 @@ def setup_calendar_auth() -> str:
         )
     except Exception as e:
         print(f"[캘린더] 인증 오류: {e}")
-        return "❌ 구글 계정 연결에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 구글 계정 연결에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -762,7 +762,7 @@ def create_event(
         if msg:
             return msg
         print(f"[캘린더] 일정 등록 오류: {e}")
-        return "❌ 일정 등록에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정 등록에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -812,7 +812,7 @@ def get_upcoming_events(days = 7, calendar_id: str = "primary", max_results: int
         if msg:
             return msg
         print(f"[캘린더] 일정 조회 오류: {e}")
-        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 def get_upcoming_events_titles(days: int = 7, calendar_id: str = "primary", max_results: int = 3) -> list:
@@ -885,13 +885,13 @@ def get_events_by_date(date_str: str, calendar_id: str = "primary") -> str:
             result += f"   🆔 {eid}\n\n"
         return result.strip()
     except ValueError:
-        return "날짜 형식이 맞지 않아요. '2025-07-20'처럼 알려주세요."
+        return "날짜 형식이 맞지 않아요. '2025-07-20'처럼 알려 주시겠어요?"
     except Exception as e:
         msg = _login_needed_message(e)
         if msg:
             return msg
         print(f"[캘린더] 일정 조회 오류: {e}")
-        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정을 조회하지 못했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 def search_events(keyword: str, days_range: int = 30, calendar_id: str = "primary") -> str:
@@ -909,7 +909,7 @@ def search_events(keyword: str, days_range: int = 30, calendar_id: str = "primar
     for product in product_keywords:
         if product in keyword_lower:
             return (f"'{keyword}'는 제품명입니다. "
-                   f"가격을 검색하시려면 '얼마', '가격', '최저가' 등의 키워드와 함께 질문해주세요.")
+                   f"가격을 검색하시려면 '얼마', '가격', '최저가' 등의 키워드와 함께 질문하시면 돼요.")
 
     if _apple_active():
         return _apple_call('search_events', keyword, days_range)
@@ -939,7 +939,7 @@ def search_events(keyword: str, days_range: int = 30, calendar_id: str = "primar
         if msg:
             return msg
         print(f"[캘린더] 일정 검색 오류: {e}")
-        return "❌ 일정을 검색하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정을 검색하지 못했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -973,9 +973,9 @@ def _resolve_event_id(service, calendar_id: str, event_id: str, series: bool = F
     if len(matches) == 1:
         return matches[0]["id"]
     if not matches:
-        raise EventLookupError(f"'{title}' 일정을 찾지 못했어요. 일정 제목을 확인해 주세요.")
+        raise EventLookupError(f"'{title}' 일정을 찾지 못했어요. 일정 제목을 확인해 보시면 돼요.")
     raise EventLookupError(f"'{title}' 일정이 {len(matches)}개 있어서 어떤 건지 모르겠어요. "
-                           "먼저 일정을 검색한 뒤 어떤 일정인지 알려주세요.")
+                           "먼저 일정을 검색한 뒤 어떤 일정인지 알려 주시겠어요?")
 
 
 def update_event(
@@ -1036,7 +1036,7 @@ def update_event(
         if msg:
             return msg
         print(f"[캘린더] 일정 수정 오류: {e}")
-        return "❌ 일정 수정에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정 수정에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -1070,7 +1070,7 @@ def delete_event(event_id: str, calendar_id: str = "primary") -> str:
         if msg:
             return msg
         print(f"[캘린더] 일정 삭제 오류: {e}")
-        return "❌ 일정 삭제에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정 삭제에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 def delete_recurring_series(event_id: str, calendar_id: str = "primary") -> str:
@@ -1102,7 +1102,7 @@ def delete_recurring_series(event_id: str, calendar_id: str = "primary") -> str:
         if msg:
             return msg
         print(f"[캘린더] 반복 일정 시리즈 삭제 오류: {e}")
-        return "❌ 반복 일정 삭제에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 반복 일정 삭제에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -1170,7 +1170,7 @@ def create_recurring_event(
         if msg:
             return msg
         print(f"[캘린더] 반복 일정 등록 오류: {e}")
-        return "❌ 반복 일정 등록에 실패했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 반복 일정 등록에 실패했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -1202,7 +1202,7 @@ def get_calendar_list() -> str:
         if msg:
             return msg
         print(f"[캘린더] 목록 조회 오류: {e}")
-        return "❌ 캘린더 목록을 조회하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 캘린더 목록을 조회하지 못했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -1265,7 +1265,7 @@ def get_schedule_summary(days: int = 30, calendar_id: str = "primary") -> str:
         if msg:
             return msg
         print(f"[캘린더] 통계 분석 오류: {e}")
-        return "❌ 일정 통계를 분석하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return "❌ 일정 통계를 분석하지 못했어요. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -1499,10 +1499,10 @@ def open_calendar_website() -> str:
         if opened:
             name = "애플(iCloud)" if _apple_active() else "구글"
             return f"[🌐 브라우저 열기]\n{name} 캘린더 웹사이트를 기본 브라우저로 열었어요.\n{url}"
-        return f"❌ 브라우저를 열 수 없었어요. 아래 주소로 직접 들어가 주세요: {url}"
+        return f"❌ 브라우저를 열 수 없었어요. 아래 주소로 직접 들어가시면 돼요: {url}"
     except Exception as e:
         print(f"[캘린더] 브라우저 열기 오류: {e}")
-        return f"❌ 브라우저를 열지 못했어요. 아래 주소로 직접 들어가 주세요: {url}"
+        return f"❌ 브라우저를 열지 못했어요. 아래 주소로 직접 들어가시면 돼요: {url}"
 
 
 # ─────────────────────────────────────────────

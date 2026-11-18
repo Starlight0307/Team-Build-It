@@ -35,7 +35,7 @@ _LONG_SENTENCE = "안녕하세요, 오늘 날씨가 정말 좋네요. 산책하�
 # ── 입력 검증 ────────────────────────────────────────────────────────
 
 def test_summarize_empty_text_rejected():
-    assert "알려주세요" in tt.summarize_text("")
+    assert "알려 주시겠어요" in tt.summarize_text("")
 
 
 def test_summarize_too_long_text_rejected():
@@ -45,11 +45,11 @@ def test_summarize_too_long_text_rejected():
 
 
 def test_translate_empty_text_rejected():
-    assert "알려주세요" in tt.translate_text("", "영어")
+    assert "알려 주시겠어요" in tt.translate_text("", "영어")
 
 
 def test_translate_empty_target_language_rejected():
-    assert "알려주세요" in tt.translate_text(_LONG_TEXT, "")
+    assert "알려 주시겠어요" in tt.translate_text(_LONG_TEXT, "")
 
 
 def test_translate_too_long_text_rejected():

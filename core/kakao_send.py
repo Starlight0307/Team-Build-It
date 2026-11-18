@@ -54,7 +54,7 @@ def is_yes(text: str) -> bool:
 
 def confirm_question(to: str, text: str) -> str:
     return (f"💬 {to} 대화창을 열어 뒀어요. 받는 사람이 맞나요? 이렇게 보낼까요?\n\n{text}\n\n"
-            "맞으면 \"어 보내줘\"라고 말씀해 주세요. 다른 말을 하면 보내지 않아요.")
+            "맞으면 \"어 보내줘\"라고 하시면 돼요. 다른 말을 하면 보내지 않아요.")
 
 
 def _key(code: int):
@@ -398,12 +398,12 @@ def _open_room_windows(to: str, tab: str) -> bool:
         if search:
             break
     if not search or not _win.is_kakao(_win.foreground()):
-        raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 주세요.")
+        raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 보시면 돼요.")
     # 대화 입력칸에 이름이 들어가면 안 된다 — 진짜 검색칸에만 넣는다. 키보드식 입력은 늦게 들어올 때가 있었다 (실측)
     _win.set_text(search, to)
     if not _wait(lambda: _win.get_text(search) == to, 1.5):
         _win.clear(search)
-        raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 주세요.")
+        raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 보시면 돼요.")
     time.sleep(1.0)
 
     def room_opened():
@@ -419,7 +419,7 @@ def _open_room_windows(to: str, tab: str) -> bool:
     if opened:
         return True
     if not in_search:   # 다른 사람의 대화창이 열렸다. 그 창에서 더 찾으면 안 된다
-        raise KakaoSendError(f"'{to}' 말고 다른 대화창이 열려서 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 말씀해 주세요.")
+        raise KakaoSendError(f"'{to}' 말고 다른 대화창이 열려서 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 알려 주시겠어요?")
     return False
 
 
@@ -434,7 +434,7 @@ def _open_windows(to: str):
     time.sleep(0.5)   # 앞으로 올린 직후의 Ctrl+F는 먹히지 않았다 (실측)
     # 나와의 채팅과 단톡방은 친구 검색에 나오지 않는다 — 친구에서 먼저 찾고, 없으면 채팅에서 찾는다
     if not _open_room_windows(to, "friends") and not _open_room_windows(to, "chats"):
-        raise KakaoSendError(f"'{to}' 대화창이 열렸는지 확인하지 못해서 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 말씀해 주세요.")
+        raise KakaoSendError(f"'{to}' 대화창이 열렸는지 확인하지 못해서 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 알려 주시겠어요?")
 
 
 def _deliver_windows(to: str, text: str, press_enter: bool) -> str:
@@ -475,7 +475,7 @@ def _deliver_windows(to: str, text: str, press_enter: bool) -> str:
     if _win.get_text(box) == text:
         _win.clear(box)   # 사용자가 무심코 Enter를 눌러 보내지 않게
         raise KakaoSendError(f"{to}에게 보내지 못했어요. 글은 입력칸에서 지웠어요.")
-    raise KakaoSendError(f"{to}에게 보내졌는지 확인하지 못했어요. 카카오톡을 직접 확인해 주세요. 다시 보내면 중복될 수 있어요.")
+    raise KakaoSendError(f"{to}에게 보내졌는지 확인하지 못했어요. 카카오톡을 직접 확인해 보시면 돼요. 다시 보내면 중복될 수 있어요.")
 
 
 def _open_mac(to: str):
@@ -488,13 +488,13 @@ def _open_mac(to: str):
         raise KakaoSendError("카카오톡을 앞으로 가져오지 못해서 보내지 않았어요.")
     time.sleep(0.3)
     if not _open_search() or not _set_focused(to) or not _wait(lambda: _focused_value() == to, 2):
-        raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 주세요.")
+        raise KakaoSendError("카카오톡 검색창을 열지 못해서 보내지 않았어요. 로그인 상태를 확인해 보시면 돼요.")
     time.sleep(1.0)
     rooms = _exact_rooms(to)
     if len(rooms) != 1:
         _close_search()
         raise KakaoSendError(f"'{to}' 이름이 정확히 같은 대화방이 " + ("없어서" if not rooms else f"{len(rooms)}개라서")
-                             + " 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 말씀해 주세요.")
+                             + " 보내지 않았어요. 카카오톡에 표시되는 이름 그대로 알려 주시겠어요?")
     room = rooms[0]
     _double_click(room["x"] + room["w"] / 2, room["y"] + room["h"] / 2)
     if not _wait(lambda: ui_snapshot.window_title() == to, 3):
@@ -555,7 +555,7 @@ def _deliver_mac(to: str, text: str, press_enter: bool) -> str:
         return f"{to} 대화창 확인 완료 (보내지 않음)"
     _key(_KEY_ENTER)
     if not _wait(lambda: _focused_value() == "", 2):
-        raise KakaoSendError(f"{to}에게 보내졌는지 확인하지 못했어요. 카카오톡을 직접 확인해 주세요. 다시 보내면 중복될 수 있어요.")
+        raise KakaoSendError(f"{to}에게 보내졌는지 확인하지 못했어요. 카카오톡을 직접 확인해 보시면 돼요. 다시 보내면 중복될 수 있어요.")
     return f"✅ {to}에게 보냈어요."
 
 

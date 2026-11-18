@@ -40,7 +40,7 @@ def set_current_user(user_id: str):
 
 def _require_login() -> str | None:
     if _current_user_id == "guest":
-        return "❌ 데이터 백업은 로그인한 사용자만 사용할 수 있어요. 먼저 로그인해주세요."
+        return "❌ 데이터 백업은 로그인한 사용자만 사용할 수 있어요. 로그인하면 바로 쓸 수 있어요."
     return None
 
 
@@ -129,7 +129,7 @@ def export_my_data() -> str:
             os.remove(tmp_path)
         except OSError:
             pass
-        return "❌ 백업 파일을 저장하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 백업 파일을 저장하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
     return (f"[✅ 데이터 백업 완료]\n"
             f"할 일 {len(todos)}개, 메모 {len(note_items)}개, 지출 기록 {len(expenses)}건을 내보냈어요.\n"

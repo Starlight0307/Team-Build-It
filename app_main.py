@@ -89,7 +89,7 @@ class KakaoWorker(QThread):
             self.done.emit(False, f"❌ {e}")
         except Exception as e:
             print(f"[카톡 보내기] 오류: {type(e).__name__}")
-            self.done.emit(False, "❌ 카카오톡으로 보내지 못했어요. 보내졌는지 카카오톡에서 확인해 주세요.")
+            self.done.emit(False, "❌ 카카오톡으로 보내지 못했어요. 보내졌는지 카카오톡에서 확인해 보시면 돼요.")
 
 
 class AppOpenWorker(QThread):
@@ -125,7 +125,7 @@ class ConfirmedToolWorker(QThread):
             self.result_ready.emit(str(result), True)
         except Exception as e:
             print(f"[확인 후 실행 오류] {self._func_name}: {type(e).__name__}")
-            self.result_ready.emit("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.", False)
+            self.result_ready.emit("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 해 보시면 돼요.", False)
 
 
 class AutoLoginWorker(QThread):
@@ -670,7 +670,7 @@ class AssistantApp(QWidget):
             self.tray_icon.showMessage(
                 "LUMI가 계속 실행 중이에요",
                 "창을 닫아도 알림/자동 실행은 백그라운드에서 계속 동작합니다. "
-                "완전히 끄려면 트레이 아이콘에서 '종료'를 선택하세요.",
+                "완전히 끄려면 트레이 아이콘에서 '종료'를 선택하시는 게 좋아요.",
                 QSystemTrayIcon.MessageIcon.Information,
                 4000,
             )
@@ -793,9 +793,9 @@ class AssistantApp(QWidget):
             # 할지 모호하다는 지적 — 자동 실행은 여전히 하지 않되, 채팅으로
             # 다시 요청하면 된다는 행동 안내를 덧붙인다.
             if label:
-                message = f"🔁 정기 알림: '{label}' — 필요하면 채팅으로 요청해주세요."
+                message = f"🔁 정기 알림: '{label}' — 필요하면 채팅으로 요청하시면 돼요."
             else:
-                message = "🔁 정기 알림 시간이에요! 필요하면 채팅으로 요청해주세요."
+                message = "🔁 정기 알림 시간이에요! 필요하면 채팅으로 요청하시면 돼요."
             action_result = routine.get('action_result') or {}
             if action_result.get('executed'):
                 mark = "✅" if action_result.get('success') else "⚠️"
@@ -879,9 +879,9 @@ class AssistantApp(QWidget):
             else:
                 detail = ""
             if label:
-                message = f"🎯🔁 조건부 알림: '{label}' {detail} — 필요하면 채팅으로 요청해주세요."
+                message = f"🎯🔁 조건부 알림: '{label}' {detail} — 필요하면 채팅으로 요청하시면 돼요."
             else:
-                message = f"🎯🔁 설정하신 조건을 넘었어요! {detail} 필요하면 채팅으로 요청해주세요."
+                message = f"🎯🔁 설정하신 조건을 넘었어요! {detail} 필요하면 채팅으로 요청하시면 돼요."
             # Proactive Agent 2단계(Analysis → Recommendation) — 조건이 왜
             # 넘었는지 실제 데이터로 한 번 더 확인해서 근거 있는 추천을
             # 덧붙인다. 근거 데이터를 못 얻으면 빈 문자열이라 조용히
@@ -989,7 +989,7 @@ class AssistantApp(QWidget):
             text = func(clear=False)
         except Exception as e:
             print(f"[실시간 감시] 알림 조회 오류: {e}")
-            text = "⚠️ 알림을 불러오지 못했습니다. 잠시 후 다시 시도해주세요."
+            text = "⚠️ 알림을 불러오지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
         # 창에서 본 알림도 이후 "이거 왜 위험해?" 같은 후속 질문이 가능하도록
         # 대화 맥락에 남겨둔다 (채팅창에 별도로 보여주진 않음)
@@ -1028,7 +1028,7 @@ class AssistantApp(QWidget):
             text = func(clear=False)
         except Exception as e:
             print(f"[실시간 감시] 알림 조회 오류: {e}")
-            text = "⚠️ 알림을 불러오지 못했습니다. 잠시 후 다시 시도해주세요."
+            text = "⚠️ 알림을 불러오지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
         # LLM은 거치지 않지만, 이후 사용자가 "이거 왜 위험해?"처럼 후속 질문을
         # 할 수 있으므로 대화 맥락(chat_history)에는 남겨둔다
@@ -1074,7 +1074,7 @@ class AssistantApp(QWidget):
             from plugins.calendar_tool import _current_user_id
             from calendar_feature import apple_backend
             tail = ("" if apple_backend.is_connected(_current_user_id) else
-                    " 아직 연결 전이라면 마이페이지의 [애플 캘린더 연결]에서 Apple ID와 앱 전용 암호를 넣어주세요.")
+                    " 아직 연결 전이라면 마이페이지의 [애플 캘린더 연결]에서 Apple ID와 앱 전용 암호를 넣으시면 돼요.")
             self.display_ai_response(f"🤖 로컬 비서: 이제부터 **애플 캘린더**를 쓸게요.{tail}")
             return True
 
@@ -1082,7 +1082,7 @@ class AssistantApp(QWidget):
             if not MOCK_USER["logged_in"]:
                 self.display_ai_response(
                     "🤖 로컬 비서: 내부 캘린더는 로그인한 사용자만 사용할 수 있어요. "
-                    "먼저 로그인해주세요."
+                    "로그인하면 바로 쓸 수 있어요."
                 )
                 return True
             calendar_preference.set_active_calendar("local")
@@ -1135,8 +1135,8 @@ class AssistantApp(QWidget):
             "1️⃣ 빠름 — 시작프로그램 10초 / 프로세스 30초 (탐지가 빠른 대신 약간의 부담)\n"
             "2️⃣ 보통 (추천) — 시작프로그램 20초 / 프로세스 60초\n"
             "3️⃣ 느림 — 시작프로그램 60초 / 프로세스 300초 (부담 최소)\n"
-            "4️⃣ 더 길게 — 원하는 시간을 직접 말씀해주세요 (예: '10분마다', '30분마다')\n\n"
-            "번호로 답하거나, 4번을 원하시면 원하는 시간을 바로 말씀해주세요."
+            "4️⃣ 더 길게 — 원하는 시간을 직접 정해요 (예: '10분마다', '30분마다')\n\n"
+            "번호로 답하시거나, 4번은 원하는 시간을 바로 알려 주시면 돼요."
         )
         return True
 
@@ -1187,7 +1187,7 @@ class AssistantApp(QWidget):
         # "4"/"4번"만 왔으면 시간을 다시 물어봄 (선택 대기 상태 유지)
         if re.match(r'^4\s*번?$', t):
             self.display_ai_response(
-                "🤖 로컬 비서: 원하시는 시간을 말씀해주세요 (예: '10분마다', '1시간마다')."
+                "🤖 로컬 비서: 원하시는 시간을 알려 주시겠어요? (예: '10분마다', '1시간마다')"
             )
             return True
 
@@ -1195,7 +1195,7 @@ class AssistantApp(QWidget):
         # 예전엔 여기서 메시지를 삼켜서, 선택지를 받은 뒤 "아이폰 최저가 검색해줘"처럼
         # 다른 요청을 하면 "이해하지 못했습니다"만 나오고 요청이 사라졌다.
         self.pending_realtime_preset = False
-        self._show_toast("실시간 감시 시작은 취소했어요. 다시 하려면 '실시간 감시 시작해줘'라고 말씀해주세요.")
+        self._show_toast("실시간 감시 시작은 취소했어요. 다시 하려면 '실시간 감시 시작해줘'라고 요청하시면 돼요.")
         return False
 
     def _start_realtime_with(self, startup_s: int, process_s: int, label: str) -> bool:
@@ -1207,7 +1207,7 @@ class AssistantApp(QWidget):
             result = func(startup_interval_seconds=startup_s, process_interval_seconds=process_s)
         except Exception as e:
             print(f"[실시간 감시] 시작 오류: {e}")
-            result = "❌ 실시간 감시를 시작하지 못했습니다. 잠시 후 다시 시도해주세요."
+            result = "❌ 실시간 감시를 시작하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
         self._last_seen_alert_count = 0  # 새로 시작했으니 알림 기준선 초기화
         self.display_ai_response(f"🤖 로컬 비서: [{label} 모드]\n{result}")
         return True
@@ -1902,10 +1902,10 @@ class AssistantApp(QWidget):
         """새 채팅 — 화면과 대화 맥락을 비우고 새 세션으로 시작한다. 이전 대화는 대화 기록에 남는다."""
         worker = getattr(self, "worker", None)
         if worker is not None and worker.isRunning():
-            self._show_toast("답변을 만드는 중이에요. 끝난 뒤에 새 채팅을 시작해 주세요.")
+            self._show_toast("답변을 만드는 중이에요. 끝난 뒤에 새 채팅을 시작하시면 돼요.")
             return
         if self._confirm_worker_running():
-            self._show_toast("Defender 검사를 하는 중이에요. 끝난 뒤에 새 채팅을 시작해 주세요.")
+            self._show_toast("Defender 검사를 하는 중이에요. 끝난 뒤에 새 채팅을 시작하시면 돼요.")
             return
         if not self.chat_bubbles and not self.chat_history:
             self.input_field.setFocus()   # 이미 빈 새 채팅
@@ -2027,7 +2027,7 @@ class AssistantApp(QWidget):
 
         outer.addWidget(self._make_settings_card("화면", icon="palette", rows=[
             ("다크 모드", "어두운 배경으로 눈의 피로를 줄여요.", self.switch_dark),
-            ("화면 표면", "투명은 유리처럼 뒤의 빛이 비치지만 성능을 더 써요. 느리면 불투명으로 바꿔 주세요.", self.surface_selector),
+            ("화면 표면", "투명은 유리처럼 뒤의 빛이 비치지만 성능을 더 써요. 느리면 불투명으로 바꾸시면 돼요.", self.surface_selector),
             ("움직임 효과", "창, 화면 전환, 말풍선, 버튼의 애니메이션을 보여 줘요.", self.switch_motion),
         ]))
         outer.addSpacing(18)
@@ -2263,7 +2263,7 @@ class AssistantApp(QWidget):
             self.update_check_btn.setToolTip("")
         status = ""
         if manual and failed:
-            status = "확인하지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요"
+            status = "확인하지 못했어요. 인터넷 연결을 확인하고 다시 누르시면 돼요"
         elif manual and not self._update_notice:
             status = "최신 버전이에요" if installed else "GitHub main과 같아요"
         self._render_version_desc(status)
@@ -2404,7 +2404,7 @@ class AssistantApp(QWidget):
         if not city:
             return "처음 실행하면 현재 위치를 자동으로 찾아요. 시·군 이름이나 해외 도시를 직접 입력해도 돼요."
         how = {"os": "기기 위치 서비스로 찾은 위치 — 켤 때마다 다시 찾아요",
-               "ip": "인터넷 주소로 찾은 대략적인 위치, 켤 때마다 다시 찾아요 — 실제와 다르면 직접 고쳐주세요",
+               "ip": "인터넷 주소로 찾은 대략적인 위치, 켤 때마다 다시 찾아요 — 실제와 다르면 직접 고치시면 돼요",
                }.get(source, "직접 입력한 지역")
         return f"현재: {city} ({how})"
 
@@ -2424,7 +2424,7 @@ class AssistantApp(QWidget):
         self.weather_locate_btn.setText(" 내 위치 찾기")
         if unchanged:
             return   # 켤 때 다시 찾았는데 지난번과 같은 곳 — 알림을 띄우지 않는다
-        rough = " (대략적인 위치라 다르면 환경설정 > 날씨에서 고쳐주세요)" if loc["source"] == "ip" else ""
+        rough = " (대략적인 위치라 다르면 환경설정 > 날씨에서 고치시면 돼요)" if loc["source"] == "ip" else ""
         self._show_toast(f"📍 현재 위치를 '{loc['name']}'(으)로 찾았어요.{rough}")
 
     def _change_chat_dir(self):
@@ -2513,7 +2513,7 @@ class AssistantApp(QWidget):
         from widget.weather_detail import WeatherDetailDialog
         city, coords = self._weather_location()
         if not city and not coords:
-            self._show_toast("📍 아직 날씨 지역을 찾는 중이에요. 잠시 후 다시 눌러 주세요.")
+            self._show_toast("📍 아직 날씨 지역을 찾는 중이에요. 잠시 후 다시 누르시면 돼요.")
             return
         last = getattr(self, "_last_weather", None) or {}
         hint = (last.get("icon_name"), last.get("is_day", True)) if last.get("icon_name") else None
@@ -2717,7 +2717,7 @@ class AssistantApp(QWidget):
         (OS 기본 음성은 목소리 선택이 적용되지 않아 미리듣기가 되지 않는다)."""
         from core.voice import TTS_PREVIEW_TEXT
         if self._voice_conversation:
-            self._show_toast("🔊 음성 대화 중에는 미리 들을 수 없어요. 대화를 끝낸 뒤에 눌러 주세요.")
+            self._show_toast("🔊 음성 대화 중에는 미리 들을 수 없어요. 대화를 끝낸 뒤에 누르시면 돼요.")
             return
         speaker = self._get_speaker()
         if not speaker.neural_ready():   # 준비 안 됐으면 읽던 답변을 끊지 않는다
@@ -3185,7 +3185,7 @@ class AssistantApp(QWidget):
                 or (self._skill_worker is not None and self._skill_worker.isRunning())
                 or (self._route_worker is not None and self._route_worker.isRunning())
                 or self._confirm_worker_running()):
-            self._show_toast("⏳ 아직 이전 요청을 처리하고 있어요. 잠시만 기다려주세요.")
+            self._show_toast("⏳ 아직 이전 요청을 처리하고 있어요. 잠시만 기다리시면 돼요.")
             return
 
         self._offer_msg_accepted = True
@@ -3307,7 +3307,7 @@ class AssistantApp(QWidget):
                 self.pending_event_args = None
                 self.display_ai_response(
                     "🤖 로컬 비서: 죄송해요, 소요 시간을 이해하지 못했습니다 (예: '1시간', '30분').\n"
-                    "일정 등록을 취소했으니, 다시 요청해주세요."
+                    "일정 등록을 취소했으니, 다시 요청하시면 돼요."
                 )
                 QTimer.singleShot(50, self.auto_scroll_to_bottom)
                 return
@@ -3425,7 +3425,7 @@ class AssistantApp(QWidget):
             if func_name in func_map and func_name in self._SLOW_CONFIRMED_FUNCS:
                 # Defender 검사처럼 최대 몇 분 걸리는 도구는 UI 스레드에서 돌리면 창이 멈춘다 → 백그라운드로
                 if self._confirm_worker_running(include_abandoned=True):
-                    self.display_ai_response("🤖 로컬 비서: 이미 다른 검사가 진행 중이라 이번 요청은 실행하지 않았어요. 끝난 뒤 다시 요청해 주세요.")
+                    self.display_ai_response("🤖 로컬 비서: 이미 다른 검사가 진행 중이라 이번 요청은 실행하지 않았어요. 끝난 뒤 다시 요청하시면 돼요.")
                     self._relock_if_scanning()
                     QTimer.singleShot(50, self.auto_scroll_to_bottom)
                 else:
@@ -3447,9 +3447,9 @@ class AssistantApp(QWidget):
                         self.switch_startup_security.blockSignals(False)
                 except Exception as e:
                     print(f"[확인 후 실행 오류] {func_name}: {e}")
-                    self.display_ai_response("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.")
+                    self.display_ai_response("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 해 보시면 돼요.")
             else:
-                self.display_ai_response("❌ 이 기능을 사용하려면 관련 플러그인이 설치되어 있는지 확인해주세요.")
+                self.display_ai_response("❌ 이 기능을 사용하려면 관련 플러그인이 설치되어 있는지 확인해 보시면 돼요.")
         else:
             self.display_ai_response("🤖 로컬 비서: 알겠어요, 요청하신 작업은 하지 않았어요.")
 
@@ -3482,7 +3482,7 @@ class AssistantApp(QWidget):
         """안전망: 결과 신호 없이 스레드가 끝났으면(비정상 종료) 입력 잠금을 풀고 고정 오류문을 보여준다."""
         if worker is self._confirm_worker:
             self._confirm_worker = None
-            self.display_ai_response("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.")
+            self.display_ai_response("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 해 보시면 돼요.")
         elif (isinstance(worker, ConfirmedToolWorker) and worker in self._abandoned_workers
               and not getattr(worker, "silent", False)):
             self._show_toast("🛡️ 아까 멈춘 검사가 끝났어요. 다시 요청하면 결과를 볼 수 있어요.")
@@ -3522,7 +3522,7 @@ class AssistantApp(QWidget):
                 self._remember_kill_confirmation(func_name, args)
             except Exception as e:
                 print(f"[확인 후 실행 오류] {func_name}: {type(e).__name__}")
-                self.display_ai_response("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.")
+                self.display_ai_response("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 해 보시면 돼요.")
         else:
             self.display_ai_response(text)
         QTimer.singleShot(50, self.auto_scroll_to_bottom)
@@ -3608,7 +3608,7 @@ class AssistantApp(QWidget):
         if not report_funcs:
             self.display_ai_response(
                 "🤖 로컬 비서: 설치된 보안 점검 플러그인이 없습니다. "
-                "마켓플레이스에서 '네트워크 보안 점검', '악성코드 탐지', '시스템 보안 점검'을 설치해주세요."
+                "마켓플레이스에서 '네트워크 보안 점검', '악성코드 탐지', '시스템 보안 점검'을 설치하시면 돼요."
             )
             return True
 
@@ -3710,7 +3710,7 @@ class AssistantApp(QWidget):
             result = delete_func(event_id=self.last_event_id)
         except Exception as e:
             print(f"[캘린더] 일정 삭제 오류: {e}")
-            result = "❌ 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요."
+            result = "❌ 일정 삭제에 실패했습니다. 잠시 후 다시 해 보시면 돼요."
 
         last_date = self.last_event_date
 
@@ -3775,7 +3775,7 @@ class AssistantApp(QWidget):
                         self.last_event_id, self.last_event_date = eid, edate
                 except Exception as e:
                     print(f"[캘린더] 일정 등록 오류: {e}")
-                    response = "🤖 로컬 비서: ❌ 일정 등록에 실패했습니다. 잠시 후 다시 시도해주세요."
+                    response = "🤖 로컬 비서: ❌ 일정 등록에 실패했습니다. 잠시 후 다시 해 보시면 돼요."
                 self.display_ai_response(response)
                 return
 
@@ -3822,7 +3822,7 @@ class AssistantApp(QWidget):
         elif state == "listening" and awaiting:
             text = "🎙️ 말씀하세요... ('그만'이라고 하면 대화 종료)"
         elif state == "listening" and self._wake_mode:
-            text = "👂 '루미야' 또는 '자비스'라고 불러주세요"
+            text = "👂 '루미야' 또는 '자비스'라고 부르시면 돼요"
         elif self._screen_pull_worker is not None:
             text = "⏬ 화면 인식 모델 내려받는 중..."
         else:
@@ -3855,11 +3855,11 @@ class AssistantApp(QWidget):
         elif state == "listening" and awaiting:
             mode, text = "listen", "말씀하세요..."
         elif state == "listening" and self._wake_mode:
-            mode, text = "listen", "호출어 듣는 중 · '루미야'라고 불러주세요"
+            mode, text = "listen", "호출어 듣는 중 · '루미야'라고 부르시면 돼요"
         elif not self._wake_mode:
-            mode, text = "idle", "호출어 꺼짐 · 오브를 눌러 대화하세요"
+            mode, text = "idle", "호출어 꺼짐 · 오브를 누르면 대화할 수 있어요"
         else:
-            mode, text = "idle", "대기 중 · 오브를 누르거나 입력하세요"
+            mode, text = "idle", "대기 중 · 오브를 누르거나 입력하면 돼요"
         # 마이크가 실제로 열려 있는가 — 문구와 툴팁으로 알려 준다
         if state in ("hearing", "transcribing") or (state == "listening" and awaiting):
             mic = "active"
@@ -3972,7 +3972,7 @@ class AssistantApp(QWidget):
         """음성 패키지가 있으면 True. 없으면 설치 여부를 묻고(설치 후 then 실행) False."""
         from PyQt6.QtWidgets import QMessageBox
         if self._voice_install_worker is not None:
-            self._show_toast("⏬ 음성 구성요소를 설치하고 있어요. 잠시만 기다려주세요.")
+            self._show_toast("⏬ 음성 구성요소를 설치하고 있어요. 잠시만 기다리시면 돼요.")
             return False
         missing = missing_voice_packages()
         if not missing:
@@ -4071,7 +4071,7 @@ class AssistantApp(QWidget):
         from core import voice as _voice
         if _voice._optional_failed:                 # 일부라도 못 깔았으면 알린다 (그 기능만 기본 방식으로 동작)
             self._show_toast("⚠️ 일부 구성요소를 설치하지 못했어요. 기본 방식으로 동작해요 "
-                             "(인터넷 연결을 확인하고 환경설정에서 다시 켜 보세요).")
+                             "(인터넷 연결을 확인하고 환경설정에서 다시 켜 보시면 돼요).")
         elif installed:
             self._show_toast("✅ 구성요소 설치가 끝났어요. 처음 쓸 때 모델을 내려받아요 "
                              "(호출어 감지 약 160MB, 고품질 목소리 약 400MB).")
@@ -4121,11 +4121,11 @@ class AssistantApp(QWidget):
             self._voice_turn = True
             self._voice_conversation = False
             self._update_voice_buttons()
-            self._voice_say("알겠습니다. 필요하시면 언제든 불러주세요.")
+            self._voice_say("알겠습니다. 필요하시면 언제든 부르시면 돼요.")
             return
         if self.worker is not None and self.worker.isRunning():
             self._voice_turn = True
-            self._voice_say("아직 이전 요청을 처리하고 있어요. 잠시만 기다려주세요.")
+            self._voice_say("아직 이전 요청을 처리하고 있어요. 잠시만 기다리시면 돼요.")
             return
         self._voice_turn = True
         self.send_message(text)
@@ -4246,7 +4246,7 @@ class AssistantApp(QWidget):
             message = web_launcher.open_request(req)
         except Exception as e:
             print(f"[웹 열기] 오류: {e}")
-            message = "❌ 브라우저를 열지 못했어요. 잠시 후 다시 시도해주세요."
+            message = "❌ 브라우저를 열지 못했어요. 잠시 후 다시 해 보시면 돼요."
         self._on_web_opened(message)
         return True
 
@@ -4263,7 +4263,7 @@ class AssistantApp(QWidget):
             self.stock_panel.request_briefing()
             return
         self._on_stock_reply(stock_plugin.stop_stock_auto_trading() if intent == "stop"
-                             else "자동매매는 안전을 위해 대화로 켤 수 없어요. 주식 위젯의 '자동' 버튼에서 직접 켜 주세요.")
+                             else "자동매매는 안전을 위해 대화로 켤 수 없어요. 주식 위젯의 '자동' 버튼에서 직접 켜시면 돼요.")
         self.stock_panel.refresh()
 
     def _on_stock_reply(self, message: str):
@@ -4320,7 +4320,7 @@ class AssistantApp(QWidget):
             msg = ("루미가 화면을 보고 조작하려면 macOS 권한이 필요해요:\n\n"
                    + "\n".join(f"· 개인정보 보호 및 보안 > {names[m]}" for m in missing)
                    + "\n\n루미를 실행한 프로그램(터미널, VS Code 또는 Python)을 목록에서 켜고, "
-                     "루미를 다시 실행해 주세요.\n지금 설정을 열까요?")
+                     "루미를 다시 실행하시면 돼요.\n지금 설정을 열까요?")
             reply = lumi_dialog.question(self, "권한 필요", msg,
                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.Yes:
@@ -4328,13 +4328,13 @@ class AssistantApp(QWidget):
                     screen_agent.open_permission_settings(m)
             self.display_ai_response("🤖 로컬 비서: 화면 작업에 필요한 macOS 권한("
                                      + ", ".join(names[m] for m in missing)
-                                     + ")을 허용한 뒤 루미를 다시 실행하고 요청해 주세요.")
+                                     + ")을 허용한 뒤 루미를 다시 실행하고 요청하시면 돼요.")
             return
 
         # 화면 인식 모델 — 없으면 동의를 받고 내려받은 뒤 이어서 실행
         if not screen_agent.model_installed():
             if self._screen_pull_worker is not None:
-                self._show_toast("⏬ 화면 인식 모델을 내려받는 중이에요. 잠시만 기다려주세요.")
+                self._show_toast("⏬ 화면 인식 모델을 내려받는 중이에요. 잠시만 기다리시면 돼요.")
                 return
             reply = lumi_dialog.question(
                 self, "화면 인식 모델 설치",
@@ -4721,7 +4721,7 @@ class AssistantApp(QWidget):
                     self._remember_kill_confirmation('kill_process', {'process_name_or_number': process_name})
                 except Exception as e:
                     print(f"[프로그램 종료] 오류: {e}")
-                    self.display_ai_response("⚠️ 프로그램을 종료하지 못했습니다. 잠시 후 다시 시도해주세요.")
+                    self.display_ai_response("⚠️ 프로그램을 종료하지 못했습니다. 잠시 후 다시 해 보시면 돼요.")
 
     def _display_price_search_result(self, text):
         """가격 검색 결과를 카드 UI로 표시"""

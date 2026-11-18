@@ -51,7 +51,7 @@ def set_current_user(user_id: str):
 
 def _require_login() -> str | None:
     if _current_user_id == "guest":
-        return "❌ 가계부는 로그인한 사용자만 사용할 수 있어요. 먼저 로그인해주세요."
+        return "❌ 가계부는 로그인한 사용자만 사용할 수 있어요. 로그인하면 바로 쓸 수 있어요."
     return None
 
 
@@ -370,14 +370,14 @@ def mark_as_purchased(item_name: str = "", price: float = None, category: str = 
         saved_at = LAST_SEARCH.get("saved_at")
         if saved_at is not None and (time.time() - saved_at) > _LAST_SEARCH_MAX_AGE_SECONDS:
             return ("⚠️ 방금 검색한 상품이 아니라서 자동으로 기록하기 어려워요. "
-                    "무엇을 얼마에 구매하셨는지 알려주세요. (예: '이어폰 5만원에 샀어')")
+                    "무엇을 얼마에 구매하셨는지 알려 주시겠어요? (예: '이어폰 5만원에 샀어')")
         if not item_name:
             item_name = LAST_SEARCH.get("cheapest_name") or ""
         if price is None:
             price = LAST_SEARCH.get("cheapest_price")
 
     if not item_name or price is None:
-        return "⚠️ 무엇을 얼마에 구매하셨는지 알려주세요. (예: '이어폰 5만원에 샀어')"
+        return "⚠️ 무엇을 얼마에 구매하셨는지 알려 주시겠어요? (예: '이어폰 5만원에 샀어')"
 
     try:
         # 원화는 소수점이 없으므로 float 대신 정수로 저장한다(1라운드 검수 지적 —
@@ -404,7 +404,7 @@ def mark_as_purchased(item_name: str = "", price: float = None, category: str = 
         return f"[✅ 구매 기록 완료]\n'{item_name}'을(를) {_format_price(price)}에 구매하신 걸로 기록했어요{cat_str}."
     except Exception as e:
         print(f"[가계부] 구매 기록 오류: {e}")
-        return "❌ 구매를 기록하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 구매를 기록하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 def get_spending_summary(days: int = 30, category: str = "") -> str:
@@ -487,7 +487,7 @@ def get_spending_summary(days: int = 30, category: str = "") -> str:
         return "\n".join(lines)
     except Exception as e:
         print(f"[가계부] 지출 집계 오류: {e}")
-        return "❌ 지출을 집계하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 지출을 집계하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 def list_purchases(days: int = 30) -> str:
@@ -523,7 +523,7 @@ def list_purchases(days: int = 30) -> str:
         return "\n".join(lines)
     except Exception as e:
         print(f"[가계부] 구매 내역 조회 오류: {e}")
-        return "❌ 구매 내역을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 구매 내역을 조회하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 def set_monthly_budget(amount: float) -> str:
@@ -592,7 +592,7 @@ def get_budget_status() -> str:
         )
     except Exception as e:
         print(f"[가계부] 예산 현황 조회 오류: {e}")
-        return "❌ 예산 현황을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 예산 현황을 확인하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 def _find_purchase(expenses: list, item: str):
@@ -604,7 +604,7 @@ def _find_purchase(expenses: list, item: str):
     일치할 때만, 그 외에는 전부 상품명 부분 문자열로 취급한다."""
     item = (item or "").strip()
     if not item:
-        return None, "⚠️ 어떤 구매 기록인지 id나 상품명을 알려주세요."
+        return None, "⚠️ 어떤 구매 기록인지 id나 상품명을 알려 주시겠어요?"
 
     exact_id = next((e for e in expenses if e["id"].lower() == item.lower()), None)
     if exact_id:
@@ -642,7 +642,7 @@ def edit_purchase(item: str, new_item_name: str = "", new_price: float = None) -
 
     new_item_name = (new_item_name or "").strip()
     if not new_item_name and new_price is None:
-        return "⚠️ 바꿀 상품명이나 가격 중 하나는 알려주세요."
+        return "⚠️ 바꿀 상품명이나 가격 중 하나는 알려 주시겠어요?"
 
     if new_price is not None:
         try:
@@ -711,7 +711,7 @@ def add_income(amount: float, source: str = "", category: str = "") -> str:
         return f"[✅ 수입 기록 완료]\n{_format_price(amount)}{source_str}을(를) 수입으로 기록했어요{cat_str}."
     except Exception as e:
         print(f"[가계부] 수입 기록 오류: {e}")
-        return "❌ 수입을 기록하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 수입을 기록하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 def list_income(days: int = 30) -> str:
@@ -748,7 +748,7 @@ def list_income(days: int = 30) -> str:
         return "\n".join(lines)
     except Exception as e:
         print(f"[가계부] 수입 내역 조회 오류: {e}")
-        return "❌ 수입 내역을 조회하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 수입 내역을 조회하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 def _find_income(income: list, item: str):
@@ -756,7 +756,7 @@ def _find_income(income: list, item: str):
     부분 문자열, 모호하면 되묻기)을 수입 기록에 적용한다."""
     item = (item or "").strip()
     if not item:
-        return None, "⚠️ 어떤 수입 기록인지 id나 출처명을 알려주세요."
+        return None, "⚠️ 어떤 수입 기록인지 id나 출처명을 알려 주시겠어요?"
 
     exact_id = next((e for e in income if e["id"].lower() == item.lower()), None)
     if exact_id:
@@ -795,7 +795,7 @@ def edit_income(item: str, new_source: str = "", new_amount: float = None) -> st
 
     new_source = (new_source or "").strip()
     if not new_source and new_amount is None:
-        return "⚠️ 바꿀 출처명이나 금액 중 하나는 알려주세요."
+        return "⚠️ 바꿀 출처명이나 금액 중 하나는 알려 주시겠어요?"
 
     if new_amount is not None:
         try:
@@ -873,7 +873,7 @@ def get_balance() -> str:
         )
     except Exception as e:
         print(f"[가계부] 잔액 조회 오류: {e}")
-        return "❌ 잔액을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 잔액을 확인하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 def get_month_spending_amount() -> int:

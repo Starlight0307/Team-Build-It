@@ -64,7 +64,7 @@ def test_zero_or_negative_minutes_rejected(isolated_app_usage_goals):
 
 def test_empty_target_rejected(isolated_app_usage_goals):
     result = au.set_usage_goal("", 60)
-    assert "알려주세요" in result
+    assert "알려 주시겠어요" in result
 
 
 def test_status_for_unknown_target(isolated_app_usage_goals):

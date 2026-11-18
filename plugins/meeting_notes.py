@@ -162,22 +162,22 @@ def start_meeting_recording(title: str = "") -> str:
     """회의 녹음을 시작한다."""
     global _recording
     if _current_user_id == "guest":
-        return "❌ 회의 녹음은 로그인한 사용자만 쓸 수 있어요. 먼저 로그인해주세요."
+        return "❌ 회의 녹음은 로그인한 사용자만 쓸 수 있어요. 로그인하면 바로 쓸 수 있어요."
     with _lock:
         if _recording is not None:
-            return f"🎙️ 이미 '{_recording.title}' 녹음 중이에요. 끝나면 '회의 녹음 끝내줘'라고 말해 주세요."
+            return f"🎙️ 이미 '{_recording.title}' 녹음 중이에요. 끝나면 '회의 녹음 끝내줘'라고 하시면 돼요."
         now = datetime.now()
         title = (title or "").strip()[:60] or f"{now.month}월 {now.day}일 회의"   # strftime에 한글을 넣으면 윈도우 Python 3.11에서 오류가 난다
         try:
             _recording = _Recorder(_audio_file(), title)
         except ImportError:
-            return "❌ 음성 구성요소가 아직 없어요. 가운데 오브를 눌러 음성 대화를 먼저 설치해 주세요."
+            return "❌ 음성 구성요소가 아직 없어요. 가운데 오브를 눌러 음성 대화를 먼저 설치하시면 돼요."
         except Exception as e:
             print(f"[회의 녹음] 시작 실패: {type(e).__name__}")
-            return "❌ 마이크를 열지 못했어요. 마이크 연결과 권한을 확인해 주세요."
+            return "❌ 마이크를 열지 못했어요. 마이크 연결과 권한을 확인해 보시면 돼요."
         _reserve_mic(True)
-    return (f"🎙️ '{title}' 녹음을 시작했어요. 끝나면 '회의 녹음 끝내줘'라고 말해 주세요.\n"
-            "참석자에게 녹음 중임을 알려 주세요. 소리는 이 컴퓨터 안에서만 처리돼요.")
+    return (f"🎙️ '{title}' 녹음을 시작했어요. 끝나면 '회의 녹음 끝내줘'라고 하시면 돼요.\n"
+            "참석자에게 녹음 중임을 알려 주시겠어요? 소리는 이 컴퓨터 안에서만 처리돼요.")
 
 
 def stop_meeting_recording() -> str:
@@ -198,7 +198,7 @@ def stop_meeting_recording() -> str:
         return f"❌ 받아쓰지 못했어요. 녹음 파일은 지우지 않고 남겨 뒀어요: {recording.path}"
     if not text:
         os.remove(recording.path)
-        return "🎙️ 녹음에서 말소리를 찾지 못했어요. 마이크 입력을 확인해 주세요."
+        return "🎙️ 녹음에서 말소리를 찾지 못했어요. 마이크 입력을 확인해 보시면 돼요."
     reply = _save_meeting(recording.title, seconds, text)
     os.remove(recording.path)   # 글을 저장한 뒤에만 지운다
     return reply
@@ -217,13 +217,13 @@ def _save_meeting(title: str, seconds: float, text: str) -> str:
     data["items"].append(item)
     _save(data)
     head = f"📝 '{item['title']}' ({item['minutes']}분) 회의록을 저장했어요. (#{item['seq']})\n\n"
-    return head + (summary or "요약은 만들지 못했어요. Ollama가 켜져 있는지 확인해 주세요. 받아쓴 글은 저장했어요.")
+    return head + (summary or "요약은 만들지 못했어요. Ollama가 켜져 있는지 확인해 보시면 돼요. 받아쓴 글은 저장했어요.")
 
 
 def summarize_meeting_file(path: str, title: str = "") -> str:
     """이미 녹음된 파일(휴대폰·줌 녹음 등)을 받아쓰고 회의록으로 정리한다. 원본 파일은 지우지 않는다."""
     if _current_user_id == "guest":
-        return "❌ 회의록은 로그인한 사용자만 만들 수 있어요. 먼저 로그인해주세요."
+        return "❌ 회의록은 로그인한 사용자만 만들 수 있어요. 로그인하면 바로 쓸 수 있어요."
     name = str(path or "").strip().strip('"\'')
     file = Path(os.path.expanduser(name))
     if not file.is_file() and not file.is_absolute():   # "회의.m4a"처럼 이름만 말하면 자주 쓰는 폴더에서 찾는다
@@ -234,17 +234,17 @@ def summarize_meeting_file(path: str, title: str = "") -> str:
                      if (d / name).is_file()), file)
     file = file.resolve()
     if not name or not file.is_file():
-        return f"'{path}' 파일을 찾지 못했어요. 파일 위치를 다시 확인해 주세요."
+        return f"'{path}' 파일을 찾지 못했어요. 파일 위치를 다시 확인해 보시면 돼요."
     if file.suffix.lower() not in _AUDIO_TYPES:
         return f"❌ 소리 파일이 아니에요. 이런 형식을 읽을 수 있어요: {', '.join(t[1:] for t in _AUDIO_TYPES)}"
     try:
         audio = _decode(str(file))
         text = _transcribe_audio(audio)
     except ImportError:
-        return "❌ 받아쓰기 구성요소가 아직 없어요. 가운데 오브를 눌러 음성 대화를 먼저 설치해 주세요."
+        return "❌ 받아쓰기 구성요소가 아직 없어요. 가운데 오브를 눌러 음성 대화를 먼저 설치하시면 돼요."
     except Exception as e:
         print(f"[회의 녹음] 파일 받아쓰기 실패: {type(e).__name__}")
-        return "❌ 이 파일을 받아쓰지 못했어요. 파일이 손상되지 않았는지 확인해 주세요."
+        return "❌ 이 파일을 받아쓰지 못했어요. 파일이 손상되지 않았는지 확인해 보시면 돼요."
     if not text:
         return "🎙️ 이 파일에서 말소리를 찾지 못했어요."
     return _save_meeting((title or "").strip()[:60] or file.stem[:60], len(audio) / SAMPLE_RATE, text)
@@ -272,7 +272,7 @@ def show_meeting(item: str, with_transcript: bool = False) -> str:
         return "❌ 회의록은 로그인한 사용자만 볼 수 있어요."
     meeting = _find(_load(), item)
     if not meeting:
-        return f"'{item}' 회의록을 찾지 못했어요. '회의록 목록 보여줘'로 번호를 확인해 주세요."
+        return f"'{item}' 회의록을 찾지 못했어요. '회의록 목록 보여줘'로 번호를 확인해 보시면 돼요."
     text = f"📝 {meeting['title']} ({meeting['created']}, {meeting['minutes']}분)\n\n{meeting['summary'] or '요약 없음'}"
     if with_transcript or not meeting["summary"]:
         text += f"\n\n[받아쓴 글]\n{meeting['transcript']}"
@@ -285,7 +285,7 @@ def export_meeting(item: str) -> str:
         return "❌ 회의록은 로그인한 사용자만 내보낼 수 있어요."
     meeting = _find(_load(), item)
     if not meeting:
-        return f"'{item}' 회의록을 찾지 못했어요. '회의록 목록 보여줘'로 번호를 확인해 주세요."
+        return f"'{item}' 회의록을 찾지 못했어요. '회의록 목록 보여줘'로 번호를 확인해 보시면 돼요."
     docs = Path.home() / "Documents"
     folder = (docs if docs.is_dir() else Path.home()) / "루미 회의록"
     folder.mkdir(exist_ok=True)

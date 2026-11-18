@@ -75,7 +75,7 @@ def test_size_alone_does_not_trigger_a_search(folder):
     """크기만으로는 검색하지 않는다 — '용량 큰 파일 찾기'는 pc_optimizer의
     find_large_files 영역이라 이 함수가 그 역할을 가로채면 안 된다."""
     result = fs.search_files(min_size_mb=5, folder=folder)
-    assert "하나 이상을 알려주세요" in result
+    assert "하나 이상을 알려 주시겠어요" in result
 
 
 # ── 최근 N일 ─────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ def test_recent_days_includes_files_within_range(folder):
 
 def test_recent_days_alone_counts_as_a_time_condition(folder):
     result = fs.search_files(recent_days=3, folder=folder)
-    assert "하나 이상을 알려주세요" not in result
+    assert "하나 이상을 알려 주시겠어요" not in result
     assert len(_names(result)) == 3
 
 

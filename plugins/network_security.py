@@ -515,7 +515,7 @@ def scan_open_ports(target: str = "127.0.0.1", port_range: str = "1-1024") -> st
     # 거꾸로 된 범위(1024-1)나 1~65535 밖의 포트는 스캔이 아예 안 돌아서 예전에는 "열린 포트 없음"(정상)으로
     # 보였다 — 스캔하지 못한 것을 정상으로 보이지 않게 확인 못 함으로 돌려준다(ChatGPT 검수 3단계 1차 테스트에서 발견)
     if not (1 <= start_port <= end_port <= 65535):
-        return CheckResult("포트 범위가 올바르지 않습니다. 1~65535 사이에서 작은 번호부터 적어 주세요 (예: '1-1024').",
+        return CheckResult("포트 범위가 올바르지 않습니다. 1~65535 사이에서 작은 번호부터 적으시면 돼요 (예: '1-1024').",
                            unknown=1)
 
     total = end_port - start_port + 1
@@ -620,7 +620,7 @@ def get_firewall_rules() -> str:
         return CheckResult("⚠️ 방화벽 정보를 확인할 수 없습니다.", unknown=1)
     except subprocess.CalledProcessError as e:
         print(f"[네트워크 보안] 방화벽 조회 오류: {e}")
-        return CheckResult("⚠️ 방화벽 규칙을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
+        return CheckResult("⚠️ 방화벽 규칙을 불러오지 못했습니다. 잠시 후 다시 해 보시면 돼요.", unknown=1)
 
 
 def manage_firewall(action: str, port: int, protocol: str = "tcp") -> str:
@@ -635,7 +635,7 @@ def manage_firewall(action: str, port: int, protocol: str = "tcp") -> str:
     try:
         port = int(port)
     except (TypeError, ValueError):
-        return f"⚠️ 포트 번호({port})가 올바르지 않습니다. 숫자로 다시 알려주세요."
+        return f"⚠️ 포트 번호({port})가 올바르지 않습니다. 숫자로 다시 알려 주시겠어요?"
 
     print(f"\n[네트워크 보안] 방화벽 규칙 {action} 적용 중... (포트 {port}/{protocol})")
 
@@ -644,7 +644,7 @@ def manage_firewall(action: str, port: int, protocol: str = "tcp") -> str:
 
     RISK_PORTS = {
         80: "웹 접속이 외부에 열립니다. 가능하면 암호화되는 443번(HTTPS)을 사용하세요.",
-        443: "웹 접속이 외부에 열립니다. 보안 인증서를 꼭 설정하세요.",
+        443: "웹 접속이 외부에 열립니다. 보안 인증서를 꼭 설정하시는 게 좋아요.",
         22: "원격 접속이 외부에 열립니다. 비밀번호를 계속 시도하는 공격의 표적이 될 수 있습니다.",
         3389: "원격 데스크톱이 외부에 열립니다. 랜섬웨어·해킹 시도의 주요 통로입니다.",
         445: "파일 공유 기능이 외부에 열립니다. 랜섬웨어가 자주 악용하는 통로라 허용을 강력히 권장하지 않습니다.",
@@ -745,7 +745,7 @@ def disable_firewall_rule(rule_name: str) -> str:
 
     name = rule_name.strip()
     if not name:
-        return "⚠️ 방화벽 규칙 이름을 알려주세요."
+        return "⚠️ 방화벽 규칙 이름을 알려 주시겠어요?"
 
     try:
         check_proc = subprocess.run(
@@ -755,7 +755,7 @@ def disable_firewall_rule(rule_name: str) -> str:
         check_out = check_proc.stdout.decode("cp949", errors="replace")
         if "찾을 수 없습니다" in check_out or "No rules match" in check_out:
             return (f"'{name}'이라는 이름의 방화벽 규칙을 찾지 못했습니다. "
-                    "get_firewall_rules로 정확한 이름을 먼저 확인해주세요.")
+                    "get_firewall_rules로 정확한 이름을 먼저 확인해 보시면 돼요.")
 
         proc = subprocess.run(
             ["netsh", "advfirewall", "firewall", "set", "rule", f"name={name}", "new", "enable=no"],
@@ -771,7 +771,7 @@ def disable_firewall_rule(rule_name: str) -> str:
 
     except Exception as e:
         print(f"[네트워크 보안] 방화벽 규칙 비활성화 오류: {e}")
-        return "⚠️ 방화벽 규칙을 변경하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "⚠️ 방화벽 규칙을 변경하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 def disable_risky_firewall_rules() -> str:
@@ -816,7 +816,7 @@ def disable_risky_firewall_rules() -> str:
 
     except Exception as e:
         print(f"[네트워크 보안] 방화벽 일괄 비활성화 오류: {e}")
-        return "⚠️ 방화벽 규칙을 정리하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "⚠️ 방화벽 규칙을 정리하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 def preview_matching_processes(process_name: str) -> dict:
@@ -1004,7 +1004,7 @@ def monitor_network_traffic(duration_seconds: int = 5) -> str:
     try:
         duration_seconds = int(duration_seconds)
     except (TypeError, ValueError):
-        return "측정 시간은 숫자로 알려주세요."
+        return "측정 시간은 숫자로 알려 주시겠어요?"
     duration_seconds = min(max(duration_seconds, 1), 30)
     print(f"\n[네트워크 보안] {duration_seconds}초간 네트워크 트래픽 측정 중...")
 
@@ -1114,7 +1114,7 @@ def check_dns_settings() -> str:
         if suspicious:
             result += (f"\n\n🚨 경고: {', '.join(suspicious)}는 알려지지 않은 외부 DNS 서버입니다. "
                         "악성코드가 DNS를 조작해 가짜 사이트로 유도하는 파밍 공격일 수 있습니다. "
-                        "네트워크 어댑터 설정에서 DNS를 직접 확인하세요.")
+                        "네트워크 어댑터 설정에서 DNS를 직접 확인하시는 게 좋아요.")
         else:
             result += "\n\n✅ 알려진 정상 DNS 서버만 사용 중입니다."
             if any(_is_local_ip(ip) for ip in all_ips):
@@ -1124,10 +1124,10 @@ def check_dns_settings() -> str:
         return CheckResult(result, critical=len(suspicious))
 
     except subprocess.TimeoutExpired:
-        return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
+        return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 해 보시면 돼요.", unknown=1)
     except Exception as e:
         print(f"[네트워크 보안] DNS 확인 오류: {e}")
-        return CheckResult("⚠️ DNS 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
+        return CheckResult("⚠️ DNS 정보를 확인하지 못했습니다. 잠시 후 다시 해 보시면 돼요.", unknown=1)
 
 
 # ─────────────────────────────────────────────
@@ -1250,7 +1250,7 @@ def _run_admin_powershell(script: str, timeout: int = 90):
             return [ln.strip() for ln in f.read().splitlines() if ln.strip()], ""
     except subprocess.TimeoutExpired:
         return None, ("관리자 작업이 시간 안에 끝나지 않았어요. 방화벽이 일부 바뀌었을 수 있으니 "
-                      "'LUMI 방화벽 규칙 보여줘'로 확인해 주세요.")
+                      "'LUMI 방화벽 규칙 보여줘'로 확인해 보시면 돼요.")
     except OSError as e:
         return None, f"관리자 작업을 실행하지 못해 방화벽을 바꾸지 않았어요: {e}"
     finally:
@@ -1785,7 +1785,7 @@ def get_listening_ports() -> str:
         lines += risky_lines + blocked_lines + known_lines + other_lines
         if other_lines:
             lines.append(f"ℹ️ 알려진 포트 목록에 없는 포트 {len(other_lines)}개는 위험하다는 뜻은 아니지만, 연 프로그램을 "
-                         "내가 알고 쓰는지 확인해 보세요.")
+                         "내가 알고 쓰는지 확인해 보시면 돼요.")
     else:
         lines.append("✅ 네트워크에 열린 TCP 포트가 없어요.")
     lines.append(f"\n🏠 이 PC 안에서만 쓰는 포트 {local_only}개 (다른 기기에서는 접속할 수 없음)")
@@ -1799,7 +1799,7 @@ def get_listening_ports() -> str:
     if (critical or warning) and mac_security.is_mac():
         lines.append("💡 '열려 있다'는 건 프로그램이 접속을 기다린다는 뜻이에요. 실제로 밖에서 닿는지는 Mac 방화벽 설정에 "
                      "달려 있어요. 시스템 설정 > 네트워크 > 방화벽에서 켜고, 쓰지 않는 기능(화면 공유·파일 공유 등)은 "
-                     "시스템 설정 > 일반 > 공유에서 꺼 주세요.")
+                     "시스템 설정 > 일반 > 공유에서 끄시면 돼요.")
     elif critical or warning:
         lines.append("💡 '열려 있다'는 건 프로그램이 접속을 기다린다는 뜻이에요. 실제로 밖에서 닿는지는 Windows 방화벽 "
                      "규칙에 달려 있어요. '위험한 포트 막아줘'라고 하면 Windows 방화벽 차단 규칙으로 확실히 막을 수 있어요.")
@@ -1978,12 +1978,12 @@ def _create_rules(specs):
     notes = []
     if not done:
         notes.append("※ 관리자 작업이 끝까지 실행되지 않았어요. 위에 '만든 규칙'으로 나온 것만 확실히 바뀌었어요 — "
-                     "'LUMI 방화벽 규칙 보여줘'로 확인해 주세요.")
+                     "'LUMI 방화벽 규칙 보여줘'로 확인해 보시면 돼요.")
     if made:
         ok, why = security_records.add_firewall_rules([{"name": rid, "display": d} for d, rid in made])
         if not ok:
             notes.append(f"※ 규칙은 만들었지만 루미 기록에 적지 못했어요({why}) — 이 규칙은 루미가 지울 수 없으니 필요하면 "
-                         f"{_FIREWALL_MANUAL_PATH}을 직접 지워 주세요.")
+                         f"{_FIREWALL_MANUAL_PATH}을 직접 지우시면 돼요.")
         elif why:
             # 기록 파일이 손상돼 새로 시작한 경우 등 — 예전 규칙은 이제 '기록에 없는 규칙'으로 보인다는 걸 알린다
             notes.append(f"※ {why} 그 전에 만든 규칙은 'LUMI 방화벽 규칙 보여줘'에서 '기록에 없는 규칙'으로 보여요.")
@@ -2017,7 +2017,7 @@ def _creation_report(title: str, made, kept, failed, note: str, what: str) -> st
     else:
         head = f"[✅ {title} 완료]"
     if made or kept:
-        lines.append(f"{what}\n되돌리려면 'LUMI 방화벽 규칙 지워줘'라고 말해 주세요.")
+        lines.append(f"{what}\n되돌리려면 'LUMI 방화벽 규칙 지워줘'라고 하시면 돼요.")
     return head + "\n" + "\n".join(lines)
 
 
@@ -2046,7 +2046,7 @@ def block_program_internet(program_path: str) -> str:
         return "⚠️ 이 기능은 Windows 전용입니다."
     path = (program_path or "").strip().strip('"')
     if not path or not os.path.isfile(path):
-        return f"[인터넷 차단 안 됨]\n'{path}' 프로그램 파일을 찾지 못했어요. 전체 경로를 알려주세요."
+        return f"[인터넷 차단 안 됨]\n'{path}' 프로그램 파일을 찾지 못했어요. 전체 경로를 알려 주시겠어요?"
     base = os.path.basename(path)
     if base.lower() in _UNBLOCKABLE_PROGRAMS:
         return (f"[인터넷 차단 안 됨]\n'{base}'은(는) Windows가 동작하는 데 필요한 프로그램이라 막으면 PC가 "
@@ -2147,11 +2147,11 @@ def remove_lumi_firewall_rule(rule_name: str = "all") -> str:
         return "⚠️ 이 기능은 Windows 전용입니다."
     view = _lumi_rules()
     if view is None:
-        return "[방화벽 규칙 삭제 안 됨]\nWindows 방화벽 규칙을 읽지 못했어요. 잠시 후 다시 시도해 주세요."
+        return "[방화벽 규칙 삭제 안 됨]\nWindows 방화벽 규칙을 읽지 못했어요. 잠시 후 다시 해 보시면 돼요."
     if not view["ledger_readable"]:
         # 기록을 못 읽으면 어떤 규칙이 루미 것인지 모른다 — 추측해서 지우지 않고, 직접 지우는 방법을 알린다
         return ("[방화벽 규칙 삭제 안 됨]\n" + view["notice"] + " 그래서 어떤 규칙을 루미가 만들었는지 확인할 수 없어 "
-                f"지우지 않았어요.\n직접 지우려면 {_FIREWALL_MANUAL_PATH}을 확인해 주세요.")
+                f"지우지 않았어요.\n직접 지우려면 {_FIREWALL_MANUAL_PATH}을 확인해 보시면 돼요.")
     rules = view["ours"]
     name = (rule_name or "all").strip()
     if name.lower() in ("all", "전부", "전체", "모두"):
@@ -2160,9 +2160,9 @@ def remove_lumi_firewall_rule(rule_name: str = "all") -> str:
         targets = [r for r in rules if r.get("name") == name]
         if not targets:
             hint = (" 같은 이름이 이 계정의 루미 기록에 없는 'LUMI 보안' 그룹 규칙에는 있어요 — 누가 만들었는지 확인할 수 "
-                    f"없어서 지우지 않아요. 직접 지우려면 {_FIREWALL_MANUAL_PATH}을 확인해 주세요."
+                    f"없어서 지우지 않아요. 직접 지우려면 {_FIREWALL_MANUAL_PATH}을 확인해 보시면 돼요."
                     if any(r.get("name") == name for r in view["unrecorded"]) else
-                    " 'LUMI 방화벽 규칙 보여줘'로 정확한 이름을 확인해 주세요.")
+                    " 'LUMI 방화벽 규칙 보여줘'로 정확한 이름을 확인해 보시면 돼요.")
             return "[방화벽 규칙 삭제 안 됨]\n이 계정에서 루미가 만든 규칙 중에 그 이름이 없어요." + hint
     # 기록에만 남은 이름(실제 규칙이 이미 없거나 루미 그룹이 아님)을 먼저 정리한다 — 저장 실패도 알린다(3차)
     live_ids = {r["id"] for r in rules}
@@ -2178,7 +2178,7 @@ def remove_lumi_firewall_rule(rule_name: str = "all") -> str:
         msg = "[방화벽 규칙 삭제]\n이 계정에서 루미가 만든 방화벽 규칙 중 지울 것이 없어요."
         if view["unrecorded"]:
             msg += (f"\n※ 이 계정의 루미 기록에 없는 'LUMI 보안' 그룹 규칙 {len(view['unrecorded'])}개는 누가 만들었는지 "
-                    f"확인할 수 없어서 지우지 않았어요. 직접 지우려면 {_FIREWALL_MANUAL_PATH}을 확인해 주세요.")
+                    f"확인할 수 없어서 지우지 않았어요. 직접 지우려면 {_FIREWALL_MANUAL_PATH}을 확인해 보시면 돼요.")
         return msg + (f"\n{stale_note}" if stale_note else "")
     keys = {f"r{i}": r for i, r in enumerate(targets)}
     # 지우기 직전에도 그룹을 다시 확인하고(고유 이름이 같아도 루미 그룹이 아니면 지우지 않음), 지운 뒤 실제로
@@ -2202,7 +2202,7 @@ def remove_lumi_firewall_rule(rule_name: str = "all") -> str:
     out = [f"지운 규칙 {len(removed)}개: " + ", ".join(r["name"] for r in removed)] if removed else []
     out += [f"⚠️ 지우지 못함: {r['name']} — {why}" for r, why in failed]
     if not done:
-        out.append("※ 관리자 작업이 끝까지 실행되지 않았어요. 'LUMI 방화벽 규칙 보여줘'로 남은 규칙을 확인해 주세요.")
+        out.append("※ 관리자 작업이 끝까지 실행되지 않았어요. 'LUMI 방화벽 규칙 보여줘'로 남은 규칙을 확인해 보시면 돼요.")
     if removed:
         ok, why = security_records.remove_firewall_rules([r["id"] for r in removed])
         if not ok:
@@ -2376,7 +2376,7 @@ def check_web_redirection() -> str:
         if not (redirected or blocked or malformed) and others <= 0:
             lines.append("✅ hosts 파일에 바뀐 주소가 없어요")
         if redirected or blocked:
-            lines.append(f"💡 hosts 파일 위치: {_hosts_path()} — 직접 넣은 게 아니라면 해당 줄을 지우고 백신 검사를 해 주세요.")
+            lines.append(f"💡 hosts 파일 위치: {_hosts_path()} — 직접 넣은 게 아니라면 해당 줄을 지우고 백신 검사를 하시면 돼요.")
     proxy = _proxy_settings()
     if proxy is None or proxy["enabled"] is None:
         unknown += 1
@@ -2391,13 +2391,13 @@ def check_web_redirection() -> str:
         elif proxy["enabled"]:
             unknown += 1
             lines.append(f"{UNKNOWN_MARK} 프록시가 켜져 있다고 돼 있지만 주소가 없어요 — 설정 > 네트워크 및 인터넷 > "
-                         "프록시를 확인해 주세요")
+                         "프록시를 확인해 보시면 돼요")
         if proxy["pac"]:
             found = True
             lines.append("⚠️ 자동 프록시 설정 스크립트가 지정돼 있어요 — 웹 접속 경로를 이 스크립트가 정해요.")
         if found:
             warning += 1                        # 프록시 설정 하나로 센다(수동 프록시 + 스크립트여도 1개)
-            lines.append("💡 회사·학교 설정이나 직접 켠 게 아니라면 설정 > 네트워크 및 인터넷 > 프록시에서 꺼 주세요.")
+            lines.append("💡 회사·학교 설정이나 직접 켠 게 아니라면 설정 > 네트워크 및 인터넷 > 프록시에서 끄시면 돼요.")
         elif not proxy["enabled"]:
             lines.append("✅ 프록시를 쓰지 않아요(웹 접속이 바로 나가요)")
     return CheckResult(f"{title}\n" + "\n".join(lines), critical=critical, warning=warning, unknown=unknown)
@@ -2591,7 +2591,7 @@ def _score_report(title: str, checks, kind: str = None) -> str:
             if unknown else "")
     return (f"{title}\n점수: {score}/100 ({grade})\n\n"
             "항목별 상태:\n" + "\n".join(f"  {s}" for s in sections) +
-            "\n\n※ 상세 내용이 필요한 항목은 개별로 다시 요청하세요." + note +
+            "\n\n※ 상세 내용이 필요한 항목은 개별로 다시 요청하시는 게 좋아요." + note +
             # 점수가 '안전 보증'으로 들리지 않게 범위를 밝힌다(2026-10-13)
             "\n※ 점수는 루미가 확인한 항목만 반영해요 — 백신 검사나 전문 보안 점검을 대신하지는 않아요." + history)
 

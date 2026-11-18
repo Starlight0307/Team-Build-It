@@ -204,7 +204,7 @@ def test_voice_report_with_conclusion_line():
                ("2026-11-17", "🌧️", "소나기", 6, 12, 93)], "앞으로 7일")
     spoken = voice.to_speech_text(reply_weather.build(raw, "이번주 비 와?"))
     assert spoken.startswith("이 기간에는 11월 17일") and spoken.rstrip(".").endswith("정리해 두었어요")
-    assert voice.to_speech_text("안녕하세요. " * 60).endswith("나머지는 화면에서 확인해 주세요.")
+    assert voice.to_speech_text("안녕하세요. " * 60).endswith("나머지는 화면에서 확인해 보시면 돼요.")
 
 
 # ── 설치된 프로그램 요약 ──
@@ -251,7 +251,7 @@ def _trend(cpu=(11.9, 28.0), ram=(66.3, 71.1), disk=(29.7, 28.8), label="최근 
     lines = [f"[📊 PC 상태 추이] ({label} vs 그 이전, 표본 100개 vs 90개)", row("CPU 평균", *cpu), row("메모리 평균", *ram),
              row("디스크 여유공간", *disk, " (늘어날수록 여유 있음)")]
     if today:
-        lines.append("※ '오늘'은 아직 끝나지 않은 하루라 어제 하루 전체보다 표본이 적을 수 있어요 — 표본 수가 적으면 참고용으로만 봐주세요.")
+        lines.append("※ '오늘'은 아직 끝나지 않은 하루라 어제 하루 전체보다 표본이 적을 수 있어요 — 표본 수가 적으면 참고용으로만 보시면 돼요.")
     return "\n".join(lines)
 
 

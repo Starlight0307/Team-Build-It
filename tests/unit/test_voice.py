@@ -34,7 +34,7 @@ def test_speech_text_strips_prefix_markdown_emoji_and_urls():
 def test_long_speech_text_is_cut_with_screen_notice():
     spoken = to_speech_text("이것은 아주 긴 답변입니다. " * 40)
     assert len(spoken) < 300
-    assert spoken.endswith("나머지는 화면에서 확인해 주세요.")
+    assert spoken.endswith("나머지는 화면에서 확인해 보시면 돼요.")
 
 
 # ── 음성 인식 정확도 개선 (2026-10-02) ──

@@ -75,11 +75,11 @@ def open_file_location(path: str) -> str:
     print(f"\n📂 [파일 탐색기] 위치 열기: {path}")
     path = (path or "").strip().strip('"').strip("'")
     if not path:
-        return "⚠️ 어떤 파일이나 폴더를 열지 알려주세요."
+        return "⚠️ 어떤 파일이나 폴더를 열지 알려 주시겠어요?"
     if not os.path.exists(path):
         path = _known_folder(path)
     if not os.path.exists(path):
-        return f"⚠️ '{path}' 경로를 찾을 수 없어요. 정확한 경로를 다시 알려주세요."
+        return f"⚠️ '{path}' 경로를 찾을 수 없어요. 정확한 경로를 다시 알려 주시겠어요?"
 
     system = platform.system()
     try:
@@ -121,7 +121,7 @@ def open_file(path: str) -> str:
         if opened.startswith("⚠️"):
             return opened
         return ("[📂 폴더 열기]\n실행 파일이라 바로 실행하지 않고, 파일이 있는 폴더를 열어 선택해 뒀어요. "
-                "실행하려면 탐색기에서 직접 더블클릭해 주세요.")
+                "실행하려면 탐색기에서 직접 더블클릭하시면 돼요.")
     try:
         if platform.system() == "Windows":
             os.startfile(path)

@@ -139,7 +139,7 @@ def test_exception_gives_fixed_message(win, monkeypatch):
     _inject(win, scan_file_with_defender)
     win._on_confirm_required(_payload("scan_file_with_defender", path="x"))
     _spin(4000, until=lambda: bool(win._shown))
-    assert win._shown == ["❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 시도해 주세요."]
+    assert win._shown == ["❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 해 보시면 돼요."]
 
 
 def test_no_path_unchanged(win, monkeypatch):

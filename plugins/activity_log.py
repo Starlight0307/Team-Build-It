@@ -151,7 +151,7 @@ def list_recent_activity(limit: int = 10) -> str:
     # log_activity와 동일한 이유로 함수 시작 시점에 한 번만 읽는다.
     user_id = _current_user_id
     if not user_id or user_id == "guest":
-        return "⚠️ 활동 이력은 로그인한 사용자만 볼 수 있어요. 먼저 로그인해주세요."
+        return "⚠️ 활동 이력은 로그인한 사용자만 볼 수 있어요. 로그인하면 바로 쓸 수 있어요."
     try:
         limit = max(1, min(int(limit), 50))
     except (TypeError, ValueError):

@@ -273,7 +273,7 @@ def test_unknown_room_and_bad_inputs(isolated_iot_rooms):
     with p:
         assert "'욕실'이라는 방을 찾을 수 없어요" in control_room("욕실", "off")
         assert "on' 또는 'off'" in control_room("거실", "toggle")
-        assert "방 이름을 알려주세요" in control_room("", "off")
+        assert "방 이름을 알려 주시겠어요" in control_room("", "off")
         assert "방 이름이 너무 길어요" in control_room("가" * 21, "off")
     assert mock.await_count == 0
 
@@ -311,7 +311,7 @@ def test_delete_room_keeps_devices_untouched(isolated_iot_rooms):
 
 
 def test_delete_unknown_room(isolated_iot_rooms):
-    assert "찾을 수 없어요" in delete_room("없는방") and "방 이름을 알려주세요" in delete_room("")
+    assert "찾을 수 없어요" in delete_room("없는방") and "방 이름을 알려 주시겠어요" in delete_room("")
 
 
 # ── 기존 기능 회귀 ────────────────────────────────────────────────────

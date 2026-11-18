@@ -101,7 +101,7 @@ def _build_match_summary(parsed_products: list, search_query: str) -> str:
         lines.append(
             f"[💡 참고] 위 5개 상품 중 검색어 '{search_query}'와 이름이 정확히 일치하는 "
             "상품을 찾지 못했습니다 — 관련은 있지만 다른 모델/등급일 수 있으니 상품명을 "
-            "그대로 확인해주세요."
+            "그대로 확인해 보시면 돼요."
         )
     return "\n".join(lines)
 
@@ -390,7 +390,7 @@ def _format_site_comparison(site_results, search_query: str) -> str:
         lines.append(f"(⚠️ {', '.join(failed)} 조회에 실패해서 나머지 사이트 결과만 보여드려요)")
     lines.append("(※ 사이트별 검색 결과 중 이름이 비슷한 상품끼리 비교했어요. 용량·색상·통신방식·구성품이 "
                  "다를 수 있고, 다나와(가격비교 집계)와 네이버쇼핑(입점몰 목록)은 성격이 다른 서비스예요. "
-                 "구매 전 상품 상세를 확인해주세요. 새 상품이 아닌 것(중고/단종/판매예정), 케이스·필름 같은 "
+                 "구매 전 상품 상세를 확인해 보시면 돼요. 새 상품이 아닌 것(중고/단종/판매예정), 케이스·필름 같은 "
                  "액세서리, 모델 등급이 다른 상품(Pro/Max 등)은 비교에서 제외했어요.)")
     return "\n".join(lines)
 
@@ -552,7 +552,7 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
 
         if not products:
             return (f"'{search_query}'에 대한 검색 결과를 가져오지 못했어요. "
-                    "상품 이름을 조금 바꾸거나 잠시 뒤 다시 검색해 주세요.")
+                    "상품 이름을 조금 바꾸거나 잠시 뒤 다시 검색하시면 돼요.")
 
         results = []
         results.append(f"╔══════════════════════════════════════════════════════╗")
@@ -609,7 +609,7 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
 
     except requests.exceptions.RequestException as e:
         print(f"[가격 검색] 통신 오류: {e}")
-        return "⚠️ 가격 정보를 가져오지 못했습니다. 인터넷 연결을 확인하고 잠시 후 다시 시도해주세요."
+        return "⚠️ 가격 정보를 가져오지 못했습니다. 인터넷 연결을 확인하고 잠시 후 다시 해 보시면 돼요."
     except Exception as e:
         print(f"[가격 검색] 오류: {e}")
-        return "⚠️ 가격 검색 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요."
+        return "⚠️ 가격 검색 중 문제가 발생했습니다. 잠시 후 다시 해 보시면 돼요."

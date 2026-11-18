@@ -29,11 +29,11 @@ def _fake_device(alias, host, is_on=False):
 # ── create_scene: 입력 검증/파싱 ────────────────────────────────────────
 
 def test_empty_scene_name_rejected(isolated_iot_scenes):
-    assert "이름을 알려주세요" in create_scene("", "거실 전등:off")
+    assert "이름을 알려 주시겠어요" in create_scene("", "거실 전등:off")
 
 
 def test_empty_devices_rejected(isolated_iot_scenes):
-    assert "기기와 동작을 알려주세요" in create_scene("취침모드", "")
+    assert "기기와 동작을 알려 주시겠어요" in create_scene("취침모드", "")
 
 
 def test_too_long_scene_name_rejected(isolated_iot_scenes):
@@ -133,7 +133,7 @@ def test_run_nonexistent_scene(isolated_iot_scenes):
 
 
 def test_run_scene_requires_name(isolated_iot_scenes):
-    assert "이름을 알려주세요" in run_scene("")
+    assert "이름을 알려 주시겠어요" in run_scene("")
 
 
 @patch("plugins.iot_control.kasa.Discover.discover", new_callable=AsyncMock)

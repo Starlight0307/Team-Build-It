@@ -152,7 +152,7 @@ AVAILABLE_PLUGINS = [
                        "get_current_cpu_percent", "get_disk_free_percent", "get_ram_percent"],
         "module_name": "system_info",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_info.py",
-        "sha256": "8fccc468395f3580e7fe83922b9cc4b929005068ed06950a66595b9de9a1ebaf",
+        "sha256": "04ea71767cd5e2ea4b327d54228cba8d57db76c31b510221171c39c4edb0efb2",
         "dependencies": ["psutil"]
     },
     {
@@ -161,7 +161,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["search_product_price", "get_cheapest_matched_price"],
         "module_name": "price_search",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/price_search.py",
-        "sha256": "ff4024dc7b865893caf24eaa082f4d5b3d8caf102793dd7ee32a47c6d709ce42",
+        "sha256": "46c53b828808d3f4aabc7d5363c99968fd921a42afba02c66b0e2b46fc24a60c",
         "dependencies": ["requests", "beautifulsoup4"]
     },
     {
@@ -180,7 +180,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "network_security",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/network_security.py",
-        "sha256": "163b7074a7c64d68a158b36b8ce56d1bd7b7ec2ac3590cb3cef4971af8089017",
+        "sha256": "9a0cbf9dd22ba880d6ed20ca7609ab07de436593f2bd58e363dcbad545b5267e",
         "dependencies": ["psutil"]
     },
     {
@@ -195,7 +195,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "malware_detection",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/malware_detection.py",
-        "sha256": "dca59042eec0c72c28a068527ffa5120523da4e2e4dc384327c452b31a2023a6",
+        "sha256": "cce366ae3376a88e9fdc5939b5a1add2997bd03d8e5981a53d24d1db006d6b2f",
         "dependencies": ["psutil"]
     },
     {
@@ -208,7 +208,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "system_security",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/system_security.py",
-        "sha256": "ef188c581cef424723ccc2e0749aaca4e68d687b1803b020fd351c51853b18f1",
+        "sha256": "762de3a1b644c1110a483d6717b321c7deacfdec65b720929edd38527212db84",
         "dependencies": []
     },
     {
@@ -221,7 +221,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "realtime_monitor",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/realtime_monitor.py",
-        "sha256": "1dde7efb4e16fcc056d189352a0b575216706e5fb7a6d6970bc671bd67a7a67d",
+        "sha256": "fbe1b1d3cfd07e553b41156b2c3fc1b1b228c8f54fc8e612099ce155bd9dc238",
         "dependencies": []
     },
     {
@@ -237,7 +237,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "calendar_tool",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/calendar_tool.py",
-        "sha256": "2ce0913e5c259ecc95066caf55d19996ce423d90daca56667172e3c190ef9628",
+        "sha256": "d88230f13c81a23fba984107d32e74647c06a9e0ea05ebc90bd2d332f10bb777",
         "dependencies": ["google-api-python-client", "google-auth-httplib2", "google-auth-oauthlib", "tzdata"]
     },
     {
@@ -252,7 +252,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "local_calendar",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/local_calendar.py",
-        "sha256": "6a55cb4e95cc85949f2f53e27d46d00318021ecc7a7928224e8aac31dc01f865",
+        "sha256": "a28074170182bf3fdabe7dd3ba1ba7998986de41555451b8b844b1a5a17c3dfb",
         "dependencies": []
     },
     {
@@ -266,7 +266,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "pc_optimizer",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/pc_optimizer.py",
-        "sha256": "d3c80d30bdf7db4281c91d6fb0eb1946b47c775e9c004e7f6eb0809800b0a253",
+        "sha256": "1f0045eeab9b943a6ce35f00b10d4fed6b9fa62915bc1a82446754d7192d9e48",
         "dependencies": []
     },
     {
@@ -286,7 +286,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "reminder",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/reminder.py",
-        "sha256": "4a3cdcf8257e4182819a4d5c9dc0cf7f75956f2088a2cd748ff78c15acb28085",
+        "sha256": "547f518fbce8de6bae4f4b706683dc00f0b51dedaa8d529dbf04d00f7e453bfc",
         "dependencies": []
     },
     {
@@ -300,7 +300,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "expense_tracker",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/expense_tracker.py",
-        "sha256": "12004939dd2767a3c102d39013aa7c8031fa214067fc536f988436b3a26b425c",
+        "sha256": "34326394f123a845a20febee3fcd5064077ba11598b29d7bbdf14602ecee2ca2",
         "dependencies": []
     },
     {
@@ -309,7 +309,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["get_stock_briefing", "open_stock_order", "stop_stock_auto_trading"],
         "module_name": "stock_portfolio",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/stock_portfolio.py",
-        "sha256": "688772e06959c17a8d2f3f0cbceb52a98af0bbb18ddd7bf0fb49a0c9cf4b1750",
+        "sha256": "dd4d894abb23ff6f7b9c00f41bbf0629ce935a66624dff390fb2e790dd9cb002",
         "dependencies": []
     },
     {
@@ -323,7 +323,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "app_usage",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/app_usage.py",
-        "sha256": "6db528bed0ed1555c33b7dad06ebadfc915f5d657c8ed278f9d8446b33b62451",
+        "sha256": "e8690b61c8bd15ab0b26b296bd1fdbc65d1729df1d064e865567a4c3f182a421",
         "dependencies": ["psutil"]
     },
     {
@@ -332,7 +332,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["search_files"],
         "module_name": "file_search",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/file_search.py",
-        "sha256": "e188c796be7ea4b9afd64ed62162599184571ae4540e64fca4a4196d52038876",
+        "sha256": "be2c9c7bdbeaacdb555ea44b19e671087a9ae4a2385e45addf099f54a2c40879",
         "dependencies": []
     },
     {
@@ -343,7 +343,7 @@ AVAILABLE_PLUGINS = [
                        "set_device_room", "list_rooms", "control_room", "delete_room"],
         "module_name": "iot_control",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/iot_control.py",
-        "sha256": "e7362c92256b50fadc66f734207c20eff5bfb79e5d38fe209d1395e6f993ef91",
+        "sha256": "7090d504bab02b8b0a0d5547af2621263ba99ffc8ec54cc43337926300289e78",
         "dependencies": ["python-kasa", "tinytuya"]
     },
     {
@@ -356,7 +356,7 @@ AVAILABLE_PLUGINS = [
         # 2026-09-29 로컬 신규 추가 — 아직 GitHub에 push되지 않아 이 해시는
         # 로컬 파일 기준으로만 정확하다(원격 설치 다운로드 검증에 쓰이는 값이라,
         # push 후 원본과 달라지면 무결성 검사가 거부한다 — push 시 재계산 필요).
-        "sha256": "2244820839cc20c0c3dc7827616bd80f7ca4ad339fc82f418701e26849d4fb73",
+        "sha256": "83c47dd3d4f178ebf987dc0f3c7aee8ad0e3273a154f1b1c89507266e933dbcb",
         "dependencies": []
     },
     {
@@ -368,7 +368,7 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/todo_list.py",
         # 2026-09-29 로컬 신규 추가 — system_history와 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
-        "sha256": "166e5abd15258863767e3b4c83b32f30bce1985f75b11e94f80fdeaba926e39a",
+        "sha256": "0d77728aeaf96a7ce5789133d25ab34a91162d8a2e5277e5c978e2c452240422",
         "dependencies": []
     },
     {
@@ -379,7 +379,7 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/notes.py",
         # 2026-09-29 로컬 신규 추가 — 아직 GitHub에 push 전이라 로컬 파일
         # 기준으로만 정확한 값(push 시 재계산 필요, 다른 신규 항목과 동일).
-        "sha256": "9ab4b9808e2bee82687c9ea9dda540df50c514f72c9f0bb24fe8c53dcd67872c",
+        "sha256": "53df0da34468a0c4efa0e43275b5b795531001b718badcafd58f623b77e5bdaf",
         "dependencies": []
     },
     {
@@ -389,7 +389,7 @@ AVAILABLE_PLUGINS = [
                        "summarize_meeting_file", "export_meeting"],
         "module_name": "meeting_notes",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/meeting_notes.py",
-        "sha256": "c3841b823beaef635d1c96a288e26edc683b3c6ca1697f970ca3dedf71b8943d",
+        "sha256": "3bdb9e55a61025adfcd5d8ea66301ea943c89e7f63c1b1e8d10faf2d7383ef0a",
         "dependencies": []
     },
     {
@@ -401,7 +401,7 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/text_tools.py",
         # 2026-09-29 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
-        "sha256": "b83f654531d697c3780bf4cabfcb40d7a7ae475e8441dba888184c9817b4f8a3",
+        "sha256": "4c5bb49ee1c1f5a41fc658c33af25c4e1ad066e1d39d5f6fe72e932f6d546b42",
         "dependencies": []
     },
     {
@@ -412,7 +412,7 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/file_explorer.py",
         # 2026-09-29 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
-        "sha256": "3acfeac7414edce235bf1898a8597f5ee7db3b48ed9cde655b72891d13a4359b",
+        "sha256": "6b02a0d2b560e698916c1691a491afdcda94c0c8b6966c0149a5a1a18568351e",
         "dependencies": []
     },
     {
@@ -424,7 +424,7 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/activity_log.py",
         # 2026-09-30 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
-        "sha256": "7d6503a494bf5c553ac4f99e769d771dca025ab54c658221b5a7cc37a066d39b",
+        "sha256": "ec6f3fd13ebba94071c414e520aa31d4b48166958c924d57e72dcb6906164f02",
         "dependencies": []
     },
     {
@@ -436,7 +436,7 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/data_backup.py",
         # 2026-09-30 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
-        "sha256": "9d4a5624761f4149c1161643c32e4fc5b970a86bd67f64fc0f263312b18b35ef",
+        "sha256": "5656f70dd38bb1076abb6df0bab202fb36ca0348a97da13a1500acc7e1b0c5c1",
         "dependencies": []
     },
     {
@@ -448,7 +448,7 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/weather.py",
         # 2026-10-01 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
-        "sha256": "082d506a53a5bd75a0aa76ad18a30c60e68c37a275bcb94ab6b8238506fb9da3",
+        "sha256": "8a269e87dae54acea72007d1af7b9ad2d7e0d588d3f99a40a84e9b324643feff",
         "dependencies": []
     },
 ]

@@ -196,7 +196,7 @@ class SkillAgentWorker(QThread):
                     log.append(entry)
                 messages.append({"role": "tool", "content": result})
         self.finished_skill.emit(False, skill.name,
-                                 f"{MAX_STEPS}단계 안에 끝내지 못했어요. 요청을 조금 더 구체적으로 말씀해 주세요.", log)
+                                 f"{MAX_STEPS}단계 안에 끝내지 못했어요. 요청을 조금 더 구체적으로 알려 주시겠어요?", log)
 
     def _call_tool(self, skill, fn: str, args: dict):
         if fn == "run_command":

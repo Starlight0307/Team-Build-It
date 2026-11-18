@@ -269,5 +269,5 @@ def download_and_install_plugin(
 
     except Exception as e:
         print(f"[플러그인 설치 오류] {m_name}: {e}")
-        lumi_dialog.critical(parent_widget, "오류", f"'{f_name}' 기능 설치에 실패했습니다. 인터넷 연결을 확인하고 잠시 후 다시 시도해주세요.")
+        lumi_dialog.critical(parent_widget, "오류", f"'{f_name}' 기능 설치에 실패했습니다. 인터넷 연결을 확인하고 잠시 후 다시 해 보시면 돼요.")
         btn.setText("설치"); btn.setEnabled(True)

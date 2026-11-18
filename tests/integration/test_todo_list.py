@@ -41,7 +41,7 @@ def test_add_todo_basic(isolated_todo_list):
 
 
 def test_add_todo_empty_text_rejected(isolated_todo_list):
-    assert "알려주세요" in add_todo("   ")
+    assert "알려 주시겠어요" in add_todo("   ")
 
 
 def test_add_todo_strips_newlines(isolated_todo_list):
@@ -151,7 +151,7 @@ def test_complete_already_done_gives_specific_message(isolated_todo_list):
 
 
 def test_complete_empty_item_asks_for_specifics(isolated_todo_list):
-    assert "알려주세요" in complete_todo("")
+    assert "알려 주시겠어요" in complete_todo("")
 
 
 # ── reopen_todo(완료 취소, 2026-09-29 신규 — 1라운드 검수에서 의도적으로

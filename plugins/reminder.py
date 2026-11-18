@@ -441,7 +441,7 @@ def _build_action(iot_device_name: str = "", iot_state: str = "", todo_text: str
     scene_action = _build_action_from_scene_args(scene_name)
     chosen = [a for a in (iot_action, todo_action, scene_action) if a]
     if len(chosen) > 1:
-        return None, "⚠️ 기기 자동 제어, 할 일 자동 추가, 씬 자동 실행 중 하나만 선택해주세요."
+        return None, "⚠️ 기기 자동 제어, 할 일 자동 추가, 씬 자동 실행 중 하나만 선택하시면 돼요."
     return (chosen[0] if chosen else None), None
 
 
@@ -454,15 +454,15 @@ def _validate_action(action) -> str:
         return "⚠️ 지원하지 않는 자동 실행 방식이에요."
     if action["type"] == "iot_control":
         if not action.get("device_name"):
-            return "⚠️ 자동으로 제어할 기기 이름을 함께 알려주세요."
+            return "⚠️ 자동으로 제어할 기기 이름을 함께 알려 주시겠어요?"
         if action.get("state") not in ("on", "off"):
-            return "⚠️ 기기를 켤지(on) 끌지(off) 함께 알려주세요."
+            return "⚠️ 기기를 켤지(on) 끌지(off) 함께 알려 주시겠어요?"
     if action["type"] == "add_todo":
         if not action.get("text"):
-            return "⚠️ 자동으로 추가할 할 일 내용을 함께 알려주세요."
+            return "⚠️ 자동으로 추가할 할 일 내용을 함께 알려 주시겠어요?"
     if action["type"] == "run_scene":
         if not action.get("scene_name"):
-            return "⚠️ 자동으로 실행할 씬 이름을 함께 알려주세요."
+            return "⚠️ 자동으로 실행할 씬 이름을 함께 알려 주시겠어요?"
     return None
 
 
@@ -1393,7 +1393,7 @@ def cancel_timer(timer_id: str = "") -> str:
                 f"  - {_format_remaining(_active_timers[tid]['expires_at'] - now)} 후"
                 + (f" ('{_active_timers[tid]['label']}')" if _active_timers[tid]["label"] else "")
                 for tid in sorted(active, key=lambda x: _active_timers[x]["expires_at"]))
-            return ("❔ 어떤 타이머를 취소할지 알려주세요. 지금 설정된 타이머예요:\n" + choices)
+            return ("❔ 어떤 타이머를 취소할지 알려 주시겠어요? 지금 설정된 타이머예요:\n" + choices)
         label = t["label"]
         del _active_timers[timer_id]
     label_str = f" ('{label}')" if label else ""
@@ -1478,7 +1478,7 @@ def set_daily_reminder(hour: int, minute: int = 0, label: str = "",
     if action_desc:
         return f"[✅ 정기 알림 + 자동 실행 등록 완료]\n매일 {hour:02d}:{minute:02d}에{label_str} {action_desc}"
     return (f"[✅ 정기 알림 설정 완료]\n매일 {hour:02d}:{minute:02d}에{label_str} 알려드릴게요. "
-            f"실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요.")
+            f"실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청하시면 돼요.")
 
 
 def list_daily_reminders() -> str:
@@ -1541,7 +1541,7 @@ def cancel_daily_reminder(routine_id: str = "") -> str:
                 return "❌ 등록된 정기 알림이 없어요."
             choices = "\n".join(f"  - 매일 {r['hour']:02d}:{r['minute']:02d}" + (f" ('{r['label']}')" if r["label"] else "")
                                 for r in visible)
-            return "❔ 어떤 정기 알림을 취소할지 알려주세요. 지금 등록된 정기 알림이에요:\n" + choices
+            return "❔ 어떤 정기 알림을 취소할지 알려 주시겠어요? 지금 등록된 정기 알림이에요:\n" + choices
         label = r["label"]
         del _routines[routine_id]
         _save_routines()
@@ -1661,7 +1661,7 @@ def set_usage_condition(target: str, threshold_minutes: float, label: str = "",
     print(f"\n🎯🔁 [조건부 알림] 설정 중: '{target}' {threshold_minutes}분 넘으면" + (f" ('{label}')" if label else ""))
     target = (target or "").strip()
     if not target:
-        return "⚠️ 조건을 걸 프로그램 이름이나 분류를 알려주세요."
+        return "⚠️ 조건을 걸 프로그램 이름이나 분류를 알려 주시겠어요?"
     try:
         threshold_minutes = float(threshold_minutes)
     except (TypeError, ValueError):
@@ -1690,7 +1690,7 @@ def set_usage_condition(target: str, threshold_minutes: float, label: str = "",
         return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\n'{target}' 오늘 사용 시간이 {friendly}을 넘으면{label_str} "
                 f"{action_desc} (Team-Build-It이 켜져 있는 동안만 감시돼요)")
     return (f"[✅ 조건부 알림 설정 완료]\n'{target}' 오늘 사용 시간이 {friendly}을 넘으면{label_str} "
-            f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. "
+            f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청하시면 돼요. "
             f"(Team-Build-It이 켜져 있는 동안만 감시돼요)")
 
 
@@ -1756,7 +1756,7 @@ def set_cpu_condition(threshold_percent: float, label: str = "",
                 f"{action_desc} (이 조건은 Team-Build-It이 실행 중일 때 약 30초마다 확인해요 — 앱이 꺼져 있거나 "
                 f"확인 사이에 잠깐 조건을 넘었다가 돌아온 경우에는 놓칠 수 있어요)")
     return (f"[✅ 조건부 알림 설정 완료]\nCPU 사용률이 {threshold_percent:.0f}%를 넘으면{label_str} "
-            f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. "
+            f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청하시면 돼요. "
             f"(이 조건은 Team-Build-It이 실행 중일 때 약 30초마다 확인해요 — 앱이 꺼져 있거나 "
             f"확인 사이에 잠깐 조건을 넘었다가 돌아온 경우에는 알림을 놓칠 수 있어요)")
 
@@ -1787,7 +1787,7 @@ def set_disk_condition(threshold_percent: float, label: str = "",
                 f"{action_desc} (이 조건은 Team-Build-It이 실행 중일 때 약 30초마다 확인해요 — 앱이 꺼져 있거나 "
                 f"확인 사이에 잠깐 조건을 넘었다가 돌아온 경우에는 놓칠 수 있어요)")
     return (f"[✅ 조건부 알림 설정 완료]\n디스크 여유 공간이 {threshold_percent:.0f}% 밑으로 떨어지면{label_str} "
-            f"알려드릴게요. 실제 정리는 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. "
+            f"알려드릴게요. 실제 정리는 자동으로 실행되지 않으니, 알림을 보시면 직접 요청하시면 돼요. "
             f"(이 조건은 Team-Build-It이 실행 중일 때 약 30초마다 확인해요 — 앱이 꺼져 있거나 "
             f"확인 사이에 잠깐 조건을 넘었다가 돌아온 경우에는 알림을 놓칠 수 있어요)")
 
@@ -1820,7 +1820,7 @@ def set_trend_condition(target: str, threshold_days: float = 3, label: str = "",
         # 없이 threshold_days=500 같은 값을 등록하면 실제로는 절대
         # 만족될 수 없는(streak가 399를 못 넘음) 조건이 조용히 등록되는
         # "죽은 조건" 버그가 생긴다.
-        return f"⚠️ 연속 일수는 {_MAX_TREND_THRESHOLD_DAYS}일 이하로 설정해주세요."
+        return f"⚠️ 연속 일수는 {_MAX_TREND_THRESHOLD_DAYS}일 이하로 설정하시면 돼요."
 
     action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
     if build_error:
@@ -1844,7 +1844,7 @@ def set_trend_condition(target: str, threshold_days: float = 3, label: str = "",
         return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\n{target_kr}가 {threshold_days}일 연속되면{label_str} "
                 f"{action_desc} {note}")
     return (f"[✅ 조건부 알림 설정 완료]\n{target_kr}가 {threshold_days}일 연속되면{label_str} "
-            f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. {note}")
+            f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청하시면 돼요. {note}")
 
 
 def set_app_usage_trend_condition(target: str = "", threshold_days: float = 3, label: str = "",
@@ -1868,7 +1868,7 @@ def set_app_usage_trend_condition(target: str = "", threshold_days: float = 3, l
         # (app_usage.py)도 최대 400일치 기록만 조사하는 동일한 안전장치를
         # 갖고 있어, 그 상한을 넘는 threshold_days는 영원히 만족될 수 없는
         # "죽은 조건"이 된다.
-        return f"⚠️ 연속 일수는 {_MAX_TREND_THRESHOLD_DAYS}일 이하로 설정해주세요."
+        return f"⚠️ 연속 일수는 {_MAX_TREND_THRESHOLD_DAYS}일 이하로 설정하시면 돼요."
 
     action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
     if build_error:
@@ -1890,7 +1890,7 @@ def set_app_usage_trend_condition(target: str = "", threshold_days: float = 3, l
         return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\n'{target_label}' 사용 시간이 {threshold_days}일 연속 늘면{label_str} "
                 f"{action_desc} {note}")
     return (f"[✅ 조건부 알림 설정 완료]\n'{target_label}' 사용 시간이 {threshold_days}일 연속 늘면{label_str} "
-            f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청해주세요. {note}")
+            f"알려드릴게요. 실제 점검은 자동으로 실행되지 않으니, 알림을 보시면 직접 요청하시면 돼요. {note}")
 
 
 def set_price_condition(query: str, target_price: float, label: str = "",
@@ -1903,7 +1903,7 @@ def set_price_condition(query: str, target_price: float, label: str = "",
     print(f"\n💸🔁 [조건부 알림] 설정 중: '{query}' {target_price}원 이하" + (f" ('{label}')" if label else ""))
     query = (query or "").strip()
     if not query:
-        return "⚠️ 가격을 추적할 상품명을 알려주세요."
+        return "⚠️ 가격을 추적할 상품명을 알려 주시겠어요?"
     try:
         target_price = float(target_price)
     except (TypeError, ValueError):
@@ -1930,7 +1930,7 @@ def set_price_condition(query: str, target_price: float, label: str = "",
         return (f"[✅ 조건부 알림 + 자동 실행 등록 완료]\n'{query}' 최저가가 {int(target_price):,}원 이하로 "
                 f"떨어지면{label_str} {action_desc} {note}")
     return (f"[✅ 조건부 알림 설정 완료]\n'{query}' 최저가가 {int(target_price):,}원 이하로 떨어지면{label_str} "
-            f"알려드릴게요. 실제 구매는 자동으로 실행되지 않으니, 알림을 보시면 직접 확인해주세요. {note}")
+            f"알려드릴게요. 실제 구매는 자동으로 실행되지 않으니, 알림을 보시면 직접 확인해 보시면 돼요. {note}")
 
 
 def set_weather_condition(threshold_percent: float = 50, when: str = "today", check_hour=None,
@@ -1953,7 +1953,7 @@ def set_weather_condition(threshold_percent: float = 50, when: str = "today", ch
 
     when = (when or "today").strip().lower()
     if when not in ("today", "tomorrow"):
-        return "⚠️ '오늘' 또는 '내일' 중 어느 날의 강수확률인지 알려주세요."
+        return "⚠️ '오늘' 또는 '내일' 중 어느 날의 강수확률인지 알려 주시겠어요?"
 
     if check_hour in (None, ""):
         check_hour = None
@@ -2039,7 +2039,7 @@ def cancel_condition(condition_id: str) -> str:
     with _conditions_lock:
         c = _conditions.get(condition_id)
         if not c or (c.get("action") and c.get("owner") != _current_user_id):
-            return "❌ 취소할 조건부 알림을 찾을 수 없습니다. list_conditions로 먼저 확인해주세요."
+            return "❌ 취소할 조건부 알림을 찾을 수 없습니다. list_conditions로 먼저 확인해 보시면 돼요."
         label = c["label"]
         del _conditions[condition_id]
         _save_conditions()

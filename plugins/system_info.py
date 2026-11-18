@@ -261,7 +261,7 @@ def kill_process(process_name_or_number: str) -> str:
         if 0 <= idx < len(LAST_TOP_PROCESSES):
             search_name = LAST_TOP_PROCESSES[idx]
         else:
-            return "잘못된 번호입니다. 다시 확인해주세요."
+            return "잘못된 번호입니다. 다시 확인해 보시면 돼요."
 
     search_name_lower = search_name.lower()
     found = False

@@ -213,3 +213,109 @@ def test_guard_catches_fake_violation(tmp_path):
     tree = ast.parse("x = " + repr("다시 말해 주세요"))
     pat = re.compile(r"다시\s?말해\s?주")
     assert any(pat.search(s) for _l, s in _user_visible_strings(tree))
+
+
+# ---- 2026-11-18: 사용자에게 보이는 '요구형' 문구 전체 정적 가드 (플러그인 + 앱 + 코어 응답) ----
+# 사용자에게 무언가를 시키는 말("~해 주세요", "다시 시도해주세요", "~하세요")은 쓰지 않는다.
+# 정보가 모자랄 때는 "알려 주시겠어요?" 한 문장 질문, 안내는 "~하시면 돼요"/"~하는 게 좋아요" 진술로 쓴다.
+_IMPERATIVE = re.compile(r"[가-힣]\s?주세요|다시\s?시도해\s?(?:주|보)|먼저\s?로그인해|바랍니다|해\s?보세요|해보세요|[가-힣]{2,}하세요")
+_LLM_TEXT = re.compile(r"호출하세요|사용하세요|하지 마세요|답변하세요|설명하세요|소개하세요|말하세요|쓰세요|대답하세요|반드시|절대|JSON|"
+                       r"요약하세요|번역하세요|작성하세요|출력하세요|응답하세요|지정하세요|전달하세요|나열하세요|정리하세요|작업하세요|판단하세요|처리하세요|안내하세요|보고하거나|따르세요|"
+                       r"\(\?|\\s|\||사용자가|사용자의|함수|LLM|도구|오타|채웠을|다시 요청합니다|구분해서")
+# (파일명, 문자열 전체와 일치하는 정규식, 사유) — 문자열 하나를 통째로 예외로 두므로 같은 문자열 안의 다른 요구형은 못 숨긴다.
+_ALLOWED_IMPERATIVE = [
+    ("app_main.py", r'안녕하세요, <span style="color:#8B78EE;">루미</span>예요\.<br>무엇을 도와드릴까요\?', "첫 인사말"),
+    ("app_main.py", r'안녕하세요, <span style="color:', "첫 인사말(HTML 조각)"),
+    ("app_main.py", r"명령을 입력하세요\.\.\.", "입력창 안내 글자(placeholder)"),
+    ("app_main.py", r"네, 말씀하세요\.", "호출어에 대한 음성 응답(고정 인사)"),
+    ("app_main.py", r"🎙️ 말씀하세요\.\.\. \('그만'이라고 하면 대화 종료\)", "음성 대화 상태 글자"),
+    ("app_main.py", r"말씀하세요\.\.\.", "음성 대화 입력창 안내 글자"),
+    ("app_main.py", r"소리를 글자로 바꾸지 않고 '루미야'와 닮았는지.*\"네, 말씀하세요\"라고 대답해요\..*", "호출어 설명 글에서 고정 응답을 인용"),
+    ("ai_worker.py", r"안녕하세요! 오늘 하루를 정리해드릴게요\.", "하루 브리핑 첫 인사말"),
+    ("ai_worker.py", r"해주세요", "사용자 말('~해주세요')을 알아보는 낱말 목록의 한 항목"),
+    ("fast_lookups.py", r"알려주세요|보여주세요|확인해주세요|봐주세요", "사용자 말을 알아보는 낱말 목록(어휘 사전)의 한 항목"),
+    ("voice.py", r"안녕하세요, 루미예요\. 이 목소리로 읽어 드릴게요\.", "음성 미리 듣기 인사말"),
+    ("user_memory.py", r"말씀하세요", "반말 변환 규칙에서 '말씀하세요'를 알아보는 패턴"),
+]
+
+
+def _allowed_imperative(filename, s):
+    return any(f == filename and re.fullmatch(rx, s, re.S) for f, rx, _why in _ALLOWED_IMPERATIVE)
+
+
+def _guard_files(root):
+    # widget/ 은 팀원 UI 코드라 가드에 넣지 않는다(라벨은 보고만 한다).
+    # small_talk.py 는 안부·덕담 정형구("편히 쉬세요", "준비 잘 하세요")와 반말 짝이 함께 들어 있어 제외한다 — 요청형 문구("~해 주세요")는 이미 고쳤다.
+    core = [f for f in sorted((root / "core").glob("*.py")) if f.name != "small_talk.py"]
+    return sorted((root / "plugins").glob("*.py")) + core + sorted((root / "settings").glob("*.py")) + [root / "app_main.py"]
+_PROMPT_CALLS = {"_ask_model", "chat", "generate", "_ollama_chat", "ask"}
+
+
+def _visible_user_strings(path):
+    import ast
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    skip = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = node.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant):
+                skip.add(id(body[0].value))
+        if isinstance(node, ast.Call):
+            f = node.func
+            name = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+            if name in ("print", "debug", "info", "warning", "error", "exception") or name in _PROMPT_CALLS:
+                for sub in ast.walk(node):
+                    skip.add(id(sub))
+        if isinstance(node, ast.Dict):   # 도구 설명(description)은 LLM 이 읽는 글이다
+            for k, v in zip(node.keys, node.values):
+                if isinstance(k, ast.Constant) and k.value in ("description", "instructions", "prompt", "system"):
+                    for sub in ast.walk(v):
+                        skip.add(id(sub))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in skip:
+            if not _LLM_TEXT.search(node.value):
+                yield node.lineno, node.value
+
+
+def test_no_imperative_requests_in_user_visible_strings():
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[2]
+    bad = []
+    for path in _guard_files(root):
+        for line, s in _visible_user_strings(path):
+            if _IMPERATIVE.search(s) and not _allowed_imperative(path.name, s):
+                bad.append(f"{path.name}:{line}: {s[:70]}")
+    assert not bad, "\n".join(bad)
+
+
+def test_guard_really_catches_a_violation_through_the_real_scan_path(tmp_path):
+    """가짜 위반 문자열을 실제 검사 경로(_visible_user_strings → _IMPERATIVE)에 통과시켜 가드가 잡는지 확인한다.
+    _LLM_TEXT 의 정규식이 잘못돼 공백이 든 문자열이 모두 면제되던 사고(2026-11-18)를 막는다."""
+    src = tmp_path / "fake_plugin.py"
+    src.write_text(
+        'def a():\n    return "잠시 후 다시 시도해 주세요."\n'
+        'def b():\n    return "⚠️ 기기 이름을 알려주세요."\n'
+        'def c():\n    return "먼저 로그인해 주세요."\n'
+        'def d():\n    return "참고만 해주세요"\n'
+        'def ok():\n    return "잠시 뒤에 다시 해 보시면 돼요."\n'
+        'def llm():\n    return "사용자가 요청하면 이 함수를 호출하세요."\n',
+        encoding="utf-8")
+    flagged = [s for _l, s in _visible_user_strings(src) if _IMPERATIVE.search(s)]
+    assert len(flagged) == 4, flagged
+    assert not any("호출하세요" in s or "보시면 돼요" in s for s in flagged)
+    # 공백이 든 평범한 문장이 'LLM 글'로 잘못 분류되지 않는다
+    assert not _LLM_TEXT.search("잠시 후 다시 시도해 주세요.") and not _LLM_TEXT.search("먼저 로그인해 주세요.")
+
+
+def test_allowlist_is_exact_per_string():
+    assert _allowed_imperative("app_main.py", "명령을 입력하세요...")
+    assert not _allowed_imperative("app_main.py", "명령을 입력하세요... 그리고 다시 시도해 주세요.")   # 부분 문자열이 아니라 전체 일치
+    assert not _allowed_imperative("ai_worker.py", "먼저 해주세요 그리고 알려주세요")
+
+
+def test_imperative_guard_catches_fake_violation():
+    import ast
+    tree = ast.parse("x = " + repr("잠시 후 다시 시도해주세요") + "\ny = " + repr("확인해 주세요"))
+    hits = [s for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            for s in [node.value] if _IMPERATIVE.search(s)]
+    assert len(hits) == 2

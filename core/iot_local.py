@@ -92,7 +92,7 @@ def fetch_tuya_keys(access_id: str, access_secret: str, region: str = None) -> i
         if found:
             break
     if not found:
-        raise IotError("Smart Life 키를 받지 못했어요. Access ID·Secret이 맞는지, Tuya 프로젝트에 앱 계정을 연결했는지 확인해 주세요.")
+        raise IotError("Smart Life 키를 받지 못했어요. Access ID·Secret이 맞는지, Tuya 프로젝트에 앱 계정을 연결했는지 확인해 보시면 돼요.")
     data = _load_store()
     for item in found:
         native, key = item.get("id"), item.get("key") or item.get("local_key")
@@ -165,11 +165,11 @@ class TuyaLocalBackend(model.DeviceBackend):
         native = key.split(":", 1)[1]
         dp = self._switch_dp.get(key)
         if not dp:
-            raise IotError(f"'{self._known[key].name}'에 연결하지 못했어요. 전원과 Wi-Fi를 확인해 주세요.")
+            raise IotError(f"'{self._known[key].name}'에 연결하지 못했어요. 전원과 Wi-Fi를 확인해 보시면 돼요.")
         secret = data["tuya_keys"][native]["key"]
         result = self._connect(native, data["devices"][key], secret).set_status(on, switch=int(dp))
         if not isinstance(result, dict) or result.get("Error"):
-            raise IotError(f"'{self._known[key].name}'을(를) 제어하지 못했어요. 전원과 Wi-Fi를 확인해 주세요.")
+            raise IotError(f"'{self._known[key].name}'을(를) 제어하지 못했어요. 전원과 Wi-Fi를 확인해 보시면 돼요.")
 
     async def discover(self) -> list:
         return await asyncio.to_thread(self._discover)

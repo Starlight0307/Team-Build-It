@@ -332,7 +332,7 @@ class WebOpenWorker(QThread):
                     " (공식 홈페이지 주소를 찾지 못해서 검색 결과를 열었어요.)"
         except Exception as e:
             print(f"[웹 열기] 오류: {e}")
-            message = "❌ 브라우저를 열지 못했어요. 잠시 후 다시 시도해주세요."
+            message = "❌ 브라우저를 열지 못했어요. 잠시 후 다시 해 보시면 돼요."
         self.finished_open.emit(message)
 
 

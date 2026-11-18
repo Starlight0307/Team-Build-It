@@ -39,9 +39,9 @@ BROKER_GUIDES = {"kis": KIS_GUIDE_URL, "kiwoom": "https://openapi.kiwoom.com/mai
                  "ls": "https://openapi.ls-sec.co.kr", "meritz": "https://openapi.imeritz.com", "db": "https://openapi.dbsec.co.kr"}
 DEMO_BROKERS = ("kis", "kiwoom", "nh", "n2")   # 나머지는 모의 서버가 없거나, 주소가 같아 키가 모의인지 가릴 수 없어 실전으로 다룬다
 ACCOUNT_CHOICE_BROKERS = ("nh", "n2", "toss")   # 한 키에 계좌가 여럿일 수 있다
-BROKER_NOTES = {"kiwoom": "포털에 이 컴퓨터의 IP도 등록해 주세요.", "ls": "모의 키를 넣어도 루미는 실전처럼 금액 재입력을 요구해요.",
+BROKER_NOTES = {"kiwoom": "포털에 이 컴퓨터의 IP도 등록하시면 돼요.", "ls": "모의 키를 넣어도 루미는 실전처럼 금액 재입력을 요구해요.",
                 "db": "모의 키를 넣어도 루미는 실전처럼 금액 재입력을 요구해요.", "meritz": "증권사 규정상 이 컴퓨터의 MAC 주소를 함께 보내요.",
-                "toss": "앱 키에는 클라이언트 ID(tsck_로 시작)를, 앱 시크릿에는 시크릿을 넣어 주세요. 허용 IP를 켰다면 이 컴퓨터의 IP도 등록해 주세요."}
+                "toss": "앱 키에는 클라이언트 ID(tsck_로 시작)를, 앱 시크릿에는 시크릿을 넣으시면 돼요. 허용 IP를 켰다면 이 컴퓨터의 IP도 등록하시면 돼요."}
 MASTER_URL = "https://new.real.download.dws.co.kr/common/master/{}_code.mst.zip"
 MASTER_TAIL = {"kospi": 228, "kosdaq": 222, "konex": 184}   # 공식 예제 kis_*_code_mst.py의 뒤쪽 고정 길이 — 그 앞이 코드·이름
 TR_BALANCE = {"demo": "VTTC8434R", "real": "TTTC8434R"}
@@ -64,7 +64,7 @@ WATCHLIST = ("005930", "000660", "035420", "035720")   # 삼성전자, SK하이�
 MAX_DRAWINGS = 200
 MAX_OVERVIEW = 8   # 시세 표에 한 번에 받는 수 — 공공데이터 서버가 자주 느려진다
 SIDE_NAMES = {"sell": "매도", "buy": "매수"}
-ORDER_UNKNOWN = "주문 결과를 확인하지 못했어요. 이중 주문을 막기 위해 다시 보내지 않았어요. 증권사 앱에서 체결 내역을 확인해 주세요."
+ORDER_UNKNOWN = "주문 결과를 확인하지 못했어요. 이중 주문을 막기 위해 다시 보내지 않았어요. 증권사 앱에서 체결 내역을 확인해 보시면 돼요."
 DEFAULT_ORDER_LIMIT = 1_000_000
 REQUEST_GAP = 1.1   # 모의투자 호출 제한(초당 약 1번)
 KST = ZoneInfo("Asia/Seoul")
@@ -138,14 +138,14 @@ def set_current_user(user_id: str):
             data = _load()
             if data["auto"]["enabled"]:
                 data["auto"]["enabled"] = False
-                data["auto"]["stopped_reason"] = _with_order_note("앱을 다시 시작해서 자동매매를 껐어요. 확인 후 다시 켜 주세요.", data)
+                data["auto"]["stopped_reason"] = _with_order_note("앱을 다시 시작해서 자동매매를 껐어요. 확인 후 다시 켜시면 돼요.", data)
                 _save(data)
 
 
 def _with_order_note(reason: str, data: dict) -> str:
     """자동매매를 꺼도 이미 나간 주문은 취소되지 않는다 — 나간 주문이 있으면 처리 방법을 함께 알린다."""
     if any(r["status"] in ("sending", "sent", "unknown") for r in data["auto"]["rules"]):
-        return f"{reason} 이미 나간 주문은 자동으로 취소되지 않아요. 미체결 주문은 증권사 앱에서 확인하고 취소해 주세요."
+        return f"{reason} 이미 나간 주문은 자동으로 취소되지 않아요. 미체결 주문은 증권사 앱에서 확인하고 취소하시면 돼요."
     return reason
 
 
@@ -191,9 +191,9 @@ def _token(data: dict, account: dict = None) -> str:
             "grant_type": "client_credentials", "appkey": account["app_key"], "appsecret": account["app_secret"]})
         body = resp.json()
     except (requests.RequestException, ValueError):
-        raise StockError("증권사에 연결하지 못했어요. 인터넷을 확인해 주세요.")
+        raise StockError("증권사에 연결하지 못했어요. 인터넷을 확인해 보시면 돼요.")
     if not body.get("access_token"):
-        raise StockError("증권사 인증에 실패했어요. 앱 키와 시크릿을 확인하거나 1분 뒤 다시 시도해 주세요.")
+        raise StockError("증권사 인증에 실패했어요. 앱 키와 시크릿을 확인하거나 1분 뒤 다시 해 보시면 돼요.")
     data["token"] = body["access_token"]
     data["token_expires"] = body.get("access_token_token_expired", "")
     return data["token"]
@@ -235,7 +235,7 @@ def _bars(rows, start: str, date_key: str, open_key: str, high_key: str, low_key
 def _pick_account(rows, key: str, account_no: str) -> dict:
     """계좌가 여럿이면 입력한 번호, 없으면 첫 계좌. 입력한 번호가 없으면 다른 계좌로 넘어가지 않는다."""
     if not rows:
-        raise StockError("이 앱 키로 쓸 수 있는 계좌를 찾지 못했어요. 모의·실전 종류를 확인해 주세요.")
+        raise StockError("이 앱 키로 쓸 수 있는 계좌를 찾지 못했어요. 모의·실전 종류를 확인해 보시면 돼요.")
     wanted = re.sub(r"\D", "", account_no or "")
     if not wanted:
         return rows[0]
@@ -252,7 +252,7 @@ class _TokenExpired(StockError):
 class _Broker:
     """한국투자증권 말고 다른 증권사의 공통 틀. 응답 필드와 값은 각 회사 공식 명세·예제로 대조했다.
     주문은 send로 한 번만 보낸다. 거절이라는 말이 없으면 접수됐을 수 있어 결과 불명으로 처리한다."""
-    auth_hint = "앱 키와 시크릿을 확인해 주세요."
+    auth_hint = "앱 키와 시크릿을 확인해 보시면 돼요."
 
     def __init__(self, data: dict, account: dict):
         self.data, self.account = data, account
@@ -262,7 +262,7 @@ class _Broker:
     def _fail(self, is_order: bool):
         if is_order:
             raise OrderResultUnknown(ORDER_UNKNOWN)
-        raise StockError("증권사 응답을 받지 못했어요. 잠시 후 다시 시도해 주세요.")
+        raise StockError("증권사 응답을 받지 못했어요. 잠시 후 다시 해 보시면 돼요.")
 
     def _http(self, method: str, url: str, is_order: bool = False, **kw) -> tuple:
         _throttle()
@@ -274,14 +274,14 @@ class _Broker:
         if not isinstance(body, dict):
             self._fail(is_order)
         if resp.status_code == 401:
-            raise _TokenExpired("증권사 인증이 만료됐어요. 잠시 후 다시 시도해 주세요.")
+            raise _TokenExpired("증권사 인증이 만료됐어요. 잠시 후 다시 해 보시면 돼요.")
         return resp, body
 
     def _post_token(self, **kw) -> dict:
         try:
             body = requests.post(kw.pop("url"), timeout=15, **kw).json()
         except (requests.RequestException, ValueError):
-            raise StockError("증권사에 연결하지 못했어요. 인터넷을 확인해 주세요.")
+            raise StockError("증권사에 연결하지 못했어요. 인터넷을 확인해 보시면 돼요.")
         return body if isinstance(body, dict) else {}
 
     def _store(self, token, seconds) -> str:
@@ -309,7 +309,7 @@ class _Broker:
 
 class _Kiwoom(_Broker):
     urls = {"demo": "https://mockapi.kiwoom.com", "real": "https://api.kiwoom.com"}
-    auth_hint = "앱 키와 시크릿, 모의·실전 종류, 포털에 등록한 이 컴퓨터의 IP를 확인해 주세요."
+    auth_hint = "앱 키와 시크릿, 모의·실전 종류, 포털에 등록한 이 컴퓨터의 IP를 확인해 보시면 돼요."
     ORDER = {"buy": "kt10000", "sell": "kt10001"}
     TOKEN_ERROR = re.compile(r"\b(8005|8010|8031|8103)\b")   # IP 변경 포함. return_code 3의 문구 안에 섞여 오기도 한다
 
@@ -370,9 +370,9 @@ class _Kiwoom(_Broker):
 
 
 _TOSS_TOKEN_ERRORS = {   # https://openapi.tossinvest.com/openapi-docs/latest/openapi.json 의 /oauth2/token 응답
-    "invalid_client": "클라이언트 ID나 시크릿이 맞지 않거나 키가 비활성 상태예요. 토스증권 WTS의 Open API 화면에서 두 값을 다시 복사해 넣어 주세요.",
-    "access_denied": "이 컴퓨터의 IP가 허용 목록에 없어요. 토스증권 WTS 설정 > Open API > 허용 IP 관리에서 지금 쓰는 IP를 등록해 주세요.",
-    "invalid_request": "키 형식이 올바르지 않아요. 앞뒤 공백 없이 클라이언트 ID와 시크릿을 다시 넣어 주세요.",
+    "invalid_client": "클라이언트 ID나 시크릿이 맞지 않거나 키가 비활성 상태예요. 토스증권 WTS의 Open API 화면에서 두 값을 다시 복사해 넣으시면 돼요.",
+    "access_denied": "이 컴퓨터의 IP가 허용 목록에 없어요. 토스증권 WTS 설정 > Open API > 허용 IP 관리에서 지금 쓰는 IP를 등록하시면 돼요.",
+    "invalid_request": "키 형식이 올바르지 않아요. 앞뒤 공백 없이 클라이언트 ID와 시크릿을 다시 넣으시면 돼요.",
 }
 
 
@@ -789,7 +789,7 @@ def _call(data: dict, method: str, path: str, tr_id: str, params: dict = None, b
     except (requests.RequestException, ValueError):
         if method == "POST":
             raise OrderResultUnknown(ORDER_UNKNOWN)
-        raise StockError("증권사 응답을 받지 못했어요. 잠시 후 다시 시도해 주세요.")
+        raise StockError("증권사 응답을 받지 못했어요. 잠시 후 다시 해 보시면 돼요.")
     if result.get("msg_cd") == "EGW00123" and retry and method == "GET":   # 토큰 만료
         data["token"] = None
         return _call(data, method, path, tr_id, params, body, tr_cont, account, retry=False)
@@ -809,7 +809,7 @@ def _num(value) -> float:
 def _split_account(account_no: str) -> tuple:
     digits = re.sub(r"\D", "", account_no or "")
     if len(digits) != 10:
-        raise StockError("계좌번호는 숫자 10자리로 입력해 주세요. (예: 50012345-01)")
+        raise StockError("계좌번호는 숫자 10자리로 입력하시면 돼요. (예: 50012345-01)")
     return digits[:8], digits[8:]
 
 
@@ -860,23 +860,23 @@ def _require_account() -> dict:
         raise StockError("주식 기능은 로그인한 사용자만 쓸 수 있어요.")
     data = _load()
     if not data["account"]:
-        raise StockError("아직 증권 계좌를 연결하지 않았어요. 홈 화면의 주식 위젯에서 계좌를 연결해 주세요.")
+        raise StockError("아직 증권 계좌를 연결하지 않았어요. 홈 화면의 주식 위젯에서 계좌를 연결하시면 돼요.")
     return data
 
 
 def connect_account(app_key: str, app_secret: str, account_no: str, mode: str = "demo", broker: str = "kis") -> str:
     """실제로 잔고를 한 번 읽어 본 뒤에만 저장한다. 안내 문장을 돌려준다. 키움은 앱 키가 계좌에 묶여 번호를 물어보지 않는다."""
     if mode not in BASE_URLS:
-        raise StockError("모의 또는 실전 계좌를 골라 주세요.")
+        raise StockError("모의 또는 실전 계좌를 고르시면 돼요.")
     if broker not in BROKER_NAMES:
-        raise StockError("증권사를 골라 주세요.")
+        raise StockError("증권사를 고르시면 돼요.")
     if mode == "demo" and broker not in DEMO_BROKERS:
         raise StockError(f"{BROKER_NAMES[broker]}는 모의 계좌로 연결할 수 없어요.")
     if not logged_in():
         raise StockError("주식 기능은 로그인한 사용자만 쓸 수 있어요.")
     app_key, app_secret = (app_key or "").strip(), (app_secret or "").strip()
     if not app_key or not app_secret:
-        raise StockError("앱 키와 시크릿을 입력해 주세요.")
+        raise StockError("앱 키와 시크릿을 입력하시면 돼요.")
     if broker == "kis":
         _split_account(account_no)
     account = {"app_key": app_key, "app_secret": app_secret, "number": (account_no or "").strip(), "mode": mode, "broker": broker}
@@ -887,7 +887,7 @@ def connect_account(app_key: str, app_secret: str, account_no: str, mode: str = 
     if adapter:
         account["number"] = adapter.connect(account["number"]) or ("키 연결" if broker not in ("kiwoom", "toss", "nh", "n2") else "")
         if not account["number"]:
-            raise StockError(f"{BROKER_NAMES[broker]}에서 계좌번호를 받지 못했어요. 앱 키를 발급한 계좌를 확인해 주세요.")
+            raise StockError(f"{BROKER_NAMES[broker]}에서 계좌번호를 받지 못했어요. 앱 키를 발급한 계좌를 확인해 보시면 돼요.")
     last = _snapshot(_fetch_portfolio(data, account))
     label = mask_account(account["number"], mode, broker)
     with _lock:
@@ -1208,7 +1208,7 @@ def _fetch_market_rows(code: str, key: str) -> list:
     try:   # 주식 시세에 없으면 ETF일 수 있다
         return _query_market(MARKET_ETF_URL, code, key)
     except StockError:
-        raise StockError("이 종목의 시세를 찾지 못했어요. ETF라면 공공데이터포털에서 '증권상품시세정보'도 활용 신청해 주세요(무료).")
+        raise StockError("이 종목의 시세를 찾지 못했어요. ETF라면 공공데이터포털에서 '증권상품시세정보'도 활용 신청하시면 돼요(무료).")
 
 
 def _query_market(url: str, code: str, key: str) -> list:
@@ -1224,10 +1224,10 @@ def _query_market(url: str, code: str, key: str) -> list:
             break
         except (requests.RequestException, ValueError):
             if attempt:
-                raise StockError("시세를 받지 못했어요. 인터넷과 시세 키를 확인해 주세요.")
+                raise StockError("시세를 받지 못했어요. 인터넷과 시세 키를 확인해 보시면 돼요.")
     response = body.get("response") if isinstance(body, dict) else None
     if not isinstance(response, dict) or response.get("header", {}).get("resultCode") != "00":
-        raise StockError("시세 키를 확인해 주세요. 공공데이터포털에서 활용 승인된 키여야 해요.")
+        raise StockError("시세 키를 확인해 보시면 돼요. 공공데이터포털에서 활용 승인된 키여야 해요.")
     items = (response.get("body") or {}).get("items") or {}
     rows = items.get("item") if isinstance(items, dict) else []
     rows = [rows] if isinstance(rows, dict) else (rows or [])
@@ -1243,9 +1243,9 @@ def _naver_get(url: str, params: dict = None) -> list:
             break
         except (requests.RequestException, ValueError):
             if attempt:
-                raise StockError("시세를 받지 못했어요. 인터넷 연결을 확인해 주세요.")
+                raise StockError("시세를 받지 못했어요. 인터넷 연결을 확인해 보시면 돼요.")
     if not isinstance(body, list):
-        raise StockError("시세를 받지 못했어요. 잠시 뒤 다시 시도해 주세요.")
+        raise StockError("시세를 받지 못했어요. 잠시 뒤 다시 해 보시면 돼요.")
     return body
 
 
@@ -1299,9 +1299,9 @@ def set_market_key(key: str) -> str:
     """삼성전자 시세를 실제로 받아 본 뒤에만 저장한다."""
     key = (key or "").strip()
     if not key:
-        raise StockError("시세 키를 입력해 주세요.")
+        raise StockError("시세 키를 입력하시면 돼요.")
     if not _fetch_market_rows(WATCHLIST[0], key):
-        raise StockError("시세를 받지 못했어요. 키가 승인됐는지 확인해 주세요.")
+        raise StockError("시세를 받지 못했어요. 키가 승인됐는지 확인해 보시면 돼요.")
     with secure_open(_market_key_path(), "w", encoding="utf-8") as f:
         json.dump({"key": key}, f)
     _market_cache.clear()
@@ -1359,12 +1359,12 @@ def manual_state() -> dict:
 
 def add_manual_holding(broker: str, stock: str, quantity: int, avg_price: int) -> dict:
     if not logged_in():
-        raise StockError("보유 종목을 저장하려면 로그인해 주세요.")
+        raise StockError("보유 종목을 저장하려면 로그인하시면 돼요.")
     code, name = resolve_stock(stock)
     if not code:
-        raise StockError("종목을 찾지 못했어요. 정확한 종목명이나 6자리 코드를 입력해 주세요.")
+        raise StockError("종목을 찾지 못했어요. 정확한 종목명이나 6자리 코드를 입력하시면 돼요.")
     if not isinstance(quantity, int) or quantity <= 0 or not isinstance(avg_price, int) or avg_price <= 0:
-        raise StockError("수량과 평균 단가는 1 이상의 정수로 입력해 주세요.")
+        raise StockError("수량과 평균 단가는 1 이상의 정수로 입력하시면 돼요.")
     item = {"code": code, "name": name, "qty": quantity, "avg": avg_price}
     with _lock:
         data = _load()
@@ -1559,17 +1559,17 @@ def validate_order(side: str, stock: str, quantity, price) -> str:
     """문제가 있으면 안내 문장, 없으면 ''."""
     status = account_status()
     if not status["connected"]:
-        return "먼저 증권 계좌를 연결해 주세요."
+        return "먼저 증권 계좌를 연결하시면 돼요."
     if not status["order_enabled"]:
-        return "주문 기능이 꺼져 있어요. 주식 위젯의 계좌 설정에서 켜 주세요."
+        return "주문 기능이 꺼져 있어요. 주식 위젯의 계좌 설정에서 켜시면 돼요."
     if side not in SIDE_NAMES:
-        return "매수인지 매도인지 골라 주세요."
+        return "매수인지 매도인지 고르시면 돼요."
     if not resolve_stock(stock)[0]:
-        return "종목을 찾지 못했어요. 정확한 종목명이나 6자리 코드를 입력해 주세요."
+        return "종목을 찾지 못했어요. 정확한 종목명이나 6자리 코드를 입력하시면 돼요."
     if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
-        return "수량은 1 이상의 정수로 입력해 주세요."
+        return "수량은 1 이상의 정수로 입력하시면 돼요."
     if not isinstance(price, int) or isinstance(price, bool) or price <= 0:
-        return "가격은 1원 이상의 정수로 입력해 주세요."
+        return "가격은 1원 이상의 정수로 입력하시면 돼요."
     if quantity * price > status["order_limit"]:
         return f"1회 주문 한도({status['order_limit']:,}원)를 넘었어요."
     return ""
@@ -1638,10 +1638,10 @@ def auto_state() -> dict:
 def add_rule(side: str, stock: str, target_price: int, quantity: int) -> dict:
     """예: add_rule("sell", "삼성전자", 70000, 10) — 현재가가 7만 원 이상이 되면 10주 지정가 매도."""
     if side not in SIDE_NAMES:
-        raise StockError("매수인지 매도인지 골라 주세요.")
+        raise StockError("매수인지 매도인지 고르시면 돼요.")
     code, name = resolve_stock(stock)
     if not code:
-        raise StockError("종목을 찾지 못했어요. 정확한 종목명이나 6자리 코드를 입력해 주세요.")
+        raise StockError("종목을 찾지 못했어요. 정확한 종목명이나 6자리 코드를 입력하시면 돼요.")
     if int(target_price) <= 0 or int(quantity) <= 0:
         raise StockError("가격과 수량은 1 이상이어야 해요.")
     rule = {"id": uuid.uuid4().hex[:8], "side": side, "code": code, "name": name,
@@ -1679,7 +1679,7 @@ def enable_auto(real_money_confirmed: bool = False):
         if min(auto["max_order"], auto["max_daily_amount"], auto["max_daily_count"]) <= 0:
             raise StockError("1회 금액, 하루 총액, 하루 횟수 한도를 모두 정해야 켤 수 있어요.")
         if not any(r["status"] == "waiting" for r in auto["rules"]):
-            raise StockError("대기 중인 규칙이 없어요. 규칙을 먼저 추가해 주세요.")
+            raise StockError("대기 중인 규칙이 없어요. 규칙을 먼저 추가하시면 돼요.")
         auto.update(enabled=True, stopped_reason="")
         _save(data)
 
@@ -1842,11 +1842,11 @@ def open_stock_order(side: str, stock: str, quantity: int, price: int = 0) -> st
     """주문 창을 채워서 연다. 주문을 내지 않는다 — 사람이 창에서 직접 눌러야 나간다."""
     status = account_status()
     if not status["logged_in"] or not status["connected"]:
-        return "⚠️ 먼저 로그인하고 주식 위젯에서 증권 계좌를 연결해 주세요."
+        return "⚠️ 먼저 로그인하고 주식 위젯에서 증권 계좌를 연결하시면 돼요."
     if not status["order_enabled"]:
-        return "⚠️ 주문 기능이 꺼져 있어요. 주식 위젯의 계좌 설정에서 켜 주세요."
+        return "⚠️ 주문 기능이 꺼져 있어요. 주식 위젯의 계좌 설정에서 켜시면 돼요."
     if _order_ui_hook is None:
-        return "⚠️ 주문 창을 열 수 없어요. 홈 화면의 주식 위젯을 확인해 주세요."
+        return "⚠️ 주문 창을 열 수 없어요. 홈 화면의 주식 위젯을 확인해 보시면 돼요."
     _order_ui_hook({"side": side if side in SIDE_NAMES else "", "stock": str(stock or ""),
                     "quantity": quantity, "price": price})
     return "주문 창을 열었어요. 내용을 확인하고 직접 눌러야 주문이 나가요. 아직 주문되지 않았어요."
@@ -1856,7 +1856,7 @@ def stop_stock_auto_trading() -> str:
     if not logged_in():
         return "⚠️ 주식 기능은 로그인한 사용자만 쓸 수 있어요."
     stop_auto("대화로 자동매매를 껐어요.")
-    return "자동매매를 껐어요. 새 주문은 더 나가지 않아요. 이미 나간 주문은 자동으로 취소되지 않으니 증권사 앱에서 확인해 주세요."
+    return "자동매매를 껐어요. 새 주문은 더 나가지 않아요. 이미 나간 주문은 자동으로 취소되지 않으니 증권사 앱에서 확인해 보시면 돼요."
 
 
 TOOL_SCHEMAS = {

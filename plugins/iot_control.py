@@ -3,6 +3,8 @@ import json
 import os
 import kasa
 
+from core import iot_messages as _iot_messages   # ai_worker 가 이 실패 문구를 정규식으로 읽으니 같은 상수를 쓴다
+
 # ==========================================
 # 🏠 IoT 스마트 기기 제어 플러그인 (TP-Link Kasa)
 # ==========================================
@@ -236,12 +238,12 @@ def _discover_kasa_devices() -> str:
         devices = asyncio.run(_discover_devices())
     except Exception as e:
         print(f"[IoT 제어] 기기 검색 오류: {e}")
-        return "⚠️ 기기 검색 중 문제가 발생했습니다. Wi-Fi 연결 상태를 확인하고 잠시 후 다시 시도해주세요."
+        return "⚠️ 기기 검색 중 문제가 발생했습니다. Wi-Fi 연결 상태를 확인하고 잠시 후 다시 해 보시면 돼요."
 
     if not devices:
         return (
             "현재 로컬 네트워크에서 발견된 Kasa 스마트 기기가 없습니다. "
-            "기기 전원이 켜져 있고 이 컴퓨터와 같은 Wi-Fi에 연결되어 있는지 확인해주세요."
+            "기기 전원이 켜져 있고 이 컴퓨터와 같은 Wi-Fi에 연결되어 있는지 확인해 보시면 돼요."
         )
 
     lines = [f"🏠 발견된 스마트 기기 ({len(devices)}개):"]
@@ -260,10 +262,7 @@ async def _set_device_state(device_name: str, turn_on: bool) -> str:
     ]
 
     if not matches:
-        return (
-            f"'{device_name}'이라는 이름의 기기를 찾지 못했습니다. "
-            "discover_iot_devices로 정확한 기기 이름을 먼저 확인해주세요."
-        )
+        return _iot_messages.not_found(device_name)
 
     if len(matches) > 1:
         # 같은 이름의 기기가 여러 개면 첫 번째를 조용히 골라서 실행하지 않는다 —
@@ -271,11 +270,7 @@ async def _set_device_state(device_name: str, turn_on: bool) -> str:
         # 없게 되는 문제라는 ChatGPT 검수 지적 반영. 모호하면 실행을 멈추고
         # IP로 구분해서 다시 요청하도록 안내한다.
         ip_list = ", ".join(dev.host for dev in matches)
-        return (
-            f"'{device_name}'이라는 이름의 기기가 {len(matches)}개 발견되어 "
-            f"어느 것을 제어할지 알 수 없습니다 ({ip_list}). "
-            "기기 이름을 다르게 설정한 뒤 다시 시도해주세요."
-        )
+        return _iot_messages.ambiguous(device_name, len(matches), ip_list)
 
     target = matches[0]
 
@@ -299,7 +294,7 @@ async def _control_registered_device(device_name: str, turn_on: bool):
     if not matches:
         return None
     if len(matches) > 1:
-        return f"'{device_name}'이라는 이름의 기기가 {len(matches)}개 있어 어느 것을 제어할지 알 수 없습니다. 기기 이름을 다르게 설정해주세요."
+        return f"'{device_name}'이라는 이름의 기기가 {len(matches)}개 있어 어느 것을 제어할지 알 수 없습니다. 기기 이름을 다르게 설정하시면 돼요."
     updated = await _backend_for(backends, matches[0].vendor).set_power(matches[0].key, turn_on)
     return f"✅ '{updated.name}' 기기를 {'켬' if turn_on else '끔'} 처리했습니다."
 
@@ -307,7 +302,7 @@ async def _control_registered_device(device_name: str, turn_on: bool):
 def control_iot_device(device_name: str, action: str) -> str:
     """이름으로 지정한 스마트 기기(등록한 Smart Life 기기 또는 Kasa)를 켜거나 끈다."""
     if not isinstance(device_name, str) or not device_name.strip():
-        return "⚠️ 제어할 기기 이름을 알려주세요."
+        return "⚠️ 제어할 기기 이름을 알려 주시겠어요?"
 
     action_norm = str(action).strip().lower()
     if action_norm not in ("on", "off"):
@@ -321,7 +316,7 @@ def control_iot_device(device_name: str, action: str) -> str:
         return asyncio.run(_set_device_state(device_name, action_norm == "on"))
     except Exception as e:
         print(f"[IoT 제어] 기기 제어 오류: {e}")
-        return "⚠️ 기기 제어 중 문제가 발생했습니다. 기기가 켜져 있고 네트워크에 연결되어 있는지 확인해주세요."
+        return "⚠️ 기기 제어 중 문제가 발생했습니다. 기기가 켜져 있고 네트워크에 연결되어 있는지 확인해 보시면 돼요."
 
 
 # ==========================================
@@ -370,7 +365,7 @@ def _parse_scene_devices(devices: str):
     원칙), LLM은 사용자가 말한 걸 이 형식의 문자열로 옮겨 담기만 하면 된다."""
     devices = (devices or "").strip()
     if not devices:
-        return None, "⚠️ 씬에 포함할 기기와 동작을 알려주세요. (예: '거실 전등:off, TV:off')"
+        return None, "⚠️ 씬에 포함할 기기와 동작을 알려 주시겠어요? (예: '거실 전등:off, TV:off')"
 
     entries = []
     seen = set()
@@ -379,7 +374,7 @@ def _parse_scene_devices(devices: str):
         if not raw:
             continue
         if ":" not in raw:
-            return None, f"⚠️ '{raw}'를 이해하지 못했습니다. '기기이름:on' 또는 '기기이름:off' 형식으로 알려주세요."
+            return None, f"⚠️ '{raw}'를 이해하지 못했습니다. '기기이름:on' 또는 '기기이름:off' 형식으로 알려 주시겠어요?"
 
         name_part, action_part = raw.split(":", 1)
         name_part = name_part.strip()
@@ -397,7 +392,7 @@ def _parse_scene_devices(devices: str):
         entries.append({"device_name": name_part, "action": action_part})
 
     if not entries:
-        return None, "⚠️ 씬에 포함할 기기와 동작을 알려주세요. (예: '거실 전등:off, TV:off')"
+        return None, "⚠️ 씬에 포함할 기기와 동작을 알려 주시겠어요? (예: '거실 전등:off, TV:off')"
     if len(entries) > _MAX_DEVICES_PER_SCENE:
         return None, f"⚠️ 씬 하나에는 기기를 최대 {_MAX_DEVICES_PER_SCENE}개까지만 담을 수 있어요."
     return entries, None
@@ -409,7 +404,7 @@ def create_scene(scene_name: str = "", devices: str = "") -> str:
     scene_name = (scene_name or "").strip()
     print(f"\n[IoT 씬] 씬 저장 중: {scene_name!r} ← {devices!r}")
     if not scene_name:
-        return "⚠️ 씬 이름을 알려주세요."
+        return "⚠️ 씬 이름을 알려 주시겠어요?"
     if len(scene_name) > _MAX_SCENE_NAME_LENGTH:
         return f"⚠️ 씬 이름이 너무 길어요(최대 {_MAX_SCENE_NAME_LENGTH}자) — 조금 줄여서 알려 주시면 만들 수 있어요."
 
@@ -500,12 +495,12 @@ def run_scene(scene_name: str = "") -> str:
     scene_name = (scene_name or "").strip()
     print(f"\n[IoT 씬] 씬 실행 요청: {scene_name!r}")
     if not scene_name:
-        return "⚠️ 실행할 씬 이름을 알려주세요."
+        return "⚠️ 실행할 씬 이름을 알려 주시겠어요?"
 
     scenes = _load_scenes()
     found = _find_scene(scenes, scene_name)
     if found is None:
-        return f"⚠️ '{scene_name}'이라는 씬을 찾을 수 없어요. list_scenes로 저장된 씬을 확인해주세요."
+        return f"⚠️ '{scene_name}'이라는 씬을 찾을 수 없어요. list_scenes로 저장된 씬을 확인해 보시면 돼요."
 
     entries = found.get("devices", [])
     if not entries:
@@ -515,7 +510,7 @@ def run_scene(scene_name: str = "") -> str:
         results = asyncio.run(_run_scene_async(entries))
     except Exception as e:
         print(f"[IoT 씬] 씬 실행 오류: {e}")
-        return "⚠️ 씬 실행 중 문제가 발생했습니다. 네트워크 연결 상태를 확인하고 잠시 후 다시 시도해주세요."
+        return "⚠️ 씬 실행 중 문제가 발생했습니다. 네트워크 연결 상태를 확인하고 잠시 후 다시 해 보시면 돼요."
 
     succeeded = [r for r in results if r["ok"]]
     failed = [r for r in results if not r["ok"]]
@@ -544,7 +539,7 @@ def delete_scene(scene_name: str = "") -> str:
     scene_name = (scene_name or "").strip()
     print(f"\n[IoT 씬] 씬 삭제 요청: {scene_name!r}")
     if not scene_name:
-        return "⚠️ 삭제할 씬 이름을 알려주세요."
+        return "⚠️ 삭제할 씬 이름을 알려 주시겠어요?"
 
     scenes = _load_scenes()
     found = _find_scene(scenes, scene_name)
@@ -675,7 +670,7 @@ def _describe_matches(matches) -> str:
 
 
 _HOST_IDENTITY_NOTE = ("이 기기는 고유 ID를 읽지 못해 IP 주소로 구분해요 — 공유기에서 IP가 바뀌면 "
-                       "방에서 못 찾게 될 수 있어요(그땐 방에서 빼고 다시 넣어주세요).")
+                       "방에서 못 찾게 될 수 있어요(그땐 방에서 빼고 다시 넣으시면 돼요).")
 
 
 def set_device_room(device_name: str = "", room_name: str = "") -> str:
@@ -684,9 +679,9 @@ def set_device_room(device_name: str = "", room_name: str = "") -> str:
     device_name = " ".join(device_name.split()) if isinstance(device_name, str) else ""
     print(f"\n[IoT 방] 방 배정 요청: {device_name!r} → {room_name!r}")
     if not device_name:
-        return "⚠️ 어떤 기기를 방에 넣을지 알려주세요."
+        return "⚠️ 어떤 기기를 방에 넣을지 알려 주시겠어요?"
     if len(device_name) > _MAX_DEVICE_NAME_LENGTH:
-        return "⚠️ 기기 이름이 너무 길어요. 정확한 기기 이름을 알려주세요."
+        return "⚠️ 기기 이름이 너무 길어요. 정확한 기기 이름을 알려 주시겠어요?"
     unassign = not (isinstance(room_name, str) and room_name.strip())
     if not unassign:
         room_display, error = _model.validate_room_name(room_name)
@@ -698,17 +693,17 @@ def set_device_room(device_name: str = "", room_name: str = "") -> str:
         devices = asyncio.run(_discover_all(backends))
     except Exception as e:
         print(f"[IoT 방] 기기 검색 오류: {type(e).__name__}")
-        return "⚠️ 기기 검색 중 문제가 발생했습니다. Wi-Fi 연결 상태를 확인하고 잠시 후 다시 시도해주세요."
+        return "⚠️ 기기 검색 중 문제가 발생했습니다. Wi-Fi 연결 상태를 확인하고 잠시 후 다시 해 보시면 돼요."
 
     matches = _model.match_devices_by_name(devices, device_name)
     if len(matches) > 1:
         return (f"⚠️ '{device_name}'이라는 이름의 기기가 {len(matches)}개 발견돼서 어느 것인지 알 수 없어요 "
-                f"({_describe_matches(matches)}). 기기 이름을 다르게 설정한 뒤 다시 시도해주세요.")
+                f"({_describe_matches(matches)}). 기기 이름을 다르게 설정한 뒤 다시 해 보시면 돼요.")
 
     if not matches:
         if not unassign:
             return (f"⚠️ '{device_name}'이라는 이름의 기기를 찾지 못했어요. "
-                    "discover_iot_devices로 정확한 기기 이름을 먼저 확인해주세요.")
+                    "discover_iot_devices로 정확한 기기 이름을 먼저 확인해 보시면 돼요.")
 
         # 해제는 기기가 지금 네트워크에 없어도(전원 꺼짐/별칭·ID가 바뀌어 영영 안 보임) 가능해야
         # 한다 — 안 그러면 사라진 기기가 방에 남아 control_room이 영원히 "기기를 찾지 못함"을
@@ -726,14 +721,14 @@ def set_device_room(device_name: str = "", room_name: str = "") -> str:
         (status, info), saved = _model.update_rooms(ROOMS_FILE, _remove_stored)
         if status == "ambiguous":
             return (f"⚠️ 저장된 방에 '{device_name}'이라는 이름의 기기가 {info}개 있어서 어느 것인지 알 수 없어요. "
-                    "list_rooms로 확인한 뒤 방 전체를 삭제하고 다시 만들어주세요.")
+                    "list_rooms로 확인한 뒤 방 전체를 삭제하고 다시 만드시면 돼요.")
         if status == "removed":
             if not saved:
-                return "⚠️ 방 정보를 저장하지 못했어요. 잠시 후 다시 시도해주세요."
+                return "⚠️ 방 정보를 저장하지 못했어요. 잠시 후 다시 해 보시면 돼요."
             return (f"[✅ 방 배정 해제]\n'{info[0]}' 기기를 '{info[1]}' 방에서 뺐어요 "
                     "(지금은 네트워크에서 발견되지 않는 기기였어요).")
         return (f"⚠️ '{device_name}'이라는 이름의 기기를 찾지 못했어요. "
-                "discover_iot_devices로 정확한 기기 이름을 먼저 확인해주세요.")
+                "discover_iot_devices로 정확한 기기 이름을 먼저 확인해 보시면 돼요.")
 
     target = matches[0]
 
@@ -756,7 +751,7 @@ def set_device_room(device_name: str = "", room_name: str = "") -> str:
     if status == "error":
         return f"⚠️ {info}"
     if not saved:
-        return "⚠️ 방 정보를 저장하지 못했어요. 잠시 후 다시 시도해주세요."
+        return "⚠️ 방 정보를 저장하지 못했어요. 잠시 후 다시 해 보시면 돼요."
     if status == "unassigned":
         return f"[✅ 방 배정 해제]\n'{target.name}' 기기를 '{info}' 방에서 뺐어요."
     moved = (f" (이전: '{info}' 방)"
@@ -831,14 +826,14 @@ def control_room(room_name: str = "", action: str = "") -> str:
 
     room = _model.find_room(_model.load_rooms(ROOMS_FILE), room_display)
     if room is None:
-        return f"⚠️ '{room_display}'이라는 방을 찾을 수 없어요. list_rooms로 등록된 방을 확인해주세요."
+        return f"⚠️ '{room_display}'이라는 방을 찾을 수 없어요. list_rooms로 등록된 방을 확인해 보시면 돼요."
 
     backends = _get_backends()
     try:
         devices, results = asyncio.run(_control_room_async(backends, room["devices"], action_norm == "on"))
     except Exception as e:
         print(f"[IoT 방] 방 제어 오류: {type(e).__name__}")
-        return "⚠️ 방 제어 중 문제가 발생했습니다. 네트워크 연결 상태를 확인하고 잠시 후 다시 시도해주세요."
+        return "⚠️ 방 제어 중 문제가 발생했습니다. 네트워크 연결 상태를 확인하고 잠시 후 다시 해 보시면 돼요."
 
     # 기기 별칭이 바뀌었으면 저장된 이름을 최신으로(키는 그대로라 방 소속은 안 깨진다). 제어 중에
     # 다른 변경이 있었을 수 있으니 방금 읽은 사본이 아니라 트랜잭션 안에서 다시 읽어 갱신한다.
@@ -877,7 +872,7 @@ def delete_room(room_name: str = "") -> str:
     if removed is None:
         return f"⚠️ '{room_display}'이라는 방을 찾을 수 없어요."
     if not saved:
-        return "⚠️ 방 정보를 저장하지 못했어요. 잠시 후 다시 시도해주세요."
+        return "⚠️ 방 정보를 저장하지 못했어요. 잠시 후 다시 해 보시면 돼요."
     return f"[✅ 방 삭제 완료]\n'{removed['name']}' 방을 삭제했어요(기기 자체는 그대로예요)."
 
 

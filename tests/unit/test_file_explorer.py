@@ -12,7 +12,7 @@ import plugins.file_explorer as fe
 
 
 def test_empty_path_asks_for_specifics():
-    assert "알려주세요" in fe.open_file_location("")
+    assert "알려 주시겠어요" in fe.open_file_location("")
 
 
 def test_nonexistent_path_is_rejected_safely(tmp_path, monkeypatch):

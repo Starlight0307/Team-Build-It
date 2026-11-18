@@ -214,13 +214,13 @@ def check_update_status() -> str:
         if days_since > 30:
             return CheckResult(header + (f"🚨 {days_since}일 동안 업데이트가 없었습니다. "
                               "최신 보안 패치가 누락됐을 가능성이 높습니다. "
-                              "설정 > Windows Update에서 즉시 확인하세요."), critical=1,
+                              "설정 > Windows Update에서 즉시 확인하시는 게 좋아요."), critical=1,
                               summary=(f"마지막 업데이트가 {days_since}일 전({raw})이에요. 그사이 나온 보안 패치가 "
-                                       "빠져 있을 가능성이 높아요. 설정 > Windows 업데이트에서 '업데이트 확인'을 눌러 주세요."))
+                                       "빠져 있을 가능성이 높아요. 설정 > Windows 업데이트에서 '업데이트 확인'을 누르시면 돼요."))
         elif days_since > 14:
             return CheckResult(header + "⚠️ 2주 이상 업데이트가 없었습니다. 업데이트 확인을 권장합니다.", warning=1,
                                summary=(f"마지막 업데이트가 {days_since}일 전이에요. 2주가 넘었으니 설정 > Windows "
-                                        "업데이트에서 한 번 확인해 주세요."))
+                                        "업데이트에서 한 번 확인해 보시면 돼요."))
         else:
             return CheckResult(header + "✅ 최근에 업데이트가 적용되었습니다.\n"
                                "ℹ️ 마지막 설치일 기준이에요 — 지금 받을 업데이트가 남아 있는지는 확인하지 않았어요"
@@ -228,13 +228,13 @@ def check_update_status() -> str:
                                summary=f"최근({days_since}일 전)에 업데이트가 설치됐어요.")
 
     except subprocess.TimeoutExpired:
-        return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
+        return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 해 보시면 돼요.", unknown=1)
     except ValueError:
         return CheckResult("[🔄 Windows 업데이트 상태]\n업데이트 날짜 정보를 확인하지 못했습니다.", unknown=1,
                            summary="업데이트 날짜를 읽지 못해 확인하지 못했어요.")
     except Exception as e:
         print(f"[시스템 보안] 업데이트 확인 오류: {e}")
-        return CheckResult("⚠️ 업데이트 상태를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
+        return CheckResult("⚠️ 업데이트 상태를 확인하지 못했습니다. 잠시 후 다시 해 보시면 돼요.", unknown=1)
 
 
 # ─────────────────────────────────────────────
@@ -288,7 +288,7 @@ def scan_shared_folders() -> str:
         result = f"[📁 공유 폴더 점검] (사용자가 만든 공유 폴더 {len(user_shares)}개)\n\n" + "\n".join(lines)
         if risky:
             result += (f"\n\n🚨 경고: {', '.join(risky)} 폴더는 비밀번호 없이 누구나 접근할 수 있습니다. "
-                        "공용 와이파이나 회사 네트워크에서 파일이 노출될 수 있으니 공유 권한을 제한하세요.")
+                        "공용 와이파이나 회사 네트워크에서 파일이 노출될 수 있으니 공유 권한을 제한하시는 게 좋아요.")
         # 누구나 접근 가능한 공유 폴더 하나당 위험 1개(마지막 경고 문단은 같은 내용의 요약이라 세지 않음)
         summary = (f"비밀번호 없이 누구나 열 수 있는 공유 폴더가 있어요({', '.join(risky)}). 공용 와이파이 등에서 파일이 "
                    "보일 수 있으니 공유 권한을 줄이는 게 좋아요." if risky
@@ -296,10 +296,10 @@ def scan_shared_folders() -> str:
         return CheckResult(result, critical=len(risky), summary=summary)
 
     except subprocess.TimeoutExpired:
-        return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
+        return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 해 보시면 돼요.", unknown=1)
     except Exception as e:
         print(f"[시스템 보안] 공유 폴더 확인 오류: {e}")
-        return CheckResult("⚠️ 공유 폴더 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
+        return CheckResult("⚠️ 공유 폴더 정보를 확인하지 못했습니다. 잠시 후 다시 해 보시면 돼요.", unknown=1)
 
 
 # 시스템 기본 관리용 공유(ADMIN$/C$/IPC$ 등 $로 끝나는 이름)는 Windows가 내부적으로
@@ -339,7 +339,7 @@ def restrict_shared_folder_permission(share_name: str) -> str:
 
     name = share_name.strip()
     if not name:
-        return "⚠️ 공유 폴더 이름을 알려주세요."
+        return "⚠️ 공유 폴더 이름을 알려 주시겠어요?"
     if name.endswith("$"):
         return f"⚠️ '{name}'은(는) Windows 시스템 기본 공유라 변경할 수 없습니다."
 
@@ -357,7 +357,7 @@ def restrict_shared_folder_permission(share_name: str) -> str:
             timeout=10
         )
         if not exists_proc.stdout.strip():
-            return f"'{name}'이라는 이름의 공유 폴더를 찾지 못했습니다. scan_shared_folders로 정확한 이름을 먼저 확인해주세요."
+            return f"'{name}'이라는 이름의 공유 폴더를 찾지 못했습니다. scan_shared_folders로 정확한 이름을 먼저 확인해 보시면 돼요."
 
         everyone_proc = _run_powershell(
             f"Get-SmbShareAccess -Name '{safe_name}' | "
@@ -379,10 +379,10 @@ def restrict_shared_folder_permission(share_name: str) -> str:
         return f"[✅ 공유 폴더 권한 제한 완료]\n'{name}' 공유 폴더에서 Everyone(누구나)의 공유 권한을 제거했습니다. (NTFS 파일 권한은 별도이며 변경되지 않았습니다)"
 
     except subprocess.TimeoutExpired:
-        return "⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요."
+        return "⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 해 보시면 돼요."
     except Exception as e:
         print(f"[시스템 보안] 공유 폴더 권한 제한 오류: {e}")
-        return "⚠️ 공유 폴더 권한을 변경하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "⚠️ 공유 폴더 권한을 변경하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -472,12 +472,12 @@ def get_login_failures(hours: int = 24) -> str:
         if _NO_ACCESS in raw:
             return CheckResult(f"[🔑 로그인 실패 이력] (최근 {hours}시간)\n"
                     f"{UNKNOWN_MARK} 관리자 권한이 없어 Windows 보안 기록을 읽지 못했어요 — 확인하지 못한 상태예요. "
-                    "확인하려면 루미를 관리자 권한으로 실행해주세요.", unknown=1,
+                    "확인하려면 루미를 관리자 권한으로 실행하시면 돼요.", unknown=1,
                     summary=("누가 비밀번호를 틀리며 로그인을 시도했는지 보려면 관리자 권한이 필요해서 확인하지 "
                              "못했어요. 루미를 관리자 권한으로 실행하면 볼 수 있어요."))
         if _QUERY_FAILED in raw:
             return CheckResult(f"[🔑 로그인 실패 이력] (최근 {hours}시간)\n"
-                    f"{UNKNOWN_MARK} Windows 보안 기록을 읽는 중 문제가 생겨 확인하지 못했어요. 잠시 후 다시 시도해주세요.", unknown=1,
+                    f"{UNKNOWN_MARK} Windows 보안 기록을 읽는 중 문제가 생겨 확인하지 못했어요. 잠시 후 다시 해 보시면 돼요.", unknown=1,
                     summary="Windows 보안 기록을 읽는 중 문제가 생겨 확인하지 못했어요.")
         if not raw or raw.count('\n') == 0:
             return CheckResult(f"[🔑 로그인 실패 이력] (최근 {hours}시간)\n✅ 로그인 실패 기록이 없습니다.",
@@ -504,7 +504,7 @@ def get_login_failures(hours: int = 24) -> str:
         return CheckResult(result, critical=1 if max_cnt >= 5 else 0, summary=summary)
 
     except subprocess.TimeoutExpired:
-        return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 시도해주세요.", unknown=1)
+        return CheckResult("⚠️ 확인 시간이 너무 오래 걸려 중단했습니다. 잠시 후 다시 해 보시면 돼요.", unknown=1)
     except Exception as e:
         print(f"[시스템 보안] 로그인 실패 이력 확인 오류: {e}")
         return CheckResult("⚠️ 로그인 실패 이력을 확인하지 못했습니다. 관리자 권한으로 앱을 실행해야 할 수 있습니다.", unknown=1)
@@ -565,7 +565,7 @@ def _score_report(title: str, checks, kind: str = None) -> str:
             if unknown else "")
     return (f"{title}\n점수: {score}/100 ({grade})\n\n"
             "항목별 상태:\n" + "\n".join(f"  {s}" for s in sections) +
-            "\n\n※ 상세 내용이 필요한 항목은 개별로 다시 요청하세요." + note +
+            "\n\n※ 상세 내용이 필요한 항목은 개별로 다시 요청하시는 게 좋아요." + note +
             # 점수가 '안전 보증'으로 들리지 않게 범위를 밝힌다(2026-10-13)
             "\n※ 점수는 루미가 확인한 항목만 반영해요 — 백신 검사나 전문 보안 점검을 대신하지는 않아요." + history)
 
@@ -613,12 +613,12 @@ def _check_uac(add):
         add("unknown", "사용자 계정 컨트롤(UAC) 설정을 확인하지 못했어요")
     elif lua == 0:
         add("critical", "사용자 계정 컨트롤(UAC)이 꺼져 있어요 — 프로그램이 묻지 않고 관리자 권한을 얻을 수 있어요. "
-                        "설정 > 사용자 계정 컨트롤 설정 변경에서 켜 주세요(재부팅 필요).")
+                        "설정 > 사용자 계정 컨트롤 설정 변경에서 켜시면 돼요(재부팅 필요).")
     elif consent is None:
         add("unknown", "UAC는 켜져 있지만 관리자 승인 방식 설정을 확인하지 못했어요")
     elif consent == 0:
         add("warning", "UAC는 켜져 있지만 관리자 권한이 필요할 때 묻지 않고 바로 허용해요. 'UAC 설정 변경'에서 "
-                       "기본값(알림 표시)으로 올려 주세요.")
+                       "기본값(알림 표시)으로 올리시면 돼요.")
     else:
         add("ok", "사용자 계정 컨트롤(UAC) 켜짐 — 관리자 권한이 필요하면 승인을 받아요")
 
@@ -636,10 +636,10 @@ def _check_remote_desktop(add):
         nla = _known_int(_reg_value(_RDP_KEY + r"\WinStations\RDP-Tcp", "UserAuthentication"), 1, {0, 1})
         if nla == 0:
             add("critical", "원격 데스크톱이 켜져 있고, 접속 전 사용자 확인(NLA)이 꺼져 있어요 — 비밀번호 대입 공격에 "
-                            "약해요. 쓰지 않으면 설정 > 시스템 > 원격 데스크톱에서 꺼 주세요.")
+                            "약해요. 쓰지 않으면 설정 > 시스템 > 원격 데스크톱에서 끄시면 돼요.")
         else:
             add("warning", "원격 데스크톱이 켜져 있어요 — 다른 컴퓨터에서 이 PC에 로그인할 수 있어요. 쓰지 않으면 "
-                           "설정 > 시스템 > 원격 데스크톱에서 꺼 주세요.")
+                           "설정 > 시스템 > 원격 데스크톱에서 끄시면 돼요.")
             if nla is None:
                 add("unknown", "원격 데스크톱의 접속 전 사용자 확인(NLA) 설정을 확인하지 못했어요")
 
@@ -687,7 +687,7 @@ def _check_smb1(add):
             findings.append(("unknown", "SMBv1 서버 구성 요소가 설치돼 있는데, 켜져 있는지 확인하지 못했어요"))
         elif setting:
             findings.append(("critical", "SMBv1 파일 공유 서버가 켜져 있어요 — 워너크라이 같은 랜섬웨어가 퍼진 오래된 "
-                                         "방식이에요. 'Windows 기능 켜기/끄기'에서 'SMB 1.0/CIFS 파일 공유 지원'을 꺼 주세요."))
+                                         "방식이에요. 'Windows 기능 켜기/끄기'에서 'SMB 1.0/CIFS 파일 공유 지원'을 끄시면 돼요."))
     # 클라이언트
     client_driver = _driver_exists("mrxsmb10.sys")
     if client_driver is None:
@@ -701,7 +701,7 @@ def _check_smb1(add):
             # Start는 '시작 설정'이지 지금 실행 중이라는 뜻은 아니다 — 문구도 그만큼만 말한다
             findings.append(("warning", "SMBv1 파일 공유(클라이언트) 구성 요소가 설치돼 있고 '사용 안 함'으로 설정돼 "
                                         "있지 않아요 — 오래된 NAS·프린터를 쓰는 게 아니면 'Windows 기능 켜기/끄기'에서 "
-                                        "'SMB 1.0/CIFS 파일 공유 지원'을 꺼 주세요."))
+                                        "'SMB 1.0/CIFS 파일 공유 지원'을 끄시면 돼요."))
     if findings:
         for severity, text in findings:
             add(severity, text)
@@ -738,16 +738,16 @@ def _check_bitlocker(add):
         add("ok", "시스템 드라이브 암호화(BitLocker)를 진행하고 있어요")
     elif state == "paused":
         add("warning", "시스템 드라이브 암호화(BitLocker)가 일시 중지돼 있어요 — 지금은 암호화 보호가 꺼진 상태예요. "
-                       "제어판 > BitLocker 드라이브 암호화에서 '보호 다시 시작'을 눌러 주세요.")
+                       "제어판 > BitLocker 드라이브 암호화에서 '보호 다시 시작'을 누르시면 돼요.")
     elif state == "decrypting":
         add("warning", "시스템 드라이브 암호화(BitLocker)를 해제하는 중이에요 — 끝나면 암호화가 없는 상태가 돼요. "
-                       "직접 해제한 게 아니라면 제어판 > BitLocker 드라이브 암호화를 확인해 주세요.")
+                       "직접 해제한 게 아니라면 제어판 > BitLocker 드라이브 암호화를 확인해 보시면 돼요.")
     elif state == "off":
         add("warning", "시스템 드라이브가 암호화(BitLocker)돼 있지 않아요 — 노트북을 잃어버리면 파일을 꺼내 볼 수 "
                        "있어요. 설정 > 개인 정보 및 보안 > 장치 암호화(또는 BitLocker)에서 켤 수 있어요.")
     else:
         add("unknown", "이 PC에서는 드라이브 암호화 상태를 확인할 수 없어요(Windows Home 등). 설정 > 개인 정보 및 "
-                       "보안 > 장치 암호화가 있으면 거기서 확인해 주세요.")
+                       "보안 > 장치 암호화가 있으면 거기서 확인해 보시면 돼요.")
 
 
 def check_security_settings() -> str:
@@ -972,7 +972,7 @@ def check_ransomware_readiness(*, _precomputed=None) -> str:
                     "있어요. 켜면 일부 프로그램이 문서 폴더에 저장하지 못할 수 있어요.", "랜섬웨어 방지는 꺼져 있어요(기본값)")
     elif why == "not_primary":
         add("unknown", "Defender가 주 백신이 아니거나 꺼져 있어서 Windows 랜섬웨어 방지 상태는 확인하지 못했어요. "
-                       "다른 백신을 쓴다면 그 백신의 설정에서 확인해 주세요.", "랜섬웨어 방지는 확인하지 못했어요(Defender가 주 백신이 아니거나 꺼져 있어요)")
+                       "다른 백신을 쓴다면 그 백신의 설정에서 확인해 보시면 돼요.", "랜섬웨어 방지는 확인하지 못했어요(Defender가 주 백신이 아니거나 꺼져 있어요)")
     else:
         add("unknown", "랜섬웨어 방지 설정을 읽지 못했어요.", "랜섬웨어 방지는 확인하지 못했어요")
 

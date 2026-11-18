@@ -212,6 +212,7 @@ _SLOW_TRIAGE_HINT = "이 목록은 CPU 사용량만 본 것이고, 메모리·�
 from core import small_talk, user_memory
 from core import reply_actions as _reply_actions
 from core import report_style as _report_style
+from core import iot_messages as _iot_messages
 from core import reply_appusage as _reply_appusage
 from core import reply_fallback as _reply_fallback
 from core import reply_files as _reply_files
@@ -272,11 +273,11 @@ def _diagnose_error(e: Exception) -> str:
     _log_error_trace(e)
     if isinstance(e, ConnectionError):
         return (
-            "AI 모델에 연결하지 못했어요. Ollama가 켜져 있는지 확인해 주시겠어요?"
+            "AI 모델에 연결하지 못했어요. Ollama가 켜져 있는지 확인해 보시면 돼요."
         )
     if isinstance(e, httpx.TimeoutException):
         return (
-            "AI 답변이 너무 오래 걸려서 멈췄어요. 컴퓨터가 바쁠 수 있으니 잠시 뒤에 다시 물어봐 주시겠어요?"
+            "AI 답변이 너무 오래 걸려서 멈췄어요. 컴퓨터가 바쁠 수 있으니 잠시 뒤에 다시 물어보시면 돼요."
         )
     if _is_model_crash(e):
         # 상세(예외 종류·코드)는 콘솔/로그에만 — 사용자에게는 상황과 다음 행동 하나만
@@ -287,9 +288,9 @@ def _diagnose_error(e: Exception) -> str:
         text = (getattr(e, 'error', '') or str(e)).lower()
         if 'model' in text and ('not found' in text or 'pull' in text):
             print(f"[AI 모델 없음] 모델 '{OLLAMA_MODEL}'을 내려받아야 해요: ollama pull {OLLAMA_MODEL}")   # 상세는 콘솔에만
-            return "AI 모델이 아직 준비되지 않았어요. 설정에서 모델 상태를 확인해 주시겠어요?"
-        return "AI 모델 쪽에 문제가 생겼어요. 잠시 뒤에 다시 물어봐 주시겠어요?"
-    return "요청을 처리하는 중에 문제가 생겼어요. 한 번만 더 말씀해 주시겠어요?"
+            return "AI 모델이 아직 준비되지 않았어요. 설정에서 모델 상태를 확인해 보시면 돼요."
+        return "AI 모델 쪽에 문제가 생겼어요. 잠시 뒤에 다시 물어보시면 돼요."
+    return "요청을 처리하는 중에 문제가 생겼어요. 한 번만 더 요청하시면 돼요."
 
 
 _PRICE_SEARCH_TTL_DAYS = 90   # 이보다 오래된 검색 이력은 "재검색"으로 치지 않음
@@ -565,7 +566,7 @@ def _describe_delete_duplicate_files(a: dict, func_map: dict) -> str:
         if len(to_delete) > len(preview_paths):
             desc += f"\n  ... 외 {len(to_delete) - len(preview_paths)}개"
     else:
-        desc += "\n\n(삭제할 대상이 없습니다 — 먼저 중복 파일을 찾아주세요)"
+        desc += "\n\n(삭제할 대상이 없습니다 — 먼저 중복 파일을 찾으시면 돼요)"
     desc += "\n\n※ 휴지통으로 이동합니다(영구 삭제 아님 — 필요하면 휴지통에서 복구할 수 있음)."
     return desc
 
@@ -583,7 +584,7 @@ def _describe_trust_security_item(a: dict, func_map: dict) -> str:
             f"{details}\n\n"
             "신뢰 목록은 '안전하다는 보증'이 아니라, 앞으로 보안 점검에서 이 파일을 의심 항목으로 알리지 않는 "
             "예외예요(파일 내용이 바뀌면 다시 알림). 이름 사칭·숨긴 명령은 신뢰해도 계속 알려요.\n"
-            "본인이 직접 설치한 프로그램이 맞을 때만 진행하세요.")
+            "본인이 직접 설치한 프로그램이 맞을 때만 진행하시는 게 좋아요.")
 
 
 def _describe_scan_file_with_defender(a: dict, func_map: dict) -> str:
@@ -2917,7 +2918,7 @@ def _build_local_schedule_summary_reply(raw_results: str):
 
 _IOT_NO_DEVICES_TEXT = (
     "현재 로컬 네트워크에서 발견된 Kasa 스마트 기기가 없습니다. "
-    "기기 전원이 켜져 있고 이 컴퓨터와 같은 Wi-Fi에 연결되어 있는지 확인해주세요."
+    "기기 전원이 켜져 있고 이 컴퓨터와 같은 Wi-Fi에 연결되어 있는지 확인해 보시면 돼요."
 )
 
 
@@ -2933,17 +2934,17 @@ def _build_iot_no_devices_reply(raw_results: str):
     정확히 일치할 때 LLM을 거치지 않고 결정론적으로 답한다."""
     if raw_results.strip() == _IOT_NO_DEVICES_TEXT:
         return ("로컬 네트워크에서 발견된 Kasa 스마트 기기가 없어요. "
-                 "기기 전원이 켜져 있고 이 컴퓨터와 같은 Wi-Fi에 연결돼 있는지 확인해봐 주실래요?")
+                 "기기 전원이 켜져 있고 이 컴퓨터와 같은 Wi-Fi에 연결돼 있는지 확인해 보시면 돼요.")
     return None
 
 
+# 플러그인(plugins/iot_control.py)이 만드는 문구와 같은 상수(core/iot_messages.py)에서 정규식을 만든다
 _IOT_NOT_FOUND_PATTERN = re.compile(
-    r"^'(.+?)'이라는 이름의 기기를 찾지 못했습니다\. "
-    r"discover_iot_devices로 정확한 기기 이름을 먼저 확인해주세요\.$"
+    r"^'(.+?)'이라는 이름의 기기를 찾지 못했습니다\. " + re.escape(_iot_messages.NOT_FOUND_HINT) + r"$"
 )
 _IOT_AMBIGUOUS_PATTERN = re.compile(
     r"^'(.+?)'이라는 이름의 기기가 (\d+)개 발견되어 어느 것을 제어할지 알 수 없습니다 "
-    r"\((.+?)\)\. 기기 이름을 다르게 설정한 뒤 다시 시도해주세요\.$"
+    r"\((.+?)\)\. " + re.escape(_iot_messages.AMBIGUOUS_TAIL) + r"$"
 )
 
 
@@ -2967,12 +2968,12 @@ def _build_iot_control_reply(raw_results: str):
     if m:
         device_name = m.group(1)
         return (f"'{device_name}'이라는 이름의 기기를 못 찾았어요. "
-                 "먼저 스마트 기기 목록을 확인해서 정확한 이름으로 다시 시도해주실래요?")
+                 "먼저 스마트 기기 목록을 확인해서 정확한 이름으로 다시 해 보시면 돼요.")
     m = _IOT_AMBIGUOUS_PATTERN.match(stripped)
     if m:
         device_name, count, ip_list = m.groups()
         return (f"'{device_name}'이라는 이름의 기기가 {count}개 발견돼서 어느 걸 제어할지 알 수 없어요 "
-                 f"({ip_list}). 기기 이름을 다르게 설정한 뒤 다시 시도해주실래요?")
+                 f"({ip_list}). 기기 이름을 다르게 설정한 뒤 다시 해 보시면 돼요.")
     return None
 
 
@@ -3677,7 +3678,7 @@ _SYSTEM_TREND_LINE = re.compile(
     r'|➡️ 변화 없음 \((?P<flat>\d+(?:\.\d+)?)%p\))'
     r'(?P<disk_note> \(늘어날수록 여유 있음\))?$'
 )
-_SYSTEM_TREND_TODAY_NOTE = "※ '오늘'은 아직 끝나지 않은 하루라 어제 하루 전체보다 표본이 적을 수 있어요 — 표본 수가 적으면 참고용으로만 봐주세요."
+_SYSTEM_TREND_TODAY_NOTE = "※ '오늘'은 아직 끝나지 않은 하루라 어제 하루 전체보다 표본이 적을 수 있어요 — 표본 수가 적으면 참고용으로만 보시면 돼요."
 _SYSTEM_TREND_METRIC_LABEL = {"CPU 평균": "CPU", "메모리 평균": "메모리", "디스크 여유공간": "디스크 여유공간"}
 
 
@@ -3727,7 +3728,7 @@ def _build_system_trend_reply(raw_results: str):
 
     reply = f"{header.group('label')} PC 상태를 비교해봤어요 — " + ", ".join(clauses) + "."
     if today_note:
-        reply += " 다만 오늘은 아직 하루가 다 지나지 않아서 표본이 적을 수 있으니 참고만 해주세요."
+        reply += " 다만 오늘은 아직 하루가 다 지나지 않아서 표본이 적을 수 있으니 참고만 하시면 돼요."
     return reply
 
 
@@ -4000,7 +4001,7 @@ def _build_price_search_reply(raw_results: str):
         if m.group('excluded'):
             lines.append(f"({m.group('excluded')}는 검색어와 이름이 달라서 이 비교에서는 제외했어요.)")
     elif _PRICE_MATCH_NONE.search(raw_results):
-        lines.append("다만 검색어와 이름이 정확히 일치하는 상품은 없어서 최저가를 딱 집어 말씀드리긴 어려워요 — 위 상품명을 직접 확인해주세요.")
+        lines.append("다만 검색어와 이름이 정확히 일치하는 상품은 없어서 최저가를 딱 집어 말씀드리긴 어려워요 — 위 상품명을 직접 확인해 보시면 돼요.")
     else:
         return None  # 예상 밖 형식 — 안전하게 LLM 경로로 폴백
     # 멀티사이트 비교(2026-10-02, 14번): plugins/price_search.py가 코드로 계산해 마커와 함께
@@ -4168,7 +4169,7 @@ def _duplicate_page_reply(page: int) -> str:
     rows = list(_LAST_DUPLICATE_VIEW)
     start = page * DUP_PAGE_SIZE
     if not rows or start >= len(rows):
-        return "더 보여 드릴 중복 파일 목록이 남아 있지 않아요. 다시 보려면 '중복 파일 찾아줘'라고 해 주세요."
+        return "더 보여 드릴 중복 파일 목록이 남아 있지 않아요. 다시 보려면 '중복 파일 찾아줘'라고 하시면 돼요."
     shown = rows[start:start + DUP_PAGE_SIZE]
     lines = [f"겹치는 분량이 큰 순서로 {start + 1}~{start + len(shown)}번째 그룹이에요."]
     lines += [_duplicate_group_line(start + k + 1, g) for k, g in enumerate(shown)]
@@ -4265,7 +4266,7 @@ def _build_large_files_reply(raw_results: str):
         lines.append(f"{i}. {_path_basename(path)}  ({size})")
     for note in notes:
         lines.append(f"※ {note}")
-    lines.append("'1번 열어줘'로 파일을 열거나, '1번 어디 있어?'로 위치를 물어보세요.")
+    lines.append("'1번 열어줘'로 파일을 열거나, '1번 어디 있어?'로 위치를 물어보시면 돼요.")
     return "\n".join(lines)
 
 
@@ -4326,7 +4327,7 @@ def _large_file_location_reply(text: str, chat_history: list, func_map: dict):
     if re.search(r"열어|틀어|재생", text):
         if len(picked) > 1:
             what = "폴더를" if wants_folder else "파일을"
-            return f"어느 {what} 열까요? '1번 {'폴더 ' if wants_folder else ''}열어줘'처럼 번호로 말씀해주세요."
+            return f"어느 {what} 열까요? '1번 {'폴더 ' if wants_folder else ''}열어줘'처럼 번호로 알려 주시면 돼요."
         path = _LAST_LARGE_FILES[picked[0] - 1][1]
         if wants_folder:
             if "open_file_location" in func_map:
@@ -4766,9 +4767,9 @@ def _slow_pc_reply(tool_result: str, asked_slow: bool, cpu: float = None, ram: f
                 f"아래 목록에서 쓰지 않는 프로그램을 종료하면 빨라질 수 있어요. {card_hint}")
     if ram >= 85:
         return (f"지금 CPU 사용량은 {cpu:.0f}%로 괜찮지만, 메모리가 {ram:.0f}% 차 있어서 느려졌을 수 있어요. "
-                f"안 쓰는 프로그램이나 브라우저 탭을 닫아 보세요.\n참고로 CPU를 많이 쓰는 프로그램도 보여드려요. {card_hint}")
+                f"안 쓰는 프로그램이나 브라우저 탭을 닫아 보시면 돼요.\n참고로 CPU를 많이 쓰는 프로그램도 보여드려요. {card_hint}")
     return (f"지금 CPU 사용량은 {cpu:.0f}%, 메모리는 {ram:.0f}%로 둘 다 여유가 있어서, CPU나 메모리 때문은 아닐 수 있어요. "
-            f"특정 프로그램이 느리다면 그 프로그램을 다시 켜 보세요.\n참고로 CPU를 많이 쓰는 프로그램을 보여드려요.{top_text} {card_hint}")
+            f"특정 프로그램이 느리다면 그 프로그램을 다시 켜 보시면 돼요.\n참고로 CPU를 많이 쓰는 프로그램을 보여드려요.{top_text} {card_hint}")
 
 
 # "루미 기능 설명해줘" — 전체 소개는 core/reply_overview.py 한 곳에서 만든다(보고서 + 기능별 사용 예 제안).
@@ -5354,7 +5355,7 @@ def _build_firewall_tool_reply(raw_results: str):
         if lead in ("done", "failed", "partial"):
             obj = _FIREWALL_ACTION_OBJECT[m.group(1)]
             lead = {"done": f"{obj} 마쳤어요", "failed": f"{obj} 하지 못했어요",
-                    "partial": f"{obj} 일부만 마쳤어요 — 아래에서 무엇이 바뀌었는지 확인해 주세요"}[lead]
+                    "partial": f"{obj} 일부만 마쳤어요 — 아래에서 무엇이 바뀌었는지 확인해 보시면 돼요"}[lead]
         elif m.groups() and m.group(1):
             lead += f" (모두 {m.group(1)}개)"
         elif "\n" not in body:
@@ -5387,7 +5388,7 @@ def _build_calendar_login_status_reply(raw_results: str):
                 "마이페이지의 [구글 연동하기]를 누르면 연결할 수 있어요.")
     if "만료" in body:
         return ("구글 캘린더 연결 시간이 지났어요. '구글 캘린더 연결해줘'라고 말씀하시거나 "
-                "마이페이지에서 다시 연결해 주세요.")
+                "마이페이지에서 다시 연결하시면 돼요.")
     account = _GOOGLE_ACCOUNT_LINE.search(body)
     if "✅" not in body or not account:
         return None
@@ -6751,7 +6752,7 @@ def _build_condition_recommendation(cond: dict, func_map: dict) -> str:
             return ""
         top_name = m.group('name').strip()
         top_percent = m.group('percent')
-        return f"현재 CPU 사용량 1위는 {top_name}({top_percent}%)예요. 사용하지 않는 프로그램이 있다면 종료해보세요."
+        return f"현재 CPU 사용량 1위는 {top_name}({top_percent}%)예요. 사용하지 않는 프로그램이 있다면 종료해 보시면 돼요."
 
     if ctype == 'disk_limit':
         getter = func_map.get('scan_temp_files')
@@ -6769,7 +6770,7 @@ def _build_condition_recommendation(cond: dict, func_map: dict) -> str:
             return ""  # 임시 파일이 없거나(정리할 게 없음) 형식이 안 맞으면 추천 안 함
         size = m.group('size')
         return (f"정리 가능한 임시 파일이 {size} 있어요. "
-                f"'{CLEAN_TEMP_FILES_COMMAND_PHRASE}'라고 말씀해주시면 정리해드릴게요.")
+                f"'{CLEAN_TEMP_FILES_COMMAND_PHRASE}'라고 요청하시면 정리해드릴게요.")
 
     return ""
 
@@ -6879,7 +6880,7 @@ def _lookup_reply(text: str) -> str:
     if ok:
         reply = f"정확한 정보가 필요한 질문이라, {opened}"
     else:
-        reply = f"정확한 정보가 필요한 질문이라 검색해 보시는 게 좋아요. 구글에서 '{query}'로 찾아보세요."
+        reply = f"정확한 정보가 필요한 질문이라 검색해 보시는 게 좋아요. 구글에서 '{query}'를 검색하시면 돼요."
     return small_talk.to_casual(reply) if user_memory.is_casual() else reply
 
 
@@ -8806,7 +8807,7 @@ class AIWorker(QThread):
             question = str(args.get("text") or "").strip()
             self.chat_history.pop()
             if not question:
-                _say("어떤 질문이었는지 잊어버렸어요. 한 번만 더 물어봐 주시겠어요?")
+                _say("어떤 질문이었는지 잊어버렸어요. 한 번만 더 물어보시면 돼요.")
                 return True
             if self.chat_history and self.chat_history[-1].get('role') == 'user' and self.chat_history[-1].get('content') == question:
                 self.chat_history.pop()
@@ -8830,7 +8831,7 @@ class AIWorker(QThread):
             # 사실 질문 답 뒤 "구글 검색 결과도 열어 드릴까요?"의 "응" — 질문 문장으로 구글 검색을 연다(모델 호출 없음)
             query = str(args.get("query") or "").strip()
             if not query:
-                _say("어떤 질문이었는지 잊어버렸어요. 한 번만 더 물어봐 주시겠어요?")
+                _say("어떤 질문이었는지 잊어버렸어요. 한 번만 더 물어보시면 돼요.")
                 return True
             opened, ok = _open_google(query)
             _say(opened if ok else f"브라우저를 열지 못했어요. 구글에서 '{query}'로 찾아보실 수 있어요.")
@@ -9176,7 +9177,7 @@ class AIWorker(QThread):
                         reply = (
                             f"방금 '{LAST_SEARCH['query']}' 검색 결과 중에는 검색어와 이름이 "
                             "정확히 일치하는 상품이 없어서 단정적으로 최저가를 말씀드리기 "
-                            "어려워요 — 위에 보여드린 상품명을 직접 확인해주세요."
+                            "어려워요 — 위에 보여드린 상품명을 직접 확인해 보시면 돼요."
                         )
                     self.response_ready.emit(f"🤖 로컬 비서: {reply}")
                     return
@@ -9255,7 +9256,7 @@ class AIWorker(QThread):
             canned = (None if self._ACK_ONLY.match(self.user_text.strip()) or (asked and self._is_decline_reply())
                       else small_talk.reply(self.user_text, user_memory.is_casual()))
             if _ASKS_REPEAT.fullmatch(self.user_text.strip().rstrip("?!. ")):   # 모델은 앞말을 되풀이하지 못하고 지어낸다
-                canned = prev_reply or ("아직 한 말이 없어. 뭐든 말해 봐." if user_memory.is_casual() else "아직 드린 말씀이 없어요. 편하게 말씀해 주세요.")
+                canned = prev_reply or ("아직 한 말이 없어. 뭐든 말해 봐." if user_memory.is_casual() else "아직 드린 말씀이 없어요. 편하게 이야기해 주시면 돼요.")
             if canned and small_talk.is_greeting(self.user_text):
                 canned = self._greeting_with_offers(canned)
             if canned:
@@ -9271,8 +9272,8 @@ class AIWorker(QThread):
                     if user_memory.is_casual():
                         reply = "천만에! 또 필요하면 말해." if thanks else "좋아! 또 필요하면 말해."
                     else:
-                        reply = ("천만에요! 더 필요한 게 있으면 언제든 말씀해 주세요." if thanks
-                                 else "좋아요! 더 필요한 게 있으면 말씀해 주세요.")
+                        reply = ("천만에요! 더 필요한 게 있으면 언제든 알려 주시면 도와 드릴게요." if thanks
+                                 else "좋아요! 더 필요한 게 있으면 알려 주시면 도와 드릴게요.")
                     self.chat_history.append({'role': 'user', 'content': self.user_text})
                     self.chat_history.append({'role': 'assistant', 'content': reply})
                     self.response_ready.emit(f"🤖 로컬 비서: {reply}")
@@ -9663,7 +9664,7 @@ class AIWorker(QThread):
                 if not combined:
                     self.response_ready.emit(
                         "🤖 로컬 비서: 지금은 관련 일정·파일을 찾지 못했어요. "
-                        "캘린더나 파일 검색 플러그인이 설치되어 있는지 확인해주세요."
+                        "캘린더나 파일 검색 플러그인이 설치되어 있는지 확인해 보시면 돼요."
                     )
                     return
 
@@ -10113,8 +10114,8 @@ class AIWorker(QThread):
                         else:  # delete_event, local_delete_event, delete_recurring_series, local_delete_recurring_series
                             action_verb, target_noun = "삭제", "일정 제목"
                         tool_results.append(
-                            "먼저 조회 결과부터 확인해주세요 — 결과를 보여드릴게요. "
-                            f"{action_verb}하고 싶은 게 있으면 그 {target_noun}으로 다시 말씀해주시면 바로 {action_verb}할게요."
+                            "먼저 조회 결과부터 보여드릴게요. "
+                            f"{action_verb}하고 싶은 게 있으면 그 {target_noun}으로 다시 요청하시면 바로 {action_verb}할게요."
                         )
                         continue
 
@@ -10355,7 +10356,7 @@ class AIWorker(QThread):
                             if self._looks_like_bogus_dangerous_action(func_name, args, func_map):
                                 tool_results.append(
                                     "❌ 요청하신 작업의 대상을 정확히 파악하지 못했어요. "
-                                    "어떤 프로세스/포트인지 구체적으로 다시 말씀해주시겠어요?"
+                                    "어떤 프로세스/포트인지 구체적으로 다시 알려 주시겠어요?"
                                 )
                                 continue
                             description = (
@@ -10373,8 +10374,8 @@ class AIWorker(QThread):
                         # 이번 사용자 메시지에 클립보드 언급이 없으면 읽지 않고 거부한다.
                         if func_name in _CLIPBOARD_FUNCS and not _clipboard_intent_present(self.user_text):
                             tool_results.append(
-                                "⚠️ 클립보드는 '클립보드 요약해줘'처럼 직접 말씀해주실 때만 읽어요. "
-                                "요약/번역할 글을 붙여넣어 주시거나 클립보드라고 말씀해주세요."
+                                "⚠️ 클립보드는 '클립보드 요약해줘'처럼 직접 요청하실 때만 읽어요. "
+                                "요약/번역할 글을 붙여넣으시거나 클립보드라고 알려 주시면 돼요."
                             )
                             continue
 
@@ -10384,25 +10385,25 @@ class AIWorker(QThread):
                             if not _room_name_stated_by_user(args.get('room_name'), self.user_text):
                                 tool_results.append(
                                     "⚠️ 방 이름은 직접 말씀해주신 이름으로만 사용해요. "
-                                    "'거실 다 꺼줘'처럼 방 이름을 말씀해주세요.")
+                                    "'거실 다 꺼줘'처럼 방 이름을 알려 주시겠어요?")
                                 continue
                         if func_name == 'control_room' and not _room_scope_all_intent(
                                 args.get('room_name'), self.user_text):
                             tool_results.append(
                                 "⚠️ 방 전체를 켜고 끌 때는 '거실 다 꺼줘', '안방 전부 켜줘'처럼 방 이름 바로 뒤에 "
-                                "'다/전부/전체/모두'를 붙여 말씀해주세요. 기기 하나만 제어하려면 기기 이름을 말씀해주세요.")
+                                "'다/전부/전체/모두'를 붙여 알려 주시면 돼요. 기기 하나만 제어하려면 기기 이름만 있어도 돼요.")
                             continue
 
                         # 메일 초안 게이트(위 _EMAIL_DRAFT_INTENT_PATTERN 설명 참고).
                         if func_name == 'draft_email' and not _email_draft_intent_present(self.user_text):
                             tool_results.append(
                                 "⚠️ 메일 초안은 '교수님께 결석 사유 메일 써줘'처럼 메일을 써달라고 "
-                                "말씀해주실 때만 만들어요.")
+                                "요청하실 때만 만들어요.")
                             continue
                         if func_name == 'open_email_draft':
                             if not _email_open_intent_present(self.user_text):
                                 tool_results.append(
-                                    "⚠️ 메일 앱은 '메일 앱으로 열어줘'처럼 직접 말씀해주실 때만 열어요.")
+                                    "⚠️ 메일 앱은 '메일 앱으로 열어줘'처럼 직접 요청하실 때만 열어요.")
                                 continue
                             # 받는 사람은 사용자가 문장에 직접 쓴 주소만 — 지어낸 주소는 비운다.
                             if not _email_address_stated_by_user(args.get('to', ''), self.user_text):
@@ -10586,7 +10587,7 @@ class AIWorker(QThread):
                         # 확인했기 때문에, 확인/처리 못 했다는 사실 그대로 솔직하게 안내한다.
                         clean_reply = (
                             "방금 요청을 정확하게 확인/처리하지 못했어요. 어떤 걸 확인하거나 "
-                            "처리해드릴지 조금 더 구체적으로 말씀해주시면 실제로 확인해서 알려드릴게요."
+                            "처리해드릴지 조금 더 구체적으로 요청하시면 실제로 확인해서 알려드릴게요."
                         )
                     else:
                         # 도구가 필요한 요청은 아니었고(use_tools=False) 단순 텍스트가
@@ -10604,7 +10605,7 @@ class AIWorker(QThread):
             if not use_tools:
                 clean_reply = _polish_chat_reply(clean_reply, self.user_text)
                 if not clean_reply:   # 고장 난 문장만 남았으면 지어내지 않고 모른다고 한다
-                    clean_reply = "그건 내가 잘 모르겠어. 다르게 물어봐 줄래?" if user_memory.is_casual() else "그건 제가 잘 모르겠어요. 다르게 물어봐 주실래요?"
+                    clean_reply = "그건 내가 잘 모르겠어. 다르게 물어봐 줄래?" if user_memory.is_casual() else "그건 제가 잘 모르겠어요. 다르게 물어보시면 돼요."
                 elif _ASKS_FACT.search(self.user_text) and not re.search(r"확인해\s*보", clean_reply) and not any(_HEDGE_WORD in str(m.get('content', '')) for m in self.chat_history[-8:]):   # 매번 붙이면 지겹다   # 이 모델은 사실을 자주 틀린다("한글은 이순신이 만들었다")
                     verify_line = _lookup_offer_line(self.user_text)      # 스스로 못 믿을 말 대신 확인 수단을 건넨다("응"하면 구글 검색을 연다)
                     if verify_line:

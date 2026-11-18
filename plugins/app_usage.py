@@ -662,7 +662,7 @@ def set_usage_goal(target: str = "", daily_minutes: int = None) -> str:
     print(f"\n[앱 사용 통계] 목표 설정: {target} {daily_minutes}분/일")
     target = (target or "").strip()
     if not target:
-        return "⚠️ 목표를 설정할 프로그램 이름이나 분류를 알려주세요."
+        return "⚠️ 목표를 설정할 프로그램 이름이나 분류를 알려 주시겠어요?"
     try:
         # ChatGPT 검수 지적(2026-09-30, expense_tracker의 동일 패턴과 같은
         # 클래스): float("inf")는 TypeError/ValueError 없이 통과했다가

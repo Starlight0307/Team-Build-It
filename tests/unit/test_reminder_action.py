@@ -10,6 +10,8 @@ _execute_action.
 """
 import threading
 
+from core import iot_messages
+
 from plugins.reminder import (
     _build_action_from_iot_args,
     _build_action_from_todo_args,
@@ -267,10 +269,7 @@ def test_execute_action_iot_control_reports_failure_for_marker_less_not_found_me
     버그의 회귀 테스트: "⚠️/❌로 시작 안 하면 성공"이라는 블랙리스트 판정을
     썼다면 이 실패를 성공으로 잘못 분류했을 것이다."""
     action = {"type": "iot_control", "device_name": "존재안함", "state": "off"}
-    fake_control = lambda device_name, action: (
-        f"'{device_name}'이라는 이름의 기기를 찾지 못했습니다. "
-        "discover_iot_devices로 정확한 기기 이름을 먼저 확인해주세요."
-    )
+    fake_control = lambda device_name, action: iot_messages.not_found(device_name)   # 플러그인과 같은 공용 문구
     result = _execute_action(action, {"control_iot_device": fake_control})
     assert result["executed"] is True
     assert result["success"] is False
@@ -280,10 +279,7 @@ def test_execute_action_iot_control_reports_failure_for_ambiguous_match_message(
     """마찬가지로 마커 없이 시작하는 "여러 개 발견" 실패 메시지도 실패로
     잡아야 한다."""
     action = {"type": "iot_control", "device_name": "전등", "state": "off"}
-    fake_control = lambda device_name, action: (
-        f"'{device_name}'이라는 이름의 기기가 2개 발견되어 어느 것을 제어할지 "
-        "알 수 없습니다 (192.168.0.10, 192.168.0.11). 기기 이름을 다르게 설정한 뒤 다시 시도해주세요."
-    )
+    fake_control = lambda device_name, action: iot_messages.ambiguous(device_name, 2, "192.168.0.10, 192.168.0.11")
     result = _execute_action(action, {"control_iot_device": fake_control})
     assert result["executed"] is True
     assert result["success"] is False
@@ -384,7 +380,7 @@ def test_execute_action_run_scene_reports_failure_when_plugin_not_installed():
 
 
 def test_execute_action_run_scene_reports_failure_when_scene_not_found():
-    fake_run_scene = lambda scene_name: f"⚠️ '{scene_name}'이라는 씬을 찾을 수 없어요. list_scenes로 저장된 씬을 확인해주세요."
+    fake_run_scene = lambda scene_name: f"⚠️ '{scene_name}'이라는 씬을 찾을 수 없어요. list_scenes로 저장된 씬을 확인해 보시면 돼요."
     action = {"type": "run_scene", "scene_name": "없는씬"}
     result = _execute_action(action, {"run_scene": fake_run_scene})
     assert result["executed"] is True

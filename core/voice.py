@@ -393,7 +393,7 @@ def to_speech_text(text: str, max_chars: int = 220) -> str:
     m = list(re.finditer(r"[.!?](?=\s)|[요다죠][.!?]?(?=\s)", cut))
     if m and m[-1].end() > max_chars * 0.4:
         cut = cut[:m[-1].end()]
-    return cut.rstrip() + " 나머지는 화면에서 확인해 주세요."
+    return cut.rstrip() + " 나머지는 화면에서 확인해 보시면 돼요."
 
 
 def _normalize(s: str) -> str:
@@ -676,7 +676,7 @@ class VoiceListener(QThread):
             stream = sd.InputStream(samplerate=device_rate, channels=1, dtype="float32", blocksize=block)
             stream.start()
         except Exception as e:
-            self.failed.emit(f"마이크를 열지 못했어요. 마이크 연결과 권한을 확인해 주세요. ({e})")
+            self.failed.emit(f"마이크를 열지 못했어요. 마이크 연결과 권한을 확인해 보시면 돼요. ({e})")
             return
 
         try:
@@ -1548,5 +1548,5 @@ class Speaker(QObject):
         if sys.platform == "win32" and code == _NO_KOREAN_VOICE:
             self._command = None   # 이후로는 읽지 않고 글로만 답한다
             self.notice.emit("Windows에 한국어 음성이 없어 답변을 소리로 읽을 수 없어요. "
-                             "설정 > 시간 및 언어 > 음성 > '음성 추가'에서 한국어를 설치해 주세요.")
+                             "설정 > 시간 및 언어 > 음성 > '음성 추가'에서 한국어를 설치하시면 돼요.")
         self._next()

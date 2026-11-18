@@ -271,7 +271,7 @@ def find_duplicate_files(directory: str = "") -> str:
     dirs = [d for d in dirs if os.path.isdir(d)]
     if not dirs:
         if directory:
-            return f"'{directory}' 폴더를 찾을 수 없습니다. 정확한 경로를 알려주세요."
+            return f"'{directory}' 폴더를 찾을 수 없습니다. 정확한 경로를 알려 주시겠어요?"
         return "검색할 기본 폴더(다운로드/문서/바탕화면 등)를 찾지 못했습니다."
 
     try:
@@ -351,7 +351,7 @@ def find_duplicate_files(directory: str = "") -> str:
         return "\n".join(lines)
     except Exception as e:
         print(f"[PC 최적화] 중복 파일 탐색 오류: {e}")
-        return "❌ 중복 파일을 탐색하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 중복 파일을 탐색하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 # find_duplicate_files()가 채우는 캐시 —
@@ -409,7 +409,7 @@ def delete_duplicate_files(group_index: int = 0, _scan_generation: int = None) -
 
     if _scan_generation is not None and _scan_generation != _SCAN_GENERATION:
         return ("방금 확인하신 목록이 그 사이에 새로 갱신됐어요 — 안전하게 아무것도 "
-                "지우지 않았습니다. '중복 파일 찾아줘'로 다시 확인한 뒤 정리해주세요.")
+                "지우지 않았습니다. '중복 파일 찾아줘'로 다시 확인한 뒤 정리하시면 돼요.")
 
     try:
         group_index = int(group_index)
@@ -494,7 +494,7 @@ def find_large_files(directory: str = "", min_size_mb: float = 100, top_n: int =
     dirs = [d for d in dirs if os.path.isdir(d)]
     if not dirs:
         if directory:
-            return f"'{directory}' 폴더를 찾을 수 없습니다. 정확한 경로를 알려주세요."
+            return f"'{directory}' 폴더를 찾을 수 없습니다. 정확한 경로를 알려 주시겠어요?"
         return "검색할 기본 폴더(다운로드/문서/바탕화면 등)를 찾지 못했습니다."
 
     try:
@@ -528,7 +528,7 @@ def find_large_files(directory: str = "", min_size_mb: float = 100, top_n: int =
         return "\n".join(lines)
     except Exception as e:
         print(f"[PC 최적화] 대용량 파일 탐색 오류: {e}")
-        return "❌ 대용량 파일을 탐색하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 대용량 파일을 탐색하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -557,7 +557,7 @@ def scan_temp_files() -> str:
                 f"임시 파일 {total_files}개, 총 {_format_size(total_bytes)}를 확인했습니다. 제가 정리해 드릴까요?")
     except Exception as e:
         print(f"[PC 최적화] 임시 파일 스캔 오류: {e}")
-        return "❌ 임시 파일을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 임시 파일을 확인하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -655,14 +655,14 @@ def clean_temp_files() -> str:
                   f"{len(items)}개 파일({_format_size(moved_bytes)})을 루미 휴지통으로 옮겼어요.\n"
                   f"{TRASH_KEEP_DAYS}일 안에는 '임시 파일 되돌려줘'라고 하면 원래 자리로 돌려놓아요. "
                   f"{TRASH_KEEP_DAYS}일이 지나면 자동으로 완전히 지워지고, 그때 저장 공간이 확보돼요.\n"
-                  f"지금 바로 공간을 비우려면 '루미 휴지통 비워줘'라고 말해 주세요.")
+                  f"지금 바로 공간을 비우려면 '루미 휴지통 비워줘'라고 하시면 돼요.")
         if skipped_recent or skipped_busy:
             result += (f"\n※ 최근 {_RECENT_SKIP_HOURS}시간 안에 쓰인 파일 {skipped_recent}개와 사용 중인 파일 "
                        f"{skipped_busy}개는 프로그램이 쓰고 있을 수 있어 건너뛰었어요.")
         return result
     except Exception as e:
         print(f"[PC 최적화] 임시 파일 정리 오류: {e}")
-        return "❌ 임시 파일을 정리하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 임시 파일을 정리하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 def restore_temp_files() -> str:
@@ -699,7 +699,7 @@ def restore_temp_files() -> str:
         return result
     except Exception as e:
         print(f"[PC 최적화] 임시 파일 되돌리기 오류: {e}")
-        return "❌ 임시 파일을 되돌리지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 임시 파일을 되돌리지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 def get_temp_trash_status() -> str:
@@ -781,7 +781,7 @@ def analyze_startup_impact() -> str:
         return "\n".join(lines)
     except Exception as e:
         print(f"[PC 최적화] 시작프로그램 부팅 영향 분석 오류: {e}")
-        return "❌ 시작프로그램을 분석하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 시작프로그램을 분석하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 # ─────────────────────────────────────────────
@@ -962,4 +962,4 @@ def list_installed_programs(sort_by: str = "name", top_n: int = 30) -> str:
         return "\n".join(lines)
     except Exception as e:
         print(f"[PC 최적화] 설치 프로그램 목록 조회 오류: {e}")
-        return "❌ 설치 프로그램 목록을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 설치 프로그램 목록을 확인하지 못했습니다. 잠시 후 다시 해 보시면 돼요."

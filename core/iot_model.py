@@ -143,7 +143,7 @@ def validate_room_name(room_name) -> tuple:
     """(정규화된 표시 이름, 에러). 한 줄 짧은 이름만 허용."""
     name = " ".join((room_name or "").split()) if isinstance(room_name, str) else ""
     if not name:
-        return None, "방 이름을 알려주세요."
+        return None, "방 이름을 알려 주시겠어요?"
     if len(name) > MAX_ROOM_NAME_LENGTH:
         return None, f"방 이름이 너무 길어요(최대 {MAX_ROOM_NAME_LENGTH}자)."
     return name, None

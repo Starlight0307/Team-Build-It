@@ -205,7 +205,7 @@ def usable_skills() -> list:
 
 def remove_skill(skill: Skill):
     if not skill.removable:
-        raise ValueError("OpenClaw 폴더의 스킬은 OpenClaw에서 지워주세요.")
+        raise ValueError("OpenClaw 폴더의 스킬은 OpenClaw에서 지우시면 돼요.")
     real = os.path.realpath(skill.base_dir)
     if not real.startswith(os.path.realpath(LUMI_SKILLS_DIR) + os.sep):
         raise ValueError("루미 스킬 폴더 밖이라 지우지 않았어요.")

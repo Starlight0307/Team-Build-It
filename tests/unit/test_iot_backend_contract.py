@@ -263,7 +263,7 @@ def test_assigning_a_host_identified_device_warns_about_ip_changes(tmp_path, mon
     d = MagicMock(); d.alias = "전등"; d.host = "10.0.0.5"; d.device_id = None; d.mac = None
     with patch("plugins.iot_control.kasa.Discover.discover", AsyncMock(return_value={"10.0.0.5": d})):
         out = iot.set_device_room("전등", "거실")
-    assert "IP 주소로 구분해요" in out and "방에서 빼고 다시 넣어주세요" in out
+    assert "IP 주소로 구분해요" in out and "방에서 빼고 다시 넣으시면 돼요" in out
 
 
 def test_assigning_a_device_with_a_stable_id_has_no_warning(tmp_path, monkeypatch):

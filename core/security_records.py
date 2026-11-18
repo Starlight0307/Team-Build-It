@@ -282,7 +282,7 @@ def add_trusted(path, reason="", blocked_names=()):
     """(성공 여부, 안내 문구)."""
     path = (path or "").strip().strip('"')
     if not path:
-        return False, "신뢰할 파일 경로를 알려주세요."
+        return False, "신뢰할 파일 경로를 알려 주시겠어요?"
     blocked = {b.lower() for b in blocked_names}
     try:
         real_base = ntpath.basename(os.path.realpath(path)).lower()
@@ -293,7 +293,7 @@ def add_trusted(path, reason="", blocked_names=()):
         return False, (f"'{ntpath.basename(path)}'은(는) Windows 시스템 프로그램이거나 다른 파일을 대신 실행하는 "
                        "도구라서 신뢰 목록에 넣을 수 없어요 — 넣으면 이 도구로 실행되는 악성 프로그램까지 가려져요.")
     if not os.path.isfile(path):
-        return False, f"'{path}' 파일을 찾지 못했어요. 점검 결과에 나온 경로를 그대로 알려주세요."
+        return False, f"'{path}' 파일을 찾지 못했어요. 점검 결과에 나온 경로를 그대로 알려 주시겠어요?"
     digest = file_sha256(path)
     if not digest:
         return False, f"'{path}' 파일을 읽지 못해(권한 부족 또는 너무 큰 파일) 신뢰 목록에 넣지 못했어요."
@@ -306,16 +306,16 @@ def add_trusted(path, reason="", blocked_names=()):
             entries = [e for e in entries if _norm(e["path"]) != _norm(path)]
             if len(entries) >= MAX_TRUSTED:
                 # 오래된 것을 자동으로 밀어내지 않는다 — 사용자가 직접 빼게 한다
-                return False, f"신뢰 목록은 최대 {MAX_TRUSTED}개까지예요. 필요 없는 항목을 먼저 빼 주세요."
+                return False, f"신뢰 목록은 최대 {MAX_TRUSTED}개까지예요. 필요 없는 항목을 먼저 빼시면 돼요."
             # reason은 사용자에게 보여주는 메모일 뿐 판정에 절대 쓰지 않는다
             entries.append({"path": path, "sha256": digest,
                             "added": datetime.now().strftime("%Y-%m-%d %H:%M"), "reason": str(reason or "")[:200]})
             _write_json(trust_file, entries)
     except RecordLockTimeout:
-        return False, "다른 루미 창이 신뢰 목록을 바꾸고 있어서 저장하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return False, "다른 루미 창이 신뢰 목록을 바꾸고 있어서 저장하지 못했어요. 잠시 후 다시 해 보시면 돼요."
     except OSError as e:
         print(f"[신뢰 목록] 저장 오류: {e}")
-        return False, "신뢰 목록을 저장하지 못했어요(디스크·권한 문제). 잠시 후 다시 시도해주세요."
+        return False, "신뢰 목록을 저장하지 못했어요(디스크·권한 문제). 잠시 후 다시 해 보시면 돼요."
     msg = (f"'{path}'을(를) 신뢰 목록에 넣었어요. 앞으로 보안 점검에서 이 파일은 의심 항목으로 알리지 않아요. "
            "파일 내용이 바뀌면(업데이트·바꿔치기) 다시 알려요.")
     return True, msg + (f"\n※ {notice}" if notice else "")
@@ -337,7 +337,7 @@ def remove_trusted(path):
             _write_json(trust_file, kept)
             return True, notice
     except RecordLockTimeout:
-        return None, "다른 루미 창이 신뢰 목록을 바꾸고 있어서 저장하지 못했어요. 잠시 후 다시 시도해 주세요."
+        return None, "다른 루미 창이 신뢰 목록을 바꾸고 있어서 저장하지 못했어요. 잠시 후 다시 해 보시면 돼요."
     except OSError as e:
         print(f"[신뢰 목록] 저장 오류: {e}")
         return None, "신뢰 목록을 저장하지 못했어요(디스크·권한 문제)."

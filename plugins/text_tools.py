@@ -286,10 +286,10 @@ TOOL_SCHEMAS = {
 def _validate_text(text: str) -> str | None:
     text = (text or "").strip()
     if not text:
-        return "⚠️ 요약/번역할 내용을 알려주세요."
+        return "⚠️ 요약/번역할 내용을 알려 주시겠어요?"
     if len(text) > _MAX_TEXT_LENGTH:
         return (f"⚠️ 텍스트가 너무 길어요({len(text)}자, 최대 {_MAX_TEXT_LENGTH}자) — "
-                "조금 나눠서 다시 요청해주세요.")
+                "조금 나눠서 다시 요청하시면 돼요.")
     return None
 
 
@@ -319,7 +319,7 @@ def summarize_text(text: str, length: str = "medium") -> str:
             summary = _chat_once(system_prompt, user_prompt)
         except Exception as e:
             print(f"[텍스트 도구] 요약 오류: {e}")
-            return "⚠️ 요약 중 오류가 발생했어요. 잠시 후 다시 시도해주세요."
+            return "⚠️ 요약 중 오류가 발생했어요. 잠시 후 다시 해 보시면 돼요."
         # 최소 정합성 확인(모듈 docstring 안전장치 2, 2026-09-29 검수로 보강):
         # (1) 원문보다 짧아야 하고, (2) 빈 응답/거부 표현/원문 베끼기가 아니어야
         # 한다 — 둘 다 아니면 실패로 보고 한 번 더 시도한다.
@@ -330,7 +330,7 @@ def summarize_text(text: str, length: str = "medium") -> str:
                 "\n\n(다시 요청합니다 — 반드시 원문보다 훨씬 짧게 핵심만 요약하세요. "
                 "요약할 수 없다는 말 대신 실제로 요약을 시도하세요.)"
             )
-    return "⚠️ 요약에 실패했어요(원문보다 짧게 줄이지 못했어요) — 잠시 후 다시 시도해주세요."
+    return "⚠️ 요약에 실패했어요(원문보다 짧게 줄이지 못했어요) — 잠시 후 다시 해 보시면 돼요."
 
 
 def translate_text(text: str, target_language: str) -> str:
@@ -342,7 +342,7 @@ def translate_text(text: str, target_language: str) -> str:
 
     target_language = (target_language or "").strip()
     if not target_language:
-        return "⚠️ 어떤 언어로 번역할지 알려주세요."
+        return "⚠️ 어떤 언어로 번역할지 알려 주시겠어요?"
     # 안전장치 3(모듈 docstring 참고): 언어 이름은 짧고 한 줄이어야 정상이다 —
     # 이 범위를 벗어나면 프롬프트 주입 시도일 가능성이 높다고 보고 거부한다.
     if len(target_language) > _MAX_LANGUAGE_LENGTH or "\n" in target_language:
@@ -363,7 +363,7 @@ def translate_text(text: str, target_language: str) -> str:
             translated = _chat_once(system_prompt, user_prompt)
         except Exception as e:
             print(f"[텍스트 도구] 번역 오류: {e}")
-            return "⚠️ 번역 중 오류가 발생했어요. 잠시 후 다시 시도해주세요."
+            return "⚠️ 번역 중 오류가 발생했어요. 잠시 후 다시 해 보시면 돼요."
         # 최소 정합성 확인(2026-09-29 검수로 보강): 빈 응답/거부 표현은 항상
         # 실패. "원문과 완전히 동일"은 원문이 충분히 길 때만 실패로 본다.
         identical = translated.strip() == text.strip()
@@ -375,7 +375,7 @@ def translate_text(text: str, target_language: str) -> str:
                 f"\n\n(다시 요청합니다 — 반드시 {target_language}로 실제로 번역하세요. "
                 "원문을 그대로 반복하거나 번역할 수 없다고 답하면 안 됩니다.)"
             )
-    return f"⚠️ {target_language}로 번역하지 못했어요 — 잠시 후 다시 시도해주세요."
+    return f"⚠️ {target_language}로 번역하지 못했어요 — 잠시 후 다시 해 보시면 돼요."
 
 
 
@@ -464,16 +464,16 @@ def _load_clipboard_for(task: str):
     """(text, error). error가 있으면 호출부는 그 문자열을 그대로 반환한다."""
     clip = _read_clipboard_text()
     if clip is None:
-        return None, "⚠️ 클립보드를 읽지 못했어요. 직접 글을 붙여넣어 요청해주세요."
+        return None, "⚠️ 클립보드를 읽지 못했어요. 직접 글을 붙여넣어 요청하시면 돼요."
     if not clip:
-        return None, "⚠️ 클립보드에 텍스트가 없어요(이미지/파일이거나 비어 있어요). 먼저 텍스트를 복사해주세요."
+        return None, "⚠️ 클립보드에 텍스트가 없어요(이미지/파일이거나 비어 있어요). 먼저 텍스트를 복사하시면 돼요."
     print(f"\n📋 [텍스트 도구] 클립보드 {task}: {len(clip)}자")  # 내용은 로그에 남기지 않음
     if _looks_sensitive(clip):
         return None, ("⚠️ 클립보드 내용이 비밀번호나 인증 키처럼 보여서 처리하지 않았어요. "
-                      "정말 요약/번역하려는 글이라면 직접 붙여넣어 요청해주세요.")
+                      "정말 요약/번역하려는 글이라면 직접 붙여넣어 요청하시면 돼요.")
     if len(clip) > _MAX_TEXT_LENGTH:
         return None, (f"⚠️ 클립보드 내용이 너무 길어요({len(clip)}자, 최대 {_MAX_TEXT_LENGTH}자) — "
-                      "일부만 복사해서 다시 요청해주세요.")
+                      "일부만 복사해서 다시 요청하시면 돼요.")
     return clip, None
 
 
@@ -527,7 +527,7 @@ _MAX_EMAIL_BODY_LENGTH = 3000
 _MIN_EMAIL_BODY_LENGTH = 10
 _EMAIL_DRAFT_HEADER = "[✉️ 메일 초안]\n"
 _EMAIL_DRAFT_FOOTER = ("(📌 AI가 만든 메일 초안이에요. 받는 사람과 날짜·이름·금액 같은 사실관계를 "
-                       "확인한 뒤 직접 보내주세요. 메일은 보내지 않았어요)")
+                       "확인한 뒤 직접 보내시면 돼요. 메일은 보내지 않았어요)")
 _EMAIL_OPEN_HEADER = "[✉️ 메일 앱 열기]\n"
 
 # 메일 앱으로 여는 건 "draft_email이 검증을 통과시킨 마지막 초안"만 쓴다. open_email_draft가
@@ -671,7 +671,7 @@ def draft_email(purpose: str, recipient_name: str = "", tone: str = "정중하�
     purpose = (purpose or "").strip()
     print(f"\n✉️ [텍스트 도구] 메일 초안: 용건 {len(purpose)}자")  # 내용은 로그에 남기지 않음
     if not purpose:
-        return "⚠️ 어떤 내용의 메일인지 알려주세요."
+        return "⚠️ 어떤 내용의 메일인지 알려 주시겠어요?"
     if len(purpose) > _MAX_EMAIL_PURPOSE_LENGTH:
         return (f"⚠️ 용건이 너무 길어요({len(purpose)}자, 최대 {_MAX_EMAIL_PURPOSE_LENGTH}자) — "
                 "핵심만 간단히 알려 주시면 작성할 수 있어요.")
@@ -697,7 +697,7 @@ def draft_email(purpose: str, recipient_name: str = "", tone: str = "정중하�
             raw = _chat_once(_EMAIL_SYSTEM_PROMPT, frame)
         except Exception as e:
             print(f"[텍스트 도구] 메일 초안 오류: {type(e).__name__}")
-            return "⚠️ 메일 초안을 만드는 중 오류가 발생했어요. 잠시 후 다시 시도해주세요."
+            return "⚠️ 메일 초안을 만드는 중 오류가 발생했어요. 잠시 후 다시 해 보시면 돼요."
         parsed = _parse_email_draft(raw)
         if (parsed and not any(m in raw for m in _EMAIL_REFUSAL_MARKERS)
                 and not _fabricated_facts_in_draft(raw, allowed_source)):
@@ -708,7 +708,7 @@ def draft_email(purpose: str, recipient_name: str = "", tone: str = "정중하�
                 # 지금 계정의 초안으로 저장하지도, 보여주지도 않는다(ChatGPT 3라운드 지적).
                 if _current_user_id != request_owner:
                     return ("⚠️ 메일 초안을 만드는 동안 계정이 바뀌어서 초안을 버렸어요. "
-                            "다시 요청해주세요.")
+                            "다시 요청하시면 돼요.")
                 _last_draft = (subject, body, time.monotonic(), request_owner)
             return f"{_EMAIL_DRAFT_HEADER}제목: {subject}\n\n{body}\n\n{_EMAIL_DRAFT_FOOTER}"
         if attempt < _MAX_RETRIES:
@@ -717,7 +717,7 @@ def draft_email(purpose: str, recipient_name: str = "", tone: str = "정중하�
             frame += ("\n\n(다시 요청합니다 — 첫 줄은 반드시 '제목: ...' 형식, 그 다음 빈 줄과 "
                       "본문. <용건>에 없는 날짜/숫자/요일/오전·오후/주소/연락처/기관 이름은 쓰지 "
                       "말고 [날짜]처럼 비워 두세요.)")
-    return "⚠️ 메일 초안을 만들지 못했어요 — 용건을 조금 더 구체적으로 적어서 다시 요청해주세요."
+    return "⚠️ 메일 초안을 만들지 못했어요 — 용건을 조금 더 구체적으로 적어서 다시 요청하시면 돼요."
 
 
 # ── 메일 앱으로 열기(mailto:) ─────────────────────────────────────────
@@ -728,7 +728,7 @@ _MAX_OPEN_SUBJECT_LENGTH = 200
 _MAX_OPEN_BODY_LENGTH = _MAX_EMAIL_BODY_LENGTH
 # RFC 6068의 한계가 아니라 LUMI의 플랫폼 호환성 정책이다. 길이는 percent-encoding "후"
 # URL 전체로 잰다 — 한글은 글자당 %XX%XX%XX(9자)라 본문이 200자만 넘어도 이 한도를 넘긴다.
-_MAILTO_TOO_LONG_MSG = "⚠️ 내용이 너무 길어서 메일 앱으로 넘기지 못했어요. 초안을 복사해서 붙여넣어 주세요."
+_MAILTO_TOO_LONG_MSG = "⚠️ 내용이 너무 길어서 메일 앱으로 넘기지 못했어요. 초안을 복사해서 붙여넣으시면 돼요."
 # 주소는 단순 ASCII 한 개만 허용한다(RFC 전체 문법/국제화 주소(IDN)는 일부러 미지원 —
 # 목적이 "많이 허용"이 아니라 "안전하게 메일 앱을 여는 것"이라서).
 _SIMPLE_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
@@ -743,7 +743,7 @@ def _build_mailto_url(to: str, subject: str, body: str):
     subject = " ".join((subject or "").split())
     body = (body or "").replace("\r\n", "\n").strip()
     if not subject and not body:
-        return None, "⚠️ 메일 앱에 채울 제목이나 내용이 없어요. 먼저 메일 초안을 만들어주세요."
+        return None, "⚠️ 메일 앱에 채울 제목이나 내용이 없어요. 먼저 메일 초안을 만드시면 돼요."
     if len(subject) > _MAX_OPEN_SUBJECT_LENGTH or len(body) > _MAX_OPEN_BODY_LENGTH:
         return None, _MAILTO_TOO_LONG_MSG
     query = []
@@ -772,7 +772,7 @@ def open_email_draft(to: str = "") -> str:
         owner = _current_user_id
     if (draft is None or draft[3] != owner
             or time.monotonic() - draft[2] > _DRAFT_TTL_SECONDS):
-        return "⚠️ 열 메일 초안이 없어요. 먼저 '~한 내용으로 메일 써줘'처럼 초안을 만들어주세요."
+        return "⚠️ 열 메일 초안이 없어요. 먼저 '~한 내용으로 메일 써줘'처럼 초안을 만드시면 돼요."
     subject, body = draft[0], draft[1]
     print(f"\n✉️ [텍스트 도구] 메일 앱 열기: 제목 {len(subject)}자, 본문 {len(body)}자")
     url, error = _build_mailto_url(to, subject, body)
@@ -789,11 +789,11 @@ def open_email_draft(to: str = "") -> str:
         _open_mailto(url)
     except Exception as e:
         print(f"[텍스트 도구] 메일 앱 열기 오류: {type(e).__name__}")
-        return "⚠️ 기본 메일 앱을 열지 못했어요. 위 초안을 복사해서 직접 붙여넣어 주세요."
-    to_label = (to or "").strip() or "비어 있음 — 직접 입력해주세요"
+        return "⚠️ 기본 메일 앱을 열지 못했어요. 위 초안을 복사해서 직접 붙여넣으시면 돼요."
+    to_label = (to or "").strip() or "비어 있음 — 직접 입력하시면 돼요"
     # os.startfile/open/xdg-open은 "열기 요청"만 하고 실제로 작성 창이 떴는지는 확인할 수 없다.
     note = ("" if body_included else
-            " 본문이 너무 길어서 받는 사람과 제목만 채웠어요 — 위 초안 본문을 복사해서 붙여넣어 주세요.")
+            " 본문이 너무 길어서 받는 사람과 제목만 채웠어요 — 위 초안 본문을 복사해서 붙여넣으시면 돼요.")
     return (f"{_EMAIL_OPEN_HEADER}'{subject}' 초안으로 메일 앱에서 작성 창 열기를 요청했어요"
             f"(받는 사람: {to_label}).{note} 메일 앱 설정에 따라 열리지 않을 수도 있어요. "
-            "아직 보내지 않았어요 — 내용을 확인하고 메일 앱에서 직접 '보내기'를 눌러주세요.")
+            "아직 보내지 않았어요 — 내용을 확인하고 메일 앱에서 직접 '보내기'를 누르시면 돼요.")

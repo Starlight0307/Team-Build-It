@@ -41,7 +41,7 @@ def test_add_note_basic(isolated_notes):
 
 
 def test_add_note_empty_text_rejected(isolated_notes):
-    assert "알려주세요" in add_note("   ")
+    assert "알려 주시겠어요" in add_note("   ")
 
 
 def test_add_note_strips_newlines(isolated_notes):
@@ -126,7 +126,7 @@ def test_search_multiple_matches_is_not_an_error(isolated_notes):
 
 
 def test_search_empty_keyword_asks_for_specifics(isolated_notes):
-    assert "알려주세요" in search_note("")
+    assert "알려 주시겠어요" in search_note("")
 
 
 def test_search_results_are_sorted_newest_first(isolated_notes):
@@ -208,7 +208,7 @@ def test_delete_numeric_lookup_ignores_note_whose_text_is_that_digit(isolated_no
 
 
 def test_delete_empty_item_asks_for_specifics(isolated_notes):
-    assert "알려주세요" in delete_note("")
+    assert "알려 주시겠어요" in delete_note("")
 
 
 # ── update_note(메모 수정, 2026-09-29 신규 — 오타 하나 고치려고 지우고
@@ -247,7 +247,7 @@ def test_update_preserves_seq_and_date(isolated_notes):
 def test_update_empty_new_text_rejected(isolated_notes):
     add_note("원래 메모")
     result = update_note("1", "")
-    assert "알려주세요" in result
+    assert "알려 주시겠어요" in result
     assert "원래 메모" in list_notes()  # 바뀌지 않았어야 함
 
 

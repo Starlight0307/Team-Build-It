@@ -229,7 +229,7 @@ def search_files(keyword: str = "", file_type: str = "", period: str = "",
 
     if folder:
         if not os.path.isdir(folder):
-            return f"'{folder}' 폴더를 찾을 수 없어요. 정확한 경로를 알려주세요."
+            return f"'{folder}' 폴더를 찾을 수 없어요. 정확한 경로를 알려 주시겠어요?"
         roots = [folder]
     else:
         roots = _default_dirs()
@@ -237,7 +237,7 @@ def search_files(keyword: str = "", file_type: str = "", period: str = "",
             return "검색할 기본 폴더(다운로드/문서/바탕화면 등)를 찾지 못했어요."
 
     if not (keyword or exts or rng):
-        return "⚠️ 이름 단서, 파일 종류, 기간 중 하나 이상을 알려주세요. (예: '지난주에 받은 PDF 찾아줘')"
+        return "⚠️ 이름 단서, 파일 종류, 기간 중 하나 이상을 알려 주시겠어요? (예: '지난주에 받은 PDF 찾아줘')"
 
     try:
         kw = keyword.lower()
@@ -294,7 +294,7 @@ def search_files(keyword: str = "", file_type: str = "", period: str = "",
         return "\n".join(lines)
     except Exception as e:
         print(f"[파일 검색] 오류: {e}")
-        return "❌ 파일을 검색하지 못했습니다. 잠시 후 다시 시도해주세요."
+        return "❌ 파일을 검색하지 못했습니다. 잠시 후 다시 해 보시면 돼요."
 
 
 search_files.last = _last_search

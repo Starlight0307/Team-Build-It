@@ -95,7 +95,7 @@ def set_current_user(user_id: str):
 
 def _require_login() -> str | None:
     if _current_user_id == "guest":
-        return "❌ 할 일 목록은 로그인한 사용자만 사용할 수 있어요. 먼저 로그인해주세요."
+        return "❌ 할 일 목록은 로그인한 사용자만 사용할 수 있어요. 로그인하면 바로 쓸 수 있어요."
     return None
 
 
@@ -303,7 +303,7 @@ def add_todo(text: str, due_date: str = "", repeat_rule: str = "", priority: str
     # 조용히 변형하지 않고 거부 후 다시 말해달라고 한다.
     text = (text or "").strip().replace("\n", " ").replace("\r", " ")
     if not text:
-        return "⚠️ 어떤 할 일을 추가할지 알려주세요."
+        return "⚠️ 어떤 할 일을 추가할지 알려 주시겠어요?"
     if len(text) > _MAX_TEXT_LENGTH:
         return f"⚠️ 할 일 내용이 너무 길어요({len(text)}자, 최대 {_MAX_TEXT_LENGTH}자) — 조금 줄여서 알려 주시면 추가할 수 있어요."
 
@@ -316,7 +316,7 @@ def add_todo(text: str, due_date: str = "", repeat_rule: str = "", priority: str
             # 실존하지 않는 날짜("2026-02-30")를 똑같이 ValueError로 묶어서
             # 던지므로 이 둘을 코드로 구분해서 다른 문구를 주는 건 과함 — 대신
             # 문구 자체를 "형식"이 아니라 "실제 날짜"까지 포괄하도록 넓혔다.
-            return "⚠️ 마감일이 올바르지 않습니다. 'YYYY-MM-DD' 형식의 실제 날짜를 입력해주세요(보통은 코드가 자동으로 맞춰줍니다)."
+            return "⚠️ 마감일이 올바르지 않습니다. 'YYYY-MM-DD' 형식의 실제 날짜를 입력하시면 돼요(보통은 코드가 자동으로 맞춰줍니다)."
     else:
         due_date = None
 
@@ -328,11 +328,11 @@ def add_todo(text: str, due_date: str = "", repeat_rule: str = "", priority: str
         # 계산하는 기준점이 반드시 필요하다 — 기준점 없이 "매일 반복"만 받으면
         # 다음 회차를 언제로 잡아야 할지 코드가 추측해야 하는데, 이 프로젝트는
         # 추측 대신 거부하고 다시 말해달라고 하는 쪽을 일관되게 택해왔다.
-        return "⚠️ 반복 할 일은 언제부터 시작할지(마감일)도 함께 알려주세요."
+        return "⚠️ 반복 할 일은 언제부터 시작할지(마감일)도 함께 알려 주시겠어요?"
     repeat_rule = repeat_rule or None
     priority = (priority or "").strip().lower() or "medium"
     if priority not in PRIORITIES:
-        return "⚠️ 우선순위는 높음/보통/낮음 중 하나로 골라주세요."
+        return "⚠️ 우선순위는 높음/보통/낮음 중 하나로 고르시면 돼요."
     # ChatGPT 검수 지적(2026-10-01, P1): monthly 반복은 "원래 며칠에
     # 고정된 반복인지"를 별도로 기억해둬야 월말 자르기가 누적되지 않는다
     # (_advance_date 문서 참고) — 처음 등록한 due_date의 day를 anchor로
@@ -438,7 +438,7 @@ def _find_todo(items: list, item: str, filter_done: bool | None = False):
     갱신할 것)."""
     item = (item or "").strip()
     if not item:
-        return None, "⚠️ 어떤 할 일인지 번호나 내용을 알려주세요."
+        return None, "⚠️ 어떤 할 일인지 번호나 내용을 알려 주시겠어요?"
 
     pool = items if filter_done is None else [t for t in items if t["done"] == filter_done]
 
@@ -455,7 +455,7 @@ def _find_todo(items: list, item: str, filter_done: bool | None = False):
                 return None, f"⚠️ {seq}번은 이미 완료 처리된 할 일이에요."
             if filter_done is True and not already["done"]:
                 return None, f"⚠️ {seq}번은 아직 완료되지 않은 할 일이에요."
-        return None, f"⚠️ {seq}번 할 일을 찾을 수 없어요. list_todos로 먼저 확인해주세요."
+        return None, f"⚠️ {seq}번 할 일을 찾을 수 없어요. list_todos로 먼저 확인해 보시면 돼요."
 
     matches = [t for t in pool if item.lower() in t["text"].lower()]
     if not matches:
@@ -572,11 +572,11 @@ def update_todo(seq: int, text: str = None, due_date: str = None, priority: str 
             try:
                 datetime.strptime(due_date, "%Y-%m-%d")
             except ValueError:
-                return "⚠️ 마감일이 올바르지 않습니다. 'YYYY-MM-DD' 형식의 실제 날짜를 입력해주세요."
+                return "⚠️ 마감일이 올바르지 않습니다. 'YYYY-MM-DD' 형식의 실제 날짜를 입력하시면 돼요."
         elif found.get("repeat_rule"):
-            return "⚠️ 반복 할 일은 마감일을 지울 수 없어요. 반복이 필요 없으면 지우고 새로 추가해 주세요."
+            return "⚠️ 반복 할 일은 마감일을 지울 수 없어요. 반복이 필요 없으면 지우고 새로 추가하시면 돼요."
     if priority is not None and priority not in PRIORITIES:
-        return "⚠️ 우선순위는 높음/보통/낮음 중 하나로 골라주세요."
+        return "⚠️ 우선순위는 높음/보통/낮음 중 하나로 고르시면 돼요."
     if text is not None:
         found["text"] = text
     if due_date is not None:

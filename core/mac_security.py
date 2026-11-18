@@ -295,8 +295,8 @@ _HIDDEN_COMMAND_INFO = (
     "🕵️ 숨긴 명령 자동 실행",
     "터미널 명령으로 인터넷에서 파일을 받아 바로 실행하거나, 내용을 알아보기 어렵게 인코딩한 명령을 돌리도록 "
     "등록돼 있습니다. 정상 프로그램은 거의 쓰지 않고 Mac 악성코드가 자주 쓰는 방식입니다.",
-    "본인이 직접 만든 자동 실행이 아니라면 이 설정 파일을 다른 곳으로 옮겨 두고 Mac을 다시 시작해 보세요. "
-    "확실하지 않으면 지우기 전에 전문가에게 문의하세요."
+    "본인이 직접 만든 자동 실행이 아니라면 이 설정 파일을 다른 곳으로 옮겨 두고 Mac을 다시 시작해 보시면 돼요. "
+    "확실하지 않으면 지우기 전에 전문가에게 문의하시는 게 좋아요."
 )
 _AUTORUN_LOCATION_INFO = (
     "🔁 Mac을 켤 때 자동으로 실행되는 프로그램",
@@ -304,7 +304,7 @@ _AUTORUN_LOCATION_INFO = (
     "공용 폴더(/Users/Shared)입니다. 게임 런처처럼 정상 프로그램이 공용 폴더에 설치되기도 하지만, "
     "본인이 설치한 게 아니라면 악성 프로그램이 재시동 후에도 살아남으려는 시도일 수 있습니다.",
     "설정 파일(.plist)이 있는 폴더를 Finder로 열어 정체를 확인하고, 모르는 항목이면 다른 곳으로 옮겨 둔 뒤 "
-    "Mac을 다시 시작하세요. 확실하지 않으면 함부로 지우지 마세요."
+    "Mac을 다시 시작하시는 게 좋아요. 확실하지 않으면 함부로 지우지 마세요."
 )
 _HIDDEN_DIR_INFO = (
     "🙈 숨김 폴더의 서명 없는 프로그램",
@@ -419,7 +419,7 @@ def classify_autoruns(items, trusted=_never_trusted):
         command = " ".join(shlex.quote(a) if (" " in a and not a.startswith("-")) else a for a in argv)
         line = f"  - [{source}] {name} → {command}"
         if any(h in (name + " " + command).lower() for h in REMOTE_CONTROL_HINTS):
-            line += " (원격 제어 프로그램 — 직접 설치한 게 아니라면 확인하세요)"
+            line += " (원격 제어 프로그램 — 직접 설치한 게 아니라면 확인하시는 게 좋아요)"
         severity, alert = autorun_judgment(name, argv, sig_lookup)
         payload = autorun_payload(argv)
         if severity and not hidden_command(argv) and trusted(payload):
@@ -549,13 +549,13 @@ _IMPERSONATION_INFO = (
     "macOS 핵심 프로그램과 이름이 같지만, macOS가 보호하는 시스템 폴더가 아닌 곳에서 실행되고 있습니다. "
     "악성코드가 활성 상태 보기에서 눈에 띄지 않으려고 자주 쓰는 수법입니다.",
     "활성 상태 보기에서 해당 프로세스를 두 번 클릭 → '열린 파일 및 포트'로 위치를 확인하고, "
-    "백신으로 그 파일을 검사하세요. 확실하지 않으면 함부로 지우지 마세요."
+    "백신으로 그 파일을 검사하시는 게 좋아요. 확실하지 않으면 함부로 지우지 마세요."
 )
 _APP_IMPERSONATION_INFO = (
     "🎭 프로그램 이름 사칭",
     "잘 알려진 프로그램(브라우저, VS Code 등)과 이름이 같지만, 그 회사의 정상 서명이 없습니다. "
     "악성코드가 정상 프로그램처럼 보이려고 이름을 따라 하는 경우가 많습니다.",
-    "활성 상태 보기에서 위치를 확인하고, 응용 프로그램 폴더의 정식 앱이 아니라면 백신으로 검사하세요."
+    "활성 상태 보기에서 위치를 확인하고, 응용 프로그램 폴더의 정식 앱이 아니라면 백신으로 검사하시는 게 좋아요."
 )
 _TEMP_NETWORK_INFO = (
     "📁 임시 폴더 실행 + 외부 통신",
@@ -901,7 +901,7 @@ def check_builtin_protection():
         out.add("ok", "시스템 무결성 보호(SIP) 켜짐 — 악성코드가 macOS 시스템 파일을 바꾸지 못해요.")
     elif "status: disabled" in sip_text:
         out.add("critical", "시스템 무결성 보호(SIP)가 꺼져 있어요 — macOS 시스템 파일이 보호되지 않아요. "
-                            "복구 모드에서 'csrutil enable'로 켜 주세요.")
+                            "복구 모드에서 'csrutil enable'로 켜시면 돼요.")
     elif "custom configuration" in sip_text or "status: enabled" in sip_text:
         out.add("warning", "시스템 무결성 보호(SIP)가 일부만 켜져 있어요(사용자 지정 구성) — 일부 보호가 꺼져 있을 수 있어요.")
     else:
@@ -915,7 +915,7 @@ def check_builtin_protection():
         out.add("info", "FileVault 암호화(또는 해제)가 진행 중이에요.")
     elif "filevault is off" in fv_text:
         out.add("warning", "FileVault(디스크 암호화)가 꺼져 있어요 — Mac을 잃어버리거나 도난당하면 파일을 그대로 꺼내 볼 수 "
-                           "있어요. 시스템 설정 > 개인정보 보호 및 보안 > FileVault에서 켜 주세요.")
+                           "있어요. 시스템 설정 > 개인정보 보호 및 보안 > FileVault에서 켜시면 돼요.")
     else:
         out.add("unknown", "FileVault 상태를 확인하지 못했어요.")
 
@@ -933,10 +933,10 @@ def check_builtin_protection():
     elif age >= XPROTECT_ALERT_DAYS:
         out.add("critical", f"XProtect(Mac 기본 백신) 정의가 {age}일 동안 업데이트되지 않았어요{ver} — 최신 악성코드를 "
                             "못 잡을 수 있어요. 시스템 설정 > 일반 > 소프트웨어 업데이트 > 자동 업데이트에서 "
-                            "'보안 응답 및 시스템 파일 설치'를 켜 주세요.")
+                            "'보안 응답 및 시스템 파일 설치'를 켜시면 돼요.")
     elif age >= XPROTECT_WARN_DAYS:
         out.add("warning", f"XProtect(Mac 기본 백신) 정의가 {age}일 전에 마지막으로 업데이트됐어요{ver} — 업데이트 설정을 "
-                           "확인해 주세요.")
+                           "확인해 보시면 돼요.")
     else:
         out.add("ok", f"XProtect(Mac 기본 백신) 최신 상태{ver} (마지막 업데이트 {age}일 전)")
     out.add("info", "Mac 기본 백신(XProtect)은 탐지 기록을 따로 보여주지 않아요 — 악성 앱을 발견하면 macOS가 바로 "
@@ -994,7 +994,7 @@ def check_update_status():
         names = ", ".join(minor)
         if waited is not None and waited >= UPDATE_ALERT_DAYS:
             out.add("critical", f"설치할 macOS 보안 업데이트가 있어요: {names}{wait_text}. 보안 패치가 빠져 있을 가능성이 "
-                                "높아요. 시스템 설정 > 일반 > 소프트웨어 업데이트에서 설치해 주세요.")
+                                "높아요. 시스템 설정 > 일반 > 소프트웨어 업데이트에서 설치하시면 돼요.")
         elif waited is not None and waited >= UPDATE_WARN_DAYS:
             out.add("warning", f"설치할 macOS 업데이트가 있어요: {names}{wait_text}. 설치를 권장해요.")
         else:
@@ -1013,7 +1013,7 @@ def check_update_status():
         out.add("warning", f"{checked}일 동안 업데이트 확인이 되지 않았어요 — 위 결과가 오래된 정보일 수 있어요.")
     if prefs.get("CriticalUpdateInstall") is False or prefs.get("ConfigDataInstall") is False:
         out.add("warning", "'보안 응답 및 시스템 파일 설치'가 꺼져 있어요 — XProtect 같은 보안 정의가 자동으로 "
-                           "업데이트되지 않아요. 소프트웨어 업데이트 > 자동 업데이트에서 켜 주세요.")
+                           "업데이트되지 않아요. 소프트웨어 업데이트 > 자동 업데이트에서 켜시면 돼요.")
     if prefs.get("AutomaticallyInstallMacOSUpdates") is False:
         out.add("info", "macOS 업데이트 자동 설치가 꺼져 있어요 — 직접 설치해야 해요.")
     return out.result(title)
@@ -1059,7 +1059,7 @@ def scan_shared_folders():
         label = f"'{s['name']}' ({s['path']})"
         if guest and smb_running:
             out.add("warning", f"{label} — 손님(비밀번호 없이) 접근 허용{', 쓰기 가능' if writable else ''}. 같은 와이파이의 "
-                               "누구나 열어볼 수 있어요. 시스템 설정 > 일반 > 공유 > 파일 공유에서 손님 접근을 꺼 주세요.")
+                               "누구나 열어볼 수 있어요. 시스템 설정 > 일반 > 공유 > 파일 공유에서 손님 접근을 끄시면 돼요.")
         elif guest:
             out.add("info", f"{label} — 손님 접근이 허용돼 있지만 파일 공유가 꺼져 있어 지금은 안전해요.")
         else:

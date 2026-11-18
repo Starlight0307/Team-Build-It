@@ -62,7 +62,7 @@ def test_discovery_error_is_handled_gracefully(mock_discover):
 # ── control_iot_device: 입력 검증 ──────────────────────────────────
 
 def test_empty_device_name_rejected():
-    assert "이름을 알려주세요" in control_iot_device("", "on")
+    assert "이름을 알려 주시겠어요" in control_iot_device("", "on")
 
 
 def test_invalid_action_rejected():

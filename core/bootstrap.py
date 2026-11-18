@@ -165,7 +165,7 @@ def _install_with_window(missing: list) -> tuple:
     frame = ttk.Frame(root, padding=24); frame.pack()
     ttk.Label(frame, text="처음 실행에 필요한 구성요소를 설치하고 있어요.",
               font=_ui_font(13, bold=True)).pack(anchor="w")
-    ttk.Label(frame, text="인터넷 속도에 따라 몇 분 걸릴 수 있습니다. 창을 닫지 말고 기다려 주세요.",
+    ttk.Label(frame, text="인터넷 속도에 따라 몇 분 걸릴 수 있습니다. 창을 닫지 말고 기다리시면 돼요.",
               font=_ui_font(10)).pack(anchor="w", pady=(4, 12))
     ttk.Label(frame, text="설치 항목: " + ", ".join(_dist_name(r) for r in missing),
               font=_ui_font(10), wraplength=420).pack(anchor="w", pady=(0, 12))
@@ -264,7 +264,7 @@ def ensure_requirements() -> bool:
     if sys.version_info < MIN_PYTHON:
         _show_error(f"루미는 Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} 이상이 필요합니다.\n"
                     f"현재 버전: {sys.version.split()[0]}\n"
-                    "python.org에서 최신 Python을 설치한 뒤 다시 실행해 주세요.")
+                    "python.org에서 최신 Python을 설치한 뒤 다시 실행하시면 돼요.")
         return False
 
     try:
@@ -297,7 +297,7 @@ def ensure_requirements() -> bool:
     if not ok:
         _show_error(
             "필요한 구성요소를 자동으로 설치하지 못했습니다.\n"
-            "인터넷 연결을 확인한 뒤 다시 실행해 주세요.\n\n"
+            "인터넷 연결을 확인한 뒤 다시 실행하시면 돼요.\n\n"
             f"--- 상세 내용 ---\n{output}"
         )
         return False

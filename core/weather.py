@@ -228,7 +228,7 @@ def detect_location() -> dict:
             return {"name": name, "lat": lat, "lon": lon, "source": "os"}
     found = _ip_location()
     if not found:
-        raise WeatherError("현재 위치를 찾지 못했어요. 인터넷 연결을 확인하거나 지역을 직접 입력해 주세요.")
+        raise WeatherError("현재 위치를 찾지 못했어요. 인터넷 연결을 확인하거나 지역을 직접 입력하시면 돼요.")
     lat, lon, city = found
     name = nearest_korean_city(lat, lon) or _english_city(city) or f"{lat:.2f}, {lon:.2f}"
     return {"name": name, "lat": lat, "lon": lon, "source": "ip"}
@@ -248,7 +248,7 @@ def fetch_weather(city: str, coords: tuple = None) -> dict:
     except WeatherError:
         raise
     except Exception as e:
-        raise WeatherError("날씨 정보를 가져오지 못했어요. 인터넷 연결을 확인해 주세요.") from e
+        raise WeatherError("날씨 정보를 가져오지 못했어요. 인터넷 연결을 확인해 보시면 돼요.") from e
     desc, day_icon, night_icon = _WMO.get(int(cur.get("weather_code", -1)), ("알 수 없음", "🌡️", "🌡️"))
     return {
         "city": name,
@@ -315,7 +315,7 @@ def fetch_forecast(city: str, coords: tuple = None, days: int = 7) -> list:
     except WeatherError:
         raise
     except Exception as e:
-        raise WeatherError("날씨 예보를 가져오지 못했어요. 인터넷 연결을 확인해 주세요.") from e
+        raise WeatherError("날씨 예보를 가져오지 못했어요. 인터넷 연결을 확인해 보시면 돼요.") from e
 
 
 # ─────────────────────────────────────────────
@@ -425,7 +425,7 @@ def fetch_weather_detail(city: str, coords: tuple = None) -> dict:
     except WeatherError:
         raise
     except Exception as e:
-        raise WeatherError("자세한 날씨를 가져오지 못했어요. 인터넷 연결을 확인해 주세요.") from e
+        raise WeatherError("자세한 날씨를 가져오지 못했어요. 인터넷 연결을 확인해 보시면 돼요.") from e
 
     air = None
     try:
