@@ -359,7 +359,7 @@ def mark_as_purchased(item_name: str = "", price: float = None, category: str = 
 
     category = (category or "").strip()
     if len(category) > _MAX_CATEGORY_LENGTH:
-        return f"⚠️ 분류 이름이 너무 길어요({len(category)}자, 최대 {_MAX_CATEGORY_LENGTH}자) — 조금 줄여서 다시 말씀해주세요."
+        return f"⚠️ 분류 이름이 너무 길어요({len(category)}자, 최대 {_MAX_CATEGORY_LENGTH}자) — 조금 줄여서 알려 주시면 기록할 수 있어요."
 
     item_name = (item_name or "").strip()
     if not item_name or price is None:
@@ -384,7 +384,7 @@ def mark_as_purchased(item_name: str = "", price: float = None, category: str = 
         # 금액 계산에서 부동소수점 오차 여지를 없앰).
         price = int(round(float(price)))
     except (TypeError, ValueError, OverflowError):
-        return "⚠️ 가격을 이해하지 못했습니다. '5만원', '3천원', '12,000원'처럼 다시 말씀해주세요."
+        return "⚠️ 가격을 이해하지 못했습니다. '5만원', '3천원', '12,000원'처럼 알려 주시겠어요?"
     if price < 0:
         return "⚠️ 가격은 0 이상이어야 해요."
 
@@ -538,7 +538,7 @@ def set_monthly_budget(amount: float) -> str:
         # round()에서 OverflowError를 던진다.
         amount = int(round(float(amount)))
     except (TypeError, ValueError, OverflowError):
-        return "⚠️ 예산 금액을 이해하지 못했습니다. '50만원', '300000원'처럼 다시 말씀해주세요."
+        return "⚠️ 예산 금액을 이해하지 못했습니다. '50만원', '300000원'처럼 알려 주시겠어요?"
     if amount < 0:
         return "⚠️ 예산은 0 이상이어야 해요."
 
@@ -556,7 +556,7 @@ def get_budget_status() -> str:
     if budget is None:
         return ("[💰 이번달 예산 현황]\n"
                 "아직 설정된 예산이 없어요. '이번달 예산 50만원으로 잡아줘'처럼 "
-                "말씀해주시면 그때부터 예산 대비 지출을 알려드릴 수 있어요.")
+                "알려 주시면 그때부터 예산 대비 지출을 알려드릴 수 있어요.")
 
     try:
         tz  = ZoneInfo(DEFAULT_TIMEZONE)
@@ -615,7 +615,7 @@ def _find_purchase(expenses: list, item: str):
         return None, f"⚠️ '{item}'과(와) 일치하는 구매 기록을 찾을 수 없어요."
     if len(matches) > 1:
         names = ", ".join(f"{e['date']} '{e['item']}' (id: {e['id']})" for e in matches)
-        return None, f"⚠️ 여러 개가 일치해요({names}) — id로 다시 말씀해주세요."
+        return None, f"⚠️ 여러 개가 일치해요({names}) — id로 다시 알려 주시면 찾아볼게요."
     return matches[0], None
 
 
@@ -653,7 +653,7 @@ def edit_purchase(item: str, new_item_name: str = "", new_price: float = None) -
             # "요청을 처리하지 못했습니다"만 뜨고 원인을 알 수 없다.
             new_price = int(round(float(new_price)))
         except (TypeError, ValueError, OverflowError):
-            return "⚠️ 가격을 이해하지 못했습니다. '5만원', '3천원', '12,000원'처럼 다시 말씀해주세요."
+            return "⚠️ 가격을 이해하지 못했습니다. '5만원', '3천원', '12,000원'처럼 알려 주시겠어요?"
         if new_price < 0:
             return "⚠️ 가격은 0 이상이어야 해요."
 
@@ -681,7 +681,7 @@ def add_income(amount: float, source: str = "", category: str = "") -> str:
 
     category = (category or "").strip()
     if len(category) > _MAX_CATEGORY_LENGTH:
-        return f"⚠️ 분류 이름이 너무 길어요({len(category)}자, 최대 {_MAX_CATEGORY_LENGTH}자) — 조금 줄여서 다시 말씀해주세요."
+        return f"⚠️ 분류 이름이 너무 길어요({len(category)}자, 최대 {_MAX_CATEGORY_LENGTH}자) — 조금 줄여서 알려 주시면 기록할 수 있어요."
 
     source = (source or "").strip()
 
@@ -690,7 +690,7 @@ def add_income(amount: float, source: str = "", category: str = "") -> str:
         # float("inf") 같은 값은 round()에서 OverflowError가 나므로 방어).
         amount = int(round(float(amount)))
     except (TypeError, ValueError, OverflowError):
-        return "⚠️ 금액을 이해하지 못했습니다. '300만원', '5만원', '20,000원'처럼 다시 말씀해주세요."
+        return "⚠️ 금액을 이해하지 못했습니다. '300만원', '5만원', '20,000원'처럼 알려 주시겠어요?"
     if amount < 0:
         return "⚠️ 금액은 0 이상이어야 해요."
 
@@ -767,7 +767,7 @@ def _find_income(income: list, item: str):
         return None, f"⚠️ '{item}'과(와) 일치하는 수입 기록을 찾을 수 없어요."
     if len(matches) > 1:
         names = ", ".join(f"{e['date']} '{e.get('source') or '(미분류)'}' (id: {e['id']})" for e in matches)
-        return None, f"⚠️ 여러 개가 일치해요({names}) — id로 다시 말씀해주세요."
+        return None, f"⚠️ 여러 개가 일치해요({names}) — id로 다시 알려 주시면 찾아볼게요."
     return matches[0], None
 
 
@@ -801,7 +801,7 @@ def edit_income(item: str, new_source: str = "", new_amount: float = None) -> st
         try:
             new_amount = int(round(float(new_amount)))
         except (TypeError, ValueError, OverflowError):
-            return "⚠️ 금액을 이해하지 못했습니다. '300만원', '5만원', '20,000원'처럼 다시 말씀해주세요."
+            return "⚠️ 금액을 이해하지 못했습니다. '300만원', '5만원', '20,000원'처럼 알려 주시겠어요?"
         if new_amount < 0:
             return "⚠️ 금액은 0 이상이어야 해요."
 

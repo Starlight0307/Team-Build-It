@@ -44,7 +44,7 @@ _DUPLICATE_FILES_NONE = (
 )
 _TEMP_FILES = (
     "[🧹 임시 파일 점검 완료]\n"
-    "임시 파일 50개, 총 120.0MB를 확인했습니다. 정리하려면 '임시 파일 정리해줘'라고 말씀해주세요."
+    "임시 파일 50개, 총 120.0MB를 확인했습니다. 제가 정리해 드릴까요?"
 )
 _TEMP_FILES_NONE = "[✅ 임시 파일 점검 완료]\n정리할 임시 파일이 없습니다."
 
@@ -72,7 +72,7 @@ def test_combines_all_four_sections():
     assert "디스크" in report
     assert "video.mp4" in report
     assert "photo.jpg" in report
-    assert "임시 파일 50개" in report
+    assert "임시 파일 — 50개" in report
     assert "네" in report  # 인트로 문장
 
 
@@ -116,7 +116,7 @@ def test_empty_scan_results_are_still_shown_not_dropped():
     )
     report = _build_pc_cleanup(func_map)
     assert "찾지 못했" in report
-    assert "정리할 임시 파일이 없습니다" in report
+    assert "정리할 임시 파일이 없어요" in report
 
 
 # ── 오류 격리 ────────────────────────────────────────────────────────
@@ -145,7 +145,7 @@ def test_malformed_raw_result_does_not_break_other_sections():
     report = _build_pc_cleanup(func_map)
 
     assert "video.mp4" in report  # find_large_files 섹션은 살아있어야 함
-    assert "임시 파일 50개" in report  # scan_temp_files 섹션도 살아있어야 함
+    assert "임시 파일 — 50개" in report  # scan_temp_files 섹션도 살아있어야 함
     assert report != ""
 
 
@@ -173,4 +173,4 @@ def test_includes_guidance_toward_confirmed_deletion_flow():
     """삭제는 이 워크플로우 밖에서, 사용자가 다시 명시적으로 요청할 때만
     (기존 confirm_required 절차를 거쳐) 일어난다는 것을 안내 문구로 남긴다."""
     report = _build_pc_cleanup(_func_map())
-    assert "정리하고 싶은 항목" in report
+    assert "확인을 거친 뒤에 진행해요" in report

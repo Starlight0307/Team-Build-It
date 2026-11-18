@@ -845,7 +845,7 @@ def detect_suspicious_processes(keywords=(), keyword_category=None, trusted=_nev
         text += f"{TRUSTED_NOTE_PREFIX} {trusted_hits}개는 신뢰 목록에 있어서 의심 항목에서 뺐어요.\n"
     if alerts:
         text += f"⛔ 의심스러운 프로그램 {len(alerts)}개 발견:\n" + "\n".join(alerts)
-        text += "\n\n💡 종료하고 싶은 프로그램의 이름이나 번호를 말씀해주시면 종료해드릴게요."
+        text += "\n\n💡 종료하려는 프로그램의 이름이나 번호를 알려 주시면 종료해 드릴 수 있어요."
     else:
         text += "✅ 의심스러운 프로그램이 발견되지 않았습니다."
     return MacCheck(text, critical=critical, warning=len(alerts) - critical)

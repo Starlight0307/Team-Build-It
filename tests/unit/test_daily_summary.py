@@ -160,7 +160,7 @@ def test_budget_not_set_message_is_suppressed():
     func_map = {
         "get_budget_status": lambda: (
             "[💰 이번달 예산 현황]\n아직 설정된 예산이 없어요. '이번달 예산 50만원으로 "
-            "잡아줘'처럼 말씀해주시면 그때부터 예산 대비 지출을 알려드릴 수 있어요."
+            "잡아줘'처럼 알려 주시면 그때부터 예산 대비 지출을 알려드릴 수 있어요."
         ),
     }
     summary = _build_daily_summary(func_map, _local_calendar)

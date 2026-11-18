@@ -305,7 +305,7 @@ def add_todo(text: str, due_date: str = "", repeat_rule: str = "", priority: str
     if not text:
         return "⚠️ 어떤 할 일을 추가할지 알려주세요."
     if len(text) > _MAX_TEXT_LENGTH:
-        return f"⚠️ 할 일 내용이 너무 길어요({len(text)}자, 최대 {_MAX_TEXT_LENGTH}자) — 조금 줄여서 다시 말씀해주세요."
+        return f"⚠️ 할 일 내용이 너무 길어요({len(text)}자, 최대 {_MAX_TEXT_LENGTH}자) — 조금 줄여서 알려 주시면 추가할 수 있어요."
 
     due_date = (due_date or "").strip()
     if due_date:
@@ -322,7 +322,7 @@ def add_todo(text: str, due_date: str = "", repeat_rule: str = "", priority: str
 
     repeat_rule = (repeat_rule or "").strip().lower()
     if repeat_rule and repeat_rule not in _REPEAT_LABELS:
-        return "⚠️ 반복 주기를 이해하지 못했습니다. '매일'/'매주'/'매달' 중 하나로 다시 말씀해주세요."
+        return "⚠️ 반복 주기를 이해하지 못했습니다. '매일'/'매주'/'매달' 중 하나로 알려 주시겠어요?"
     if repeat_rule and not due_date:
         # repeat_rule은 "due_date로부터 얼마나 간격을 두고 다음 회차를 만들지"를
         # 계산하는 기준점이 반드시 필요하다 — 기준점 없이 "매일 반복"만 받으면
@@ -462,7 +462,7 @@ def _find_todo(items: list, item: str, filter_done: bool | None = False):
         return None, f"⚠️ '{item}'과(와) 일치하는 할 일을 찾을 수 없어요."
     if len(matches) > 1:
         names = ", ".join(f"{t['seq']}번 '{t['text']}'" for t in matches)
-        return None, f"⚠️ 여러 개가 일치해요({names}) — 번호로 다시 말씀해주세요."
+        return None, f"⚠️ 여러 개가 일치해요({names}) — 번호로 다시 알려 주시면 찾아볼게요."
     return matches[0], None
 
 

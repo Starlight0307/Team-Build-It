@@ -463,7 +463,7 @@ def test_casual_keeps_report_item_lines():
         a, b = text.split("\n"), out.split("\n")
         assert len(a) == len(b)
         for x, y in zip(a, b):
-            if not x.startswith("👉"):
+            if not x.startswith(("👉", "(")):      # 맺음말과 괄호 안내 줄은 말투가 바뀐다 — 항목 줄은 그대로
                 assert x == y, (x, y)
     assert small_talk.to_casual(samples[0]).splitlines()[-1].endswith("확인해 줄까?") or small_talk.to_casual(samples[0]).splitlines()[-1] != samples[0].splitlines()[-1]
 

@@ -199,7 +199,7 @@ def _login_needed_message(e: Exception):
         return (
             "[🔐 구글 캘린더 권한 필요]\n"
             "구글 로그인 때 캘린더 권한이 허용되지 않았어요.\n"
-            "'구글 캘린더 연결해줘'라고 말씀하신 뒤, 구글 화면에서 캘린더 권한을 체크해주세요."
+            "'구글 캘린더 연결해줘'라고 하신 뒤 구글 화면에서 캘린더 권한을 체크하시면 돼요."
         )
     return None
 
@@ -545,7 +545,7 @@ def get_login_status() -> str:
         )
     except Exception as e:
         print(f"[캘린더] 로그인 상태 확인 오류: {e}")
-        return "[🔐 로그인 상태]\n⚠️ 로그인 상태를 확인하지 못했어요. '구글 캘린더 연결해줘'라고 다시 말씀해 주세요."
+        return "[🔐 로그인 상태]\n⚠️ 로그인 상태를 확인하지 못했어요. 구글 캘린더 연결이 필요하면 도와 드릴 수 있어요."
 
 
 def _connect_with_saved_token(client_file: str) -> tuple[bool, str]:
@@ -1061,7 +1061,7 @@ def delete_event(event_id: str, calendar_id: str = "primary") -> str:
         hint = ""
         if recurring_id:
             hint = (" (반복 일정의 일부였어요 — 나머지 회차는 그대로 있어요. "
-                    "전체 삭제를 원하시면 반복 일정 전체를 삭제해달라고 말씀해주세요)")
+                    "원하시면 반복 일정 전체를 삭제하는 것도 도와 드릴 수 있어요.)")
         return f"[🗑️ 일정 삭제 완료]\n제목 '{title}' 일정이 삭제되었습니다.{hint}"
     except Exception as e:
         if isinstance(e, EventLookupError):
@@ -1090,7 +1090,7 @@ def delete_recurring_series(event_id: str, calendar_id: str = "primary") -> str:
         master = service.events().get(calendarId=calendar_id, eventId=master_id).execute()
         if not master.get("recurrence"):
             return (f"'{master.get('summary', '(제목 없음)')}' 일정은 반복 일정이 아니라서 "
-                     "시리즈 전체 삭제를 할 수 없어요. 이 일정 하나만 삭제하려면 다시 삭제해달라고 말씀해주세요.")
+                     "시리즈 전체 삭제를 할 수 없어요. 이 일정 하나만 삭제하는 것도 도와 드릴 수 있어요.")
         title = master.get("summary", "(제목 없음)")
         service.events().delete(calendarId=calendar_id, eventId=master_id).execute()
         return (f"[🗑️ 반복 일정 시리즈 삭제 완료]\n"
@@ -1124,7 +1124,7 @@ def create_recurring_event(
         return _apple_call('create_recurring_event', title, start_datetime, end_datetime, recurrence_type, recurrence_count, description, location)
     print(f"\n🔁 [캘린더] 반복 일정 등록 중: {title}")
     if recurrence_type.upper() not in ("DAILY", "WEEKLY", "MONTHLY", "YEARLY"):
-        return "반복 주기는 매일/매주/매월/매년 중 하나로 말씀해주세요."
+        return "반복 주기는 매일/매주/매월/매년 중 하나로 알려 주시면 돼요."
     # 2026-09-14 재검증에서 발견한 버그: recurrence_count가 int로 변환되지
     # 않은 채 그대로 RRULE COUNT에 들어가고, 상한도 없어서 LLM이 지어낸
     # 비현실적으로 큰 값(예: 1000)이 그대로 구글 캘린더 서버에 전송될 위험이

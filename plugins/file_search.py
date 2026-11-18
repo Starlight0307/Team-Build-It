@@ -204,15 +204,15 @@ def search_files(keyword: str = "", file_type: str = "", period: str = "",
 
     exts = _resolve_extensions(file_type) if file_type else None
     if file_type and exts is None:
-        return f"⚠️ '{file_type}' 종류를 이해하지 못했어요. PDF, 문서, 엑셀, 이미지, 동영상처럼 말씀해주세요."
+        return f"⚠️ '{file_type}' 종류를 이해하지 못했어요. PDF, 문서, 엑셀, 이미지, 동영상처럼 알려 주시겠어요?"
     try:
         min_mb = float(min_size_mb or 0)
         max_mb = float(max_size_mb or 0)
         days = int(recent_days or 0)
     except (TypeError, ValueError):
-        return "⚠️ 크기나 기간(최근 N일) 조건을 이해하지 못했어요. 숫자로 다시 말씀해주세요."
+        return "⚠️ 크기나 기간(최근 N일) 조건을 이해하지 못했어요. 숫자로 알려 주시겠어요?"
     if min_mb < 0 or max_mb < 0 or days < 0 or days > 365:
-        return "⚠️ 크기는 0 이상, 최근 N일은 1~365 사이로 말씀해주세요."
+        return "⚠️ 크기는 0 이상, 최근 N일은 1~365 사이로 알려 주시면 찾아볼 수 있어요."
     if min_mb and max_mb and min_mb > max_mb:
         return "⚠️ 최소 크기가 최대 크기보다 클 수 없어요."
 
@@ -224,7 +224,7 @@ def search_files(keyword: str = "", file_type: str = "", period: str = "",
     else:
         rng = _period_range(period) if period else None
         if period and rng is None:
-            return "⚠️ 기간을 이해하지 못했어요. 오늘/어제/이번주/지난주/이번달/지난달 중에서 말씀해주세요."
+            return "⚠️ 기간을 이해하지 못했어요. 오늘/어제/이번주/지난주/이번달/지난달 중에서 알려 주시겠어요?"
         period_text = _PERIOD_LABELS.get(period, "")
 
     if folder:

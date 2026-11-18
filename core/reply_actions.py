@@ -178,20 +178,49 @@ _STRICT_ASK = re.compile(
 _STRICT_SUFFIX = re.compile(r"(?:요|이요|이야|예요|이에요|은|는|을|를|만|부터|에대해|이랑|도정도|이|가|도)")
 
 
+_STRICT_PUNCT = re.compile(r"[!.,~'\"]+")
+_EXT_TAIL = re.compile(r"^(?P<stem>.+)\.(?P<ext>[a-z][a-z0-9]{1,3})$")
+# 프로그램 종료 제안은 "이름 + 종료" 한마디도 그 제안으로 본다(그 제안이 하려는 동작 그대로라 명령이 섞인 것이 아니다)
+_KILL_FUNCS = frozenset({"kill_process", "block_suspicious_process"})
+_STRICT_ACT = re.compile(r"(?:을|를|은|는|좀)?(?:종료|종료해줘|종료해|종료해주세요|꺼줘|꺼|끝내줘|닫아줘)(?:요)?")
+
+
+def _strict_forms(offer) -> set:
+    """strict 매칭용 이름 모양 — 입력과 같은 정규화(구두점 제거)를 거치고, 확장자를 뺀 어간(chrome.exe -> chrome)도 후보에 넣는다.
+    어간은 3글자 이상·숫자만이 아닐 때만 쓴다(짧은 어간이 다른 낱말과 겹치지 않게)."""
+    forms = set()
+    for raw in list(offer.aliases or ()) + [offer.label]:
+        low = re.sub(r"\s+", "", str(raw or "")).lower()
+        if not low:
+            continue
+        forms.add(_STRICT_PUNCT.sub("", low))
+        m = _EXT_TAIL.match(low)
+        if m:
+            stem = _STRICT_PUNCT.sub("", m.group("stem"))
+            if len(stem) >= _MIN_ALIAS_LEN and not stem.isdigit():
+                forms.add(stem)
+    return {f for f in forms if f}
+
+
 def _match_strict(text, offers):
-    t = _norm(re.sub(r"[!.,~'\"]+", "", str(text or "")))
+    t = _norm(_STRICT_PUNCT.sub("", str(text or "")))
     if not t or len(t) > _MAX_NAME_INPUT:
         return []
     hits = []
     for i, o in enumerate(offers):
-        for f in {_norm(x) for x in list(o.aliases or ()) + [o.label] if _norm(x)}:
+        for f in _strict_forms(o):
             if t == f:
                 hits.append(i)
                 break
             if f in _AMBIGUOUS_NAMES or not t.startswith(f):
                 continue
             rest = t[len(f):]
-            if _STRICT_SUFFIX.fullmatch(rest) or _STRICT_ASK.fullmatch(rest):
+            if o.func in _KILL_FUNCS:
+                # 종료 제안은 조사·"종료" 말고는 받지 않는다 — "chrome 사용법/방법"이 종료 확인창으로 가면 안 된다
+                ok = _STRICT_SUFFIX.fullmatch(rest) or _STRICT_ACT.fullmatch(rest)
+            else:
+                ok = _STRICT_SUFFIX.fullmatch(rest) or _STRICT_ASK.fullmatch(rest)
+            if ok:
                 hits.append(i)
                 break
     return hits

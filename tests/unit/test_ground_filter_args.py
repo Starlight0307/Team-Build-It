@@ -153,10 +153,11 @@ def test_worst_case_time():
 
 def test_dispatch_hook_is_wired():
     src = open(aw.__file__, encoding="utf-8").read()
-    assert "args = _ground_filter_args(func_name, args, self.user_text)" in src
+    assert "args = _ground_filter_args(func_name, args, self.user_text, self.chat_history)" in src
     assert set(aw._GROUND_FILTER_RULES) == {"get_spending_summary", "list_todos", "list_notes", "get_usage_report",
                                             "get_usage_trend", "get_goal_status", "search_events", "local_search_events",
-                                            "get_upcoming_events", "local_get_upcoming_events"}
+                                            "get_upcoming_events", "local_get_upcoming_events", "search_note",
+                                            "search_product_price"}
 
 
 # ═══════════ 검수 반영 (2026-11-16): 오제거·뒤집힘 회귀 ═══════════
@@ -397,3 +398,220 @@ def test_missing_required_helper():
     assert aw._missing_required_after_grounding("search_events", {"days_range": 7}) == "keyword"
     assert aw._missing_required_after_grounding("search_events", {"keyword": "회의"}) is None
     assert aw._missing_required_after_grounding("get_usage_report", {}) is None
+
+
+# ── 메모 검색 search_note.keyword (2026-11-17) ──
+@pytest.mark.parametrize("text,kw,expect", [
+    ("와이파이 비밀번호 메모한 거 찾아줘", "와이파이 비밀번호", "와이파이 비밀번호"),      # 근거 있음
+    ("병원 관련 메모 있어?", "병원", "병원"),
+    ("메모 찾아줘", "회의", None),                                                        # 근거 없음 -> 제거
+    ("메모 찾아줘", "메모", None),                                                        # 도구 낱말뿐
+    ("병원 메모 찾아줘", "병원 예약 취소", "병원"),                                         # 지어낸 낱말만 버린다
+    ("병원 메모 찾아줘", "예약", None),                                                    # 전부 지어낸 값
+    ("병원 메모 찾아줘", "병원 메모", "병원"),                                              # 앞뒤 도구 낱말 제거
+    ("병원 메모 찾아줘", "병원 메모 찾아줘", "병원"),
+    ("병원에 대한 메모 찾아줘", "병원을", "병원"),                                         # 조사 붙은 값은 조사를 떼도 근거가 되면 인정
+    ("병원에서 메모 찾아줘", "병원에서", "병원에서"),                                       # 문장에 그대로 있으면 그대로
+    ("\"회의록\" 메모 찾아줘", "회의록", "회의록"),                                          # 질문에 따옴표
+    ("'회의록' 메모 찾아줘", "\"회의록\"", "회의록"),                                         # 따옴표 종류가 달라도 인정
+    ("“회의록” 메모 찾아줘", "'회의록'", "회의록"),
+    ("Wifi 비밀번호 메모 찾아줘", "wifi", "wifi"),                                           # 대소문자 무시
+    ("wifi 비밀번호 메모 찾아줘", "WiFi 비밀번호", "WiFi 비밀번호"),
+    ("와이파이  비밀번호 메모", "와이파이 비밀번호", "와이파이 비밀번호"),                       # 공백 차이
+    ("회의 일정 메모 찾아줘", "회의 일정", "회의 일정"),                                     # 일정 낱말도 메모 검색어에서는 근거면 유지
+    ("우유 사기 메모 찾아줘", "우유 사기", "우유 사기"),
+])
+def test_search_note_keyword(text, kw, expect):
+    assert G("search_note", {"keyword": kw}, text).get("keyword") == expect
+
+
+# ── 상품 가격 검색 search_product_price.query / keyword ──
+@pytest.mark.parametrize("text,q,expect", [
+    ("아이폰 16 최저가 알려줘", "아이폰 16", "아이폰 16"),
+    ("아이폰 16 최저가 알려줘", "아이폰 16 최저가", "아이폰 16"),                            # 도구 낱말 제거
+    ("아이폰 16 얼마야?", "아이폰 16", "아이폰 16"),
+    ("아이폰16 얼마야", "아이폰 16", "아이폰 16"),                                           # 공백 차이
+    ("맥북 가격 알려줘", "맥북 프로 M3", "맥북"),                                              # 지어낸 낱말만 버린다
+    ("최저가 알려줘", "아이폰", None),                                                        # 근거 없음 -> 제거
+    ("가격 좀 알려줘", "갤럭시 S24", None),
+    ("에어팟 최저가", "AirPods", None),                                                       # 문장에 없는 번역은 근거가 아니다
+    ("RTX 4090 최저가", "rtx 4090", "rtx 4090"),
+    ("RTX 4090 최저가", "RTX 4090 Ti", "RTX 4090"),
+    ("맥북을 사려는데 얼마야", "맥북을", "맥북을"),                                          # 문장에 그대로 있는 조사 붙은 값
+    ("맥북 사려는데 얼마야", "맥북을", "맥북"),                                              # 조사만 붙은 값 -> 조사를 뗀 근거
+    ("\"갤럭시 S24\" 가격", "갤럭시 S24", "갤럭시 S24"),                                      # 질문에 따옴표
+    ("'갤럭시 S24' 가격", "\"갤럭시 S24\"", "갤럭시 S24"),
+    ("갤럭시 S24 가격", "갤럭시 S24 128GB", "갤럭시 S24"),
+    ("노트북 가격 알려줘", "노트북", "노트북"),
+])
+def test_search_product_price_query(text, q, expect):
+    assert G("search_product_price", {"query": q}, text).get("query") == expect
+
+
+def test_empty_values_are_left_for_required_check():
+    assert G("search_note", {"keyword": ""}, "메모 보여줘") == {"keyword": ""}
+    assert aw._missing_required_after_grounding("search_note", {"keyword": ""}) == "keyword"
+    assert aw._missing_required_after_grounding("search_product_price", {"query": "", "keyword": ""}) == "query"
+
+
+def test_search_product_price_keyword_alias_is_grounded_too():
+    assert G("search_product_price", {"keyword": "맥북 에어"}, "맥북 가격 알려줘") == {"keyword": "맥북"}
+    assert G("search_product_price", {"keyword": "맥북"}, "가격 알려줘") == {}
+    assert G("search_product_price", {"query": "맥북", "keyword": "맥북 프로"}, "맥북 가격") == {"query": "맥북", "keyword": "맥북"}
+
+
+def test_note_price_other_args_and_other_tools_untouched():
+    assert G("search_note", {"keyword": "병원", "limit": 5}, "병원 메모 찾아줘") == {"keyword": "병원", "limit": 5}
+    assert G("list_notes", {"keyword": "병원"}, "메모 보여줘") == {"keyword": "병원"}
+    assert G("search_note", "문자열", "x") == "문자열"
+
+
+def test_required_helper_for_note_and_price():
+    assert aw._missing_required_after_grounding("search_note", {}) == "keyword"
+    assert aw._missing_required_after_grounding("search_note", {"keyword": "병원"}) is None
+    assert aw._missing_required_after_grounding("search_product_price", {}) == "query"
+    assert aw._missing_required_after_grounding("search_product_price", {"keyword": "맥북"}) is None
+    assert aw._missing_required_after_grounding("search_product_price", {"query": "맥북"}) is None
+
+
+def test_note_price_rules_are_registered():
+    assert "keyword" in aw._GROUND_FILTER_RULES["search_note"]
+    assert set(aw._GROUND_FILTER_RULES["search_product_price"]) == {"query", "keyword"}
+
+
+def _run_tool(text, func_name, args, props, monkeypatch):
+    calls, shown = [], []
+
+    if func_name == "search_note":
+        def tool(keyword):
+            calls.append({"keyword": keyword})
+            return "결과"
+    else:
+        def tool(query="", keyword=""):
+            calls.append({k: v for k, v in (("query", query), ("keyword", keyword)) if v})
+            return "결과"
+    tool.__name__ = func_name
+    state = {"n": 0}
+
+    def fake_chat(*a, **k):
+        state["n"] += 1
+        if state["n"] == 1:
+            return {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": func_name, "arguments": args}}]}}
+        return {"message": {"role": "assistant", "content": "완료"}}
+    monkeypatch.setattr(aw.ollama, "chat", fake_chat)
+    monkeypatch.setitem(aw.TOOL_SCHEMAS, func_name, {"type": "function", "function": {
+        "name": func_name, "description": "검색", "parameters": {"type": "object",
+                                                              "properties": {k: {"type": "string"} for k in props}, "required": []}}})
+    monkeypatch.setattr(aw, "MOCK_USER", {"logged_in": False, "name": ""})
+    monkeypatch.setattr(aw.user_memory, "is_casual", lambda: False)
+    w = aw.AIWorker(text, [], [tool], "s")
+    w.response_ready.connect(shown.append)
+    w.run()
+    return calls, shown
+
+
+@pytest.mark.parametrize("func,props,text,args,expected_calls", [
+    ("search_note", ("keyword",), "병원 메모 찾아줘", {"keyword": "병원 예약"}, [{"keyword": "병원"}]),
+    ("search_product_price", ("query", "keyword"), "맥북 최저가 알려줘", {"query": "맥북 최저가 M3"}, [{"query": "맥북"}]),
+])
+def test_run_grounded_value_runs_tool(func, props, text, args, expected_calls, monkeypatch):
+    calls, _shown = _run_tool(text, func, args, props, monkeypatch)
+    assert calls == expected_calls
+
+
+@pytest.mark.parametrize("func,props,text,args", [
+    ("search_note", ("keyword",), "메모 찾아줘", {"keyword": "회의"}),
+    ("search_product_price", ("query", "keyword"), "최저가 알려줘", {"query": "아이폰"}),
+    ("search_product_price", ("query", "keyword"), "최저가 알려줘", {"keyword": "아이폰"}),
+])
+def test_run_missing_value_asks_one_question_and_does_not_run_tool(func, props, text, args, monkeypatch, capsys):
+    calls, shown = _run_tool(text, func, args, props, monkeypatch)
+    out = capsys.readouterr()
+    assert calls == []
+    assert shown and "무엇을 찾을지" in shown[-1] and "TypeError" not in shown[-1] and "keyword" not in shown[-1] and "query" not in shown[-1]
+    assert "실행 오류" not in out.out + out.err
+
+
+# ── 후속 질문: 지시어가 있을 때만 직전 사용자 말을 근거에 더한다 (2026-11-17) ──
+HIST = [{"role": "user", "content": "맥북 에어 M3 가격 알려줘"},
+        {"role": "assistant", "content": "다나와에서 갤럭시 S24를 찾았어요."}]
+
+
+@pytest.mark.parametrize("text,value,expect", [
+    ("그거 최저가 알려줘", "맥북 에어 M3", "맥북 에어 M3"),            # 지시어 + 직전 사용자 말에 근거
+    ("방금 그거 얼마야", "맥북 에어", "맥북 에어"),
+    ("아까 거 가격", "맥북", "맥북"),
+    ("그거 최저가 알려줘", "맥북 에어 M3 프로", "맥북 에어 M3"),        # 지어낸 낱말은 여전히 버린다
+    ("그거 최저가 알려줘", "갤럭시 S24", None),                          # assistant 답변은 근거가 아니다
+    ("최저가 알려줘", "맥북 에어 M3", None),                              # 지시어가 없으면 엄격하다
+    ("가격 알려줘", "맥북", None),
+])
+def test_price_followup_uses_history_only_with_referent(text, value, expect):
+    out = G("search_product_price", {"query": value}, text, HIST)
+    assert out.get("query") == expect
+
+
+def test_note_followup_and_history_limits():
+    hist = [{"role": "user", "content": "병원 예약 메모 찾아줘"}, {"role": "user", "content": "날씨 어때"},
+            {"role": "user", "content": "내일 일정"}]
+    assert G("search_note", {"keyword": "날씨"}, "그거 찾아줘", hist).get("keyword") == "날씨"       # 최근 2개 안
+    assert G("search_note", {"keyword": "병원"}, "그거 찾아줘", hist).get("keyword") is None          # 3번째 이전은 쓰지 않는다
+    assert G("search_note", {"keyword": "병원"}, "메모 찾아줘", hist).get("keyword") is None
+    assert G("search_note", {"keyword": "병원"}, "그거 메모 찾아줘", None).get("keyword") is None
+    assert G("search_note", {"keyword": "병원"}, "그거 메모 찾아줘", "문자열").get("keyword") is None
+
+
+def test_history_not_used_for_other_tools():
+    assert G("list_notes", {"tag": "회의"}, "그거 보여줘", [{"role": "user", "content": "회의 메모"}]).get("tag") is None
+
+
+def test_history_current_text_itself_not_duplicated():
+    hist = [{"role": "user", "content": "그거 최저가 알려줘"}]
+    assert G("search_product_price", {"query": "맥북"}, "그거 최저가 알려줘", hist).get("query") is None
+
+
+# ── 숫자만 남는 경우·영문+숫자 공백 ──
+@pytest.mark.parametrize("text,q,expect", [
+    ("아이폰15 얼마야", "iPhone 15", None),
+    ("아이폰15 얼마야", "아이폰 15", "아이폰 15"),
+    ("ps5 최저가", "PS 5", "PS5"),
+    ("PS 5 최저가", "ps5", "ps5"),
+    ("ps5 최저가", "PS5 디지털", "PS5"),
+    ("rtx 4090 최저가", "RTX4090", "RTX4090"),
+    ("15 얼마야", "15", None),
+    ("갤럭시 S24 가격", "S 24", "S24"),
+])
+def test_numeric_only_and_alnum_spacing(text, q, expect):
+    assert G("search_product_price", {"query": q}, text).get("query") == expect
+
+
+# ── 지시어 낱말 경계와 이력 content 형태 (2026-11-17 재검수) ──
+@pytest.mark.parametrize("text,has", [
+    ("그거 최저가 알려줘", True), ("그걸 찾아줘", True), ("방금 말한 거", True), ("아까 그 메모", True), ("거기 적은 거", True),
+    ("아까 말한 것", True), ("그 메모 찾아줘", True), ("위 내용 찾아줘", True), ("그거야", True), ("방금전에", False),
+    ("아까운 돈 얼마야", False), ("그런 거 말고 가격 알려줘", False), ("그리고 가격 알려줘", False), ("그래서 얼마야", False),
+    ("방금", True),
+])
+def test_referent_words_boundaries(text, has):
+    assert bool(aw._REFERENT_WORDS.search(text)) is has
+
+
+def test_referent_false_friend_does_not_pull_history():
+    hist = [{"role": "user", "content": "맥북 가격 알려줘"}]
+    assert G("search_product_price", {"query": "맥북"}, "그리고 가격 알려줘", hist).get("query") is None
+    assert G("search_product_price", {"query": "맥북"}, "아까운 가격 알려줘", hist).get("query") is None
+    assert G("search_product_price", {"query": "맥북"}, "그거 가격 알려줘", hist).get("query") == "맥북"
+
+
+def test_history_content_list_and_dict_forms():
+    ok = [{"role": "user", "content": [{"type": "text", "text": "맥북 가격 알려줘"}, {"type": "image", "image": "x.png"}]}]
+    assert G("search_product_price", {"query": "맥북"}, "그거 가격 알려줘", ok).get("query") == "맥북"
+    # 키 이름("type", "text")이 근거로 섞이지 않는다
+    only_keys = [{"role": "user", "content": {"type": "text", "text": "맥북"}}]
+    assert G("search_product_price", {"query": "맥북"}, "그거 가격 알려줘", only_keys).get("query") is None
+    key_words = [{"role": "user", "content": [{"type": "image", "image": "x.png"}]}]
+    assert G("search_note", {"keyword": "type"}, "그거 찾아줘", key_words).get("keyword") is None
+    assert G("search_note", {"keyword": "image"}, "그거 찾아줘", key_words).get("keyword") is None
+    assert aw._history_text(None) == "" and aw._history_text(12) == "" and aw._history_text("글") == "글"
+    assert aw._history_text([{"type": "text", "text": "a"}, "b", {"type": "text", "text": 3}]) == "a"

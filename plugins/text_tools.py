@@ -346,7 +346,7 @@ def translate_text(text: str, target_language: str) -> str:
     # 안전장치 3(모듈 docstring 참고): 언어 이름은 짧고 한 줄이어야 정상이다 —
     # 이 범위를 벗어나면 프롬프트 주입 시도일 가능성이 높다고 보고 거부한다.
     if len(target_language) > _MAX_LANGUAGE_LENGTH or "\n" in target_language:
-        return "⚠️ 번역할 언어를 더 간단히 말씀해주세요(예: '영어', '일본어')."
+        return "⚠️ 번역할 언어를 '영어', '일본어'처럼 더 간단히 알려 주시겠어요?"
 
     system_prompt = (
         "당신은 번역만 하는 도구입니다. 사용자 메시지의 <번역언어> 태그에 적힌 언어로 "
@@ -613,7 +613,7 @@ def _single_line_field(value, name: str, default: str = "", max_length: int = _M
     높다고 보고 거부한다(요약·번역의 target_language와 같은 방어선)."""
     value = (value or "").strip() or default
     if len(value) > max_length or "\n" in value or "\r" in value:
-        return None, f"⚠️ {name}은(는) 짧게 한 줄로 말씀해주세요."
+        return None, f"⚠️ {name}은(는) 짧게 한 줄로 알려 주시면 처리할 수 있어요."
     return value, None
 
 
@@ -674,7 +674,7 @@ def draft_email(purpose: str, recipient_name: str = "", tone: str = "정중하�
         return "⚠️ 어떤 내용의 메일인지 알려주세요."
     if len(purpose) > _MAX_EMAIL_PURPOSE_LENGTH:
         return (f"⚠️ 용건이 너무 길어요({len(purpose)}자, 최대 {_MAX_EMAIL_PURPOSE_LENGTH}자) — "
-                "핵심만 간단히 말씀해주세요.")
+                "핵심만 간단히 알려 주시면 작성할 수 있어요.")
     recipient, err = _single_line_field(recipient_name, "받는 사람 이름", max_length=_MAX_EMAIL_RECIPIENT_LENGTH)
     if err:
         return err

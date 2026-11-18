@@ -669,7 +669,7 @@ def set_usage_goal(target: str = "", daily_minutes: int = None) -> str:
         # round()에서 OverflowError를 던진다.
         daily_minutes = int(round(float(daily_minutes)))
     except (TypeError, ValueError, OverflowError):
-        return "⚠️ 목표 시간을 이해하지 못했습니다. 분 단위 숫자로 다시 말씀해주세요(예: 2시간 → 120)."
+        return "⚠️ 목표 시간을 이해하지 못했습니다. 분 단위 숫자로 알려 주시겠어요? (예: 2시간 → 120)"
     if daily_minutes <= 0:
         return "⚠️ 목표 시간은 0분보다 커야 해요."
 

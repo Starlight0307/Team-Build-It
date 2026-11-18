@@ -30,6 +30,7 @@ NO_ISSUE_CLOSING = "👉 지금은 특별히 걱정할 부분은 없어 보여�
 NO_ISSUE_UNKNOWN_CLOSING = "👉 측정된 항목 기준으로는 특별히 걱정할 부분은 없어 보여요."
 LOAD_OFFER_LABEL = "컴퓨터에 부담을 주는 프로그램이 있는지 확인해 드릴까요?"
 DISK_OFFER_LABEL = "용량을 많이 차지하는 파일을 찾아 드릴까요?"
+SCOPE_NOTE = "(CPU·메모리·디스크 같은 수치만 확인했어요. 보안·악성코드·네트워크까지는 'PC 종합 점검'이라고 하시면 확인해 드릴 수 있어요.)"
 RAM_ONLY_CLOSING = "👉 메모리 사용량이 높은 편이에요. 켜 둔 프로그램을 정리하면 도움이 될 수 있어요."
 
 SYSINFO_HEADER = re.compile(
@@ -149,6 +150,7 @@ def build(raw):
         closing = NO_ISSUE_UNKNOWN_CLOSING
     else:
         closing = NO_ISSUE_CLOSING
+    closing = f"{SCOPE_NOTE}\n{closing}"      #수치만 본 것임을 알리고 보안까지는 종합 점검으로 안내한다(질문은 아니라 맺음말 하나만 남는다)
     return report_style.render_report("컴퓨터 상태", items, ok_names=ok, closing=closing), offers
 
 

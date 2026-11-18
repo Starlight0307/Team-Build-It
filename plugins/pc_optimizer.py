@@ -334,6 +334,9 @@ def find_duplicate_files(directory: str = "") -> str:
             _bump_scan_generation()
             return f"[✅ 중복 파일 탐색 완료]\n중복된 파일을 찾지 못했습니다. (파일 {scanned}개 확인)"
 
+        # 겹치는 분량(파일 하나 크기 × (개수-1))이 큰 순서로 정렬한다 — 화면에 보이는 번호, 이 캐시의 번호,
+        # "N번 그룹 정리"의 N 이 항상 같은 그룹을 가리키게 하려는 것(정렬은 안정 정렬이라 같은 분량이면 스캔 순서 유지).
+        groups_with_mtime.sort(key=lambda g: (-g["size"] * (len(g["files"]) - 1), g["files"][0]["path"]))   # 같은 분량이면 대표 파일 경로로 순서를 고정
         _LAST_DUPLICATE_GROUPS.clear()
         _LAST_DUPLICATE_GROUPS.extend(groups_with_mtime)
         _bump_scan_generation()
@@ -414,10 +417,10 @@ def delete_duplicate_files(group_index: int = 0, _scan_generation: int = None) -
         # 잘못된 값을 "0 = 전체 삭제"로 조용히 바꿔버리면(fail-open) 입력 오류가
         # 가장 파괴적인 동작으로 이어진다 — ChatGPT 검수에서 지적된 위험한
         # fail-open 패턴. 알 수 없는 값이면 아무것도 하지 않고 실패로 안내한다.
-        return "그룹 번호를 이해하지 못했어요. 다시 한번 말씀해주시겠어요?"
+        return "그룹 번호를 이해하지 못했어요. 번호만 다시 알려 주시겠어요?"
 
     if group_index < 0:
-        return "그룹 번호를 이해하지 못했어요. 다시 한번 말씀해주시겠어요?"
+        return "그룹 번호를 이해하지 못했어요. 번호만 다시 알려 주시겠어요?"
     elif group_index == 0:
         target_groups = _LAST_DUPLICATE_GROUPS
     elif group_index <= len(_LAST_DUPLICATE_GROUPS):
@@ -551,7 +554,7 @@ def scan_temp_files() -> str:
         if total_files == 0:
             return "[✅ 임시 파일 점검 완료]\n정리할 임시 파일이 없습니다."
         return (f"[🧹 임시 파일 점검 완료]\n"
-                f"임시 파일 {total_files}개, 총 {_format_size(total_bytes)}를 확인했습니다. 정리하려면 '임시 파일 정리해줘'라고 말씀해주세요.")
+                f"임시 파일 {total_files}개, 총 {_format_size(total_bytes)}를 확인했습니다. 제가 정리해 드릴까요?")
     except Exception as e:
         print(f"[PC 최적화] 임시 파일 스캔 오류: {e}")
         return "❌ 임시 파일을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."

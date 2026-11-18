@@ -458,7 +458,9 @@ def _fetch_products_html(search_query: str):
     response = requests.get(url, headers=_DANAWA_HEADERS, timeout=10)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, 'html.parser')
-    return soup.select('li.prod_item')[:5]
+    # 2026-11-17: 다나와가 검색 페이지를 새 구조로 바꿔 li.prod_item 이 사라졌다(실측: 200 응답, 상품은 li[data-product-seq]).
+    items = soup.select('li.prod_item') or soup.select('li[data-product-seq]')
+    return items[:5]
 
 
 def _parse_product_item(product):
@@ -471,9 +473,11 @@ def _parse_product_item(product):
     if not name_elem:
         name_elem = product.select_one('p.prod_name a')
     if not name_elem:
+        name_elem = product.select_one('p > a[href*="prod.danawa.com/info"]')    # 새 구조(2026-11)
+    if not name_elem:
         return None
 
-    name = name_elem.get_text(strip=True)
+    name = " ".join(name_elem.get_text().split())     # 새 구조는 검색어가 <b>로 감싸여 strip=True 면 띄어쓰기가 사라진다
     price_won = None
     price_formatted = "가격 정보 없음"
 
@@ -498,6 +502,17 @@ def _parse_product_item(product):
                 price_formatted = f"{price_won:,}원"
             except (TypeError, ValueError):
                 pass
+
+    # 방법 3: 새 구조 — 판매처별 가격 링크("4,497,990원") 중 가장 낮은 값("출시가: …원"은 판매가가 아니라 제외)
+    if price_won is None:
+        found = []
+        for a in product.select('a[href*="prod.danawa.com/info"]'):
+            m = re.fullmatch(r'([\d,]+)원', a.get_text(strip=True))
+            if m and int(m.group(1).replace(',', '')) > 0:      # "0원"은 품절 표시라 가격 후보가 아니다
+                found.append(int(m.group(1).replace(',', '')))
+        if found:
+            price_won = min(found)
+            price_formatted = f"{price_won:,}원"
 
     img_elem = product.select_one('img')
     img_url = img_elem.get('src', '') if img_elem else ''
@@ -526,7 +541,7 @@ def search_product_price(query: str = "", keyword: str = "") -> str:
     sys.stderr.flush()
 
     if not search_query:
-        return "검색어가 없습니다. 어떤 상품을 찾으시는지 말씀해주세요."
+        return "검색어가 없습니다. 어떤 상품을 찾으시는지 알려 주시면 검색해 드릴게요."
 
     try:
         products = _fetch_products_html(search_query)

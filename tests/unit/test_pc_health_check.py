@@ -179,4 +179,4 @@ def test_item_lines_have_no_emoji_but_facts_remain():
 def test_only_one_closing_question_and_blank_line_between_sections():
     report = _full_report()
     assert report.count("👉") <= 1
-    assert report.count("📋") >= 1 and "\n\n📋 시스템 상태" in report
+    assert "\n\n🖥️ 시스템 상태" in report

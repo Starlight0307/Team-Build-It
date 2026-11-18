@@ -199,10 +199,10 @@ def test_no_retry_when_too_little_time_left(monkeypatch):
 
 
 def test_question_budget_shrinks_later_calls(monkeypatch):
-    monkeypatch.setattr(aw._ollama_local, "question_started", time.monotonic() - 230, raising=False)
+    monkeypatch.setattr(aw._ollama_local, "question_started", time.monotonic() - (aw.OLLAMA_QUESTION_BUDGET_S - 10), raising=False)
     c = use(monkeypatch, FakeClient([OK]))
     aw._ollama_chat(model="m", messages=[])
-    assert c.timeouts[0].read <= aw.OLLAMA_MIN_CALL_S + 1      # 질문 예산(240초)이 거의 바닥 — 최소 시간만
+    assert c.timeouts[0].read <= aw.OLLAMA_MIN_CALL_S + 1      # 질문 예산이 거의 바닥 — 최소 시간만
 
 
 def test_worst_case_total_per_call_is_bounded(monkeypatch):

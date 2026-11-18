@@ -11,7 +11,7 @@ def test_not_set_message():
     raw = (
         "[💰 이번달 예산 현황]\n"
         "아직 설정된 예산이 없어요. '이번달 예산 50만원으로 잡아줘'처럼 "
-        "말씀해주시면 그때부터 예산 대비 지출을 알려드릴 수 있어요."
+        "알려 주시면 그때부터 예산 대비 지출을 알려드릴 수 있어요."
     )
     result = _build_budget_status_reply(raw)
     assert result is not None

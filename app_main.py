@@ -680,6 +680,12 @@ class AssistantApp(QWidget):
     # ─────────────────────────────────────────────
     def _run_startup_update_check(self):
         # Windows 업데이트 + 방화벽 + 열린 포트를 백그라운드에서 확인해 한 메시지로 보여준다
+        # 환경설정/대화로 끈 계정이면 점검·알림만 건너뛴다 — 휴지통 정리는 점검과 별개라 그대로 한다(빈 글이라 알림 없음)
+        if not app_settings.get("startup_security_check"):
+            self._startup_security_worker = UpdateCheckWorker(lambda: (_purge_expired_temp_trash(), "")[1])
+            self._startup_security_worker.result_ready.connect(self._on_update_check_result)
+            self._startup_security_worker.start()
+            return
         from core.startup_security import build_startup_notice
         func_map = {f.__name__: f for f in self.installed_tools}
         # 업데이트 확인(_update_worker)과 따로 둔다 — 2026-10-19 실제 앱: 같은 변수를 쓰고 비우지 않아서, 앱을 켤 때마다
@@ -1998,6 +2004,10 @@ class AssistantApp(QWidget):
         self.switch_motion.setChecked(not app_settings.get("ui_motion_off"))
         self.switch_motion.toggled.connect(self._on_motion_toggled)
 
+        self.switch_startup_security = ToggleSwitch()
+        self.switch_startup_security.setChecked(bool(app_settings.get("startup_security_check")))
+        self.switch_startup_security.toggled.connect(self._on_startup_security_toggled)
+
         self.surface_selector = QWidget()
         sel = QHBoxLayout(self.surface_selector)
         sel.setContentsMargins(0, 0, 0, 0)
@@ -2042,6 +2052,11 @@ class AssistantApp(QWidget):
             ("창 닫기 버튼(X)",
              "'백그라운드'는 창만 닫고 알림·자동 실행을 계속해요. 완전히 끄려면 위쪽 종료 버튼이나 트레이 메뉴를 쓰세요.",
              self.close_action_selector),
+        ]))
+        outer.addSpacing(18)
+        from core import reply_startup_setting as _startup_setting
+        outer.addWidget(self._make_settings_card("보안", icon="shield-check", rows=[
+            ("시작할 때 보안 점검", _startup_setting.settings_description(), self.switch_startup_security),
         ]))
         outer.addSpacing(18)
         # 음성 인식 정확도 — 빠름/정확 둘 중 하나 (세그먼트 버튼)
@@ -2604,7 +2619,8 @@ class AssistantApp(QWidget):
         for line in self._settings_dividers:
             line.setStyleSheet(f"background-color: {p['card_brd']}; border: none;")
         for sw in (self.switch_dark, self.switch_voice_reply, self.switch_voice_hq,
-                   self.switch_wake_listening, self.switch_wake_kws, self.switch_wake_stream, self.switch_motion):
+                   self.switch_wake_listening, self.switch_wake_kws, self.switch_wake_stream, self.switch_motion,
+                   self.switch_startup_security):
             sw.set_colors(p['accent'], p['switch_off'], p['accent2'])
         self.voice_words_input.setStyleSheet(
             f"QLineEdit {{ background-color: {p['ib']}; color: {p['tc']}; border: 1px solid {p['ibrd']}; "
@@ -2768,6 +2784,10 @@ class AssistantApp(QWidget):
             self._show_toast("👂 호출어 감지 구성요소를 설치하는 중이에요. 끝나면 소리 점수로 먼저 찾아요.")
         else:
             self._show_toast("👂 호출어를 소리 점수로 먼저 찾아요. (잘 안 맞으면 환경설정에서 끌 수 있어요)")
+
+    def _on_startup_security_toggled(self, on: bool):
+        app_settings.set("startup_security_check", bool(on))
+        self._show_toast("🛡️ 앱을 켤 때 보안을 점검해요." if on else "🛡️ 다음부터 앱을 켤 때 점검하지 않아요.")
 
     def _on_wake_stream_toggled(self, on: bool):
         app_settings.set("wake_stream", on)
@@ -2958,7 +2978,8 @@ class AssistantApp(QWidget):
                         (self.switch_voice_reply, bool(app_settings.get("voice_reply"))),
                         (self.switch_voice_hq, bool(app_settings.get("voice_hq"))),
                         (self.switch_wake_kws, bool(app_settings.get("wake_kws"))),
-                        (self.switch_wake_stream, bool(app_settings.get("wake_stream")))):
+                        (self.switch_wake_stream, bool(app_settings.get("wake_stream"))),
+                        (self.switch_startup_security, bool(app_settings.get("startup_security_check")))):
             sw.blockSignals(True)
             sw.setChecked(val)
             sw.blockSignals(False)
@@ -3399,7 +3420,8 @@ class AssistantApp(QWidget):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            func_map = {f.__name__: f for f in self.installed_tools}
+            from core.reply_startup_setting import CORE_TOOLS
+            func_map = {**CORE_TOOLS, **{f.__name__: f for f in self.installed_tools}}   # 플러그인이 아닌 core 도구(설정 변경)도 같은 확인창으로
             if func_name in func_map and func_name in self._SLOW_CONFIRMED_FUNCS:
                 # Defender 검사처럼 최대 몇 분 걸리는 도구는 UI 스레드에서 돌리면 창이 멈춘다 → 백그라운드로
                 if self._confirm_worker_running(include_abandoned=True):
@@ -3419,6 +3441,10 @@ class AssistantApp(QWidget):
                         reply = _build_deterministic_reply(str(result)) or result
                     self.display_ai_response(f"🤖 로컬 비서: {reply}")
                     self._remember_kill_confirmation(func_name, args)
+                    if func_name in CORE_TOOLS:   # 대화로 바꾼 설정을 환경설정 스위치에도 맞춘다
+                        self.switch_startup_security.blockSignals(True)
+                        self.switch_startup_security.setChecked(bool(app_settings.get("startup_security_check")))
+                        self.switch_startup_security.blockSignals(False)
                 except Exception as e:
                     print(f"[확인 후 실행 오류] {func_name}: {e}")
                     self.display_ai_response("❌ 요청하신 작업을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.")

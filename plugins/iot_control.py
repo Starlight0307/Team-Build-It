@@ -411,7 +411,7 @@ def create_scene(scene_name: str = "", devices: str = "") -> str:
     if not scene_name:
         return "⚠️ 씬 이름을 알려주세요."
     if len(scene_name) > _MAX_SCENE_NAME_LENGTH:
-        return f"⚠️ 씬 이름이 너무 길어요(최대 {_MAX_SCENE_NAME_LENGTH}자) — 조금 줄여서 다시 말씀해주세요."
+        return f"⚠️ 씬 이름이 너무 길어요(최대 {_MAX_SCENE_NAME_LENGTH}자) — 조금 줄여서 알려 주시면 만들 수 있어요."
 
     entries, error = _parse_scene_devices(devices)
     if error:
@@ -446,7 +446,7 @@ def list_scenes() -> str:
     scenes = _load_scenes()
     if not scenes:
         return ("[🏠 저장된 씬 목록]\n저장된 씬이 없습니다. "
-                "'취침모드 씬 만들어줘, 거실전등이랑 TV 꺼줘'처럼 말씀해주시면 만들어드려요.")
+                "'취침모드 씬 만들어줘, 거실전등이랑 TV 꺼줘'처럼 알려 주시면 만들 수 있어요.")
 
     lines = [f"[🏠 저장된 씬 목록] (총 {len(scenes)}개)"]
     for s in scenes:
@@ -771,7 +771,7 @@ def list_rooms() -> str:
     print("\n[IoT 방] 방 목록 조회 중...")
     rooms = _model.load_rooms(ROOMS_FILE)
     if not rooms:
-        return ("[🏠 방 목록]\n등록된 방이 없어요. '거실 전등을 거실에 넣어줘'처럼 말씀해주시면 만들어드려요.")
+        return ("[🏠 방 목록]\n등록된 방이 없어요. '거실 전등을 거실에 넣어줘'처럼 알려 주시면 만들 수 있어요.")
     lines = [f"[🏠 방 목록] (총 {len(rooms)}개)"]
     for r in rooms:
         names = ", ".join(d["name"] or "(이름 없음)" for d in r["devices"])

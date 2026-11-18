@@ -161,7 +161,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["search_product_price", "get_cheapest_matched_price"],
         "module_name": "price_search",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/price_search.py",
-        "sha256": "038cd03e0f1adae01901805f192c4296d1c7c889dc44616e7eca15852b8cc1c9",
+        "sha256": "ff4024dc7b865893caf24eaa082f4d5b3d8caf102793dd7ee32a47c6d709ce42",
         "dependencies": ["requests", "beautifulsoup4"]
     },
     {
@@ -195,7 +195,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "malware_detection",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/malware_detection.py",
-        "sha256": "4e76e17bdfb28b95e836a59c1128e50ebb5e5dfb8877c075fa970cbb7b74e515",
+        "sha256": "dca59042eec0c72c28a068527ffa5120523da4e2e4dc384327c452b31a2023a6",
         "dependencies": ["psutil"]
     },
     {
@@ -237,7 +237,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "calendar_tool",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/calendar_tool.py",
-        "sha256": "8aed02b12f245e2c972ca2e2a9838f9d5b211920f99be6670fe0a46873493a84",
+        "sha256": "2ce0913e5c259ecc95066caf55d19996ce423d90daca56667172e3c190ef9628",
         "dependencies": ["google-api-python-client", "google-auth-httplib2", "google-auth-oauthlib", "tzdata"]
     },
     {
@@ -252,7 +252,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "local_calendar",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/local_calendar.py",
-        "sha256": "1709f48814607c1a78d3a3d4e4b0ca894578b1b5425c6ae21662d4640483e24c",
+        "sha256": "6a55cb4e95cc85949f2f53e27d46d00318021ecc7a7928224e8aac31dc01f865",
         "dependencies": []
     },
     {
@@ -266,7 +266,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "pc_optimizer",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/pc_optimizer.py",
-        "sha256": "741585b2c3c942c23723bd5adfb6274d03f9b312a2d70e95aa122502f15d2917",
+        "sha256": "d3c80d30bdf7db4281c91d6fb0eb1946b47c775e9c004e7f6eb0809800b0a253",
         "dependencies": []
     },
     {
@@ -286,7 +286,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "reminder",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/reminder.py",
-        "sha256": "66fb1fce903fc2d504d52a4c2db7aa5d32e01d4d403f4dbfb68bf3ffb186c517",
+        "sha256": "4a3cdcf8257e4182819a4d5c9dc0cf7f75956f2088a2cd748ff78c15acb28085",
         "dependencies": []
     },
     {
@@ -300,7 +300,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "expense_tracker",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/expense_tracker.py",
-        "sha256": "5a902e6eb31b353fed4d4973f66e246969d98972c185014d3dfbc0c3498e2f7f",
+        "sha256": "12004939dd2767a3c102d39013aa7c8031fa214067fc536f988436b3a26b425c",
         "dependencies": []
     },
     {
@@ -323,7 +323,7 @@ AVAILABLE_PLUGINS = [
         ],
         "module_name": "app_usage",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/app_usage.py",
-        "sha256": "751aa11b9e8762754ad8dd17efb29ab93fcd3a425f1c08526f166bd3c3d00297",
+        "sha256": "6db528bed0ed1555c33b7dad06ebadfc915f5d657c8ed278f9d8446b33b62451",
         "dependencies": ["psutil"]
     },
     {
@@ -332,7 +332,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["search_files"],
         "module_name": "file_search",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/file_search.py",
-        "sha256": "2518b7d72ca608741e3cefdb90218c0187428d870fb657ed44d5958006be4e57",
+        "sha256": "e188c796be7ea4b9afd64ed62162599184571ae4540e64fca4a4196d52038876",
         "dependencies": []
     },
     {
@@ -343,7 +343,7 @@ AVAILABLE_PLUGINS = [
                        "set_device_room", "list_rooms", "control_room", "delete_room"],
         "module_name": "iot_control",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/iot_control.py",
-        "sha256": "68d0dc1c246e9e46793af7917d1317627d437f67039565b37304606eaec147b7",
+        "sha256": "e7362c92256b50fadc66f734207c20eff5bfb79e5d38fe209d1395e6f993ef91",
         "dependencies": ["python-kasa", "tinytuya"]
     },
     {
@@ -368,7 +368,7 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/todo_list.py",
         # 2026-09-29 로컬 신규 추가 — system_history와 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
-        "sha256": "2f6162f60f410ce7703ad1b7df3868740ba41982aaf0c7b7d1eb206d86af13cb",
+        "sha256": "166e5abd15258863767e3b4c83b32f30bce1985f75b11e94f80fdeaba926e39a",
         "dependencies": []
     },
     {
@@ -379,7 +379,7 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/notes.py",
         # 2026-09-29 로컬 신규 추가 — 아직 GitHub에 push 전이라 로컬 파일
         # 기준으로만 정확한 값(push 시 재계산 필요, 다른 신규 항목과 동일).
-        "sha256": "0cf7d4cce9510b56bfd927cc923b44ffedfa5846500b5a0ea60d762b2bea554b",
+        "sha256": "9ab4b9808e2bee82687c9ea9dda540df50c514f72c9f0bb24fe8c53dcd67872c",
         "dependencies": []
     },
     {
@@ -401,7 +401,7 @@ AVAILABLE_PLUGINS = [
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/text_tools.py",
         # 2026-09-29 로컬 신규 추가 — 다른 신규 항목과 동일하게 아직 GitHub에
         # push 전이라 로컬 파일 기준으로만 정확한 값(push 시 재계산 필요).
-        "sha256": "9c99438eec24f2edbdf0faaa154de801e2ccf89e1e6b7b7de3afee709ae20903",
+        "sha256": "b83f654531d697c3780bf4cabfcb40d7a7ae475e8441dba888184c9817b4f8a3",
         "dependencies": []
     },
     {

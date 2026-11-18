@@ -12,7 +12,7 @@ from core import reply_actions as ra
 from core import reply_overview as ro
 from core import report_style, small_talk, voice
 
-ALL_NAMES = ["일정·캘린더", "할 일", "메모", "타이머·알림", "PC 상태", "PC 정리", "보안 점검", "파일 찾기", "최저가 검색",
+ALL_NAMES = ["일정·캘린더", "할 일", "메모", "타이머·알림", "PC 상태", "PC 정리", "보안 점검", "파일 찾기", "날씨", "최저가 검색",
              "가계부", "앱 사용 시간", "실시간 감시", "스마트 기기", "요약·번역·메일 초안", "데이터 백업·활동 기록"]
 
 
@@ -28,12 +28,12 @@ def _c(monkeypatch):
 def test_report_shape():
     text = ro.report()
     lines = text.split("\n")
-    assert lines[0] == "📋 루미가 도와드릴 수 있는 일 · 15가지"
+    assert lines[0] == "📋 루미가 도와드릴 수 있는 일 · 16가지"
     assert report_style.lint_report(text) == []
     for name in ALL_NAMES:
         assert name in text, name
     assert [f[0] for f in ro.FEATURES] == ALL_NAMES
-    assert len(ro.FEATURES) == 15 and lines[0].endswith("15가지")
+    assert len(ro.FEATURES) == 16 and lines[0].endswith("16가지")
     assert len(re.findall(r"[\U0001F000-\U0001FAFF]", text)) == 2        # 머리줄 📋 + 맺음 👉 만
     assert text.count("?") == 1 and lines[-1] == "👉 이 중에 사용 예를 알려 드릴 기능이 있을까요?"
     assert not re.search(r"하세요|말씀해|물어보", text)
@@ -71,12 +71,12 @@ def test_overview_run_registers_offers_without_model(monkeypatch):
     w, out = _worker("루미 기능 설명해줘", monkeypatch, calls)
     w.run()
     assert calls == [] and out[0] == "🤖 로컬 비서: " + ro.report()
-    assert ra.LAST_OFFER is not None and len(ra.LAST_OFFER.offers) == 15
+    assert ra.LAST_OFFER is not None and len(ra.LAST_OFFER.offers) == 16
     assert all(o.func == ro.EXAMPLE_FUNC for o in ra.LAST_OFFER.offers)
 
 
 @pytest.mark.parametrize("answer,name", [("일정", "일정·캘린더"), ("캘린더", "일정·캘린더"), ("할 일", "할 일"), ("메모", "메모"),
-                                          ("타이머", "타이머·알림"), ("알림", "타이머·알림"), ("가계부", "가계부"), ("최저가", "최저가 검색"),
+                                          ("타이머", "타이머·알림"), ("알림", "타이머·알림"), ("가계부", "가계부"), ("날씨", "날씨"), ("최저가", "최저가 검색"),
                                           ("스마트 기기", "스마트 기기"), ("임시 파일", "PC 정리"), ("악성코드", "보안 점검"), ("백업", "데이터 백업·활동 기록")])
 def test_pick_by_feature_name_gives_examples_without_model(answer, name, monkeypatch):
     _register()
@@ -88,7 +88,7 @@ def test_pick_by_feature_name_gives_examples_without_model(answer, name, monkeyp
     for ex in ro.FEATURE_EXAMPLES[name]:
         assert f'"{ex}"' in reply
     assert reply.endswith("다른 기능의 사용 예도 알려 드릴까요?") and "하세요" not in reply
-    assert ra.LAST_OFFER is not None and len(ra.LAST_OFFER.offers) == 15      # 이어서 다른 기능도 고를 수 있다
+    assert ra.LAST_OFFER is not None and len(ra.LAST_OFFER.offers) == 16      # 이어서 다른 기능도 고를 수 있다
 
 
 def test_yes_asks_which_no_clears(monkeypatch):
@@ -113,7 +113,7 @@ def test_unrelated_sentence_clears_and_long_sentence_with_short_name_not_hijacke
 def test_casual_conversion_keeps_report_lines():
     casual = small_talk.to_casual(ro.report())
     assert casual.split("\n")[1:7] == ro.report().split("\n")[1:7]
-    assert casual.startswith("📋 루미가 도와드릴 수 있는 일 · 15가지")
+    assert casual.startswith("📋 루미가 도와드릴 수 있는 일 · 16가지")
     assert small_talk.to_casual(ro.example_reply("메모")).endswith("다른 기능의 사용 예도 알려 줄까?")
 
 
@@ -133,7 +133,7 @@ COMMANDS = [
     "일정 추가", "내일 일정", "일정 알려줘", "일정 삭제", "내일 3시 일정 잡아줘", "메모 보여줘", "메모 지워줘", "타이머 10분", "타이머 3분 맞춰줘",
     "타이머 취소", "알림 꺼줘", "할 일 추가", "정리해줘", "임시 파일 얼마나 있는지 알려줘", "컴퓨터 상태 보여줘", "백업해줘", "번역해줘",
     "요약해줘", "메일 보내줘", "이번달 지출 보여줘", "거실 전등 켜줘", "아이폰 최저가 알려줘", "실시간 감시 시작해줘", "악성코드 검사해줘",
-    "다운로드 폴더 열어줘", "파일 찾아줘 보고서", "일정 삭제 방법", "타이머 취소하는 방법",
+    "다운로드 폴더 열어줘", "파일 찾아줘 보고서", "일정 삭제 방법", "타이머 취소하는 방법", "오늘 날씨 알려줘", "내일 날씨 어때", "날씨 알려줘",
 ] + [ex for exs in ro.FEATURE_EXAMPLES.values() for ex in exs]
 
 
@@ -146,7 +146,7 @@ def test_commands_are_not_hijacked_and_offer_is_cleared(text):
 
 @pytest.mark.parametrize("text,name", [
     ("타이머", "타이머·알림"), ("가계부", "가계부"), ("임시 파일", "PC 정리"), ("일정", "일정·캘린더"), ("메모", "메모"), ("정리", "PC 정리"),
-    ("악성코드", "보안 점검"), ("최저가", "최저가 검색"), ("백업", "데이터 백업·활동 기록"), ("스마트 기기", "스마트 기기"),
+    ("악성코드", "보안 점검"), ("날씨", "날씨"), ("최저가", "최저가 검색"), ("백업", "데이터 백업·활동 기록"), ("스마트 기기", "스마트 기기"),
     ("요약", "요약·번역·메일 초안"), ("번역", "요약·번역·메일 초안"), ("메일", "요약·번역·메일 초안"), ("활동 기록", "데이터 백업·활동 기록"),
     ("앱 사용 시간", "앱 사용 시간"), ("실시간 감시", "실시간 감시"), ("타이머요", "타이머·알림"), ("타이머는", "타이머·알림"),
     ("타이머 사용 예 알려줘", "타이머·알림"), ("일정 사용법", "일정·캘린더"), ("가계부 예시 보여줘", "가계부"), ("메모 사용법 알려줘요", "메모"),
@@ -197,3 +197,11 @@ def test_descriptions_are_specific():
     desc = {n: d for n, d, _e, _a in ro.FEATURES}
     assert "확인을 거쳐" in desc["PC 정리"] and "지켜보고" in desc["실시간 감시"]
     assert desc["메모"] != "메모를 저장해 둬요." and desc["할 일"] != "할 일을 추가하고 볼 수 있어요."
+
+
+def test_weather_in_life_group_with_examples():
+    lines = ro.report().splitlines()
+    assert any(ln.startswith("생활 — 날씨, ") for ln in lines)
+    assert ro.FEATURE_EXAMPLES["날씨"] == ("오늘 날씨 어때?", "이번주 날씨 알려줘")
+    reply = ro.example_reply("날씨")
+    assert reply.startswith("날씨는 ") and '"오늘 날씨 어때?"' in reply and "다른 기능의 사용 예도 알려 드릴까요?" in reply

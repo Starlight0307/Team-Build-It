@@ -247,14 +247,14 @@ def add_note(text: str, tags: str = "") -> str:
     if not text:
         return "⚠️ 어떤 내용을 메모할지 알려주세요."
     if len(text) > _MAX_TEXT_LENGTH:
-        return f"⚠️ 메모 내용이 너무 길어요({len(text)}자, 최대 {_MAX_TEXT_LENGTH}자) — 조금 줄여서 다시 말씀해주세요."
+        return f"⚠️ 메모 내용이 너무 길어요({len(text)}자, 최대 {_MAX_TEXT_LENGTH}자) — 조금 줄여서 알려 주시면 저장할 수 있어요."
 
     tag_list = _parse_tags(tags)
     if len(tag_list) > _MAX_TAGS:
-        return f"⚠️ 태그가 너무 많아요({len(tag_list)}개, 최대 {_MAX_TAGS}개) — 몇 개만 골라서 다시 말씀해주세요."
+        return f"⚠️ 태그가 너무 많아요({len(tag_list)}개, 최대 {_MAX_TAGS}개) — 몇 개만 골라서 알려 주시면 저장할 수 있어요."
     too_long = [t for t in tag_list if len(t) > _MAX_TAG_LENGTH]
     if too_long:
-        return f"⚠️ 태그가 너무 길어요('{too_long[0]}', 최대 {_MAX_TAG_LENGTH}자) — 조금 줄여서 다시 말씀해주세요."
+        return f"⚠️ 태그가 너무 길어요('{too_long[0]}', 최대 {_MAX_TAG_LENGTH}자) — 조금 줄여서 알려 주시면 저장할 수 있어요."
 
     data = _load()
     seq = data["next_seq"]
@@ -384,7 +384,7 @@ def _find_note(items: list, item: str):
         return None, f"⚠️ '{item}'과(와) 일치하는 메모를 찾을 수 없어요."
     if len(matches) > 1:
         names = ", ".join(f"{t['seq']}번 '{t['text']}'" for t in matches)
-        return None, f"⚠️ 여러 개가 일치해요({names}) — 번호로 다시 말씀해주세요."
+        return None, f"⚠️ 여러 개가 일치해요({names}) — 번호로 다시 알려 주시면 찾아볼게요."
     return matches[0], None
 
 
@@ -417,7 +417,7 @@ def update_note(item: str, new_text: str) -> str:
     if not new_text:
         return "⚠️ 새 메모 내용을 알려주세요."
     if len(new_text) > _MAX_TEXT_LENGTH:
-        return f"⚠️ 메모 내용이 너무 길어요({len(new_text)}자, 최대 {_MAX_TEXT_LENGTH}자) — 조금 줄여서 다시 말씀해주세요."
+        return f"⚠️ 메모 내용이 너무 길어요({len(new_text)}자, 최대 {_MAX_TEXT_LENGTH}자) — 조금 줄여서 알려 주시면 저장할 수 있어요."
 
     data = _load()
     found, error = _find_note(data["items"], item)

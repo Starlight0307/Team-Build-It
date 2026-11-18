@@ -160,21 +160,31 @@ def test_direct_status_hook_registers_offer_only_in_context():
     assert ai_worker._build_system_status_report("다른 글") is None
 
 
-# ── 종합 점검은 항목 줄, PC 정리는 이전 모양 유지 ──
-def test_health_check_and_cleanup_keep_conversational_system_section():
+# ── 종합 점검·PC 정리는 둘 다 보고서 항목 줄(2026-11-18부터 PC 정리도) ──
+def test_health_check_and_cleanup_use_report_lines_for_system_section():
     old = ai_worker._build_system_info_reply(_sys())
     assert old.startswith("지금 컴퓨터 상태를 살펴보니 운영체제는 Windows 11이고") and "📋" not in old
     assert ai_worker._build_deterministic_reply(_sys()) == old       # 등록 빌더는 그대로 대화체
     rep = ai_worker._build_pc_health_check({"get_system_info": lambda: _sys()})
     # 종합 점검의 시스템 구간은 항목 줄 보고서(2026-11-12) — 수치는 그대로, 이모지는 제목 줄 하나뿐
-    assert "📋 컴퓨터 상태" not in rep and "📋 시스템 상태" in rep
+    assert "📋 컴퓨터 상태" not in rep and "🖥️ 시스템 상태" in rep
     assert "CPU — 18.0% (16코어)" in rep and "메모리 — 17.3GB 사용 / 총 31.1GB" in rep and "디스크 — 1332.0GB 남음 / 총 1862.0GB" in rep
     assert "지금 컴퓨터 상태를 살펴보니" not in rep
     clean = ai_worker._build_pc_cleanup({"get_system_info": lambda: _sys()})
-    assert old in clean and "📋 컴퓨터 상태" not in clean
+    assert old not in clean and "📋 컴퓨터 상태" not in clean and "📋 PC 정리 점검" in clean
+    assert "디스크 — 1862.0GB 중 1332.0GB 남음 (72%)" in clean and "운영체제" not in clean
 
 
 def test_summarize_single_sysinfo_uses_report_but_multi_does_not():
     assert ai_worker._summarize_tool_results([], [_sys()]).startswith("📋 컴퓨터 상태")
     multi = ai_worker._summarize_tool_results([], [_sys(), _sys()])
     assert "📋" not in multi and multi.count("지금 컴퓨터 상태를 살펴보니") == 2
+
+
+def test_status_report_says_only_numbers_were_checked_and_points_to_full_check():
+    """"PC 상태 점검"은 수치만 읽는다 — 보안까지 본 것처럼 읽히지 않게 종합 점검을 안내한다(질문은 맺음말 하나)."""
+    for kw in ({}, {"cpu_temp": "45.0°C", "gpu": "RTX", "gpu_temp": "50°C"}):
+        text, _offers = reply_status.build(_sys(**kw))
+        assert reply_status.SCOPE_NOTE in text and "PC 종합 점검" in text
+        assert text.index(reply_status.SCOPE_NOTE) < text.rindex("👉") and text.count("👉") == 1
+        assert text.count("?") == 0

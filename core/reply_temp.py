@@ -43,3 +43,35 @@ def build(raw):
         head = f"임시 파일이 {count:,}개, 약 {size} 있어요."
     return (f"{head} 제가 정리해 드릴까요?",
             [Offer(label="임시 파일을 정리해 드릴까요?", func="clean_temp_files", args={})])
+
+
+def value_text(raw):
+    """PC 정리 보고서의 "임시 파일" 항목 값(문장 아님, 질문 없음). 형식을 못 알아보면 None."""
+    text = str(raw or "").strip()
+    if text.startswith(_EMPTY):
+        return "정리할 임시 파일이 없어요"
+    m = _FOUND.match(text)
+    if not m:
+        return None
+    count = int(m.group("n"))
+    size = _size(m.group("num"), m.group("unit"))
+    if count >= SCAN_LIMIT:      # build 와 같은 이유로 "이상"이라고 정직하게 말한다
+        return f"{SCAN_LIMIT:,}개 이상, 약 {size} 이상 ({SCAN_LIMIT:,}개까지만 확인)"
+    return f"{count:,}개, 약 {size}"
+
+
+# ── "임시 파일 얼마나 있어?" 같은 조회 질문 (2026-11-17) ──
+# 모델 도구 선택 단계에서 2분 넘게 걸린 문장이다. 정리·삭제 같은 실행 말이 섞이면 아니다(기존 정리 제안 흐름이 맡는다).
+_TEMP_WORD = re.compile(r"임시\s*파일|임시파일|temp\s*파일|tmp\s*파일|temp\s*files?|tmp\s*files?", re.I)
+_TEMP_ACTION = re.compile(r"지워|지우|삭제|정리|비워|비우|청소|치워|없애|제거|되돌|복구|복원|clean|delete|remove")
+_TEMP_OTHER = re.compile(r"어떻게|왜|뭐야|뭔데|어디|위치|경로|폴더|그리고|하고|그런데|근데|이랑|면\s")     # 방법·원인·위치·복합 요청은 모델 쪽 몫
+_TEMP_ASK = re.compile(r"얼마|몇|있어|있나|있니|있는지|있을까|용량|크기|많|확인|점검|보여|알려|조회|스캔|검사|얼만큼")
+
+
+def is_scan_question(text) -> bool:
+    t = str(text or "").strip().lower()
+    if not t or len(t) > 40 or not _TEMP_WORD.search(t):
+        return False
+    if _TEMP_ACTION.search(t) or _TEMP_OTHER.search(t):
+        return False
+    return bool(_TEMP_ASK.search(t)) or _TEMP_WORD.sub("", t).strip(" ?!.~") in ("", "가", "는", "은", "도")

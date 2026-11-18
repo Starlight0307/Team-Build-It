@@ -72,13 +72,14 @@ def test_flagged_process_scan_with_unverified_note():
             + "⛔ 의심스러운 프로그램 1개 발견:\n"
             + "  ⚠️ svchost.exe (실행 번호: 42) | 사용자: me\n"
             + "     발견 이유: Windows 시스템 프로그램 이름인데 시스템 폴더가 아닌 곳에서 실행 중 (C:\\x\\svchost.exe)\n"
-            + "\n💡 종료하고 싶은 프로그램의 이름이나 번호를 말씀해주시면 종료해드릴게요.")
+            + "\n💡 종료하려는 프로그램의 이름이나 번호를 알려 주시면 종료해 드릴 수 있어요.")
 
     reply = _build_suspicious_process_reply(_HEAD + body)
 
     assert reply is not None
-    assert "- svchost.exe (실행 번호: 42)" in reply
-    assert "시스템 프로그램 12개는 관리자 권한 부족 등으로" in reply
+    assert "svchost.exe(번호 42)" in reply
+    assert "❔ Windows 시스템 프로그램 12개 — 실행 위치 확인 못 함" in reply
+    assert "확인 못 함 1건" in reply.split("\n")[0]
 
 
 # ── 시작프로그램 결과의 ❔(바로가기 대상 확인 못 함) ─────────────────────

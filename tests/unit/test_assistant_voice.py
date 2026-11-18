@@ -135,11 +135,27 @@ def test_suspicious_process_fallback_offers_kill_choices(monkeypatch):
            + aw._SUSPICIOUS_PROC_FOOTER)
     with aw.offer_context("s", "guest"):
         out = aw._build_suspicious_process_reply(raw)
-    assert "어떤 걸 종료해 드릴까요? ① evil.exe ② bad one" in out and not FORBIDDEN.search(out)
+    assert out.startswith("📋 의심 프로세스 점검 · 확인 필요 2건") and not FORBIDDEN.search(out)
+    assert "⚠️ evil.exe(번호 11) — " in out and "⚠️ bad one(번호 12) — " in out
+    assert out.rstrip().endswith("👉 어떤 걸 종료해 드릴까요?") and "①" not in out
+    assert "점검한 프로그램 — 10개" in out and "위험" not in out.split("\n")[0]
     assert "말씀해주시면" not in out
     assert ra.LAST_OFFER is not None
     assert [(o.func, o.args["process_name_or_number"]) for o in ra.LAST_OFFER.offers] == \
         [("kill_process", "evil.exe"), ("kill_process", "bad one")]
+    assert all(o.by_name for o in ra.LAST_OFFER.offers)
+
+
+def test_suspicious_process_fallback_single_and_lint():
+    from core import report_style as rs
+    raw = ("[🚨 의심 프로그램 점검 결과] (t)\n실행 중인 프로그램 10개를 확인했습니다.\n\n⛔ 의심스러운 프로그램 1개 발견:\n"
+           "  ⚠️ evil.exe (실행 번호: 11) | 사용자: a\n     발견 이유: 알려진 해킹 도구와 이름이 같음 (x) / 이유2\n"
+           + aw._SUSPICIOUS_PROC_FOOTER)
+    with aw.offer_context("s", "guest"):
+        out = aw._build_suspicious_process_reply(raw)
+    assert out.rstrip().endswith("👉 제가 'evil.exe' 프로그램을 종료해 드릴까요?")
+    assert "외 1가지" in out and rs.lint_report(out) == []
+    assert [(o.func, o.args["process_name_or_number"]) for o in ra.LAST_OFFER.offers] == [("kill_process", "evil.exe")]
 
 
 def _real_func_map():
@@ -186,7 +202,7 @@ def test_real_plugin_outputs_have_no_orders_in_all_symptoms():
     "전문가에게 문의하세요.", "확인해 보세요.", "으로 두세요.", "바꿔보세요.", "관리자 권한으로 실행해주세요.",
     "이름을 알려주세요.", "숫자로 알려주세요.", "즉시 삭제하세요.", "443번(HTTPS)을 사용하세요.", "다른 네트워크를 쓰세요.",
     "인증서를 꼭 설정하세요.", "공유 권한을 제한하세요.", "번호를 전부 변경하세요.", "해당 프로세스를 우클릭 → 작업 끝내기.",
-    "번호를 말해 주세요.", "이름이나 번호를 말씀해주시면 종료해드릴게요.", "백신 검사를 해 주세요.", "클릭해 주세요.",
+    "번호를 말해 주세요.", "이름이나 번호를 말씀해주시면 종료해드릴게요.", "💡 종료하려는 프로그램의 이름이나 번호를 알려 주시면 종료해 드릴 수 있어요.", "알려 주시겠어요?", "백신 검사를 해 주세요.", "클릭해 주세요.",
     "선택해 주세요.", "열어 주세요.", "입력해 주세요.", "올려 주세요.", "확인해 주시기 바랍니다.", "'열린 포트 보여줘'라고 하면 볼 수 있어요.",
 ])
 def test_every_known_plugin_order_is_dropped(order):
@@ -431,3 +447,25 @@ def test_real_shape_reports_are_short_and_update_appears_once():
     assert sum(1 for ln in text.split(chr(10)) if ln.startswith(("🚨", "⚠️", "❔", "ℹ️")) and "업데이트" in ln.split(" — ")[0]) == 1
     assert len(text) <= 450, (len(text), text)
     assert "(N/M" not in text and report_style.lint_report(text) == []
+
+
+def test_suspicious_process_fallback_marks_impersonation_but_never_asserts_malware():
+    from core import report_style as rs
+    raw = ("[🚨 의심 프로그램 점검 결과] (t)\n실행 중인 프로그램 10개를 확인했습니다.\n\n⛔ 의심스러운 프로그램 2개 발견:\n"
+           "  ⚠️ svchost.exe (실행 번호: 42) | 사용자: a\n     발견 이유: Windows 시스템 프로그램 이름인데 시스템 폴더가 아닌 곳에서 실행 중 (C:\\x\\svchost.exe)\n"
+           "  ⚠️ tool.exe (실행 번호: 43) | 사용자: a\n     발견 이유: 임시 폴더에서 실행되면서 인터넷과 연결 중\n"
+           + aw._SUSPICIOUS_PROC_FOOTER)
+    with aw.offer_context("s", "guest"):
+        out = aw._build_suspicious_process_reply(raw)
+    lines = out.split("\n")
+    assert lines[0] == "📋 의심 프로세스 점검 · 확인 필요 2건 · 그중 1건은 특히 주의"
+    assert lines[1].startswith("🚨 svchost.exe(번호 42) — ") and lines[2].startswith("⚠️ tool.exe(번호 43) — ")
+    assert "C:\\" not in out and rs.lint_report(out) == []
+    assert not any(w in out for w in ("악성코드입니다", "감염", "해킹당"))
+
+
+def test_new_statement_phrasing_is_dropped_but_known_facts_kept():
+    from core.symptom_triage import _drop_orders
+    assert _drop_orders("알려진 해킹 도구가 1개 있어요.") == "알려진 해킹 도구가 1개 있어요."
+    assert _drop_orders("알려진 취약점은 없어요. 번호를 다시 알려 주시면 찾아볼게요.") == "알려진 취약점은 없어요."
+    assert _drop_orders("1개 발견했어요. 권한이 없어요. 알려 주시겠어요?") == "1개 발견했어요. 권한이 없어요."

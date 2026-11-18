@@ -28,18 +28,19 @@ _ORIGINAL_OLLAMA_CHAT = ollama.chat
 # ── 모델이 죽거나 멈췄을 때의 대처 (2026-11-12) ──
 # 2026-11-12 실측: llama-server가 7일에 13번 죽었고(메모리 부족 의심), 죽은 뒤 질문마다 240초 넘게 응답이 없었다.
 # 원인: ollama.Client()를 시간 제한 없이 만들어(timeout=None) 응답이 영영 안 오면 끝없이 기다렸다.
-OLLAMA_TIMEOUT_LOADED_S = 90          # 모델이 이미 올라와 있을 때 응답을 기다리는 기본 상한(초)
-OLLAMA_TIMEOUT_COLD_S = 180           # 모델을 처음 올리는 중일 때(첫 로딩은 오래 걸릴 수 있다)
+OLLAMA_TIMEOUT_LOADED_S = 180         # 모델이 이미 올라와 있을 때 응답을 기다리는 기본 상한(초) — 2026-11-18 사용자 요청으로 90→180(이 PC 는 내장 그래픽이라 느린 질문이 90초를 넘는다)
+OLLAMA_TIMEOUT_COLD_S = 240           # 모델을 처음 올리는 중일 때(첫 로딩은 오래 걸릴 수 있다) — 180→240
 # 스트리밍을 쓰지 않아 read 시간 제한은 '프롬프트 처리 + 답 전체 생성' 시간이다. 이 PC 실측으로 긴 답(1024토큰)이 약 50초라
 # 기본 90초면 대부분 넉넉하지만, 입력이 길수록 처리 시간이 늘어 정상 응답이 잘릴 수 있다 — 입력 글자 1,000자당 5초를 더하되 최대치를 둔다.
 OLLAMA_TIMEOUT_PER_1K_CHARS_S = 5
-OLLAMA_TIMEOUT_LOADED_MAX_S = 150
-OLLAMA_TIMEOUT_COLD_MAX_S = 240
+OLLAMA_TIMEOUT_LOADED_MAX_S = 300
+OLLAMA_TIMEOUT_COLD_MAX_S = 360
 # 호출 하나(재시도 포함)의 전체 마감, 질문 하나(모델을 여러 번 부를 수 있다)의 예산. 예산이 바닥나도 호출마다 최소 시간은 준다.
-# 최악 합계: 호출 하나는 TOTAL_BUDGET(240초)을 넘지 않는다. 질문 하나는 도구 선택 1회 + 요약 1회(+ 요약 재시도 1회) = 최대 3번
-# 호출이라 예산(240초)이 바닥나기 전까지는 240초, 이후 남은 호출은 MIN_CALL(30초)씩만 받아 최악 약 240 + 30 + 30 = 300초.
-OLLAMA_TOTAL_BUDGET_S = 240
-OLLAMA_QUESTION_BUDGET_S = 240
+# 최악 합계: 호출 하나는 TOTAL_BUDGET(360초)을 넘지 않는다. 질문 하나는 도구 선택 1회 + 요약 1회(+ 요약 재시도 1회) = 최대 3번
+# 호출이라 예산(360초)이 바닥나기 전까지는 360초, 이후 남은 호출은 MIN_CALL(30초)씩만 받아 최악 약 360 + 30 + 30 = 420초.
+# (대기 상한을 COLD_MAX 360 까지 늘렸으므로 예산도 같이 360 — 예산이 240 이면 위 상한이 실제로는 적용되지 않는다.)
+OLLAMA_TOTAL_BUDGET_S = 360
+OLLAMA_QUESTION_BUDGET_S = 360
 OLLAMA_MIN_CALL_S = 30
 OLLAMA_MIN_RETRY_S = 10          # 마감까지 이만큼도 안 남았으면 재시도하지 않는다
 OLLAMA_RETRY_WAIT_S = 1.5        # 실패 뒤 다시 시도하기 전 잠깐 기다리는 시간
@@ -210,11 +211,13 @@ _SLOW_TRIAGE_HINT = "이 목록은 CPU 사용량만 본 것이고, 메모리·�
 
 from core import small_talk, user_memory
 from core import reply_actions as _reply_actions
+from core import report_style as _report_style
 from core import reply_appusage as _reply_appusage
 from core import reply_fallback as _reply_fallback
 from core import reply_files as _reply_files
 from core import reply_quiet as _reply_quiet
 from core import reply_battery as _reply_battery
+from core import reply_startup_setting as _reply_startup_setting
 from core import reply_briefing as _reply_briefing
 from core import reply_login as _reply_login
 from core import reply_overview as _reply_overview
@@ -543,7 +546,19 @@ def _describe_delete_duplicate_files(a: dict, func_map: dict) -> str:
     to_delete = [f["path"] for g in target_groups for f in g["files"][1:]]
     total_bytes = sum(g["size"] * max(len(g["files"]) - 1, 0) for g in target_groups)
     if to_delete:
-        desc += f"\n\n현재 확인된 삭제 대상: {len(to_delete)}개 파일, 약 {_format_size(total_bytes)}"
+        if group_index:
+            g0 = target_groups[0]
+            which = f"방금 스캔한 목록의 {group_index}번 그룹(파일 하나 {_format_size(g0['size'])}, {len(g0['files'])}개)"
+        elif len(target_groups) > DUP_PAGE_SIZE:
+            which = f"모든 그룹({len(target_groups)}개) — 화면에 보이지 않은 그룹도 포함"
+        else:
+            which = f"모든 그룹({len(target_groups)}개)"
+        desc += f"\n\n삭제 범위: {which}"
+        desc += f"\n현재 확인된 삭제 대상: {len(to_delete)}개 파일, 약 {_format_size(total_bytes)}"
+        kept = [g["files"][0]["path"] for g in target_groups[:3]]
+        desc += "\n남기는 파일(그룹마다 가장 오래된 1개): " + ", ".join(_path_basename(p) for p in kept)
+        if len(target_groups) > len(kept):
+            desc += f" 외 {len(target_groups) - len(kept)}개 그룹"
         preview_paths = to_delete[:5]
         desc += "\n" + "\n".join(f"  - {p}" for p in preview_paths)
         if len(to_delete) > len(preview_paths):
@@ -1595,6 +1610,53 @@ def _keep_search_keyword(value, ctx):
     return " ".join(kept) if kept else None
 
 
+# ── 메모 검색(search_note.keyword)·상품 가격 검색(search_product_price.query/keyword) 검색어 근거 판정 (2026-11-17) ──
+# 같은 위험: 모델이 말하지 않은 단어를 검색어에 지어 붙이거나("맥북 최저가" -> "맥북 프로 M3") 아예 다른 검색어를 준다.
+# 낱말마다 사용자 문장에 있으면 유지(조사만 붙은 값은 조사를 떼도 근거가 되면 인정), 맨 앞·뒤의 도구 낱말("찾아줘", "최저가")은 뗀다,
+# 하나도 남지 않으면 지운다 — 필수 인자라 도구를 부르지 않고 "무엇을 찾을지"만 되묻는다(_GROUND_REQUIRED_ARGS).
+_QUOTE_EDGE = re.compile(r"^[\"'“”‘’「」『』()\[\]<>]+|[\"'“”‘’「」『』()\[\]<>,.!?~]+$")
+_NOTE_TOOL_WORDS = frozenset(_norm_evidence(w) for w in (
+    "메모", "메모한", "메모해둔", "저장한", "노트", "찾아줘", "찾아", "찾기", "검색", "검색해줘", "보여줘", "알려줘", "조회", "목록",
+    "있어", "있나", "뭐", "내", "나의", "관련", "내용"))
+_PRICE_TOOL_WORDS = frozenset(_norm_evidence(w) for w in (
+    "최저가", "가격", "값", "얼마", "얼마야", "검색", "검색해줘", "찾아줘", "찾아", "알려줘", "보여줘", "비교", "싼", "싸게", "다나와",
+    "쇼핑", "상품", "제품", "내", "나의"))
+
+
+def _make_query_keeper(tool_words):
+    def is_tool(tok):
+        base = _PARTICLE_TAIL.sub("", tok) if len(tok) > 2 else tok
+        return _norm_evidence(tok) in tool_words or _norm_evidence(base) in tool_words
+
+    def keep(value, ctx):
+        toks = [t for t in (_QUOTE_EDGE.sub("", t) for t in str(value or "").split()) if t]
+        while toks and is_tool(toks[0]):
+            toks.pop(0)
+        while toks and is_tool(toks[-1]):
+            toks.pop()
+        kept, i = [], 0
+        while i < len(toks):
+            tok = toks[i]
+            base = _PARTICLE_TAIL.sub("", tok) if len(tok) > 2 else tok
+            if _norm_evidence(tok) and _word_in(tok, ctx[0], ctx[1]):
+                kept.append(tok)
+            elif base and base != tok and _norm_evidence(base) and _word_in(base, ctx[0], ctx[1]):
+                kept.append(base)
+            elif (i + 1 < len(toks) and re.fullmatch(r"[A-Za-z]+", tok) and re.fullmatch(r"\d+[A-Za-z]*", toks[i + 1])
+                  and _word_in(tok + toks[i + 1], ctx[0], ctx[1])):
+                kept.append(tok + toks[i + 1])      # "PS 5" 처럼 영문 뒤 숫자를 띄어 쓴 값은 문장의 "ps5"로 인정(문장 비교는 공백을 무시한다)
+                i += 1
+            i += 1
+        joined = " ".join(kept)
+        if not re.search(r"[A-Za-z가-힣]", joined):      # 숫자·기호만 남으면 검색어가 못 된다("iPhone 15" -> "15")
+            return None
+        return joined
+    return keep
+
+
+_keep_note_keyword = _make_query_keeper(_NOTE_TOOL_WORDS)
+_keep_price_query = _make_query_keeper(_PRICE_TOOL_WORDS)
+
 _PERIOD_EVIDENCE = re.compile(
     r"\d+\s*(?:일|주|달|개월|년|days?|weeks?|months?)|이번\s*(?:주|달|월|분기)|다음\s*(?:주|달|월)|지난\s*(?:주|달|월)|올해|내년|오늘|내일|모레|글피|"
     r"한\s*달|두\s*달|일주일|이주일|한\s*주|두\s*주|보름|주일|앞으로|향후|[월화수목금토일]요일|\d{1,2}\s*월|연말|연초|올\s*한\s*해|"
@@ -1616,25 +1678,69 @@ _GROUND_FILTER_RULES = {
     "local_search_events": {"keyword": _keep_search_keyword, "days_range": _keep_days_range},
     "get_upcoming_events": {"days": _keep_days_range},
     "local_get_upcoming_events": {"days": _keep_days_range},
+    "search_note": {"keyword": _keep_note_keyword},
+    "search_product_price": {"query": _keep_price_query, "keyword": _keep_price_query},
 }
 # 정리 뒤 비게 되면 도구를 부르지 않고 "무엇을 찾을지" 한 가지만 묻는 필수 인자(core/reply_fallback.py 의 정보 부족 질문)
-_GROUND_REQUIRED_ARGS = {"search_events": ("keyword",), "local_search_events": ("keyword",)}
+_GROUND_REQUIRED_ARGS = {"search_events": ("keyword",), "local_search_events": ("keyword",), "search_note": ("keyword",)}
+# 여러 인자 중 하나만 있으면 되는 필수 인자(search_product_price 는 query 또는 keyword) — 모두 비면 첫 이름을 되묻는다
+_GROUND_REQUIRED_ANY = {"search_product_price": ("query", "keyword")}
 
 
 def _missing_required_after_grounding(func_name, args):
     for key in _GROUND_REQUIRED_ARGS.get(func_name, ()):
         if not str((args or {}).get(key) or "").strip():
             return key
+    anyof = _GROUND_REQUIRED_ANY.get(func_name)
+    if anyof and not any(str((args or {}).get(k) or "").strip() for k in anyof):
+        return anyof[0]
     return None
 
 
-def _ground_filter_args(func_name, args, user_text: str):
+# 앞 말을 가리키는 낱말("그거 최저가 알려줘")이 현재 문장에 있을 때만, 직전 사용자 말 1~2개를 검색어 근거에 더한다(assistant 답은 쓰지 않는다)
+_REFERENT_WORDS = re.compile(
+    r"(?<![가-힣])(?:그거|그걸|그것|그게|그건|거기|아까|방금|위에|위의)(?:는|은|를|을|가|의|에|도|서|에서|랑|와|만|야|예요|이야|요)?(?![가-힣])"
+    r"|(?<![가-힣])위\s*(?:내용|거|것)(?![가-힣])|(?:^|\s)그(?:\s|$)|(?:^|\s)위(?:\s|$)")
+_GROUND_HISTORY_FUNCS = frozenset({"search_note", "search_product_price"})
+
+
+def _history_text(content) -> str:
+    """대화 기록 content 에서 사람이 쓴 글만 — 문자열이거나, 목록 안의 {"type": "text", "text": ...} 의 text. 그 밖은 빈 글."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (list, tuple)):
+        return " ".join(str(p["text"]) for p in content
+                        if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str))
+    return ""
+
+
+def _history_evidence_text(user_text: str, chat_history, limit: int = 2) -> str:
+    """현재 문장에 지시어가 있을 때만 직전 사용자 말(최대 limit개)을 이어 붙여 돌려준다. 없으면 현재 문장 그대로."""
+    cur = str(user_text or "")
+    if not _REFERENT_WORDS.search(cur) or not isinstance(chat_history, (list, tuple)):
+        return cur
+    prev = []
+    for msg in reversed(chat_history):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        txt = _history_text(msg.get("content")).strip()
+        if not txt or txt == cur.strip():
+            continue
+        prev.append(txt)
+        if len(prev) >= limit:
+            break
+    return " ".join([cur] + prev)
+
+
+def _ground_filter_args(func_name, args, user_text: str, chat_history=None):
     """모델이 준 필터 인자를 사용자 현재 문장과 대조한다 — 근거 있으면 그대로, 반대 근거가 분명하면 교정(할 일 상태·앱 분류),
     근거가 전혀 없으면 지운다(도구 기본값 사용). 기간(period)·날짜 같은 다른 인자는 건드리지 않는다.
     지운·고친 인자는 도구·인자 이름만 로그에 남긴다(문장 원문은 남기지 않는다)."""
     rules = _GROUND_FILTER_RULES.get(func_name)
     if not rules or not isinstance(args, dict):
         return args
+    if func_name in _GROUND_HISTORY_FUNCS:
+        user_text = _history_evidence_text(user_text, chat_history)
     ctx = (_norm_evidence(user_text), str(user_text or "").lower())
     fixed = dict(args)
     for key, keep in rules.items():
@@ -3386,7 +3492,7 @@ _SUSPICIOUS_PROC_ITEM = re.compile(
     re.MULTILINE
 )
 _SUSPICIOUS_PROC_REASON = re.compile(r'^ {5}발견 이유: (?P<reasons>.+)$', re.MULTILINE)
-_SUSPICIOUS_PROC_FOOTER = "💡 종료하고 싶은 프로그램의 이름이나 번호를 말씀해주시면 종료해드릴게요."
+_SUSPICIOUS_PROC_FOOTER = "💡 종료하려는 프로그램의 이름이나 번호를 알려 주시면 종료해 드릴 수 있어요."
 # 2026-10-08: 관리자 권한이 없어 위치를 못 읽은 시스템 프로그램 수를 알리는 줄(본문 첫 줄, 선택).
 # plugins/malware_detection.py의 UNVERIFIED_NOTE_PREFIX로 시작한다.
 _SUSPICIOUS_PROC_UNVERIFIED = re.compile(
@@ -3430,16 +3536,20 @@ def _build_suspicious_process_reply(raw_results: str):
     scanned = m.group('scanned')
     body = m.group('body').strip()
     unverified_note = ""
+    note_items = []      # 보고서 서식용 같은 내용(ℹ️·❔ 줄)
     if (um := _SUSPICIOUS_PROC_UNVERIFIED.match(body)):
         if um.group('os') == "macOS":
             unverified_note = (f" 실행 파일 위치가 없는 macOS 커널 프로그램 {um.group('count')}개는 이름 사칭 여부를 "
                                "판단하지 않았어요.")
+            note_items.append(_report_style.Item("ℹ️", f"macOS 커널 프로그램 {um.group('count')}개", "이름 사칭 여부 판단 안 함"))
         else:
             unverified_note = (f" 다만 Windows 시스템 프로그램 {um.group('count')}개는 관리자 권한 부족 등으로 "
                                "실행 위치를 확인하지 못했어요.")
+            note_items.append(_report_style.Item("❔", f"Windows 시스템 프로그램 {um.group('count')}개", "실행 위치 확인 못 함", "권한 부족"))
         body = body[um.end():].strip()
     if (tm := _SUSPICIOUS_PROC_TRUSTED.match(body + "\n")):
         unverified_note += f" 신뢰 목록에 있는 {tm.group('count')}개는 의심 항목에서 뺐어요."
+        note_items.append(_report_style.Item("ℹ️", f"신뢰 목록 {tm.group('count')}개", "의심 항목에서 제외"))
         body = (body + "\n")[tm.end():].strip()
     if body.startswith(_SUSPICIOUS_PROC_NONE):
         # 뒤에 붙은 범위 안내(ℹ️ 루미 기준이라 백신 검사를 대신하지 않음 등)는 빼지 않고 전한다(2026-10-13)
@@ -3461,13 +3571,22 @@ def _build_suspicious_process_reply(raw_results: str):
     if len(names) != count or len(reasons) != count:
         return None  # 예상 밖 형식 — 안전하게 LLM 경로로 폴백
 
-    result_lines = [
-        f"지금 실행 중인 프로그램 {scanned}개를 살펴보니 그중 {count}개가 의심스러워요:"
-    ]
+    # 2026-11-17: 항목이 여럿이고 이유가 길어 보고서 서식(core/report_style.py)으로 쓴다 — 개수·이름·번호·이유는 그대로,
+    # 위험이라고 단정하지 않는다(모두 ⚠️ 확인 필요). 이유 문구는 reply_malware의 짧은 풀이를 쓰고, 못 풀면 정리한 원문 일부.
+    from core import reply_malware as _rm
+    r_items = []
     for (name, pid), reason in zip(names, reasons):
-        result_lines.append(f"- {name} (실행 번호: {pid}) — {reason}")
-    if unverified_note:
-        result_lines.append(unverified_note.strip())
+        parts = reason.split(" / ")
+        easy = [_rm._proc_reason_easy(r)[2] for r in parts]          # 이름 사칭·해킹 도구급이면 True
+        k = easy.index(True) if True in easy else 0
+        status, why = _rm._proc_reason_short(parts[k])
+        if len(parts) > 1:
+            status = f"{status} 외 {len(parts) - 1}가지"
+        # 🚨 도 "의심" 표시다 — 악성코드로 확정한다는 뜻이 아니다(머리줄도 "특히 주의"까지만 말한다)
+        r_items.append(_report_style.Item("🚨" if True in easy else "⚠️", f"{_rm._clean(name, 40) or _rm._NAME_OMITTED}(번호 {pid})", status, why))
+    r_items += [i for i in note_items if i.mark == "❔"]
+    r_items += [_report_style.Item("ℹ️", "점검한 프로그램", f"{scanned}개")]
+    r_items += [i for i in note_items if i.mark == "ℹ️"]
     # 사용자에게 이름·번호를 말하게 하지 않고 선택지로 제안한다 — 목록에서 읽은 안전한 이름만, 위험 도구라 확인창을 거친다
     safe_names = []
     for name, _pid in names:
@@ -3475,13 +3594,27 @@ def _build_suspicious_process_reply(raw_results: str):
         if _SAFE_PROC_NAME.fullmatch(name) and name not in safe_names:
             safe_names.append(name)
     safe_names = safe_names[:3]
+    closing = ""
     if len(safe_names) == 1:
-        result_lines.append(f"'{safe_names[0]}' 프로그램을 종료해 드릴까요?")
+        closing = f"👉 제가 '{safe_names[0]}' 프로그램을 종료해 드릴까요?"
+        offers = [_reply_actions.Offer(label=f"{safe_names[0]} 종료", func="kill_process",
+                                       args={"process_name_or_number": safe_names[0]})]
     elif safe_names:
-        result_lines.append("어떤 걸 종료해 드릴까요? " + _reply_actions.render_choices(safe_names))
-    _add_reply_offers([_reply_actions.Offer(label=f"{n} 종료", func="kill_process",
-                                            args={"process_name_or_number": n}) for n in safe_names])
-    return "\n".join(result_lines)
+        closing = "👉 어떤 걸 종료해 드릴까요?"       # 이름은 위 항목 줄에 있다 — 사용자는 이름으로 고른다
+        offers = [_reply_actions.Offer(label=f"{n} 종료", func="kill_process", args={"process_name_or_number": n},
+                                       aliases=(n,), which="어느 프로그램을 종료해 드릴까요?", by_name=True, strict_name=True)
+                  for n in safe_names]
+    else:
+        offers = []
+    _add_reply_offers(offers)
+    text = _report_style.render_report("의심 프로세스 점검", r_items, closing=closing)
+    flagged = [i for i in r_items if i.mark in ("🚨", "⚠️")]
+    sharp = sum(1 for i in flagged if i.mark == "🚨")
+    unknown = sum(1 for i in r_items if i.mark == "❔")
+    head = f"{_report_style.TITLE_MARK} 의심 프로세스 점검 · 확인 필요 {len(flagged)}건"
+    head += f" · 그중 {sharp}건은 특히 주의" if sharp else ""
+    head += f" · 확인 못 함 {unknown}건" if unknown else ""
+    return head + "\n" + text.partition("\n")[2]
 
 
 _SYSINFO_HEADER = re.compile(
@@ -3959,53 +4092,124 @@ _DUP_GROUP_HEADER = re.compile(r"^  (?P<count>\d+)개 중복, 각 (?P<size>[\d.]
 _DUP_GROUP_ITEM = re.compile(r"^    - (?P<path>.+)$")
 
 
-def _build_duplicate_files_reply(raw_results: str):
-    """find_duplicate_files()의 결과(그룹 수, 그룹별 파일 개수·경로)를 LLM에게
-    맡기면 경로를 손상시키거나 파일을 누락시킬 위험이 있다 — 고정 구조를
-    코드가 직접 파싱해서 "선언된 그룹 수 == 실제 파싱된 그룹 수"이고 "그룹별
-    선언 개수 == 그 그룹의 실제 경로 수"까지 검증한 뒤에만 문장을 만든다."""
-    stripped = raw_results.strip()
-    m_none = _DUP_FILES_NONE.match(stripped)
-    if m_none:
-        return f"중복된 파일을 찾지 못했어요. (파일 {m_none.group('scanned')}개 확인)"
+DUP_PAGE_SIZE = 5                  # 중복 파일은 겹치는 분량이 큰 순서로 이만큼씩만 보여 준다
+DUP_PAGE_FUNC = "__duplicate_page__"   # 실행 대상이 아닌 표식 — "다음 5그룹도 보여 드릴까요?"의 "응"을 코드가 받는다(재스캔·도구 호출 없음)
+DUP_SCAN_LIMIT = 5000               # plugins/pc_optimizer.py 의 _SCAN_FILE_LIMIT 과 같은 값
+_LAST_DUPLICATE_VIEW: list = []     # 마지막 중복 파일 결과를 겹치는 분량 큰 순으로 정리한 표 [(개수, 파일 하나 크기 글, 이름)]
 
-    m = _DUP_FILES_HEADER.match(stripped)
+
+def _parse_duplicate_files(raw_results: str):
+    """find_duplicate_files() 결과 → {"declared","scanned","wasted","groups":[(개수, 크기 글, 크기 바이트, 이름)]}.
+    선언된 그룹 수와 실제 그룹 수, 그룹별 선언 개수와 실제 경로 수가 모두 맞을 때만 돌려주고 아니면 None."""
+    m = _DUP_FILES_HEADER.match(str(raw_results or "").strip())
     if not m:
         return None
-    declared_groups = int(m.group('groups'))
-    body_lines = m.group('body').split('\n')
-    i, n = 0, len(body_lines)
-    groups_found = 0
-    lines = [
-        f"중복 파일 그룹을 {declared_groups}개 찾았어요 "
-        f"(총 {m.group('scanned')}개 파일 확인, 절약 가능 용량 약 {m.group('wasted')})."
-    ]
+    lines = m.group('body').split('\n')
+    groups, i, n = [], 0, len(lines)
     while i < n:
-        ln = body_lines[i]
-        if not ln.strip():
+        if not lines[i].strip():
             i += 1
             continue
-        gh = _DUP_GROUP_HEADER.match(ln)
+        gh = _DUP_GROUP_HEADER.match(lines[i])
         if not gh:
-            return None  # 예상 밖 줄 — 안전하게 LLM 경로로 폴백
-        count = int(gh.group('count'))
-        size = gh.group('size')
+            return None
         i += 1
         paths = []
-        while i < n and _DUP_GROUP_ITEM.match(body_lines[i]):
-            paths.append(_DUP_GROUP_ITEM.match(body_lines[i]).group('path'))
+        while i < n and _DUP_GROUP_ITEM.match(lines[i]):
+            paths.append(_DUP_GROUP_ITEM.match(lines[i]).group('path'))
             i += 1
-        if len(paths) != count:
+        if len(paths) != int(gh.group('count')):
             return None
-        groups_found += 1
-        lines.append(f"- {size}짜리 파일 {count}개가 겹쳐요:")
-        for p in paths:
-            lines.append(f"    {p}")
-    if groups_found != declared_groups:
+        try:
+            groups.append((len(paths), gh.group('size'), _size_to_bytes(gh.group('size')), _path_basename(paths[0])))
+        except ValueError:
+            return None
+    if len(groups) != int(m.group('groups')) or not groups:
         return None
+    return {"declared": len(groups), "scanned": int(m.group('scanned')), "wasted": m.group('wasted'), "groups": groups}
+
+
+def _dup_scan_generation():
+    """지금 중복 파일 스캔 세대(삭제 확인창이 쓰는 번호와 같다). 읽지 못하면 None."""
+    try:
+        import plugins.pc_optimizer as _po
+        return _po._SCAN_GENERATION
+    except Exception:
+        return None
+
+
+def _dup_page_offer(page: int):
+    return _reply_actions.Offer(label=DUP_NEXT_LABEL, func=DUP_PAGE_FUNC, args={"page": page, "gen": _dup_scan_generation()})
+
+
+# "응" 말고 "다음"·"더 보여줘"·"계속"도 다음 5그룹 제안의 승낙으로 본다 — 모델로 넘어가 다시 스캔하는 것을 막는다(명령 동사·번호가 섞이면 제외)
+_DUP_NEXT_WORDS = re.compile(r"^(?:다음(?:5개|5그룹|그룹)?|더(?:보여줘|보여주세요|보여줄래|볼래|볼게)|계속(?:해줘|해주세요|해)?)$")
+
+
+def _duplicate_offer_alias(text: str) -> str:
+    cur = _reply_actions.LAST_OFFER
+    if cur is None or not cur.offers or any(o.func != DUP_PAGE_FUNC for o in cur.offers):
+        return text
+    t = re.sub(r"[\s!.,~'\"]+", "", str(text or ""))
+    return "응" if _DUP_NEXT_WORDS.match(t) else text
+
+
+def _duplicate_group_line(rank: int, g) -> str:
+    return f"{rank}. {g[3]} — 파일 하나 {g[1]}, {g[0]}개"
+
+
+def _duplicate_scan_note(scanned: int) -> str:
+    return " 파일이 많아 5천 개까지만 살펴본 결과예요." if scanned >= DUP_SCAN_LIMIT else ""
+
+
+def _duplicate_page_reply(page: int) -> str:
+    """중복 파일 결과의 page(0부터)번째 5그룹 — 마지막 스캔 결과 표에서만 읽는다(재스캔 없음, 삭제 제안 없음)."""
+    rows = list(_LAST_DUPLICATE_VIEW)
+    start = page * DUP_PAGE_SIZE
+    if not rows or start >= len(rows):
+        return "더 보여 드릴 중복 파일 목록이 남아 있지 않아요. 다시 보려면 '중복 파일 찾아줘'라고 해 주세요."
+    shown = rows[start:start + DUP_PAGE_SIZE]
+    lines = [f"겹치는 분량이 큰 순서로 {start + 1}~{start + len(shown)}번째 그룹이에요."]
+    lines += [_duplicate_group_line(start + k + 1, g) for k, g in enumerate(shown)]
+    if start + len(shown) < len(rows):
+        lines.append(f"👉 {DUP_NEXT_LABEL}")
+        _add_reply_offers([_dup_page_offer(page + 1)])
+    else:
+        lines.append("여기까지가 마지막 그룹이에요. 중복 파일은 보여 드리기만 하고 지우지는 않아요.")
     return "\n".join(lines)
 
 
+DUP_NEXT_LABEL = "다음 5그룹도 보여 드릴까요?"
+
+
+def _build_duplicate_files_reply(raw_results: str):
+    """find_duplicate_files() 결과 요약 — 129그룹 전체 경로를 그대로 내면 3만~4만 자가 됐다(2026-11-17 실제 앱).
+    겹치는 분량(파일 하나 크기 × (개수-1))이 큰 5그룹만 파일 이름·크기·개수로 보여 주고, 나머지는 "응"으로 5그룹씩 잇는다.
+    표시용 표는 _LAST_DUPLICATE_VIEW 에 두고 다시 스캔하지 않는다. 읽기 전용 정보 — 삭제는 제안하지 않는다."""
+    stripped = raw_results.strip()
+    m_none = _DUP_FILES_NONE.match(stripped)
+    if m_none:
+        _LAST_DUPLICATE_VIEW.clear()
+        return f"중복된 파일을 찾지 못했어요. (파일 {m_none.group('scanned')}개 확인)"
+    parsed = _parse_duplicate_files(stripped)
+    if parsed is None:
+        return None  # 예상 밖 줄 — 안전하게 LLM 경로로 폴백
+    rows = list(parsed["groups"])     # 정렬하지 않는다 — find_duplicate_files 가 이미 겹치는 분량 큰 순으로 내고, 삭제 캐시 번호와 같은 순서다
+    _LAST_DUPLICATE_VIEW[:] = rows
+    shown = rows[:DUP_PAGE_SIZE]
+    head = f"내용이 같은 파일이 {parsed['declared']}그룹, 겹치는 분량은 약 {parsed['wasted']}예요."
+    head += _duplicate_scan_note(parsed["scanned"])
+    head += (f" 큰 순서로 {len(shown)}그룹만 보여 드릴게요." if len(rows) > len(shown) else " 전부 보여 드릴게요.")
+    lines = [head] + [_duplicate_group_line(k + 1, g) for k, g in enumerate(shown)]
+    if len(rows) > len(shown) and not getattr(_COMPOSITE, "on", False):
+        lines.append(f"👉 {DUP_NEXT_LABEL}")
+        _add_reply_offers([_dup_page_offer(1)])
+    else:
+        lines.append("중복 파일은 보여 드리기만 하고 지우지는 않아요.")
+    return "\n".join(lines)
+
+
+LARGE_FILES_TOP_N = 10      # plugins/pc_optimizer.py find_large_files 의 top_n 기본값
 _LARGE_FILES_HEADER = re.compile(
     r"^\[📦 대용량 파일 목록\] \(총 (?P<count>\d+)개, (?P<min_mb>[\d.]+)MB 이상, 파일 (?P<scanned>\d+)개 확인\)\n"
     r"(?P<body>.+)$", re.DOTALL
@@ -4052,7 +4256,10 @@ def _build_large_files_reply(raw_results: str):
     # 화면에는 이름·용량만 — 2026-10-19 기능 점검: 전체 경로까지 나오니 길고 보기 불편했다. 경로는 기억해 뒀다가
     # "1번 어디 있어?"처럼 물으면 _large_file_location_reply가 알려준다.
     _LAST_LARGE_FILES[:] = items
-    lines = [f"{m.group('min_mb')}MB 이상인 파일을 {declared_count}개 찾았어요 (총 {m.group('scanned')}개 파일 확인)."]
+    if declared_count >= LARGE_FILES_TOP_N:     # 원문의 "총 N개"는 상위 N개로 자른 수라 전체 개수가 아니다
+        lines = [f"{m.group('min_mb')}MB 이상인 파일을 큰 순서로 {declared_count}개만 보여 드려요 (총 {m.group('scanned')}개 파일 확인)."]
+    else:
+        lines = [f"{m.group('min_mb')}MB 이상인 파일을 {declared_count}개 찾았어요 (총 {m.group('scanned')}개 파일 확인)."]
     for i, (size, path) in enumerate(items, 1):
         lines.append(f"{i}. {_path_basename(path)}  ({size})")
     for note in notes:
@@ -4932,7 +5139,7 @@ def _build_goal_status_reply(raw_results: str):
     같은 원칙 — 퍼센트/마커 판정을 LLM이 다시 계산하게 하지 않고 그대로 relay한다."""
     stripped = raw_results.strip()
     if stripped == _GOAL_STATUS_NONE_SET:
-        return "아직 설정된 목표가 없어요. '유튜브 하루 1시간까지만 보고 싶어'처럼 말씀해주시면 설정해드릴게요."
+        return "아직 설정된 목표가 없어요. '유튜브 하루 1시간까지만 보고 싶어'처럼 알려 주시면 설정해 드릴게요."
 
     m_not_found = _GOAL_STATUS_NOT_FOUND.match(stripped)
     if m_not_found:
@@ -5230,7 +5437,8 @@ def _build_calendar_delete_reply(raw_results: str):
     if m:
         hint = m.group("hint").strip()
         if hint:   # "(반복 일정의 일부였어요 — 나머지 회차는 그대로 있어요. …)" — 이미 사용자용 문장
-            hint = " " + hint.strip("() ").rstrip(".") + "."
+            hint = hint.strip("() ").rstrip(".")
+            hint = " " + hint + ("" if hint.endswith(("?", "!", "？", "。")) else ".")
         return f"'{m.group('title')}' 일정을 삭제했어요.{hint}"
     m = _DELETE_SERIES.match(text)
     if m:
@@ -5605,6 +5813,18 @@ def _is_daily_summary_request(text_lower: str) -> bool:
     return any(kw in text_lower for kw in _DAILY_SUMMARY_KEYWORDS)
 
 
+# 합성 답(하루 브리핑·PC 종합 점검·PC 정리)은 맨 끝에 질문 한 줄만 남긴다 — 구간 원문 끝의 "제가 ~해 드릴까요?"와 👉 질문 줄은
+# 떼고 사실 문장만 남긴다(질문이 두 번 보이는 것 방지, 2026-11-17). 합성 답 안에서는 구간 질문에 Offer 를 걸지 않는다.
+_SECTION_QUESTION_SENTENCE = re.compile(r"(?:(?<=[.!。])[ \t]+|^[ \t]*)제가 [^.\n?]*?(?:드릴까요|드릴게요|줄까요|볼까요)\?[ \t]*$", re.M)
+_SECTION_QUESTION_LINE = re.compile(r"^[ \t]*👉[^\n]*[?？][ \t]*$\n?", re.M)
+
+
+def _strip_section_question(text):
+    out = _SECTION_QUESTION_LINE.sub("", str(text or ""))
+    out = _SECTION_QUESTION_SENTENCE.sub("", out)
+    return out.rstrip()
+
+
 @_composite_section
 def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
     """하루 통합 브리핑 — 일정/보안/지출/화면사용시간을 각자 도구로 조회한 뒤,
@@ -5747,7 +5967,16 @@ def _build_daily_summary(func_map: dict, get_active_calendar) -> str:
         return ""
 
     intro = "안녕하세요! 오늘 하루를 정리해드릴게요."
-    return _reply_briefing.wrap(sections, intro, titles)   # 섹션 3개 이상이면 보고서 틀(2026-11-12)
+    section_asks = [m.group(0).strip() for x in sections for m in _SECTION_QUESTION_LINE.finditer(str(x))]
+    sections = [_strip_section_question(x) for x in sections]
+    wrapped = _reply_briefing.wrap(sections, intro, titles)
+    if section_asks and "👉" not in wrapped:        # 보고서 틀이 맺음말을 달지 않았으면 구간의 질문 하나를 맨 끝에 남긴다
+        # 질문은 실제로 이을 수 있는 것만 남긴다 — 자세히 보기 Offer 로 바꿀 수 있으면 등록하고, 아니면 질문을 빼고 사실만 둔다
+        offer = _detail_offer_from_text(section_asks[0])
+        if offer is not None and getattr(_OFFER_LOCAL, "ctx", None) is not None:
+            _add_reply_offers([offer])
+            wrapped += "\n\n" + section_asks[0]
+    return wrapped   # 섹션 3개 이상이면 보고서 틀(2026-11-12)
 
 
 # ─────────────────────────────────────────────
@@ -5860,6 +6089,9 @@ def _single_security_check_request(text_lower: str):
 # 뗀 상태 표시는 말로 옮긴다("확인 필요, …"). 구간별로 따로 달린 안내 주석·맺음말은 하나로 합친다(질문은 하나만).
 _HEALTH_ITEM_LINE = re.compile(r"^(?P<mark>🚨|⚠️|ℹ️|❔|✅) (?P<rest>\S.* — \S.*)$")
 _HEALTH_ITEM_TAG = {"🚨": "바로 확인 필요, ", "⚠️": "확인 필요, ", "ℹ️": "", "❔": "", "✅": ""}
+# 종합 점검 구간 제목 이모지 — 시스템·보안·악성코드·네트워크가 한눈에 구별되게 구간마다 다르게 단다
+_HEALTH_SECTION_MARK = {'get_system_info': "🖥️", 'get_system_security_report': "🛡️",
+                        'get_malware_report': "🦠", 'get_network_security_report': "🌐"}
 
 
 def _health_system_section(raw: str):
@@ -5976,6 +6208,10 @@ def _build_pc_health_check(func_map: dict) -> str:
                 built, section_notes, section_closings = _calm_health_section(built)
                 notes.extend(section_notes)
                 closings.extend((severity, c) for c in section_closings)
+            built = _strip_section_question(built)
+            mark = _HEALTH_SECTION_MARK.get(func_name)
+            if mark and built.startswith(_report_style.TITLE_MARK + " "):     # 구간 제목 이모지를 구간마다 다르게 — 내용이 달라 보이도록
+                built = mark + built[len(_report_style.TITLE_MARK):]
             sections.append(built)
 
     # 1) 시스템 정보(CPU/메모리/디스크) — 점수 리포트 형식이 아니라 고정
@@ -6187,6 +6423,101 @@ def _is_pc_cleanup_request(text_lower: str) -> bool:
     return True
 
 
+_UNIT_BYTES = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}
+_CLEANUP_TOP_NAMES = 3                    # 큰 파일은 이름을 이만큼만 보여 준다
+LARGE_FILES_DETAIL_LABEL = "큰 파일 목록을 자세히 보여 드릴까요?"
+
+
+def _size_to_bytes(text: str) -> float:
+    m = re.match(r"^([\d.]+)([A-Za-z]+)$", str(text).strip())
+    if not m or m.group(2).upper() not in _UNIT_BYTES:
+        raise ValueError(text)
+    return float(m.group(1)) * _UNIT_BYTES[m.group(2).upper()]
+
+
+def _bytes_to_text(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f}{unit}" if (n >= 10 or unit == "B") else f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n:.1f}GB"
+
+
+def _scanned_note(scanned) -> str:
+    """"없음" 결과에 붙는 확인 범위 — 5,000개 상한에 닿았으면 그만큼만 본 것이라고 말한다(단독 답의 "(파일 N개 확인)"과 같은 정보)."""
+    n = int(scanned)
+    return f"{DUP_SCAN_LIMIT:,}개까지만 확인" if n >= DUP_SCAN_LIMIT else f"파일 {n:,}개 확인"
+
+
+def _summarize_large_files(raw: str):
+    """PC 정리 보고서의 "큰 파일" 값 — 개수·합계 용량·큰 순서 상위 3개 이름만(경로·전체 목록 없음). 형식을 못 알아보면 None."""
+    stripped = str(raw or "").strip()
+    _LAST_LARGE_FILES.clear()      # 합성 답은 3개 이름만 보여 주므로 옛 목록의 번호("1번 어디 있어?")가 남아 엉뚱한 파일을 가리키지 않게 비운다
+    m_none = _LARGE_FILES_NONE.match(stripped)
+    if m_none:
+        return f"{m_none.group('min_mb')}MB 이상인 파일은 찾지 못했어요 ({_scanned_note(m_none.group('scanned'))})"
+    m = _LARGE_FILES_HEADER.match(stripped)
+    if not m:
+        return None
+    items, noted = [], False
+    for ln in m.group("body").split("\n"):
+        if not ln.strip():
+            continue
+        im = _LARGE_FILE_ITEM.match(ln)
+        if im:
+            items.append((_size_to_bytes(im.group("size")), _path_basename(im.group("path"))))
+        elif _LARGE_FILES_NOTE.match(ln):
+            noted = True
+        else:
+            return None
+    if len(items) != int(m.group("count")):
+        return None
+    items.sort(key=lambda x: -x[0])
+    names = "·".join(name for _b, name in items[:_CLEANUP_TOP_NAMES])
+    total = _bytes_to_text(sum(b for b, _n in items))
+    if len(items) >= LARGE_FILES_TOP_N:         # 상위 10개로 자른 수라 전체 개수처럼 말하지 않는다
+        lead = f"{m.group('min_mb')}MB 이상 중 큰 것 {len(items)}개 합계 약 {total}"
+    else:
+        lead = f"{m.group('min_mb')}MB 이상 {len(items)}개, 합계 약 {total}"
+    extra = [names] + (["스캔 한도로 일부만 확인"] if noted else [])
+    return f"{lead} ({', '.join(extra)})"
+
+
+def _summarize_duplicate_files(raw: str):
+    """PC 정리 보고서의 "중복 파일" 값 — 그룹 수·겹치는 분량·겹치는 분량이 가장 큰 그룹 1개(읽기 전용 정보, 삭제 제안 없음). 못 알아보면 None."""
+    stripped = str(raw or "").strip()
+    _LAST_DUPLICATE_VIEW.clear()      # 합성 답은 목록을 보여 주지 않으니 옛 단독 목록을 비워 "응"(다음 5그룹)이 엉뚱한 목록을 잇지 않게 한다
+    m_none = _DUP_FILES_NONE.match(stripped)
+    if m_none:
+        return f"중복된 파일은 찾지 못했어요 ({_scanned_note(m_none.group('scanned'))})"
+    parsed = _parse_duplicate_files(stripped)
+    if parsed is None:
+        return None
+    best = max(parsed["groups"], key=lambda g: g[2] * (g[0] - 1))
+    extra = [f"가장 큰 그룹: {best[3]}, 파일 하나 {best[1]} × {best[0]}개"]
+    if parsed["scanned"] >= DUP_SCAN_LIMIT:
+        extra.append(f"{DUP_SCAN_LIMIT:,}개까지만 확인")
+    return f"{parsed['declared']}그룹, 겹치는 분량 약 {parsed['wasted']} ({', '.join(extra)})"
+
+
+def _summarize_temp_files(raw: str):
+    """PC 정리 보고서의 "임시 파일" 값 — 단독 질문과 같은 5천 개 상한 정직 표기. 형식을 못 알아보면 None."""
+    return _reply_temp.value_text(raw)
+
+
+def _summarize_disk(raw: str):
+    """PC 정리 보고서의 "디스크" 값 — 시스템 정보 원문에서 디스크 한 줄만. 형식을 못 알아보면 None."""
+    m = _SYSINFO_HEADER.match(str(raw or "").strip())
+    if not m:
+        return None
+    try:
+        total, free = float(m.group("disk_total")), float(m.group("disk_free"))
+        pct = f" ({free / total * 100:.0f}%)"
+    except (ValueError, ZeroDivisionError):
+        pct = ""
+    return f"{m.group('disk_total')}GB 중 {m.group('disk_free')}GB 남음{pct}"
+
+
 @_composite_section
 def _build_pc_cleanup(func_map: dict) -> str:
     """PC 정리 후보 — 디스크(시스템 정보)/대용량 파일/중복 파일/임시 파일
@@ -6213,32 +6544,83 @@ def _build_pc_cleanup(func_map: dict) -> str:
     정규식 매칭 쪽에서 예외가 나면 이 섹션뿐 아니라 함수 전체가 죽어서
     나머지 섹션까지 전부 사라지는 문제가 있었다(이 함수가 지키려는
     "섹션 하나 실패해도 나머지는 계속" 원칙 자체가 깨짐)."""
-    sections = []
+    rows = []                # (라벨, 값) — 보고서 항목 줄
+    temp_offers = []
+    candidates = 0           # 실제로 정리할 만한 게 있는 구간 수(큰 파일·중복 파일·임시 파일)
+    checked = 0              # 내용을 실제로 읽은 후보 구간 수(없음 결과 포함, 디스크 제외) — 3이면 전부 확인한 것
+    unknown = 0              # 설치돼 있는데 못 읽은 구간 수
+    large_found = []
+    dup_found = []
+    real = []                # 실제 내용이 있는 구간 — 확인 못 했다는 줄만 있으면 답 전체를 비운다
+    labels = {'get_system_info': "디스크", 'find_large_files': "큰 파일",
+              'find_duplicate_files': "중복 파일", 'scan_temp_files': "임시 파일"}
+    unavailable = ('scan_temp_files', 'find_large_files', 'find_duplicate_files')
 
-    def _run_section(func_name: str, label: str, builder=_build_deterministic_reply):
+    def _run_section(func_name: str, label: str, builder):
+        nonlocal candidates, unknown, checked
         if func_name not in func_map:
             return
+        built, found = None, False
         try:
             raw = func_map[func_name]()
             built = builder(raw)
+            if func_name == 'find_large_files':
+                found = bool(built) and not _LARGE_FILES_NONE.match(str(raw).strip())
+                if found:
+                    large_found.append(True)      # 합성 답에는 이름 3개까지만 — 전체 목록은 후속 제안으로
+            elif func_name == 'find_duplicate_files':
+                found = bool(built) and not _DUP_FILES_NONE.match(str(raw).strip())
+                if found:
+                    dup_found.append(True)
+            elif func_name == 'scan_temp_files':      # 정리할 임시 파일이 있을 때만 "정리해 드릴까요?"에 이을 Offer 를 만든다
+                offers = (_reply_temp.build(raw) or ("", []))[1]
+                temp_offers.extend(offers)
+                found = bool(built) and bool(offers)
         except Exception as e:
             print(f"[AI 워커] PC 정리 - {label} 조회/처리 오류: {e}")
-            return
+            built, found = None, False
         if built:
-            sections.append(built)
+            rows.append((labels[func_name], built))
+            real.append(func_name)
+            candidates += int(found)
+            checked += int(func_name != 'get_system_info')
+        elif func_name in unavailable:      # 설치돼 있는데 못 읽은 구간은 조용히 빼지 않고 한 줄로 알린다
+            rows.append((labels[func_name], "이번에는 확인하지 못했어요"))
+            unknown += 1
 
-    _run_section('get_system_info', '시스템 정보(디스크 포함)', builder=_build_system_info_reply)
-    _run_section('find_large_files', '대용량 파일')
-    _run_section('find_duplicate_files', '중복 파일')
-    _run_section('scan_temp_files', '임시 파일')
+    _run_section('get_system_info', '시스템 정보(디스크 포함)', _summarize_disk)
+    _run_section('find_large_files', '대용량 파일', _summarize_large_files)
+    _run_section('find_duplicate_files', '중복 파일', _summarize_duplicate_files)
+    _run_section('scan_temp_files', '임시 파일', _summarize_temp_files)
 
-    if not sections:
+    if not real:
         return ""
 
+    parts = []
+    if candidates:
+        parts.append(f"정리 후보 {candidates}건")
+    if unknown:
+        parts.append(f"확인 못 함 {unknown}건")
+    if not parts:      # 후보가 없다고 말하는 건 세 구간을 다 읽었을 때만 — 일부만 봤으면 본 범위만 말한다
+        parts.append("정리할 것 없음" if checked == 3 else
+                     "확인한 범위에서는 정리할 것 없음" if checked else "정리 후보는 살펴보지 않았어요")
+    header = f"{_report_style.TITLE_MARK} PC 정리 점검" + "".join(f" · {p}" for p in parts)
+    body = "\n".join([header] + [f"{label} — {value}" for label, value in rows])
+
+    # 끝 질문은 실제로 이을 수 있는 것만 묻는다 — 정리할 임시 파일이 있으면 그 정리 Offer 를 등록해 "응"이 약속과 일치하게 하고
+    # (위험 도구라 확인창을 거친다), 없으면 질문 대신 진술문으로 맺는다.
+    notes = ["중복 파일은 보여 드리기만 하고 지우지는 않아요."] if dup_found else []
+    notes.append("실제 정리나 삭제는 확인을 거친 뒤에 진행해요.")
+    if temp_offers and getattr(_OFFER_LOCAL, "ctx", None) is not None:      # 제안을 등록할 수 있는 곳(AIWorker.run)에서만 묻는다
+        _add_reply_offers(temp_offers)
+        notes.append("👉 임시 파일을 제가 정리해 드릴까요?")
+    elif large_found and getattr(_OFFER_LOCAL, "ctx", None) is not None:
+        _add_reply_offers([_reply_actions.Offer(label=LARGE_FILES_DETAIL_LABEL, func="find_large_files", args={})])
+        notes.append(f"👉 {LARGE_FILES_DETAIL_LABEL}")
+    else:
+        notes[-1] += " 원하는 항목이 있으면 제가 도와 드릴 수 있어요."
     intro = "네, 정리할 게 있는지 확인해드릴게요."
-    outro = ("\n\n실제로 정리하고 싶은 항목이 있으면 말씀해주세요"
-             "(예: '임시 파일 정리해줘', '중복 파일 삭제해줘') — 확인 후에 진행할게요.")
-    return f"{intro}\n\n" + "\n\n".join(sections) + outro
+    return f"{intro}\n\n{body}\n\n" + "\n".join(notes)
 
 
 # ─────────────────────────────────────────────
@@ -6401,7 +6783,11 @@ def _polish_chat_reply(reply: str, user_text: str) -> str:
     return " ".join(kept[:3])
 
 
-_HEDGE_WORD = "틀릴 수도 있으니"
+# 모델이 사실 질문에 직접 답한 뒤에는 스스로 못 믿을 말(자기 불신 문구)을 붙이지 않고, 확인 수단(구글 검색)을 제안으로 건넨다.
+# "응"하면 _handle_offer_reply 가 질문 문장을 검색어로 기본 브라우저에서 구글 검색을 연다(_lookup_reply 와 같은 동작, 검색어는 사용자의 질문 문장뿐).
+LOOKUP_FUNC = "__web_lookup__"      # 실행 대상 도구가 아닌 표식 — 코드가 직접 받는다
+_LOOKUP_OFFER_LABEL = "구글 검색 결과도 열어 드릴까요?"
+_HEDGE_WORD = "구글 검색 결과도 열어"      # 최근 대화에 이 말이 있으면 다시 붙이지 않는다(반말 "열어 줄까?"도 같은 어간)
 _ASKS_FACT = re.compile(r"법\s*알려|방법|어떻게|왜|누구|누가|몇\s*개|몇\s*명|언제|어디|영어로|일본어로|중국어로|뭐야|뭔가요|뭐예요")
 _ASKS_REPEAT = re.compile(r"뭐라고요?|(?:아까|방금)\s*뭐라고\s*(?:했어요?|했니)|다시\s*(?:말해\s*(?:줘|주세요)|한번\s*말해\s*(?:줘|주세요))|잘\s*못\s*들었어요?")
 _ASKS_DATE = re.compile(r"며칠|몇\s*일|요일|날짜|오늘|내일|모레|어제|글피")
@@ -6451,17 +6837,43 @@ def _needs_lookup(text: str) -> bool:
 
 def _lookup_reply(text: str) -> str:
     """구글 검색 결과를 기본 브라우저로 열고 그렇게 했다고 답한다. 검색어(사용자의 말)만 밖으로 나간다."""
+    query = _LOOKUP_TAIL.sub("", text.strip()) or text.strip()
+    opened, ok = _open_google(query)
+    if ok:
+        reply = f"정확한 정보가 필요한 질문이라, {opened}"
+    else:
+        reply = f"정확한 정보가 필요한 질문이라 검색해 보시는 게 좋아요. 구글에서 '{query}'로 찾아보세요."
+    return small_talk.to_casual(reply) if user_memory.is_casual() else reply
+
+
+def _open_google(query: str):
+    """기본 브라우저로 구글 검색 결과를 연다 -> (사용자에게 보일 문장, 열었는지). 검색어는 사용자의 질문 문장뿐."""
     from urllib.parse import quote_plus
     from core import web_launcher
-    query = _LOOKUP_TAIL.sub("", text.strip()) or text.strip()
     try:
-        opened = web_launcher.open_request({"site": "구글", "query": query,
-                                            "url": "https://www.google.com/search?q=" + quote_plus(query)})
-        reply = f"이런 정보는 제가 틀릴 수 있어서, {opened}"
+        return web_launcher.open_request({"site": "구글", "query": query,
+                                          "url": "https://www.google.com/search?q=" + quote_plus(query)}), True
     except Exception as e:
         print(f"[구글 검색 열기 실패] {type(e).__name__}")
-        reply = f"이런 정보는 제가 틀릴 수 있어서 검색해 보시는 게 좋아요. 구글에서 '{query}'로 찾아보세요."
-    return small_talk.to_casual(reply) if user_memory.is_casual() else reply
+        return "", False
+
+
+def _lookup_offerable(text: str) -> bool:
+    """모델 답 뒤에 구글 검색 제안을 붙여도 되는 질문 — 내 컴퓨터·내 정보에 대한 질문 문장은 밖으로 내보내지 않는다."""
+    text = (text or "").strip()
+    return (bool(text) and not _PC_THING.search(text.lower()) and not _ASKS_MY_FACT.search(text)
+            and not user_memory._SECRET.search(text) and not user_memory._PATH.search(text)      # 비밀번호·계좌·긴 숫자·파일 경로가 든 문장은 구글로 보내자는 제안도 하지 않는다
+            and not any(w in text for w in _NOT_LOOKUP))
+
+
+def _lookup_offer_line(question: str) -> str:
+    """사실 질문에 대한 모델 답 끝에 붙이는 한 줄(제안 문구)과 그 제안 등록. 붙이지 않는 질문이면 빈 문자열."""
+    if not _lookup_offerable(question):
+        return ""
+    query = _LOOKUP_TAIL.sub("", question.strip()) or question.strip()
+    _add_reply_offers([_reply_actions.Offer(label=_LOOKUP_OFFER_LABEL, func=LOOKUP_FUNC, args={"query": query})])
+    line = f"👉 {_LOOKUP_OFFER_LABEL}"
+    return small_talk.to_casual(line) if user_memory.is_casual() else line
 
 
 def _only_generic_words(text: str, keywords) -> bool:
@@ -8120,6 +8532,43 @@ class AIWorker(QThread):
         self.response_ready.emit(f"🤖 로컬 비서: {shown}")
         return True
 
+    def _fast_overview(self) -> bool:
+        """"뭐 할 수 있어?"·"기능 알려줘"·"도움말" — 모델이 없는 기능을 지어내므로 정해진 기능 소개 보고서로 답한다(모델·도구 없음)."""
+        if not _reply_overview.is_overview_question(self.user_text):
+            return False
+        overview, overview_offers = _reply_overview.build()
+        self.chat_history.append({'role': 'user', 'content': self.user_text})
+        self.chat_history.append({'role': 'assistant', 'content': overview})
+        _add_reply_offers(overview_offers)
+        self.response_ready.emit(f"🤖 로컬 비서: {overview}")
+        return True
+
+    def _fast_temp_scan(self) -> bool:
+        """"임시 파일 얼마나 있어?" — 모델 도구 선택 없이 scan_temp_files 를 바로 부른다(조회 전용). 정리·삭제 말이 섞이면 가로채지 않는다."""
+        if not _reply_temp.is_scan_question(self.user_text):
+            return False
+        scanner = next((f for f in self.installed_tools if f.__name__ == 'scan_temp_files'), None)
+        if scanner is None:
+            reply = "지금은 임시 파일을 확인할 수 없어요. PC 최적화 플러그인이 설치돼 있지 않은 것 같아요."
+            self.chat_history.append({'role': 'user', 'content': self.user_text})
+            self.chat_history.append({'role': 'assistant', 'content': reply})
+            self.response_ready.emit(f"🤖 로컬 비서: {reply}")
+            return True
+        self.status_update.emit("🧹  임시 파일 확인 중")
+        try:
+            raw = str(scanner())
+        except Exception as e:
+            print(f"[AI 워커] 임시 파일 조회 오류: {e}")
+            self.response_ready.emit(_diagnose_error(e))
+            return True
+        reply = _build_deterministic_reply(raw) or raw
+        if user_memory.is_casual():
+            reply = small_talk.to_casual(reply)
+        self.chat_history.append({'role': 'user', 'content': self.user_text})
+        self.chat_history.append({'role': 'assistant', 'content': reply})
+        self.response_ready.emit(f"🤖 로컬 비서: {reply}")
+        return True
+
     def _fast_battery(self) -> bool:
         """"배터리 몇 퍼센트야"처럼 이 컴퓨터 배터리를 묻는 짧은 질문이면 모델 없이 psutil 로 읽어 답한다(모델이 숫자를 지어냈다)."""
         if not _reply_battery.is_battery_question(self.user_text):
@@ -8133,6 +8582,25 @@ class AIWorker(QThread):
         self.chat_history.append({'role': 'user', 'content': self.user_text})
         self.chat_history.append({'role': 'assistant', 'content': reply})
         self.response_ready.emit(f"🤖 로컬 비서: {reply}")
+        return True
+
+    def _fast_startup_security_setting(self) -> bool:
+        """"시작할 때 보안 점검 꺼줘/켜줘/켜져 있어?" — 상태는 설정값을 읽어 바로 답하고, 바꾸는 말은 기존 위험 도구와 같은
+        확인창(confirm_required)을 띄운다(승인하면 app_main이 core 도구를 실행). "보안 점검해줘" 같은 점검 요청은 가로채지 않는다."""
+        planned = _reply_startup_setting.plan(self.user_text)
+        if planned is None:
+            return False
+        _kind, reply, change = planned
+        if change is None:
+            if user_memory.is_casual():
+                reply = small_talk.to_casual(reply)
+            self.chat_history.append({'role': 'user', 'content': self.user_text})
+            self.chat_history.append({'role': 'assistant', 'content': reply})
+            self.response_ready.emit(f"🤖 로컬 비서: {reply}")
+            return True
+        self.chat_history.append({'role': 'user', 'content': self.user_text})
+        self.confirm_required.emit(change)
+        self.chat_history.append({'role': 'assistant', 'content': '시작할 때 보안 점검 설정 변경 확인을 요청했습니다.'})
         return True
 
     def _offer_owner(self) -> str:
@@ -8205,7 +8673,7 @@ class AIWorker(QThread):
     def _handle_offer_reply(self) -> bool:
         """직전 답변의 제안 선택지에 대한 "응"/"2번"/"아니"를 알아듣고 바로 잇는다(core/reply_actions.py).
         처리했으면 True. 위험 도구는 기존 확인창(confirm_required)을 거치고, 안전 도구는 바로 실행한다."""
-        res = _reply_actions.consume(self.user_text, sid=self.current_session_id, user=self._offer_owner())
+        res = _reply_actions.consume(_duplicate_offer_alias(self.user_text), sid=self.current_session_id, user=self._offer_owner())
         if res is None:
             return False
         func_map = {f.__name__: f for f in self.installed_tools}
@@ -8239,6 +8707,28 @@ class AIWorker(QThread):
             self.user_text = question
             _QUESTION_LOCAL.text = question
             return False
+        if name == DUP_PAGE_FUNC:
+            # 중복 파일 다음 5그룹 — 마지막 결과 표에서만 읽는다(재스캔·도구 호출 없음, 읽기 전용)
+            try:
+                page = max(int(args.get("page", 1)), 0)
+            except (TypeError, ValueError):
+                page = 1
+            gen, now_gen = args.get("gen"), _dup_scan_generation()
+            if gen is not None and now_gen is not None and gen != now_gen:
+                _say("목록이 바뀌었어요. 중복 파일을 다시 찾아 드릴까요?")
+                _add_reply_offers([_reply_actions.Offer(label="중복 파일을 다시 찾아 드릴까요?", func="find_duplicate_files", args={})])
+                return True
+            _say(_duplicate_page_reply(page))
+            return True
+        if name == LOOKUP_FUNC:
+            # 사실 질문 답 뒤 "구글 검색 결과도 열어 드릴까요?"의 "응" — 질문 문장으로 구글 검색을 연다(모델 호출 없음)
+            query = str(args.get("query") or "").strip()
+            if not query:
+                _say("어떤 질문이었는지 잊어버렸어요. 한 번만 더 물어봐 주시겠어요?")
+                return True
+            opened, ok = _open_google(query)
+            _say(opened if ok else f"브라우저를 열지 못했어요. 구글에서 '{query}'로 찾아보실 수 있어요.")
+            return True
         if name == _reply_overview.EXAMPLE_FUNC:
             # 기능 소개 뒤 기능 이름 선택 — 도구를 실행하지 않고 고정 표의 사용 예만 말한다(모델 호출 없음)
             example = _reply_overview.example_reply(args.get("name"))
@@ -8410,6 +8900,10 @@ class AIWorker(QThread):
                         _add_reply_offers([_reply_appusage.retry_offer()])
                         self.response_ready.emit(f"🤖 로컬 비서: {_reply_appusage.FAIL_REPLY}")
                     return
+
+            # ── 빠른 감지 0.97: "뭐 할 수 있어?" 기능 소개 / "임시 파일 얼마나 있어?" 조회 — 모델 없이 코드로 답한다 ──
+            if self._fast_overview() or self._fast_temp_scan():
+                return
 
             # ── 빠른 감지 1: 제품 가격 검색 요청을 정규식으로 직접 감지 ──
             import re
@@ -8635,6 +9129,10 @@ class AIWorker(QThread):
 
             # ── 빠른 감지 1.736: "배터리 몇 퍼센트야" — 모델 없이 psutil 로 직접 읽어 답한다 ──
             if self._fast_battery():
+                return
+
+            # ── 빠른 감지 1.737: "시작할 때 보안 점검 꺼줘/켜줘/켜져 있어?" — 설정은 코드로 읽고, 바꿀 땐 확인창을 거친다 ──
+            if self._fast_startup_security_setting():
                 return
 
             # ── 빠른 감지 1.74: "좋아/응/고마워"처럼 맞장구만 할 때 ──
@@ -9658,7 +10156,7 @@ class AIWorker(QThread):
                     # ── 파일 검색: 조건은 LLM 대신 사용자 문장에서 결정론적으로 추출 ──
                     # ── 그 밖의 조회 도구: 사용자가 말하지 않은 필터 인자(분류·상태·태그·앱·키워드·기간)는 버린다 ──
                     if func_name in _GROUND_FILTER_RULES:
-                        args = _ground_filter_args(func_name, args, self.user_text)
+                        args = _ground_filter_args(func_name, args, self.user_text, self.chat_history)
                         _miss = _missing_required_after_grounding(func_name, args)
                         if _miss:   # 정리 뒤 필수 인자(검색어)가 비면 도구를 부르지 않고 한 가지만 묻는다
                             failures.append((func_name, args, TypeError(f"missing 1 required positional argument: '{_miss}'")))
@@ -9998,7 +10496,9 @@ class AIWorker(QThread):
                 if not clean_reply:   # 고장 난 문장만 남았으면 지어내지 않고 모른다고 한다
                     clean_reply = "그건 내가 잘 모르겠어. 다르게 물어봐 줄래?" if user_memory.is_casual() else "그건 제가 잘 모르겠어요. 다르게 물어봐 주실래요?"
                 elif _ASKS_FACT.search(self.user_text) and not re.search(r"확인해\s*보", clean_reply) and not any(_HEDGE_WORD in str(m.get('content', '')) for m in self.chat_history[-8:]):   # 매번 붙이면 지겹다   # 이 모델은 사실을 자주 틀린다("한글은 이순신이 만들었다")
-                    clean_reply += " 내가 틀릴 수도 있으니 중요한 건 확인해 봐." if user_memory.is_casual() else " 제가 틀릴 수도 있으니 중요한 건 확인해 보세요."
+                    verify_line = _lookup_offer_line(self.user_text)      # 스스로 못 믿을 말 대신 확인 수단을 건넨다("응"하면 구글 검색을 연다)
+                    if verify_line:
+                        clean_reply += "\n\n" + verify_line
 
             self.chat_history.append({'role': 'assistant', 'content': clean_reply})
             self.response_ready.emit(f"🤖 로컬 비서: {clean_reply}")

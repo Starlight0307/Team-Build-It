@@ -10,7 +10,7 @@ import core.ai_worker as aw
 from core import reply_actions as ra
 
 NONE_RAW = ("[🔕 묵음 시간대]\n설정된 묵음 시간대가 없어요. "
-            "'밤 10시부터 아침 7시까지는 알림 묵음으로 해줘'처럼 말씀해주시면 설정해드려요.")
+            "'밤 10시부터 아침 7시까지는 알림 묵음으로 해줘'처럼 알려 주시면 설정해드려요.")
 
 
 def worker(text):

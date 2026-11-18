@@ -1333,9 +1333,9 @@ def set_timer(minutes: float, label: str = "") -> str:
     try:
         minutes = float(minutes)
     except (TypeError, ValueError):
-        return "⚠️ 타이머 시간을 이해하지 못했습니다. '10분 뒤에 알려줘'처럼 말씀해주세요."
+        return "⚠️ 타이머 시간을 이해하지 못했어요. '10분 뒤'처럼 알려 주시면 맞춰 드릴게요."
     if minutes < _MIN_MINUTES:
-        return "⚠️ 타이머 시간이 너무 짧아요. 조금 더 긴 시간으로 다시 말씀해주세요."
+        return "⚠️ 타이머 시간이 너무 짧아요. 조금 더 긴 시간으로 알려 주시겠어요?"
     minutes = min(minutes, _MAX_MINUTES)
 
     label = (label or "").strip()
@@ -1449,9 +1449,9 @@ def set_daily_reminder(hour: int, minute: int = 0, label: str = "",
         hour = int(hour)
         minute = int(minute or 0)
     except (TypeError, ValueError):
-        return "⚠️ 시각을 이해하지 못했습니다. '매일 오전 9시'처럼 다시 말씀해주세요."
+        return "⚠️ 시각을 이해하지 못했습니다. '매일 오전 9시'처럼 알려 주시겠어요?"
     if not (0 <= hour <= 23) or not (0 <= minute <= 59):
-        return "⚠️ 시각은 0~23시, 0~59분 사이로 말씀해주세요."
+        return "⚠️ 시각은 0~23시, 0~59분 사이로 알려 주시면 설정할 수 있어요."
 
     action, build_error = _build_action(iot_device_name, iot_state, todo_text, scene_name)
     if build_error:
@@ -1665,7 +1665,7 @@ def set_usage_condition(target: str, threshold_minutes: float, label: str = "",
     try:
         threshold_minutes = float(threshold_minutes)
     except (TypeError, ValueError):
-        return "⚠️ 기준 시간을 이해하지 못했습니다. 분 단위 숫자로 다시 말씀해주세요(예: 4시간 → 240)."
+        return "⚠️ 기준 시간을 이해하지 못했습니다. 분 단위 숫자로 알려 주시겠어요? (예: 4시간 → 240)"
     if threshold_minutes <= 0:
         return "⚠️ 기준 시간은 0분보다 커야 해요."
 
@@ -1700,7 +1700,7 @@ def set_spending_condition(threshold_amount: float, label: str = "",
     try:
         threshold_amount = float(threshold_amount)
     except (TypeError, ValueError):
-        return "⚠️ 기준 금액을 이해하지 못했습니다. 숫자로 다시 말씀해주세요(예: 50만원 → 500000)."
+        return "⚠️ 기준 금액을 이해하지 못했습니다. 숫자로 알려 주시겠어요? (예: 50만원 → 500000)"
     if threshold_amount <= 0:
         return "⚠️ 기준 금액은 0원보다 커야 해요."
 
@@ -1730,7 +1730,7 @@ def set_cpu_condition(threshold_percent: float, label: str = "",
     try:
         threshold_percent = float(threshold_percent)
     except (TypeError, ValueError):
-        return "⚠️ 기준 퍼센트를 이해하지 못했습니다. 숫자로 다시 말씀해주세요(예: 90)."
+        return "⚠️ 기준 퍼센트를 이해하지 못했습니다. 숫자로 알려 주시겠어요? (예: 90)"
     if not (0 < threshold_percent <= 100):
         return "⚠️ 기준 퍼센트는 0보다 크고 100 이하여야 해요."
 
@@ -1767,7 +1767,7 @@ def set_disk_condition(threshold_percent: float, label: str = "",
     try:
         threshold_percent = float(threshold_percent)
     except (TypeError, ValueError):
-        return "⚠️ 기준 퍼센트를 이해하지 못했습니다. 숫자로 다시 말씀해주세요(예: 10)."
+        return "⚠️ 기준 퍼센트를 이해하지 못했습니다. 숫자로 알려 주시겠어요? (예: 10)"
     if not (0 < threshold_percent <= 100):
         return "⚠️ 기준 퍼센트는 0보다 크고 100 이하여야 해요."
 
@@ -1804,11 +1804,11 @@ def set_trend_condition(target: str, threshold_days: float = 3, label: str = "",
     target = (target or "").strip().lower()
     if target not in _TREND_TARGET_LABELS:
         return ("⚠️ 추세 종류를 이해하지 못했습니다. 'CPU 사용률 증가', '메모리 사용률 증가', "
-                "'디스크 여유공간 감소' 중 하나로 다시 말씀해주세요.")
+                "'디스크 여유공간 감소' 중 하나로 알려 주시겠어요?")
     try:
         threshold_days = int(threshold_days)
     except (TypeError, ValueError):
-        return "⚠️ 며칠 연속인지 숫자로 다시 말씀해주세요(예: 3일 연속 → 3)."
+        return "⚠️ 며칠 연속인지 숫자로 알려 주시겠어요? (예: 3일 연속 → 3)"
     if threshold_days < 2:
         return "⚠️ 연속 일수는 2일 이상이어야 해요(1일은 '연속'이라고 부르기 어려워요)."
     if threshold_days > _MAX_TREND_THRESHOLD_DAYS:
@@ -1860,7 +1860,7 @@ def set_app_usage_trend_condition(target: str = "", threshold_days: float = 3, l
     try:
         threshold_days = int(threshold_days)
     except (TypeError, ValueError):
-        return "⚠️ 며칠 연속인지 숫자로 다시 말씀해주세요(예: 3일 연속 → 3)."
+        return "⚠️ 며칠 연속인지 숫자로 알려 주시겠어요? (예: 3일 연속 → 3)"
     if threshold_days < 2:
         return "⚠️ 연속 일수는 2일 이상이어야 해요(1일은 '연속'이라고 부르기 어려워요)."
     if threshold_days > _MAX_TREND_THRESHOLD_DAYS:
@@ -1907,7 +1907,7 @@ def set_price_condition(query: str, target_price: float, label: str = "",
     try:
         target_price = float(target_price)
     except (TypeError, ValueError):
-        return "⚠️ 목표 가격을 이해하지 못했습니다. 숫자로 다시 말씀해주세요(예: 90만원 → 900000)."
+        return "⚠️ 목표 가격을 이해하지 못했습니다. 숫자로 알려 주시겠어요? (예: 90만원 → 900000)"
     if target_price <= 0:
         return "⚠️ 목표 가격은 0원보다 커야 해요."
 
@@ -1947,7 +1947,7 @@ def set_weather_condition(threshold_percent: float = 50, when: str = "today", ch
     try:
         threshold_percent = float(threshold_percent if threshold_percent is not None else 50)
     except (TypeError, ValueError):
-        return "⚠️ 기준 강수확률을 이해하지 못했습니다. 숫자로 다시 말씀해주세요(예: 50)."
+        return "⚠️ 기준 강수확률을 이해하지 못했습니다. 숫자로 알려 주시겠어요? (예: 50)"
     if not (0 < threshold_percent <= 100):
         return "⚠️ 기준 강수확률은 0보다 크고 100 이하여야 해요."
 
@@ -1963,9 +1963,9 @@ def set_weather_condition(threshold_percent: float = 50, when: str = "today", ch
                 raise ValueError
             check_hour = int(check_hour)
         except (TypeError, ValueError):
-            return "⚠️ 확인 시작 시각을 이해하지 못했습니다. 0~23시 사이로 다시 말씀해주세요."
+            return "⚠️ 확인 시작 시각을 이해하지 못했습니다. 0~23시 사이로 알려 주시겠어요?"
         if not (0 <= check_hour <= 23):
-            return "⚠️ 확인 시작 시각은 0~23시 사이로 말씀해주세요."
+            return "⚠️ 확인 시작 시각은 0~23시 사이로 알려 주시면 설정할 수 있어요."
 
     if isinstance(weekdays_only, str):
         weekdays_only = weekdays_only.strip().lower() in ("true", "1", "yes", "y", "예", "네")
@@ -2182,11 +2182,11 @@ def set_quiet_hours(start_hour: int, end_hour: int) -> str:
         start_hour = int(start_hour)
         end_hour = int(end_hour)
     except (TypeError, ValueError):
-        return "⚠️ 시각을 이해하지 못했습니다. '밤 10시부터 아침 7시까지'처럼 다시 말씀해주세요."
+        return "⚠️ 시각을 이해하지 못했습니다. '밤 10시부터 아침 7시까지'처럼 알려 주시겠어요?"
     if not (0 <= start_hour <= 23) or not (0 <= end_hour <= 23):
-        return "⚠️ 시각은 0~23시 사이로 말씀해주세요."
+        return "⚠️ 시각은 0~23시 사이로 알려 주시면 설정할 수 있어요."
     if start_hour == end_hour:
-        return "⚠️ 시작 시각과 끝 시각이 같으면 하루 종일 묵음이 되어버려요 — 다른 시각으로 다시 말씀해주세요."
+        return "⚠️ 시작 시각과 끝 시각이 같으면 하루 종일 묵음이 되어버려요 — 다른 시각으로 알려 주시겠어요?"
 
     # ChatGPT 검수 지적(2026-10-01): app_settings.set()은 호출마다 파일을
     # 통째로 다시 쓰는 구현이라(settings/app_settings.py 참고) 세 번의
@@ -2221,7 +2221,7 @@ def get_quiet_hours_status() -> str:
     end = app_settings.get("quiet_hours_end")
     if not enabled or start is None or end is None:
         return ("[🔕 묵음 시간대]\n설정된 묵음 시간대가 없어요. "
-                "'밤 10시부터 아침 7시까지는 알림 묵음으로 해줘'처럼 말씀해주시면 설정해드려요.")
+                "'밤 10시부터 아침 7시까지는 알림 묵음으로 해줘'처럼 알려 주시면 설정해드려요.")
     return f"[🔕 묵음 시간대]\n매일 {start:02d}:00 ~ {end:02d}:00"
 
 

@@ -636,7 +636,7 @@ def local_delete_event(event_id: str) -> str:
             remaining = sum(1 for e in events if e.get("recurrence_group") == group_id)
             if remaining:
                 hint = (f" (반복 일정의 일부였어요 — 나머지 {remaining}건은 그대로 있어요. "
-                        f"전체 삭제를 원하시면 반복 일정 전체를 삭제해달라고 말씀해주세요)")
+                        f"원하시면 반복 일정 전체를 삭제하는 것도 도와 드릴 수 있어요.)")
 
         return f"[🗑️ 일정 삭제 완료 (내부 캘린더)]\n제목 '{event['title']}' 일정이 삭제되었습니다.{hint}"
     except Exception as e:
@@ -664,7 +664,7 @@ def local_delete_recurring_series(event_id: str) -> str:
         group_id = event.get("recurrence_group")
         if not group_id:
             return (f"'{event['title']}' 일정은 반복 일정이 아니라서 시리즈 전체 삭제를 "
-                     "할 수 없어요. 이 일정 하나만 삭제하려면 다시 삭제해달라고 말씀해주세요.")
+                     "할 수 없어요. 이 일정 하나만 삭제하는 것도 도와 드릴 수 있어요.")
 
         title = event["title"]
         remaining = [e for e in events if e.get("recurrence_group") != group_id]
@@ -711,7 +711,7 @@ def local_create_recurring_event(
     recurrence_count = max(1, min(104, recurrence_count))
     recurrence_type = recurrence_type.upper()
     if recurrence_type not in _RECURRENCE_STEP:
-        return "반복 주기는 매일/매주/매월/매년 중 하나로 말씀해주세요."
+        return "반복 주기는 매일/매주/매월/매년 중 하나로 알려 주시면 돼요."
     try:
         start = datetime.fromisoformat(_parse_datetime(start_datetime, timezone))
         end   = datetime.fromisoformat(_parse_datetime(end_datetime, timezone))

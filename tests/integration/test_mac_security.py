@@ -234,7 +234,13 @@ def test_detect_suspicious_processes_format_and_counts(monkeypatch):
     assert (r.critical, r.warning) == (2, 2)   # 다운로드 앱이 옮겨져 실행되는 AppTranslocation(7)은 알리지 않는다
     assert "macOS 시스템 프로그램 1개" in r
     reply = aw._build_deterministic_reply(str(r))
-    assert reply and "그중 4개가 의심스러워요" in reply and "macOS 커널 프로그램 1개" in reply
+    assert reply
+    head = reply.splitlines()[0]
+    assert head == "📋 의심 프로세스 점검 · 확인 필요 4건 · 그중 2건은 특히 주의"      # launchd 사칭·xmrig(해킹 도구)
+    assert "🚨 launchd(번호 2) — macOS 기본 프로그램 이름 사용" in reply and "🚨 xmrig(번호 4)" in reply
+    assert "⚠️ dropper(번호 3)" in reply and "⚠️ other(번호 6)" in reply
+    assert "ℹ️ macOS 커널 프로그램 1개 — 이름 사칭 여부 판단 안 함" in reply
+    assert "ℹ️ 점검한 프로그램 — " in reply and "Windows" not in reply
 
 
 def test_detect_trusted_process(monkeypatch, tmp_path):

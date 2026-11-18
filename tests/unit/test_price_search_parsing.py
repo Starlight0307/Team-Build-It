@@ -99,3 +99,46 @@ def test_malformed_price_input_value_falls_back_to_text():
     """)
     item = _parse_product_item(product)
     assert item["price_won"] == 99000
+
+
+# ── 2026-11-17: 다나와 새 검색 페이지 구조(Tailwind, li[data-product-seq]) ──
+_NEW_LAYOUT = """
+<ul><li class="border-b" data-product-seq="106756001"><div class="flex py-6">
+  <div><a class="group" href="https://prod.danawa.com/info/?pcode=106756001&amp;keyword=x"><img alt="a" src="https://img.example/a.jpg"></a></div>
+  <div><p class="mb-2"><a class="font-bold" href="https://prod.danawa.com/info/?pcode=106756001&amp;keyword=x">APPLE <b>맥북</b>프로16 블랙</a></p>
+  <p>출시가: 4,290,000원</p>
+  <a class="flex font-bold" href="https://prod.danawa.com/info/?pcode=106756001#a">5,566,770원</a>
+  <a class="flex font-bold" href="https://prod.danawa.com/info/?pcode=106756001#b">4,497,990원</a>
+  <a href="https://prod.danawa.com/info/?pcode=106756001#c">5.0리뷰수(5)</a></div></div></li></ul>
+"""
+
+
+def test_new_danawa_layout_is_parsed():
+    from plugins.price_search import _parse_product_item
+    li = BeautifulSoup(_NEW_LAYOUT, "html.parser").select_one("li[data-product-seq]")
+    item = _parse_product_item(li)
+    assert item["name"] == "APPLE 맥북프로16 블랙"                  # <b> 안의 검색어도 띄어쓰기가 유지된다
+    assert item["price_won"] == 4497990      # 판매처 링크 중 최저가(출시가 4,290,000원은 링크가 아니라 제외)
+    assert item["link"].startswith("https://prod.danawa.com/info/?pcode=106756001")
+    assert item["img_url"] == "https://img.example/a.jpg"
+
+
+def test_fetch_uses_new_selector_when_old_one_missing(monkeypatch):
+    import plugins.price_search as ps
+
+    class _Resp:
+        text = _NEW_LAYOUT
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(ps.requests, "get", lambda *a, **k: _Resp())
+    assert len(ps._fetch_products_html("맥북")) == 1
+
+
+def test_new_layout_ignores_zero_won_soldout_price():
+    from plugins.price_search import _parse_product_item
+    html = _NEW_LAYOUT.replace('4,497,990원</a>', '0원</a>')
+    item = _parse_product_item(BeautifulSoup(html, "html.parser").select_one("li[data-product-seq]"))
+    assert item["price_won"] == 5566770
+    only_zero = html.replace('5,566,770원', '0원')
+    item = _parse_product_item(BeautifulSoup(only_zero, "html.parser").select_one("li[data-product-seq]"))
+    assert item["price_won"] is None and item["price_formatted"] == "가격 정보 없음"

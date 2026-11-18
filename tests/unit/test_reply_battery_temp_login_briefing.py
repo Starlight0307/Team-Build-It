@@ -149,7 +149,7 @@ def test_fast_battery_hook(monkeypatch):
 
 
 # ── 임시 파일 ──
-RAW = "[🧹 임시 파일 점검 완료]\n임시 파일 {n}개, 총 {s}를 확인했습니다. 정리하려면 '임시 파일 정리해줘'라고 말씀해주세요."
+RAW = "[🧹 임시 파일 점검 완료]\n임시 파일 {n}개, 총 {s}를 확인했습니다. 제가 정리해 드릴까요?"
 
 
 def test_temp_limit_reached():
@@ -382,7 +382,9 @@ def test_build_daily_summary_with_security_report_stays_conversational():
         "get_budget_status": lambda: "[💰 이번 달 예산 현황]\n예산 100,000원",
         "get_goal_status": lambda: "[🎯 목표]\n- 유튜브: 1시간",
     }
-    out = aw._build_daily_summary(tools, lambda: "local")
+    with aw.offer_context("s", "u"):        # 끝 질문은 이을 수 있는 제안을 등록할 수 있을 때만 남는다
+        out = aw._build_daily_summary(tools, lambda: "local")
+        assert ra.LAST_OFFER is not None
     assert out.startswith("안녕하세요!") and "오늘 하루 정리" not in out
     assert out.count("👉") == 1 and out.count("?") == 1
 
@@ -390,7 +392,7 @@ def test_build_daily_summary_with_security_report_stays_conversational():
 def test_composite_sections_keep_old_temp_output_but_direct_question_gets_offer():
     raw = RAW.format(n=50, s="1.2MB")
     out = aw._build_pc_cleanup({"scan_temp_files": lambda: raw})
-    assert "임시 파일 50개" in out and "정리해 드릴까요" not in out and ra.LAST_OFFER is None
+    assert "임시 파일 — 50개" in out and "정리해 드릴까요" not in out and ra.LAST_OFFER is None
     assert aw._build_temp_files_reply(raw) is not None or True      # 컨텍스트 밖에서는 정상 동작
     with aw.offer_context("s1", "u1"):
         assert "제가 정리해 드릴까요?" in aw._build_deterministic_reply(raw)
