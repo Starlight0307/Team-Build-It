@@ -227,6 +227,7 @@ from core import reply_programs as _reply_programs
 from core import reply_status as _reply_status
 from core import reply_trend as _reply_trend
 from core import reply_weather as _reply_weather
+from core import fast_lookups as _fast_lookups
 from core import security_session as _security_session
 
 # 실제 호출하는 Ollama 모델 — 이 파일 안에 7곳 넘게 문자열로 직접 박혀
@@ -4444,9 +4445,10 @@ def _build_installed_programs_reply(raw_results: str):
 # ⏱️ 타이머/리마인더(신규 기능 4) 결정론적 빌더
 # ─────────────────────────────────────────────
 
-_TIMER_LIST_EMPTY = "[⏱️ 타이머 목록]\n설정된 타이머가 없습니다."
-_TIMER_LIST_HEADER = re.compile(r"^\[⏱️ 타이머 목록\] \(총 (?P<count>\d+)개\)\n(?P<body>.+)$", re.DOTALL)
-_TIMER_LIST_ITEM = re.compile(r"^  - (?P<remaining>\d+분 \d+초) 후(?: \('(?P<label>.+)'\))? \(id: (?P<id>\S+)\)$")
+# list_timers() 원문 형식은 core/fast_lookups.py 가 한 곳에서 정의한다(빠른 경로의 보고서 빌더와 같은 정규식을 쓴다)
+_TIMER_LIST_EMPTY = _fast_lookups.TIMER_LIST_EMPTY
+_TIMER_LIST_HEADER = _fast_lookups.TIMER_LIST_HEADER
+_TIMER_LIST_ITEM = _fast_lookups.TIMER_LIST_ITEM
 
 
 def _build_timer_list_reply(raw_results: str):
@@ -8619,6 +8621,75 @@ class AIWorker(QThread):
         self.response_ready.emit(f"🤖 로컬 비서: {reply}")
         return True
 
+    def _emit_fast_reply(self, reply: str) -> bool:
+        """읽기 빠른 경로의 답을 대화 기록에 남기고 내보낸다(반말 사용자는 말투만 바꾼다)."""
+        if user_memory.is_casual():
+            reply = small_talk.to_casual(reply)
+        self.chat_history.append({'role': 'user', 'content': self.user_text})
+        self.chat_history.append({'role': 'assistant', 'content': reply})
+        self.response_ready.emit(f"🤖 로컬 비서: {reply}")
+        return True
+
+    def _fast_timer_list(self) -> bool:
+        """"지금 설정된 타이머 뭐 있어?" — 모델이 도구를 못 골라 2분 넘게 걸렸다. list_timers(읽기 전용)를 바로 부른다.
+        타이머를 만들거나 취소하는 말은 가로채지 않는다(그건 위의 set_timer/cancel 빠른 경로가 먼저 본다)."""
+        if not _fast_lookups.is_timer_list_question(self.user_text):
+            return False
+        func = next((f for f in self.installed_tools if f.__name__ == 'list_timers'), None)
+        if func is None:
+            return False
+        self.status_update.emit("⏱️  타이머 목록 확인 중")
+        try:
+            raw = str(func())
+        except Exception as e:
+            print(f"[AI 워커] 타이머 목록 조회 오류: {type(e).__name__}")
+            note, offers = _reply_fallback.failure("list_timers", {}, e)
+            _add_reply_offers(offers)
+            return self._emit_fast_reply(note)
+        shown = _fast_lookups.timer_report(raw) or _build_timer_list_reply(raw) or raw
+        return self._emit_fast_reply(shown)
+
+    def _fast_rain_forecast(self) -> bool:
+        """"내일 비 와?"·"우산 필요해?" — 예보 도구를 바로 부르고 비 올 확률 중심의 짧은 답(core/reply_weather.py)으로 만든다.
+        도시 이름·지금 날씨·조건 알림("비 오면 알려줘")·잡담은 가로채지 않는다."""
+        when = _fast_lookups.rain_forecast_when(self.user_text)
+        if when is None:
+            return False
+        func = next((f for f in self.installed_tools if f.__name__ == 'get_weather_forecast'), None)
+        if func is None:
+            return False
+        self.status_update.emit("🌦️  날씨 예보 확인 중")
+        try:
+            raw = str(func(when=when))
+        except Exception as e:
+            print(f"[AI 워커] 빠른 날씨 예보 오류: {type(e).__name__}")
+            note, offers = _reply_fallback.failure("get_weather_forecast", {"when": when}, e)
+            _add_reply_offers(offers)
+            return self._emit_fast_reply(note)
+        return self._emit_fast_reply(_build_deterministic_reply(raw) or raw)
+
+    def _fast_recent_downloads(self) -> bool:
+        """"이번주에 받은 파일 찾아줘" — 다운로드 폴더에서 기간으로 찾는다(읽기 전용). 모델이 종류를 지어내 "0건"이 나오던 질문이다.
+        파일 종류·이름 단서가 섞이거나 받은 파일 점검·열기·지우기 말이면 가로채지 않는다. 다운로드 폴더가 없으면 모델에 맡긴다."""
+        planned = _fast_lookups.recent_downloads_request(self.user_text)
+        if planned is None:
+            return False
+        args, label = planned
+        func = next((f for f in self.installed_tools if f.__name__ == 'search_files'), None)
+        downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+        if func is None or not os.path.isdir(downloads):
+            return False
+        self.status_update.emit("📥  받은 파일 찾는 중")
+        try:
+            raw = str(func(folder=downloads, **args))
+        except Exception as e:
+            print(f"[AI 워커] 받은 파일 검색 오류: {type(e).__name__}")
+            note, offers = _reply_fallback.failure("search_files", args, e)
+            _add_reply_offers(offers)
+            return self._emit_fast_reply(note)
+        shown = _fast_lookups.no_files_reply(raw, label) or _build_deterministic_reply(raw) or raw      # 결과 없음은 기간을 넣은 한 문장으로
+        return self._emit_fast_reply(shown)
+
     def _fast_startup_security_setting(self) -> bool:
         """"시작할 때 보안 점검 꺼줘/켜줘/켜져 있어?" — 상태는 설정값을 읽어 바로 답하고, 바꾸는 말은 기존 위험 도구와 같은
         확인창(confirm_required)을 띄운다(승인하면 app_main이 core 도구를 실행). "보안 점검해줘" 같은 점검 요청은 가로채지 않는다."""
@@ -9168,6 +9239,10 @@ class AIWorker(QThread):
 
             # ── 빠른 감지 1.737: "시작할 때 보안 점검 꺼줘/켜줘/켜져 있어?" — 설정은 코드로 읽고, 바꿀 땐 확인창을 거친다 ──
             if self._fast_startup_security_setting():
+                return
+
+            # ── 빠른 감지 1.738: 타이머 목록 / "내일 비 와?" / "이번주에 받은 파일" — 읽기 질문은 모델 없이 도구를 바로 부른다 ──
+            if self._fast_timer_list() or self._fast_rain_forecast() or self._fast_recent_downloads():
                 return
 
             # ── 빠른 감지 1.74: "좋아/응/고마워"처럼 맞장구만 할 때 ──
