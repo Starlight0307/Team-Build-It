@@ -161,7 +161,7 @@ AVAILABLE_PLUGINS = [
         "func_names": ["search_product_price", "get_cheapest_matched_price"],
         "module_name": "price_search",
         "github_url": "https://raw.githubusercontent.com/Starlight0307/Team-Build-It/main/plugins/price_search.py",
-        "sha256": "46c53b828808d3f4aabc7d5363c99968fd921a42afba02c66b0e2b46fc24a60c",
+        "sha256": "da1778bda49c1fc5850c53ad37cf562dec93e0360f926c88c6e71350601bde66",
         "dependencies": ["requests", "beautifulsoup4"]
     },
     {

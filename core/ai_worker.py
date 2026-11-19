@@ -212,6 +212,7 @@ _SLOW_TRIAGE_HINT = "이 목록은 CPU 사용량만 본 것이고, 메모리·�
 from core import small_talk, user_memory
 from core import reply_actions as _reply_actions
 from core import report_style as _report_style
+from core import price_notes as _price_notes
 from core import iot_messages as _iot_messages
 from core import reply_appusage as _reply_appusage
 from core import reply_fallback as _reply_fallback
@@ -4000,6 +4001,11 @@ def _build_price_search_reply(raw_results: str):
         lines.append(f"이 중에서는 {m.group('name')}가 {m.group('price')}으로 가장 저렴해요.")
         if m.group('excluded'):
             lines.append(f"({m.group('excluded')}는 검색어와 이름이 달라서 이 비교에서는 제외했어요.)")
+        am = _price_notes.read_excluded_note(raw_results)      # 줄이 없으면(옛 플러그인 등) None — 이전과 같은 답
+        if am:
+            lines.append(f"(액세서리로 보이는 {am[0]}건({am[1]})은 이 비교에서 뺐어요.)")
+        elif _price_notes.has_mixed_note(raw_results):
+            lines.append("(검색 결과가 대부분 액세서리로 보여서 그대로 비교했어요. 본체가 아닌 상품이 섞여 있을 수 있어요.)")
     elif _PRICE_MATCH_NONE.search(raw_results):
         lines.append("다만 검색어와 이름이 정확히 일치하는 상품은 없어서 최저가를 딱 집어 말씀드리긴 어려워요 — 위 상품명을 직접 확인해 보시면 돼요.")
     else:

@@ -6,6 +6,8 @@ import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 
+from core import price_notes
+
 # ChatGPT 검수 지적: 다나와 검색 결과에 검색어와 다른 등급의 상품(예: "에어팟 프로"를
 # 검색했는데 "프로"가 안 붙은 일반 에어팟)이 섞여 나올 수 있는데, "그중 가장 저렴한
 # 것을 추천해줘"라고 LLM에게 판단·계산을 맡기면 모델이 그 등급 차이를 못 보고 다른
@@ -41,19 +43,10 @@ def _query_core(query: str) -> str:
     return re.sub(r"\s+", "", core).strip()
 
 
-def _match_products(parsed_products: list, search_query: str):
-    """검색어와 실제로 이름이 일치하는 상품 판정 + 그중 최저가 계산의 순수
-    부분만 담당한다(전역 상태 변경 없음). (matched, matched_with_price,
-    cheapest_name, cheapest_price) 튜플을 반환하고, 매칭된 상품 중 가격
-    정보가 있는 게 하나도 없으면 cheapest_name/cheapest_price는 둘 다
-    None이다.
-
-    _build_match_summary(사용자에게 보여줄 텍스트 생성 + LAST_SEARCH 갱신)와
-    get_cheapest_matched_price(E10 조건부 알림 getter)가 이 판정 로직을
-    공유한다 — 후자가 LAST_SEARCH까지 건드리면, 조건부 알림이 백그라운드로
-    폴링할 때마다 사용자가 방금 직접 검색한 것과 무관한 쿼리로 LAST_SEARCH를
-    덮어써서 "이 중에 제일 싼 거 뭐야?" 후속 질문 기능이 조용히 망가지는
-    실제 버그가 되므로, 반드시 이 부작용 없는 버전을 공유해야 한다."""
+def _match_core(parsed_products: list, search_query: str):
+    """이름 일치 판정 + 그중 최저가 계산의 순수 부분(액세서리 거르기 없음, 전역 상태 변경 없음).
+    (matched, matched_with_price, cheapest_name, cheapest_price)를 반환하고, 매칭된 상품 중 가격
+    정보가 있는 게 하나도 없으면 cheapest_name/cheapest_price는 둘 다 None이다."""
     query_core = _query_core(search_query)
     if query_core:
         matched = [p for p in parsed_products if query_core in p[0].replace(" ", "")]
@@ -68,25 +61,65 @@ def _match_products(parsed_products: list, search_query: str):
     return matched, matched_with_price, cheapest[0], cheapest[1]
 
 
+def _match_products_ex(parsed_products: list, search_query: str):
+    """검색어와 일치하는 상품의 최저가 — 액세서리 거르기(_split_accessories)를 여기서 한 번만 한다.
+    검색어에 액세서리 낱말이 없을 때 액세서리로 보이는 상품을 뺀 나머지로 계산한다(맥북 검색에서 케이스
+    9,900원이 최저가가 되는 걸 막는다). 반환: (matched, matched_with_price, cheapest_name, cheapest_price,
+    excluded, fell_back)
+      - excluded: 최저가 비교에서 뺀 액세서리로 보이는 상품들
+      - fell_back: 거르지 않은 목록으로 계산했다 — 결과가 전부 액세서리로 보였거나, 거르고 나니 검색어와
+        일치하며 가격이 있는 상품이 없었다(= 본체가 아닌 상품이 섞여 있을 수 있음). 이때 excluded는 빈 목록."""
+    kept, excluded, all_accessory = _split_accessories(parsed_products, search_query)
+    result = _match_core(kept, search_query)
+    if all_accessory:
+        return (*result, [], True)
+    if result[2] is None and excluded:
+        full = _match_core(parsed_products, search_query)    # 남긴 상품 중엔 비교할 게 없다 — 액세서리뿐이면 거르지 않고 보여 준다
+        if full[2] is not None:
+            return (*full, [], True)
+    return (*result, excluded, False)
+
+
+def _match_products(parsed_products: list, search_query: str):
+    """(matched, matched_with_price, cheapest_name, cheapest_price) — `_match_products_ex`에서 액세서리 정보만 뺀
+    것. 전역 상태를 바꾸지 않는다.
+
+    _build_match_summary(사용자에게 보여줄 텍스트 생성 + LAST_SEARCH 갱신)와
+    get_cheapest_matched_price(E10 조건부 알림 getter)가 이 판정 로직을
+    공유한다 — 후자가 LAST_SEARCH까지 건드리면, 조건부 알림이 백그라운드로
+    폴링할 때마다 사용자가 방금 직접 검색한 것과 무관한 쿼리로 LAST_SEARCH를
+    덮어써서 "이 중에 제일 싼 거 뭐야?" 후속 질문 기능이 조용히 망가지는
+    실제 버그가 되므로, 반드시 이 부작용 없는 버전을 공유해야 한다. 액세서리는 여기서(= 이 경로에서)
+    걸러지므로 가격 조건 알림이 케이스 가격에 울리지 않는다."""
+    matched, matched_with_price, cheapest_name, cheapest_price, _excluded, _fell_back = _match_products_ex(
+        parsed_products, search_query)
+    return matched, matched_with_price, cheapest_name, cheapest_price
+
+
 def _build_match_summary(parsed_products: list, search_query: str) -> str:
     """검색어와 실제로 일치하는 상품 중 최저가를 LLM 판단 없이 결정론적으로
     계산해 사용자에게 보여줄 텍스트로 만들고, 후속 질문 재사용을 위해
     LAST_SEARCH를 갱신한다(위 LAST_SEARCH 설명 참고). 판정 로직 자체는
     _match_products가 담당한다(네트워크 없이 검증 가능 —
     tests/unit/test_price_search_matching.py 참고)."""
-    matched, matched_with_price, cheapest_name, cheapest_price = _match_products(parsed_products, search_query)
+    matched, matched_with_price, cheapest_name, cheapest_price, excluded, fell_back = _match_products_ex(
+        parsed_products, search_query)
 
     lines = [""]
     if matched_with_price:
         lines.append("[💡 검색어와 이름이 일치하는 상품 중 최저가 — 이미 계산됨]")
         lines.append(f"{cheapest_name}: {cheapest_price:,}원")
-        unmatched = [p for p in parsed_products if p not in matched]
+        unmatched = [p for p in parsed_products if p not in matched and p not in excluded]
         if unmatched:
             lines.append(
                 f"(참고: 위 5개 중 {len(unmatched)}개는 검색어 '{search_query}'와 "
                 f"이름이 다른 상품이라 이 최저가 비교에서 제외함 — "
-                + ", ".join(p[0] for p in unmatched) + ")"
+                + ", ".join(price_notes.clean_name(p[0], 40) for p in unmatched) + ")"
             )
+        if excluded:
+            lines.append(price_notes.excluded_note([p[0] for p in excluded]))
+        elif fell_back:
+            lines.append(price_notes.MIXED_NOTE)
         # 후속 질문("이 중에 제일 싼 거 뭐야?")에서 재검색 없이 재사용할 수
         # 있도록 방금 계산한 최저가를 기억해둔다 (위 LAST_SEARCH 설명 참고).
         LAST_SEARCH["query"] = search_query
@@ -211,10 +244,36 @@ _NAVER_SHOP_URL = "https://openapi.naver.com/v1/search/shop.json"
 _NAVER_DISPLAY = 30   # 상위 10개가 케이스/중고로 차 있어도 본품이 남도록(필터 후 비교)
 _NAVER_NEW_PRODUCT_TYPES = (1, 2, 3)   # 일반상품(가격비교/비매칭/매칭). 4~12는 중고/단종/판매예정
 PRICE_SITE_BLOCK_MARKER = "[🏬 사이트별 최저가 비교 — 이미 계산됨]"
-_ACCESSORY_TERMS = (
-    "케이스", "필름", "보호필름", "보호유리", "강화유리", "액정보호", "충전기", "케이블", "거치대",
-    "파우치", "커버", "스트랩", "젠더", "어댑터", "스티커", "키링",
-    "범퍼", "슬리브", "도킹", "크래들", "폴리오", "카드지갑",
+# 종류별 묶음 — 검색어에 한 낱말이 있으면 "그 낱말과 같은 묶음"의 낱말만 거르기에서 풀린다("맥북 파우치 최저가"는
+# 파우치·슬리브·가방류만 허용하고 필름·스트랩 같은 다른 종류는 계속 거른다. "아이폰 충전기"는 케이블·어댑터도 같은 종류다).
+_ACCESSORY_GROUPS = (
+    ("충전기", "케이블", "어댑터", "충전선", "젠더", "charger", "cable", "adapter"),
+    ("필름", "보호필름", "보호유리", "강화유리", "액정보호", "protector"),
+    ("케이스", "커버", "범퍼", "폴리오", "case"),
+    ("파우치", "슬리브", "가방", "백팩", "카드지갑", "pouch", "sleeve"),
+    ("스트랩", "strap"),
+    ("거치대",), ("스티커",), ("키링",), ("도킹", "크래들"), ("키스킨",), ("이어팁",),
+)
+_ACCESSORY_TERMS = tuple(t for group in _ACCESSORY_GROUPS for t in group)
+_HANGUL = re.compile(r"[가-힣]")
+_KO_TERMS = tuple(t for t in _ACCESSORY_TERMS if _HANGUL.search(t))
+_EN_TERMS = tuple(t for t in _ACCESSORY_TERMS if not _HANGUL.search(t))
+_KO_TERM_PATTERN = "(?:" + "|".join(re.escape(t) for t in sorted(_KO_TERMS, key=len, reverse=True)) + ")"
+# 영문 낱말은 단어 경계로만 맞춘다(앞뒤가 영문자가 아님, 복수형 s/es 허용) — "showcase"·"staircase"·"discharger" 같은 우연한 겹침 제외.
+_EN_TERM_RE = re.compile(r"(?<![a-z])(?P<t>" + "|".join(sorted(_EN_TERMS, key=len, reverse=True)) + r")(?:e?s)?(?![a-z])")
+# 낱말이 브랜드·제품군 이름에 박힌 경우는 액세서리가 아니다(후지필름 카메라 등) — 판정 전에 이름에서 지운다.
+_NOT_ACCESSORY_COMPOUNDS = ("후지필름", "fujifilm", "필름카메라", "필름스캐너", "필름현상")
+# 본체 이름에 액세서리가 "딸려 온다"는 구체적 표기("케이스 포함", "케이스 증정 포함", "충전기 미포함", "+케이스",
+# "사은품 케이스")만 번들로 보고 그 낱말을 지운다. "케이스 무료배송"·"케이스 서비스 상품"·"케이스 증정"처럼 낱말 뒤에
+# 무료·서비스·증정이 붙은 이름은 액세서리 자체의 판매 문구일 수 있어 번들로 보지 않는다(공백을 지운 이름에서 검사).
+_KO_BUNDLE = re.compile(
+    rf"{_KO_TERM_PATTERN}(?:증정)?(?:포함|미포함|불포함)"
+    rf"|(?:사은품|증정품|동봉|포함|증정)[:：]?{_KO_TERM_PATTERN}"
+    rf"|[+＋&]{_KO_TERM_PATTERN}"
+)
+_EN_BUNDLE = re.compile(
+    r"(?:\bwith|\bincluding|\bincl\.?|\bfree|[+&])\s*(?:" + "|".join(_EN_TERMS) + r")(?:e?s)?(?![a-z])"
+    r"|(?<![a-z])(?:" + "|".join(_EN_TERMS) + r")(?:e?s)?\s*(?:included|incl\.?)(?![a-z])"
 )
 # 이 목록은 "완벽한 분류기"가 아니라 실용적 안전망이다(미탐/오탐은 계속 있다 — 새 사례가
 # 나오면 여기에 추가하고 테스트도 같이 늘린다). 틀리면 비교에서 빠지거나 끼는 것뿐이고,
@@ -280,12 +339,51 @@ def _fetch_naver_products(search_query: str, credentials):
     return [p for p in (_parse_naver_item(i) for i in items) if p is not None]
 
 
+def _accessory_terms_in(text: str) -> set:
+    """텍스트에 든 액세서리 낱말들(한글은 공백 없는 부분 문자열, 영문은 단어 경계)."""
+    lowered = (text or "").casefold()
+    compact = re.sub(r"\s+", "", lowered)
+    found = {t for t in _KO_TERMS if t in compact}
+    found.update(m.group("t") for m in _EN_TERM_RE.finditer(lowered))
+    return found
+
+
+def _released_terms(search_query: str) -> set:
+    """검색어에 든 낱말과 같은 묶음의 낱말 전부 — 사용자가 직접 찾는 액세서리 종류라 거르지 않는다."""
+    wanted = _accessory_terms_in(search_query)
+    released = set()
+    for group in _ACCESSORY_GROUPS:
+        if wanted.intersection(group):
+            released.update(group)
+    return released
+
+
 def _is_accessory(name: str, search_query: str) -> bool:
-    """검색어에 없는 액세서리 단어가 상품명에 있으면 True. 검색어 자체가 "아이폰 충전기"
-    처럼 그 단어를 포함하면 액세서리를 찾는 것이므로 제외하지 않는다."""
-    n = re.sub(r"\s+", "", name).casefold()
-    q = re.sub(r"\s+", "", search_query).casefold()
-    return any(t in n and t not in q for t in _ACCESSORY_TERMS)
+    """검색어에서 찾는 종류가 아닌 액세서리 낱말이 상품명에 있으면 True(예: 본체 검색 "맥북"에서 "맥북 에어
+    케이스"). 검색어에 "충전기"가 있으면 같은 묶음(케이블·어댑터…)은 거르지 않고 필름 같은 다른 종류만 거른다.
+    "케이스 포함"·"+케이스" 같은 번들 표기와 "후지필름" 같은 브랜드 이름 속 낱말은 액세서리로 보지 않는다."""
+    released = _released_terms(search_query)
+    lowered = (name or "").casefold()
+    for c in _NOT_ACCESSORY_COMPOUNDS:
+        lowered = lowered.replace(c, " ")
+    compact = _KO_BUNDLE.sub("", re.sub(r"\s+", "", lowered))
+    spaced = _EN_BUNDLE.sub(" ", lowered)
+    return any(t in compact and t not in released for t in _KO_TERMS) or any(
+        m.group("t") not in released for m in _EN_TERM_RE.finditer(spaced))
+
+
+def _split_accessories(parsed_products: list, search_query: str):
+    """(이름, 가격[, 판매처]) 목록 → (kept, excluded, all_accessory).
+      - 일부만 액세서리로 보이면: kept=본체로 보이는 것들, excluded=액세서리로 보여 뺀 것들, all_accessory=False.
+      - 전부 액세서리로 보이면: 거르지 않는다 — kept=원래 목록 전체, excluded=[], all_accessory=True
+        (호출부가 "본체가 아닌 상품이 섞여 있을 수 있어요"라고 알린다).
+      - 액세서리가 없으면: kept=원래 목록, excluded=[], all_accessory=False."""
+    flags = [_is_accessory(p[0], search_query) for p in parsed_products]
+    if flags and all(flags):
+        return list(parsed_products), [], True
+    kept = [p for p, f in zip(parsed_products, flags) if not f]
+    excluded = [p for p, f in zip(parsed_products, flags) if f]
+    return kept, excluded, False
 
 
 def _has_unrequested_grade(name: str, search_query: str) -> bool:
@@ -313,11 +411,12 @@ def _has_unrequested_grade(name: str, search_query: str) -> bool:
 
 def _site_cheapest(products, search_query):
     """한 사이트의 (이름, 가격, 판매처|None) 목록 → (cheapest 튜플 또는 None, 액세서리로
-    제외된 개수). 이름 일치 판정은 기존 _match_products를 쓰되, 비교 블록에서는 액세서리와
-    "검색어에 없는 등급 접미사"가 붙은 상품을 먼저 뺀다."""
+    제외된 개수). 비교 블록에서는 액세서리와 "검색어에 없는 등급 접미사"가 붙은 상품을 여기서 먼저 빼고(전부
+    액세서리여도 다나와 요약처럼 되돌리지 않는다), 이름 일치 판정과 최저가는 거르기 없는 _match_core로 한다 —
+    거르는 곳을 한 군데로 두어 이중 처리를 막는다."""
     kept = [p for p in products
             if not _is_accessory(p[0], search_query) and not _has_unrequested_grade(p[0], search_query)]
-    _, matched_with_price, _, _ = _match_products(kept, search_query)
+    _, matched_with_price, _, _ = _match_core(kept, search_query)
     cheapest = min(matched_with_price, key=lambda p: p[1]) if matched_with_price else None
     return cheapest, len(products) - len(kept)
 
