@@ -169,6 +169,11 @@ def _macos_location():
     창에 답할 때까지 기다리므로 도우미 앱 자체 제한(60초)보다 조금 길게 기다린다."""
     if not os.path.isdir(_MACOS_LOCATOR):
         return None
+    # 업데이트·설치가 실행 비트를 떨구면 open이 실패해 IP로 떨어진다 — 실행 직전에 되살린다
+    try:
+        os.chmod(os.path.join(_MACOS_LOCATOR, "Contents", "MacOS", "lumi-locator"), 0o755)
+    except OSError:
+        pass
     fd, out_path = tempfile.mkstemp(prefix="lumi-loc-", suffix=".json")
     os.close(fd)
     try:
