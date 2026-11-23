@@ -269,5 +269,7 @@ def download_and_install_plugin(
 
     except Exception as e:
         print(f"[플러그인 설치 오류] {m_name}: {e}")
-        lumi_dialog.critical(parent_widget, "오류", f"'{f_name}' 기능 설치에 실패했습니다. 인터넷 연결을 확인하고 잠시 후 다시 해 보시면 돼요.")
+        # 앱에 들어 있는 파일을 켜다 실패한 경우는 내려받지 않았으니 인터넷 안내가 맞지 않는다
+        hint = "루미를 다시 켠 뒤 한 번 더 해 보시면 돼요." if bundled else "인터넷 연결을 확인하고 잠시 후 다시 해 보시면 돼요."
+        lumi_dialog.critical(parent_widget, "오류", f"'{f_name}' 기능 설치에 실패했습니다. {hint}")
         btn.setText("설치"); btn.setEnabled(True)

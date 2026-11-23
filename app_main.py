@@ -2842,7 +2842,9 @@ class AssistantApp(QWidget):
         try:
             uninstall_plugin(m_name, self.installed_tools, self.installed_module_names)
         except OSError as e:
-            lumi_dialog.critical(self, "오류", f"'{f_name}' 기능을 제거하지 못했어요.\n{e}")
+            # 파일 경로가 담긴 원래 오류(예: Permission denied: 'C:\…\installed_plugins.json.tmp')는 로그에만 남긴다
+            print(f"[플러그인 제거 오류] {m_name}: {e}")
+            lumi_dialog.critical(self, "오류", f"'{f_name}' 기능을 제거하지 못했어요. 루미를 다시 켠 뒤 한 번 더 해 보시면 돼요.")
             return
         self._sync_plugin_ui()
         if m_name == "stock_portfolio":

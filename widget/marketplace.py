@@ -112,8 +112,7 @@ class PluginMarketplaceWidget(QFrame):
         self.plugin_items.clear()
 
         for p in MARKETPLACE_PLUGINS:
-            f_names = p.get('func_names', [p.get('func_name')])
-            card    = PluginCard(p, self.parent_app, f_names)
+            card = PluginCard(p, self.parent_app)
             self.plugin_items.append(card)
 
         self._current_cols = -1  # 강제로 재배치

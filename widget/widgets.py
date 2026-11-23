@@ -376,7 +376,7 @@ class CommandCard(QFrame):
 # 🃏 플러그인 카드
 # ==========================================
 class PluginCard(QFrame):
-    def __init__(self, p, parent_app, f_names):
+    def __init__(self, p, parent_app):
         super().__init__()
         self.p = p
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -401,8 +401,9 @@ class PluginCard(QFrame):
         self.btn.setMinimumSize(70, 34)
         self.btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn.clicked.connect(
-            lambda checked, b=self.btn, n=f_names, m=p['module_name'], u=p['github_url']:
-                parent_app.plugin_page.plugin_install_request.emit(n[0], m, u, b)
+            # 확인·완료 창에 보이는 이름 — 함수 이름(예: search_product_price)이 아니라 기능 이름
+            lambda checked, b=self.btn, m=p['module_name'], u=p['github_url']:
+                parent_app.plugin_page.plugin_install_request.emit(p['name'], m, u, b)
         )
         self.remove_btn = QPushButton("제거")
         self.remove_btn.setMinimumSize(60, 34)

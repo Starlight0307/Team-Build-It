@@ -100,3 +100,28 @@ def test_marketplace_lists_only_addons_and_home_split_is_saved(fresh_install, qa
     finally:
         w.shutdown_background_work()
         w.close()
+
+
+def test_install_button_shows_feature_name_not_function_name(qapp):
+    """설치 확인·완료 창에 '다나와 검색'처럼 기능 이름이 보여야 한다(예전엔 search_product_price 같은 함수 이름)."""
+    from PyQt6.QtCore import QObject, pyqtSignal
+    from PyQt6.QtWidgets import QPushButton
+    from widget.widgets import PluginCard
+
+    class FakePage(QObject):
+        plugin_install_request = pyqtSignal(str, str, str, QPushButton)
+        plugin_uninstall_request = pyqtSignal(str, str)
+
+    class FakeApp:
+        installed_module_names = []
+
+    FakeApp.plugin_page = FakePage()
+    got = []
+    FakeApp.plugin_page.plugin_install_request.connect(lambda name, m, u, b: got.append((name, m)))
+    p = MARKETPLACE_PLUGINS[0]
+    card = PluginCard(p, FakeApp)
+    try:
+        card.btn.click()
+    finally:
+        card.deleteLater()
+    assert got == [(p["name"], p["module_name"])]
